@@ -63,6 +63,22 @@
 |---|---|
 | ![검색](docs/images/ko/04-search.png) | ![Codex 대화](docs/images/ko/05-codex-transcript.png) |
 
+### 📂 산출물: 세션이 만든 결과를 모아 미리보기
+세션마다 **산출물** 탭이 있습니다.
+- 대화에 나온 파일 경로를 자동으로 모아 날짜별로 정리합니다. 영상, PDF, 그림, 슬라이드, 문서, 데이터가 대상입니다.
+- 그 자리에서 미리 봅니다.
+  - 그림, 영상·음성 플레이어, PDF, Markdown·텍스트·CSV를 바로 엽니다.
+  - HTML은 격리된 화면(샌드박스)에서 엽니다.
+  - LibreOffice가 있으면 PowerPoint·Word를 PDF로 바꿔 보여 줍니다.
+- 다른 파일도 직접 넣을 수 있습니다. **＋ 산출물 지정** 버튼이나 `ccd artifact add <경로> --title "…"`을 쓰세요.
+- ↗ 버튼을 누르면 그 파일 경로를 다른 세션에 바로 보냅니다.
+- 자율 연구 프로젝트에도 같은 탭이 있습니다.
+- 그 세션에 등록된 파일만 열 수 있습니다.
+
+| 산출물 탭 | 미리보기 |
+|---|---|
+| ![산출물](docs/images/ko/12-outputs.png) | ![미리보기](docs/images/ko/13-output-preview.png) |
+
 ### 🎛 모든 세션이 함께 쓰는 GPU 대기열
 `ccd gpu run --mem 12G --est 90m -- python train.py`처럼 실행하면 다음 순서로 동작합니다.
 1. 차례가 올 때까지 기다립니다.

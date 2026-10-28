@@ -563,7 +563,16 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
       if (flags.json) return console.log(JSON.stringify(items));
       return console.log(items.map((x) => `${x.source === 'pinned' ? '*' : ' '} ${x.kind.padEnd(8)} ${x.path}`).join('\n') || '(none)');
     }
-    die('artifact subcommands: ls [--all] | add <path> [--title T]');
+    if (sub === 'hide') {  // unpin + hide (also hides files auto-detected from the conversation)
+      const files = pos.slice(2);
+      if (!files.length) die('usage: ccd artifact hide <path> [<path> ...] [--session S]');
+      for (const f of files) {
+        const r = await api('/api/artifacts/hide', { session: sid, path: path.resolve(f) });
+        console.log(r.ok ? `hidden: ${path.resolve(f)}` : r.error);
+      }
+      return;
+    }
+    die('artifact subcommands: ls [--all] | add <path> [--title T] | hide <path...>');
   },
   async url() { console.log(fs.readFileSync(path.join(DIR, 'url.txt'), 'utf8').trim()); },
 

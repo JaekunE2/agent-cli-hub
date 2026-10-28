@@ -45,6 +45,13 @@ Every hub terminal (and, with Python, every other console window on the PC) as a
 |---|---|
 | ![Search](docs/images/en/04-search.png) | ![Codex transcript](docs/images/en/05-codex-transcript.png) |
 
+### 📂 Outputs — every result a session produced, previewed
+Each session has an **Outputs** tab. File paths mentioned in its conversation — videos, PDFs, figures, slides, documents, data — are collected automatically, grouped by day and previewed in place: images, video and audio players, PDFs, Markdown / text / CSV, HTML in a sandbox, and PowerPoint / Word converted to PDF when LibreOffice is installed. Pin anything else with **＋ Mark an output** or `ccd artifact add <path> --title "…"`, and send a file's path back into any session with one click (↗). Autonomous research projects have the same tab. Only files listed for a session can be opened.
+
+| Outputs tab | Preview |
+|---|---|
+| ![Outputs](docs/images/en/12-outputs.png) | ![Preview](docs/images/en/13-output-preview.png) |
+
 ### 🎛 GPU queue shared by all sessions
 `ccd gpu run --mem 12G --est 90m -- python train.py` waits its turn, runs with `CUDA_VISIBLE_DEVICES` set and releases the GPU when it ends. Memory and system-RAM reservations, backfilling of short jobs, heat guard, per-GPU lines, and GPU jobs started outside the queue are detected and shown as current users. Nothing outside the queue is ever killed.
 
@@ -162,6 +169,7 @@ MIT
 - 🖥 **모든 화면 모아보기**: 터미널마다 실시간 화면을 보고 바로 입력할 수 있습니다.
 - 🤖 **Claude Code · Codex · Cursor · 셸**: 원하는 폴더에서 바로 띄웁니다. Codex 터미널도 작업 중/대기 상태가 보입니다.
 - 🔎 **대화 전체 검색**: Claude Code와 Codex 대화 기록을 모두 검색하고, 그 대화를 원래 폴더에서 이어서 엽니다.
+- 📂 **산출물 미리보기**: 세션이 만든 영상, PDF, 그림, 문서를 자동으로 모아 그 자리에서 미리 봅니다.
 - 🎛 **GPU 대기열**: 세션들이 GPU를 순서대로 나눠 씁니다. 대기열 밖 작업은 종료하지 않습니다.
 - 🔬 **자율 연구**, 📅 **캘린더**, 📊 **AI 사용량**도 들어 있습니다. 계정 전환은 사용자가 버튼을 누를 때만 일어납니다.
 - 📱 **휴대폰에서 접속**: Tailscale로 접속합니다. 화면의 QR을 찍으면 됩니다.
