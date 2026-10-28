@@ -1,0 +1,9 @@
+{
+  "name": "Agent CLI Hub",
+  "short_name": "Agent Hub",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#17171a",
+  "theme_color": "#1f1f23",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

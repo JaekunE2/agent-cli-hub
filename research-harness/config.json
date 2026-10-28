@@ -1,0 +1,27 @@
+{
+  "_comment": "Autopilot limits live here, outside the project, so the agent cannot relax them. Directors must not edit this file.",
+  "projects_root": "../research",
+  "autopilot": {
+    "max_turns_per_hour": 40,
+    "no_progress_limit": 3,
+    "throttle_wait_min": 20,
+    "idle_nudge_min": 4,
+    "max_resumes_per_hour": 3,
+    "stop_hook_block_cap": 200,
+    "auto_switch_account": false
+  },
+  "budget": {
+    "max_parallel_workers": 2,
+    "usage_soft_limit": 85,
+    "usage_hard_limit": 95
+  },
+  "review": {
+    "_comment": "P9 exit gate (lib/reviewgate.js, enforced by hooks/stop.js): external review >= min_recommendation AND blind benchmark vs benchmark_papers accepted papers ranks ours <= benchmark_max_rank in every one of benchmark_runs runs. After max_review_rounds reviews without passing → blocked for the user.",
+    "min_recommendation": "weak accept",
+    "benchmark_max_rank": 3,
+    "benchmark_papers": 5,
+    "benchmark_runs": 2,
+    "max_review_rounds": 15,
+    "stall_rounds": 3
+  }
+}

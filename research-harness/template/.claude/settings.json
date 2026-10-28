@@ -1,0 +1,13 @@
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "\"{{NODE}}\" \"{{HARNESS_FWD}}/hooks/session-start.js\"", "timeout": 30 } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "\"{{NODE}}\" \"{{HARNESS_FWD}}/hooks/stop.js\"", "timeout": 30 } ] }
+    ],
+    "StopFailure": [
+      { "hooks": [ { "type": "command", "command": "\"{{NODE}}\" \"{{HARNESS_FWD}}/hooks/stop-failure.js\"", "timeout": 30 } ] }
+    ]
+  }
+}

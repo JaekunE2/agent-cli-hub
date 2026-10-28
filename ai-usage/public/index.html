@@ -1,0 +1,629 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 사용량</title>
+<style>
+  :root {
+    --bg: #f5f4f0;
+    --surface: #ffffff;
+    --surface-2: #efede7;
+    --text: #1d1c1a;
+    --muted: #6d6a63;
+    --line: #e2dfd7;
+    --track: #e9e6de;
+    --ok: #2f8f5b;
+    --warn: #c98a12;
+    --bad: #c8412f;
+    --accent: #1d1c1a;
+    --claude: #d97757;
+    --cursor: #3a3a3a;
+    --chatgpt: #10a37f;
+    --openai: #5b5bd6;
+    --shadow: 0 1px 2px rgba(20, 18, 12, .05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151514;
+      --surface: #1f1f1d;
+      --surface-2: #2a2a27;
+      --text: #ecebe6;
+      --muted: #9d9a92;
+      --line: #33322f;
+      --track: #34332f;
+      --ok: #4cc083;
+      --warn: #e2a93b;
+      --bad: #ec6a56;
+      --accent: #ecebe6;
+      --cursor: #bdbdbd;
+      --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 "Pretendard", "Malgun Gothic", system-ui, -apple-system, sans-serif;
+    padding: 28px clamp(16px, 4vw, 48px) 60px;
+  }
+  header {
+    display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; justify-content: space-between;
+    max-width: 1280px; margin: 0 auto 22px;
+  }
+  h1 { font-size: 22px; margin: 0; letter-spacing: -.01em; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  button, select, input {
+    font: inherit; color: inherit;
+  }
+  .btn {
+    border: 1px solid var(--line); background: var(--surface); padding: 7px 14px; border-radius: 8px;
+    cursor: pointer; box-shadow: var(--shadow);
+  }
+  .btn:hover { border-color: var(--muted); }
+  .btn.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+  .btn:disabled { opacity: .55; cursor: default; }
+  .btn.small { padding: 3px 9px; font-size: 12px; }
+
+  main { max-width: 1280px; margin: 0 auto; }
+  .summary {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 22px;
+  }
+  .stat { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; box-shadow: var(--shadow); }
+  .stat .k { color: var(--muted); font-size: 12px; }
+  .stat .v { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 16px; }
+  .controls input, .controls select { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 7px 10px; box-shadow: var(--shadow); }
+  .controls #q { flex: 1 1 200px; min-width: 140px; }
+  .controls select { cursor: pointer; }
+  .filternote { color: var(--muted); font-size: 12px; margin-left: auto; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
+  @media (max-width: 420px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px 14px;
+    box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 12px; min-width: 0;
+  }
+  .card.live {
+    border-color: color-mix(in srgb, var(--ok) 55%, var(--line));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ok) 45%, transparent), var(--shadow);
+    background: linear-gradient(color-mix(in srgb, var(--ok) 5%, var(--surface)), var(--surface));
+  }
+  .live-badge {
+    display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600;
+    color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent);
+    padding: 1px 8px; border-radius: 99px; white-space: nowrap;
+  }
+  .live-badge::before { content: ""; width: 6px; height: 6px; border-radius: 99px; background: var(--ok); }
+  .card-head { display: flex; gap: 10px; align-items: flex-start; }
+  .logo {
+    width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; flex: none;
+    color: #fff; font-weight: 700; font-size: 15px;
+  }
+  .logo.claude, .logo.claude-desktop, .logo.claude-token { background: var(--claude); }
+  .logo.gemini { background: #4f7ff0; }
+  .logo.cursor { background: var(--cursor); color: var(--surface); }
+  .logo.codex { background: var(--chatgpt); }
+  .logo.openai-api { background: var(--openai); }
+  .who { min-width: 0; flex: 1; }
+  .who .name { font-weight: 650; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .who .meta { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pill { font-size: 11px; padding: 1px 7px; border-radius: 99px; background: var(--surface-2); color: var(--muted); font-weight: 500; }
+  .headroom { text-align: right; flex: none; }
+  .headroom .num { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .headroom .lbl { font-size: 11px; color: var(--muted); }
+
+  .meter { display: grid; gap: 5px; }
+  .meter-top { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
+  .meter-top .left { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .bar { height: 8px; border-radius: 99px; background: var(--track); overflow: hidden; }
+  .bar > span { display: block; height: 100%; border-radius: inherit; transition: width .4s ease; }
+  .meter-foot { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12px; flex-wrap: wrap; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  .bg-ok { background: var(--ok); } .bg-warn { background: var(--warn); } .bg-bad { background: var(--bad); }
+
+  .billing { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; font-size: 12.5px; padding: 8px 10px; background: var(--surface-2); border-radius: 8px; }
+  .billing .bk { color: var(--muted); white-space: nowrap; }
+  .billing .bv { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+  .memo { font-size: 12.5px; }
+  .memo-view { width: 100%; text-align: left; background: none; border: 1px dashed var(--line); border-radius: 8px; padding: 7px 10px; cursor: text; color: var(--text); white-space: pre-wrap; word-break: break-word; font: inherit; }
+  .memo-view:hover { border-color: var(--muted); }
+  .memo.empty .memo-view { color: var(--muted); font-style: italic; border-style: dashed; }
+  .memo textarea { width: 100%; min-height: 60px; resize: vertical; border: 1px solid var(--accent); border-radius: 8px; padding: 7px 10px; background: var(--bg); font: inherit; }
+  .memo-hint { color: var(--muted); font-size: 11px; margin-top: 3px; }
+  .notes { color: var(--muted); font-size: 12px; margin: 0; padding-left: 16px; }
+  .error { color: var(--bad); font-size: 13px; background: color-mix(in srgb, var(--bad) 8%, transparent); border-radius: 8px; padding: 8px 10px; word-break: break-word; }
+  .card-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; border-top: 1px solid var(--line); padding-top: 9px; }
+  .foot-actions { display: flex; gap: 6px; align-items: center; }
+  .empty { text-align: center; color: var(--muted); padding: 60px 20px; }
+  .skeleton { height: 180px; border-radius: 14px; background: linear-gradient(90deg, var(--surface) 0%, var(--surface-2) 50%, var(--surface) 100%); background-size: 200% 100%; animation: sh 1.2s infinite; border: 1px solid var(--line); }
+  @keyframes sh { to { background-position: -200% 0; } }
+
+  dialog {
+    border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--text);
+    width: min(520px, calc(100vw - 32px)); padding: 0;
+  }
+  dialog::backdrop { background: rgba(0, 0, 0, .4); }
+  dialog form { padding: 20px 22px; display: grid; gap: 12px; }
+  dialog h2 { margin: 0; font-size: 17px; }
+  label { display: grid; gap: 4px; font-size: 13px; }
+  label small { color: var(--muted); font-size: 12px; line-height: 1.45; }
+  dialog input, dialog select, dialog textarea {
+    border: 1px solid var(--line); background: var(--bg); border-radius: 8px; padding: 8px 10px; width: 100%;
+  }
+  code { background: var(--surface-2); padding: 0 4px; border-radius: 4px; font-size: 12px; }
+  .row { display: flex; gap: 8px; justify-content: flex-end; }
+  .form-error { color: var(--bad); font-size: 13px; min-height: 1em; }
+  .toggle { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13px; }
+  .toggle input { width: auto; }
+  .share-tag { font-size: 12px; font-weight: 600; color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); padding: 2px 9px; border-radius: 99px; vertical-align: middle; margin-left: 6px; }
+  body.readonly #add { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>AI 사용량 <span class="share-tag" id="shareTag" hidden></span></h1>
+    <div class="sub" id="updated">불러오는 중…</div>
+  </div>
+  <div class="actions">
+    <label class="toggle"><input type="checkbox" id="auto" checked> 5분마다 자동 새로고침</label>
+    <button class="btn" id="add">+ 계정 추가</button>
+    <button class="btn primary" id="refresh">새로고침</button>
+  </div>
+</header>
+
+<main>
+  <section class="summary" id="summary"></section>
+  <section class="controls" id="controls">
+    <input id="q" type="search" placeholder="이름·이메일 검색" autocomplete="off">
+    <select id="fprovider" aria-label="서비스 필터"><option value="">모든 서비스</option></select>
+    <select id="fstatus" aria-label="상태 필터">
+      <option value="">모든 상태</option>
+      <option value="live">로그인됨</option>
+      <option value="tight">90%+ 소진</option>
+      <option value="error">오류</option>
+    </select>
+    <select id="sort" aria-label="정렬">
+      <option value="default">기본 순서</option>
+      <option value="headroom-asc">잔여율 낮은순 (급한 것 먼저)</option>
+      <option value="headroom-desc">잔여율 높은순</option>
+      <option value="name">이름순</option>
+      <option value="provider">서비스순</option>
+    </select>
+    <button class="btn small" id="clearFilters" hidden>필터 해제</button>
+    <span class="filternote" id="filternote"></span>
+  </section>
+  <section class="grid" id="grid">
+    <div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>
+  </section>
+</main>
+
+<dialog id="dlg">
+  <form method="dialog" id="form">
+    <h2>계정 추가</h2>
+    <label>종류
+      <select name="type" id="type">
+        <option value="claude">Claude (Pro / Max)</option>
+        <option value="claude-token">Claude 장기 토큰 (sk-ant-oat01-…)</option>
+        <option value="cursor">Cursor</option>
+        <option value="codex">ChatGPT (Plus / Pro · Codex 한도)</option>
+        <option value="openai-api">OpenAI API (이번 달 비용)</option>
+        <option value="gemini">Gemini API 키 (유효성만)</option>
+      </select>
+    </label>
+    <label>표시 이름 <input name="label" placeholder="예: 회사 계정" maxlength="40"></label>
+
+    <div data-for="claude">
+      <label>credentials 파일 경로
+        <input name="credentialsPath" placeholder="C:\Users\USER\.claude-work\.credentials.json">
+        <small>다른 계정은 별도 폴더로 로그인하세요: PowerShell에서 <code>$env:CLAUDE_CONFIG_DIR="$HOME\.claude-work"; claude</code> 실행 후 <code>/login</code>. 그 폴더의 <code>.credentials.json</code> 경로를 넣으면 됩니다. 토큰은 만료 시 자동 갱신됩니다.</small>
+      </label>
+    </div>
+
+    <div data-for="claude-token" hidden>
+      <label>토큰 파일 경로
+        <input name="tokenPath" placeholder="C:\Users\you\claude_token.txt">
+        <small><code>claude setup-token</code>으로 만든 토큰을 저장한 파일. 경로만 저장되고 토큰은 복사되지 않습니다.</small>
+      </label>
+      <label>또는 토큰 직접 입력
+        <input name="token" placeholder="sk-ant-oat01-...">
+      </label>
+      <label>계정 표시 이름 (선택)
+        <input name="owner" placeholder="예: you@example.com">
+        <small>이 토큰은 계정 정보를 조회할 수 없어 조직 ID만 보입니다. 여기에 적으면 카드에 계정 이름으로 표시됩니다.</small>
+      </label>
+    </div>
+
+    <div data-for="claude-desktop" hidden>
+      <label>계정 UUID (선택)
+        <input name="accountUuid" placeholder="비워두면 데스크탑 앱에 현재 로그인된 계정">
+        <small>Claude 데스크탑 앱에 로그인된 계정을 자동으로 읽습니다. 토큰은 복사하지 않고 앱의 저장소에서 그때그때 복호화합니다(Windows 전용). 여러 계정으로 로그인했다면 특정 계정 UUID를 지정할 수 있습니다.</small>
+      </label>
+    </div>
+
+    <div data-for="gemini" hidden>
+      <label>API 키 파일 경로
+        <input name="keyPath" placeholder="C:\Users\you\gemini_key.txt">
+      </label>
+      <label>또는 API 키 직접 입력
+        <input name="apiKey" placeholder="AIza... / AQ....">
+        <small>Google은 API 키로 남은 할당량을 알려주지 않아 키 유효 여부만 표시됩니다.</small>
+      </label>
+    </div>
+
+    <div data-for="cursor" hidden>
+      <label>WorkosCursorSessionToken 쿠키 값
+        <input name="sessionToken" placeholder="user_01XXXX%3A%3AeyJhbGciOi...">
+        <small>브라우저에서 cursor.com 대시보드에 로그인 → 개발자도구(F12) → Application → Cookies → <code>WorkosCursorSessionToken</code> 값을 복사하세요.</small>
+      </label>
+    </div>
+
+    <div data-for="codex" hidden>
+      <label>Codex auth.json 경로
+        <input name="authPath" placeholder="C:\Users\USER\.codex-sub\auth.json">
+        <small><code>$env:CODEX_HOME="$HOME\.codex-sub"; codex login</code>으로 로그인한 폴더의 auth.json (권장, 자동 갱신)</small>
+      </label>
+      <label>또는 accessToken 직접 입력
+        <input name="accessToken" placeholder="eyJhbGciOi...">
+        <small>chatgpt.com 로그인 후 <code>https://chatgpt.com/api/auth/session</code>에서 <code>accessToken</code> 값 (약 10일 후 만료)</small>
+      </label>
+    </div>
+
+    <div data-for="openai-api" hidden>
+      <label>Admin API 키
+        <input name="adminKey" placeholder="sk-admin-...">
+        <small>platform.openai.com → Settings → Admin keys에서 발급 (일반 API 키로는 비용 조회 불가)</small>
+      </label>
+      <label>월 예산 (USD, 선택)
+        <input name="monthlyBudget" type="number" min="0" step="1" placeholder="100">
+      </label>
+    </div>
+
+    <div class="form-error" id="formError"></div>
+    <div class="row">
+      <button class="btn" type="button" onclick="this.closest('dialog').close()">취소</button>
+      <button class="btn primary" id="save" value="save">추가</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const LOGO = { claude: 'C', 'claude-desktop': 'C', 'claude-token': 'C', cursor: '⌘', codex: 'G', 'openai-api': 'AI', gemini: '✦', meshy: 'M' };
+
+let lastData = null;
+let timer = null;
+let editingMemo = null;
+let shareMode = false;
+let readOnly = false;
+
+function level(used) {
+  if (used >= 90) return 'bad';
+  if (used >= 70) return 'warn';
+  return 'ok';
+}
+
+function untilText(iso) {
+  if (!iso) return '';
+  const t = new Date(iso);
+  const ms = t - Date.now();
+  if (Number.isNaN(ms)) return '';
+  if (ms <= 0) return '곧 초기화';
+  const m = Math.round(ms / 60000);
+  const d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), mm = m % 60;
+  const span = d ? `${d}일 ${h}시간` : h ? `${h}시간 ${mm}분` : `${mm}분`;
+  const sameDay = t.toDateString() === new Date().toDateString();
+  const at = t.toLocaleString('ko-KR', sameDay ? { hour: '2-digit', minute: '2-digit' } : { month: 'numeric', day: 'numeric', weekday: 'short', hour: '2-digit', minute: '2-digit' });
+  return `${span} 후 초기화 · ${at}`;
+}
+
+function meterHtml(m) {
+  if (m.usedPercent == null) {
+    return `<div class="meter"><div class="meter-top"><span>${esc(m.name)}</span></div>
+      <div class="meter-foot"><span>${esc(m.detail || '')}</span><span>${esc(untilText(m.resetsAt))}</span></div></div>`;
+  }
+  const used = Math.round(m.usedPercent * 10) / 10;
+  const left = Math.max(0, 100 - used);
+  const lv = level(used);
+  return `<div class="meter">
+    <div class="meter-top"><span>${esc(m.name)}</span><span class="left ${lv}"><b>${Math.round(left)}%</b> 남음</span></div>
+    <div class="bar" role="progressbar" aria-valuenow="${used}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(m.name)} 사용률"><span class="bg-${lv}" style="width:${used}%"></span></div>
+    <div class="meter-foot"><span>${used}% 사용${m.detail ? ' · ' + esc(m.detail) : ''}</span><span>${esc(untilText(m.resetsAt))}</span></div>
+  </div>`;
+}
+
+// Remaining headroom on the tightest (or headline) meter — used for both the badge and sorting.
+function headroomOf(a) {
+  if (!a.ok) return null;
+  const pct = (a.meters || []).filter((m) => m.usedPercent != null);
+  const main = pct.find((m) => m.headline);
+  const worst = main ? main.usedPercent : pct.length ? Math.max(...pct.map((m) => m.usedPercent)) : null;
+  return worst == null ? null : { remaining: 100 - worst, label: main ? `${main.name} 남음` : '가장 빠듯한 한도' };
+}
+
+function cardHtml(a) {
+  const h = headroomOf(a);
+  const headroom = h
+    ? `<div class="headroom"><div class="num ${level(100 - h.remaining)}">${Math.round(h.remaining)}%</div><div class="lbl">${esc(h.label)}</div></div>` : '';
+  const meta = [a.provider, a.email].filter(Boolean).join(' · ');
+  const body = a.ok
+    ? (a.meters.length ? a.meters.map(meterHtml).join('') : '<div class="sub">표시할 한도 정보가 없습니다</div>')
+      + (a.notes?.length ? `<ul class="notes">${a.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : '')
+    : `<div class="error">${esc(a.error)}</div>`;
+  const copyBtn = (!readOnly && a.hasSecret) ? `<button class="btn small" data-copy="${esc(a.id)}">토큰 복사</button>` : '';
+  const del = readOnly ? '' : (a.source === 'manual' ? `<button class="btn small" data-del="${esc(a.id)}">삭제</button>` : '<span>자동 감지</span>');
+  const bill = a.billing && (a.billing.at || a.billing.note)
+    ? `<div class="billing"><span class="bk">${esc(a.billing.label || '결제일')}</span><span class="bv">${esc(billingText(a.billing))}</span></div>` : '';
+  const hasMemo = a.memo && a.memo.trim();
+  const memo = readOnly
+    ? (hasMemo ? `<div class="memo"><div class="memo-view" style="cursor:default">${esc(a.memo)}</div></div>` : '')
+    : `<div class="memo ${hasMemo ? '' : 'empty'}" data-memo="${esc(a.id)}">
+      <button class="memo-view" data-memoedit="${esc(a.id)}" title="클릭해서 메모 편집">${hasMemo ? esc(a.memo) : '+ 메모 추가'}</button>
+    </div>`;
+  const isLive = a.live && a.ok;
+  const liveBadge = isLive ? '<span class="live-badge">로그인됨</span>' : '';
+  return `<article class="card${isLive ? ' live' : ''}">
+    <div class="card-head">
+      <div class="logo ${esc(a.type)}" aria-hidden="true">${LOGO[a.type] || '?'}</div>
+      <div class="who">
+        <div class="name">${esc(a.label)} ${a.plan ? `<span class="pill">${esc(a.plan)}</span>` : ''} ${liveBadge}</div>
+        <div class="meta" title="${esc(meta)}">${esc(meta)}</div>
+      </div>
+      ${headroom}
+    </div>
+    ${body}
+    ${bill}
+    ${memo}
+    <div class="card-foot"><span>${new Date(a.fetchedAt).toLocaleTimeString('ko-KR')} 조회</span><span class="foot-actions">${copyBtn}${del}</span></div>
+  </article>`;
+}
+
+function billingText(b) {
+  if (!b.at) return b.note || '';
+  const t = new Date(b.at);
+  const ms = t - Date.now();
+  const days = Math.ceil(ms / 86400000);
+  const date = t.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' });
+  const rel = days <= 0 ? '오늘' : days === 1 ? '내일' : `${days}일 후`;
+  return `${date} (${rel})${b.note ? ' · ' + b.note : ''}`;
+}
+
+function render(data) {
+  if (editingMemo) return; // don't clobber an in-progress memo edit on the periodic re-render
+  shareMode = !!data.shareMode;
+  readOnly = !!data.readOnly;
+  document.body.classList.toggle('share', shareMode);
+  document.body.classList.toggle('readonly', readOnly);
+  const tag = $('#shareTag');
+  tag.hidden = !(shareMode || readOnly);
+  tag.textContent = readOnly ? '보기 전용' : '공유용 · 내 PC 계정 제외';
+  const list = data.accounts;
+  $('#updated').textContent = `마지막 업데이트 ${new Date(data.generatedAt).toLocaleTimeString('ko-KR')} · 계정 ${list.length}개`;
+  if (!list.length) {
+    $('#summary').innerHTML = '';
+    $('#grid').innerHTML = '<div class="empty" style="grid-column:1/-1">감지된 계정이 없습니다. “계정 추가”로 등록하세요.</div>';
+    return;
+  }
+  const ok = list.filter((a) => a.ok);
+  const tight = ok.flatMap((a) => a.meters.filter((m) => m.usedPercent != null && m.usedPercent >= 90));
+  const byProvider = {};
+  for (const a of list) byProvider[a.provider] = (byProvider[a.provider] || 0) + 1;
+  const liveCount = list.filter((a) => a.live && a.ok).length;
+  $('#summary').innerHTML = [
+    ['정상 조회', `${ok.length} / ${list.length}`],
+    ['앱 로그인 세션', `${liveCount}개`],
+    ['90% 이상 소진된 한도', `${tight.length}개`],
+    ...Object.entries(byProvider).map(([p, n]) => [p, `${n}개 계정`]),
+  ].map(([k, v]) => `<div class="stat"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join('');
+
+  syncProviderOptions(Object.keys(byProvider));
+  const shown = applyFilterSort(list);
+  $('#grid').innerHTML = shown.length
+    ? shown.map(cardHtml).join('')
+    : '<div class="empty" style="grid-column:1/-1">조건에 맞는 계정이 없습니다.</div>';
+
+  const f = filterState();
+  const active = f.q || f.provider || f.status || f.sort !== 'default';
+  $('#clearFilters').hidden = !active;
+  $('#filternote').textContent = shown.length === list.length ? '' : `${shown.length} / ${list.length} 표시`;
+}
+
+function filterState() {
+  return { q: $('#q').value.trim().toLowerCase(), provider: $('#fprovider').value, status: $('#fstatus').value, sort: $('#sort').value };
+}
+
+function tightCount(a) {
+  return a.ok ? (a.meters || []).filter((m) => m.usedPercent != null && m.usedPercent >= 90).length : 0;
+}
+
+function applyFilterSort(list) {
+  const f = filterState();
+  let out = list.filter((a) => {
+    if (f.provider && a.provider !== f.provider) return false;
+    if (f.status === 'live' && !(a.live && a.ok)) return false;
+    if (f.status === 'error' && a.ok) return false;
+    if (f.status === 'tight' && !tightCount(a)) return false;
+    if (f.q) {
+      const hay = `${a.label || ''} ${a.email || ''} ${a.provider || ''} ${a.plan || ''}`.toLowerCase();
+      if (!hay.includes(f.q)) return false;
+    }
+    return true;
+  });
+  const rem = (a) => { const h = headroomOf(a); return h ? h.remaining : null; };
+  const byRem = (dir) => (a, b) => {
+    const ra = rem(a), rb = rem(b);
+    if (ra == null && rb == null) return 0;
+    if (ra == null) return 1; // accounts with no % (errors, key-only) sink to the bottom
+    if (rb == null) return -1;
+    return dir * (ra - rb);
+  };
+  if (f.sort === 'headroom-asc') out = out.slice().sort(byRem(1));
+  else if (f.sort === 'headroom-desc') out = out.slice().sort(byRem(-1));
+  else if (f.sort === 'name') out = out.slice().sort((a, b) => (a.label || '').localeCompare(b.label || '', 'ko'));
+  else if (f.sort === 'provider') out = out.slice().sort((a, b) => (a.provider || '').localeCompare(b.provider || '') || (a.label || '').localeCompare(b.label || '', 'ko'));
+  return out;
+}
+
+function syncProviderOptions(providers) {
+  const sel = $('#fprovider');
+  const cur = sel.dataset.pending || sel.value;
+  const sorted = providers.slice().sort();
+  if (sel.dataset.sig !== sorted.join(',')) {
+    sel.innerHTML = ['<option value="">모든 서비스</option>', ...sorted.map((p) => `<option value="${esc(p)}">${esc(p)}</option>`)].join('');
+    sel.dataset.sig = sorted.join(',');
+    sel.value = sorted.includes(cur) ? cur : '';
+    delete sel.dataset.pending;
+  }
+}
+
+async function load(force = false) {
+  const btn = $('#refresh');
+  btn.disabled = true;
+  btn.textContent = '조회 중…';
+  try {
+    const res = await fetch(`/api/usage${force ? '?force=1' : ''}`);
+    if (!res.ok) throw new Error(`서버 오류 ${res.status}`);
+    lastData = await res.json();
+    render(lastData);
+  } catch (e) {
+    $('#updated').textContent = `불러오기 실패: ${e.message} (서버가 실행 중인지 확인하세요)`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '새로고침';
+  }
+}
+
+function schedule() {
+  clearInterval(timer);
+  if ($('#auto').checked) timer = setInterval(() => load(), 300_000);
+}
+
+$('#refresh').addEventListener('click', () => load(true));
+$('#auto').addEventListener('change', schedule);
+setInterval(() => lastData && render(lastData), 30_000);
+
+// --- filter & sort controls (persisted per browser) ---
+const FILTER_KEY = 'aiUsage.filters';
+function saveFilters() {
+  try { localStorage.setItem(FILTER_KEY, JSON.stringify(filterState())); } catch { /* ignore */ }
+}
+function restoreFilters() {
+  let s;
+  try { s = JSON.parse(localStorage.getItem(FILTER_KEY) || '{}'); } catch { s = {}; }
+  if (s.q) $('#q').value = s.q;
+  if (s.status) $('#fstatus').value = s.status;
+  if (s.sort) $('#sort').value = s.sort;
+  if (s.provider) $('#fprovider').dataset.pending = s.provider; // applied once options exist
+}
+['#q', '#fprovider', '#fstatus', '#sort'].forEach((sel) => {
+  $(sel).addEventListener('input', () => { saveFilters(); if (lastData) render(lastData); });
+});
+$('#clearFilters').addEventListener('click', () => {
+  $('#q').value = ''; $('#fprovider').value = ''; $('#fstatus').value = ''; $('#sort').value = 'default';
+  saveFilters(); if (lastData) render(lastData);
+});
+restoreFilters();
+
+$('#grid').addEventListener('click', async (e) => {
+  const copyId = e.target.closest('[data-copy]')?.dataset.copy;
+  if (copyId) { copyToken(copyId, e.target.closest('button')); return; }
+
+  const memoId = e.target.closest('[data-memoedit]')?.dataset.memoedit;
+  if (memoId) { openMemoEditor(memoId, e.target.closest('.memo')); return; }
+
+  const id = e.target.closest('[data-del]')?.dataset.del;
+  if (!id) return;
+  const btn = e.target.closest('button');
+  if (btn.dataset.confirm !== '1') {
+    btn.dataset.confirm = '1';
+    btn.textContent = '정말 삭제?';
+    setTimeout(() => { btn.dataset.confirm = ''; btn.textContent = '삭제'; }, 3000);
+    return;
+  }
+  await fetch(`/api/accounts/${encodeURIComponent(id)}`, { method: 'DELETE', headers: { 'X-Dashboard': '1' } });
+  load();
+});
+
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return; } catch { /* fallback below */ }
+  const ta = document.createElement('textarea');
+  ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.focus(); ta.select();
+  try { document.execCommand('copy'); } finally { ta.remove(); }
+}
+
+async function copyToken(id, btn) {
+  const orig = btn.textContent;
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/token', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Dashboard': '1' }, body: JSON.stringify({ id }) });
+    if (!res.ok) throw new Error();
+    const { token } = await res.json();
+    if (!token) throw new Error();
+    await copyText(token);
+    btn.textContent = '복사됨 ✓';
+  } catch {
+    btn.textContent = '복사 실패';
+  }
+  setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 1500);
+}
+
+function openMemoEditor(id, box) {
+  const current = lastData?.accounts.find((a) => a.id === id)?.memo || '';
+  editingMemo = id;
+  box.innerHTML = '<textarea maxlength="2000" placeholder="이 계정에 대한 메모… (저장: Ctrl+Enter, 취소: Esc)"></textarea><div class="memo-hint">Ctrl+Enter 저장 · Esc 취소</div>';
+  const ta = box.querySelector('textarea');
+  ta.value = current;
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+  let settled = false;
+  const finish = () => { if (settled) return; settled = true; editingMemo = null; if (lastData) render(lastData); };
+  const save = async () => {
+    if (settled) return;
+    const text = ta.value.trim();
+    if (text === current) return finish();
+    ta.disabled = true;
+    try {
+      const res = await fetch('/api/memo', { method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-Dashboard': '1' }, body: JSON.stringify({ id, memo: text }) });
+      if (!res.ok) throw new Error();
+      const acc = lastData?.accounts.find((a) => a.id === id);
+      if (acc) acc.memo = text;
+    } catch { ta.disabled = false; alert('메모 저장에 실패했습니다.'); return; }
+    finish();
+  };
+  ta.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); save(); }
+    else if (ev.key === 'Escape') { ev.preventDefault(); finish(); }
+  });
+  ta.addEventListener('blur', () => save(), { once: true });
+}
+
+const syncType = () => {
+  document.querySelectorAll('[data-for]').forEach((el) => { el.hidden = el.dataset.for !== $('#type').value; });
+};
+$('#type').addEventListener('change', syncType);
+$('#add').addEventListener('click', () => { $('#form').reset(); $('#formError').textContent = ''; syncType(); $('#dlg').showModal(); });
+
+$('#save').addEventListener('click', async (e) => {
+  e.preventDefault();
+  const fd = new FormData($('#form'));
+  const type = fd.get('type');
+  const body = { type, label: fd.get('label') };
+  document.querySelectorAll(`[data-for="${type}"] [name]`).forEach((el) => { if (el.value) body[el.name] = el.type === 'number' ? Number(el.value) : el.value; });
+  const need = { claude: ['credentialsPath'], 'claude-desktop': [], 'claude-token': ['tokenPath', 'token'], cursor: ['sessionToken'], codex: ['authPath', 'accessToken'], 'openai-api': ['adminKey'], gemini: ['keyPath', 'apiKey'], meshy: ['keyPath', 'apiKey'] }[type];
+  if (need.length && !need.some((k) => body[k])) { $('#formError').textContent = '필수 항목을 입력하세요.'; return; }
+  const res = await fetch('/api/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Dashboard': '1' }, body: JSON.stringify(body) });
+  if (!res.ok) { $('#formError').textContent = (await res.json()).error || '저장 실패'; return; }
+  $('#dlg').close();
+  load(true);
+});
+
+load();
+schedule();
+</script>
+</body>
+</html>

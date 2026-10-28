@@ -1,0 +1,19 @@
+{
+  "_comment": "Copy to config.json and keep only what you need. Every key is optional.",
+  "lang": "en",
+  "remote": "tailscale",
+  "consoles": true,
+  "python": "C:\\Python312\\python.exe",
+  "codex": "C:\\Users\\you\\AppData\\Roaming\\npm\\codex.cmd",
+  "cursorAgent": "C:\\Users\\you\\AppData\\Local\\cursor-agent\\cursor-agent.cmd",
+  "usageUrl": "http://127.0.0.1:4777",
+  "usageDir": "../ai-usage",
+  "locateRoots": ["D:\\work"],
+  "calendar": {
+    "todo": "D:\\notes\\todo.md",
+    "events": "D:\\notes\\calendar.json",
+    "googleAccount": "you@example.com",
+    "timeZone": "America/New_York"
+  },
+  "gpt": { "model": "gpt-5" }
+}

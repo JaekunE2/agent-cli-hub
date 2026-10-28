@@ -1,0 +1,27 @@
+# runtime state and secrets (created on your PC, never committed)
+node.exe
+hub/node_modules/
+hub/.token
+hub/url.txt
+hub/config.json
+hub/data/
+hub/*.log
+hub/*.out
+hub/.search-cache.json.gz
+hub/favorites.json
+hub/gpu-queue*.json
+hub/gpu-logs/
+hub/terms-state.json
+hub/crash-state.json
+hub/artifacts-store.json
+hub/restart-report.txt
+hub/uploads/
+hub/preview-cache/
+hub/notify/
+hub/approvals/
+ai-usage/accounts.json
+ai-usage/memos.json
+ai-usage/org-emails.json
+ai-usage/*.log
+research/
+dist/
