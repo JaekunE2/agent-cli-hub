@@ -123,6 +123,25 @@
 |---|---|
 | ![휴대폰 연결](docs/images/ko/10-phone.png) | <img src="docs/images/ko/11-phone-terminal.png" width="300"> |
 
+### 💬 텔레그램 릴레이: 텔레그램으로 세션과 대화 (관제 없이도 동작)
+`telegram-relay/`는 의존성 없는 별도 봇입니다.
+- @BotFather로 봇을 만들고 `telegram-relay\setup.bat`을 실행한 뒤, 휴대폰에서 **시작**을 누르면 됩니다. 그다음부터 이 PC의 Claude Code 세션 어디와도 텔레그램으로 대화합니다.
+- Claude CLI를 직접 실행하므로(`claude -p --resume`) 관제가 꺼져 있어도 됩니다.
+
+할 수 있는 일:
+- 📋 버튼으로 세션 고르기: 최근 / 열림 / 폴더 / 검색 탭, ➕ 새 대화
+- 📌 고른 세션은 채팅 맨 위에 고정
+- ⏳ 진행 카드에서 지금 하는 단계를 보여 주고, ⏹ 버튼으로 멈춤
+- 📱 휴대폰에 맞춘 짧은 답, 긴 답은 한 메시지 안에서 ◀ ▶로 넘김, 답 아래 빠른 답장 버튼
+- 📷 보낸 사진·파일은 세션에 경로로 전달
+- 📂 세션이 만든 PDF·그림·영상은 텔레그램으로 받음 (그림은 앨범으로)
+- 🔔 PC에서 시킨 작업의 답도 받기
+- ⚙ 권한·모델을 버튼으로 바꾸기
+
+![텔레그램 릴레이](telegram-relay/docs/images/ko/relay-tour.png)
+
+자세한 내용: [telegram-relay/README.ko.md](telegram-relay/README.ko.md)
+
 ### 📊 AI 사용량과 내 계정들
 함께 들어 있는 사용량 대시보드(4777 포트)가 다음을 보여 줍니다. 이 PC에 로그인된 계정은 자동으로 찾습니다.
 - Claude 5시간·주간 한도
@@ -220,6 +239,7 @@ operator/          관제 세션 운영 매뉴얼(CLAUDE.md / AGENTS.md)과 ENVI
 research-harness/  자율 연구: 훅, 프로젝트 템플릿, 도구
 skills/            agent-cli-hub 스킬 + paper-review/claims/numbers/code 스킬
 guidance/          start.bat이 ~/.claude/CLAUDE.md와 ~/.codex/AGENTS.md에 넣는 안내
+telegram-relay/    Claude Code 세션용 텔레그램 봇 (독립 실행, 의존성 없음)
 ```
 
 ## 라이선스
