@@ -74,18 +74,10 @@ The hub listens only on `127.0.0.1` and your Tailscale address — never the LAN
 |---|---|
 | ![Phone dialog](docs/images/en/10-phone.png) | <img src="docs/images/en/11-phone-terminal.png" width="300"> |
 
-### 💬 Telegram relay: your sessions from Telegram (works without the hub too)
-`telegram-relay/` is a separate, dependency-free bot. Make a bot with @BotFather, run `telegram-relay\setup.bat`, press START on your phone, and you can talk to any Claude Code session on this PC from Telegram. It runs the Claude CLI directly (`claude -p --resume`), so it works with or without the hub.
-- 📋 Pick sessions with buttons: Recent / Open / Folders / Search tabs, ➕ new conversation.
-- 📌 The chosen session stays pinned at the top of the chat.
-- ⏳ A live progress card shows the steps and has a ⏹ button.
-- 📱 Answers are written for a phone. Long ones page with ◀ ▶ in one message. Quick replies sit under each answer.
-- 📷 Photos and files you send reach the session as paths. 📂 PDFs, figures and videos it made come back, with pictures as an album.
-- 🔔 Turns you run on the PC can be forwarded too. ⚙ Permissions and model are one tap away.
+### 💬 Your sessions from Telegram: Claude Telegram Relay (separate repo)
+Pick a Claude Code session on this PC with buttons in Telegram, chat with it from your phone, send photos and get its output files (PDFs, figures, videos) back. It is a separate project that works on its own, with or without the hub: **[JaekunE2/claude-telegram-relay](https://github.com/JaekunE2/claude-telegram-relay)**
 
-![Telegram relay](telegram-relay/docs/images/en/relay-tour.png)
-
-Details: [telegram-relay/README.md](telegram-relay/README.md)
+![Telegram relay](https://raw.githubusercontent.com/JaekunE2/claude-telegram-relay/main/docs/images/en/relay-tour.png)
 
 ### 📊 AI usage and your accounts
 A bundled usage dashboard (port 4777) shows Claude 5-hour / weekly limits, Codex (ChatGPT) limits, Cursor, OpenAI API costs, Gemini key status — it detects this PC's logins automatically. Add more **of your own** Codex logins with a device-code login (`＋ Add a Codex account`). A session can continue on another of your accounts with the **⇄ other account** button. Switching only ever happens when you press it.
@@ -164,7 +156,6 @@ operator/          the operator session's manual (CLAUDE.md / AGENTS.md) and ENV
 research-harness/  autonomous research: hooks, project template, tools
 skills/            agent-cli-hub skill + paper-review/claims/numbers/code skills
 guidance/          the block start.bat puts into ~/.claude/CLAUDE.md and ~/.codex/AGENTS.md
-telegram-relay/    Telegram bot for your Claude Code sessions (standalone, no dependencies)
 ```
 
 ## License
@@ -184,7 +175,7 @@ MIT
 - 🤖 **Claude Code · Codex · Cursor · 셸**: 원하는 폴더에서 바로 띄웁니다. Codex 터미널도 작업 중/대기 상태가 보입니다.
 - 🔎 **대화 전체 검색**: Claude Code와 Codex 대화 기록을 모두 검색하고, 그 대화를 원래 폴더에서 이어서 엽니다.
 - 📂 **산출물 미리보기**: 세션이 만든 영상, PDF, 그림, 문서를 자동으로 모아 그 자리에서 미리 봅니다.
-- 💬 **텔레그램 릴레이**: 휴대폰 텔레그램에서 버튼으로 세션을 고르고 대화합니다. 사진을 보내고, 결과 파일을 받습니다. 관제 없이도 동작합니다.
+- 💬 **텔레그램 릴레이**: 휴대폰 텔레그램에서 버튼으로 세션을 고르고 대화합니다. 사진을 보내고, 결과 파일을 받습니다. 별도 저장소 [claude-telegram-relay](https://github.com/JaekunE2/claude-telegram-relay)이며 관제 없이도 동작합니다.
 - 🎛 **GPU 대기열**: 세션들이 GPU를 순서대로 나눠 씁니다. 대기열 밖 작업은 종료하지 않습니다.
 - 🔬 **자율 연구**, 📅 **캘린더**, 📊 **AI 사용량**도 들어 있습니다. 계정 전환은 사용자가 버튼을 누를 때만 일어납니다.
 - 📱 **휴대폰에서 접속**: Tailscale로 접속합니다. 화면의 QR을 찍으면 됩니다.

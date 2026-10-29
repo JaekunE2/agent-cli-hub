@@ -31,10 +31,7 @@ node "<dir>\hub\ccd.js" url    # the address to give the user
 ## 5. Optional, **(ask)** first
 - Start at logon: `powershell -ExecutionPolicy Bypass -File "<dir>\install-autostart.ps1"`
 - Phone access: install Tailscale on the PC and the phone with the same account, then the 📱 button in the hub shows a QR code.
-- Telegram relay (talk to Claude Code sessions from Telegram; works without the hub):
-  1. The user makes a bot with @BotFather (`/newbot`) and keeps the token. Never ask them to paste it into this chat; they paste it into the setup window.
-  2. Open a new console window for `"<dir>\telegram-relay\setup.bat"` (it prompts for the token, shows a `t.me/...?start=<code>` link the user opens on the phone, asks for the permission mode and autostart).
-  3. Add `--proxy http://host:port` on networks that block Telegram. Details: `telegram-relay\README.md`.
+- Telegram relay (talk to Claude Code sessions from Telegram) is a separate project: https://github.com/JaekunE2/claude-telegram-relay — follow its README. The user pastes the BotFather token into its setup window, never into this chat.
 
 ## 6. Report to the user
 The hub address, where it is installed, which agent CLIs it found, that the operator session is running (it will write `operator\ENVIRONMENT.md`), and how to stop (`stop.bat`) or remove it (`uninstall.ps1`, then delete the folder).
