@@ -472,7 +472,10 @@ async function fetchCodex(acc) {
   const notes = [];
   if (rl.limit_reached) notes.push('한도에 도달했습니다');
   if (u.credits?.unlimited) notes.push('크레딧 무제한');
-  else if (u.credits?.has_credits) notes.push(`남은 크레딧: ${u.credits.balance}`);
+  else if (u.credits?.has_credits) {
+    const bal = Number(u.credits.balance);
+    notes.push(`남은 크레딧: ${Number.isFinite(bal) ? Math.round(bal).toLocaleString('en-US') : u.credits.balance}`);
+  }
 
   const auth = claims?.['https://api.openai.com/auth'] || {};
   const plan = u.plan_type || auth.chatgpt_plan_type || '';
@@ -622,7 +625,7 @@ function readBody(req) {
 }
 
 const ALLOWED_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`]);
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 
 const server = http.createServer(async (req, res) => {
   // Share mode is read-only with no secrets, so it may be reached over the LAN by IP.
@@ -646,17 +649,49 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'GET' && url.pathname === '/api/meta') {
         return send(res, 200, { shareMode: SHARE_MODE, readOnly: READONLY });
       }
+const AGY_QUOTA_PATH = path.join(__dirname, '..', 'hub', 'agy-quota.json');
+const HUB_TOKEN_PATH = path.join(__dirname, '..', 'hub', '.token');
+function loadAgyCard() {
+  try {
+    const q = JSON.parse(fs.readFileSync(AGY_QUOTA_PATH, 'utf8'));
+    if (!q?.groups?.length) return null;
+    const meters = [];
+    for (const g of q.groups) {
+      if (g.fiveH != null) meters.push({ name: `${g.name} 5시간`, usedPercent: g.fiveH, detail: g.fiveHReset || '' });
+      if (g.weekly != null) meters.push({ name: `${g.name} 주간`, usedPercent: g.weekly, detail: g.weeklyReset || '' });
+    }
+    if (!meters.length) return null;
+    return {
+      id: 'agy-cli', type: 'agy', provider: 'Antigravity', label: 'Antigravity IDE / CLI',
+      plan: 'agy /usage', email: q.account || '', source: 'auto', live: true, hasSecret: false,
+      ok: true, meters, notes: [], fetchedAt: q.fetchedAt || new Date().toISOString(),
+    };
+  } catch { return null; }
+}
+
       if (req.method === 'GET' && url.pathname === '/api/usage') {
         const force = url.searchParams.has('force');
         let accounts = allAccounts();
         if (SHARE_MODE) accounts = accounts.filter((a) => !isLiveLogin(a)); // hide this PC's own logins
         const results = await Promise.all(accounts.map((a) => usageFor(a, force)));
+        const agy = !SHARE_MODE && !url.searchParams.has('noagy') ? loadAgyCard() : null;
+        if (agy) results.push(agy);
         const memos = loadMemos();
         for (const r of results) {
           r.memo = memos[r.id] || '';
           r.hasSecret = false; // the shared version never hands tokens to the page // never expose copy affordance
         }
         return send(res, 200, { accounts: results, generatedAt: new Date().toISOString(), shareMode: SHARE_MODE, readOnly: READONLY });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/agy/refresh') {
+        let tok = '';
+        try { tok = fs.readFileSync(HUB_TOKEN_PATH, 'utf8').trim(); } catch {}
+        const r = await fetch(`http://127.0.0.1:7777/api/agy/usage${tok ? `?t=${encodeURIComponent(tok)}` : ''}`, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(25000),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j.ok) return send(res, 502, { ok: false, error: j.error || `허브(7777) 조회 실패 (HTTP ${r.status})` });
+        return send(res, 200, { ok: true });
       }
       if (req.method === 'GET' && url.pathname === '/api/accounts') {
         const cfg = loadConfig();

@@ -34,24 +34,108 @@ module.exports = function gpuQueue({ dir, file = 'gpu-queue.json', config = {}, 
   const run = (cmd, args, timeout = 8000) => new Promise((resolve) => {
     execFile(cmd, args, { timeout, windowsHide: true }, (err, out) => resolve(err ? { err: err.message } : { out: String(out) }));
   });
-  const QUERY = ['--query-gpu=index,uuid,name,memory.total,memory.used,utilization.gpu', '--format=csv,noheader,nounits'];
+  const QUERY = ['--query-gpu=index,uuid,name,memory.total,memory.used,utilization.gpu,memory.reserved,power.draw,power.limit,pstate,clocks.current.graphics,clocks.max.graphics', '--format=csv,noheader,nounits'];
   const THERMAL = ['--query-gpu=index,temperature.gpu,temperature.gpu.tlimit,clocks_event_reasons.hw_thermal_slowdown,clocks_event_reasons.sw_thermal_slowdown', '--format=csv,noheader,nounits'];
   const APPS = ['--query-compute-apps=pid,process_name,gpu_uuid', '--format=csv,noheader,nounits'];
-  function parse(host, gOut, aOut) {
+  const PMON = ['pmon', '-c', '1'];
+  const ACTIVE_APP = /python|julia|matlab|colmap|^kit\.exe|isaac|blender|ffmpeg|ollama|llama|vllm|comfy|torch|train|unity|unreal|ue[45]editor|dfc|surro|onnx|triton|tensorrt/i;
+  const UI_NOISE_APP = /^(msedge|msedgewebview2|chrome|explorer|searchhost|shellexperiencehost|startmenuexperiencehost|textinputhost|applicationframehost|systemsettings|windowsterminal|antigravity|claude|chatgpt|ms-teams|teamviewer|emeditor|snippingtool|draw\.io|crossdeviceresume|shellhost|dwm|csrss)\.exe$/i;
+  const prevGpuUtil = new Map();
+  let prevCpuTicks = null, cpuHistory = [], cpuState = { model: (os.cpus()[0]?.model || 'CPU').replace(/\s+/g, ' ').trim(), cores: os.cpus().length, util: 0 };
+  function sampleCpu() {
+    const cpus = os.cpus();
+    let idle = 0, total = 0;
+    for (const c of cpus) {
+      for (const v of Object.values(c.times)) total += v;
+      idle += c.times.idle;
+    }
+    if (prevCpuTicks && total > prevCpuTicks.total) {
+      const dTotal = total - prevCpuTicks.total, dIdle = idle - prevCpuTicks.idle;
+      const raw = Math.max(0, Math.min(100, Math.round(((dTotal - dIdle) / dTotal) * 100)));
+      cpuHistory.push(raw);
+      if (cpuHistory.length > 6) cpuHistory.shift();
+      const sorted = [...cpuHistory].sort((a, b) => a - b);
+      // Drop transient process-spawn spikes (top 2 samples when buffer has >= 4 samples)
+      const kept = sorted.length >= 4 ? sorted.slice(0, sorted.length - 2) : sorted;
+      const avg = Math.round(kept.reduce((s, x) => s + x, 0) / kept.length);
+      cpuState.util = cpuHistory.length <= 2 ? avg : Math.round(cpuState.util * 0.65 + avg * 0.35);
+    }
+    prevCpuTicks = { idle, total };
+    return cpuState;
+  }
+  sampleCpu();
+  function parse(host, gOut, aOut, pOut) {
     const byUuid = new Map();
+    const byIdx = new Map();
     const list = gOut.trim().split(/\r?\n/).filter(Boolean).map((l) => {
-      const [index, uuid, name, total, used, util] = l.split(',').map((x) => x.trim());
-      const g = { key: `${host}:${index}`, host, index: Number(index), name, totalMB: Number(total), usedMB: Number(used), util: Number(util) || 0, procs: [] };
+      const [index, uuid, name, total, used, util, reserved, pwrDraw, pwrLimit, pstate, clkCur, clkMax] = l.split(',').map((x) => x.trim());
+      const resMB = Number.isFinite(Number(reserved)) ? Number(reserved) : 0;
+      const rawUtil = Number(util) || 0;
+      const curMHz = Number(clkCur) || 0, maxMHz = Number(clkMax) || 0;
+      const pwrW = Number.isFinite(Number(pwrDraw)) ? Math.round(Number(pwrDraw)) : null;
+      const pwrLimW = Number.isFinite(Number(pwrLimit)) ? Math.round(Number(pwrLimit)) : null;
+      const isLowPState = pstate && !/^P[012]$/i.test(pstate);
+      const isIdlePower = pwrW != null && pwrLimW != null && pwrW <= Math.max(26, Math.round(pwrLimW * 0.16));
+      const g = {
+        key: `${host}:${index}`, host, index: Number(index), name,
+        totalMB: Number(total), usedMB: Number(used) + resMB, appUsedMB: Number(used), reservedMB: resMB,
+        util: rawUtil, rawUtil, pstate: pstate || null, clockMHz: curMHz || null, maxClockMHz: maxMHz || null,
+        powerW: pwrW, powerLimitW: pwrLimW,
+        isLowPState, isIdlePower,
+        procs: [], activeProcs: [],
+      };
       // Grace-class unified-memory boards (e.g. DGX Spark) share system memory: nvidia-smi says [N/A]
       if (!Number.isFinite(g.totalMB)) { g.unified = true; g.totalMB = 0; g.usedMB = 0; }
       byUuid.set(uuid, g);
+      byIdx.set(g.index, g);
       return g;
     });
+    const pidNames = new Map();
     for (const l of (aOut || '').trim().split(/\r?\n/).filter(Boolean)) {
-      const [pid, pname, uuid] = l.split(',').map((x) => x.trim());
+      const [pidStr, pname, uuid] = l.split(',').map((x) => x.trim());
+      const pid = Number(pidStr);
+      const baseName = path.basename(pname || '');
+      if (pid && baseName && !/^\[/.test(baseName)) pidNames.set(pid, baseName);
       const g = byUuid.get(uuid);
-      // Windows lists every desktop app that touches the GPU; show only likely compute jobs
-      if (g && COMPUTE.test(path.basename(pname))) g.procs.push({ pid: Number(pid), name: path.basename(pname) });
+      // Windows lists every desktop app that touches the GPU; show only likely compute jobs for queue auto-adopt
+      if (g && COMPUTE.test(baseName)) g.procs.push({ pid, name: baseName });
+    }
+    for (const l of (pOut || '').trim().split(/\r?\n/).filter((x) => x && !x.startsWith('#'))) {
+      const cols = l.trim().split(/\s+/);
+      if (cols.length < 9) continue;
+      const gIdx = Number(cols[0]), pid = Number(cols[1]), pType = cols[2];
+      const rawSm = Number(cols[3]) || 0, rawMem = Number(cols[4]) || 0;
+      const rawName = cols.slice(8).join(' ');
+      const g = byIdx.get(gIdx);
+      if (!g || !Number.isFinite(pid)) continue;
+      const name = pidNames.get(pid) || rawName;
+      if (UI_NOISE_APP.test(name)) continue;
+      // Only show processes that are pure Compute (type 'C') or actively using SM in P0/P2 boost state
+      const isComputeProc = pType === 'C' || COMPUTE.test(name) || ACTIVE_APP.test(name);
+      if (!isComputeProc) continue;
+      const scale = (g.isLowPState && g.clockMHz && g.maxClockMHz) ? Math.min(1, g.clockMHz / g.maxClockMHz) : 1;
+      const sm = (g.isLowPState && g.isIdlePower && pType !== 'C') ? 0 : Math.round(rawSm * scale);
+      const mem = Math.round(rawMem * scale);
+      if (sm >= 2 || pType === 'C') {
+        g.activeProcs.push({ pid, name, sm, mem });
+      }
+    }
+    for (const g of list) {
+      g.activeProcs.sort((a, b) => (b.sm - a.sm) || (b.mem - a.mem));
+      // When in P5/P8 low-power state or drawing idle power (~16W) with no active compute process,
+      // Windows DWM/WebView2 window repaints cause nvidia-smi raw utilization to jump 4~54% at idle clock (210~450 MHz).
+      if ((g.isLowPState || g.isIdlePower) && g.activeProcs.length === 0 && g.procs.length === 0) {
+        const scale = (g.clockMHz && g.maxClockMHz) ? Math.min(1, g.clockMHz / g.maxClockMHz) : 0.15;
+        const scaled = Math.round(g.rawUtil * scale * 0.35);
+        g.util = scaled <= 2 ? 0 : Math.min(3, scaled);
+      } else if (g.isLowPState && g.clockMHz && g.maxClockMHz) {
+        g.util = Math.round(g.rawUtil * Math.min(1, g.clockMHz / g.maxClockMHz));
+      }
+      const prev = prevGpuUtil.get(g.key);
+      if (prev !== undefined && g.isLowPState) g.util = Math.round(prev * 0.5 + g.util * 0.5);
+      prevGpuUtil.set(g.key, g.util);
+      delete g.isLowPState;
+      delete g.isIdlePower;
     }
     return list;
   }
@@ -151,7 +235,10 @@ module.exports = function gpuQueue({ dir, file = 'gpu-queue.json', config = {}, 
   async function probe() {
     const out = [];
     const [g, a, th] = await Promise.all([run('nvidia-smi', QUERY), run('nvidia-smi', APPS), run('nvidia-smi', THERMAL)]);
-    if (g.out) out.push(...applyThermal(parse('local', g.out, a.out), th.out, NaN)); else probeError = `nvidia-smi: ${g.err}`;
+    // Only run pmon (which blocks 1s) when the GPU is in active boost state (P0/P1/P2)
+    const needPmon = g.out && /,\s*P[012]\s*,/i.test(g.out);
+    const pm = needPmon ? await run('nvidia-smi', PMON) : { out: '' };
+    if (g.out) out.push(...applyThermal(parse('local', g.out, a.out, pm.out), th.out, NaN)); else probeError = `nvidia-smi: ${g.err}`;
     for (const s of cfg.servers) {
       const last = remote.get(s.id);
       // remote servers are polled less often (ssh round trips); an OFF server only for reachability
@@ -494,9 +581,20 @@ module.exports = function gpuQueue({ dir, file = 'gpu-queue.json', config = {}, 
   // period instead of judging it by the last value written to disk.
   for (const t of st.tickets) if (t.status === 'granted' || t.status === 'waiting') t.heartbeatAt = Date.now();
   if (!st.durationsSeeded) { for (const t of st.tickets) if (t.status === 'released') recordDuration(t); st.durationsSeeded = true; }
-  let timer = null;
-  function start() { if (!timer) { tick(); timer = setInterval(tick, cfg.pollMs); } }
-  function stop() { if (timer) { clearInterval(timer); timer = null; } save(); }
+  let timer = null, cpuTimer = null;
+  function start() {
+    if (!timer) {
+      tick();
+      timer = setInterval(tick, cfg.pollMs);
+      cpuTimer = setInterval(sampleCpu, 2000);
+      cpuTimer.unref?.();
+    }
+  }
+  function stop() {
+    if (timer) { clearInterval(timer); timer = null; }
+    if (cpuTimer) { clearInterval(cpuTimer); cpuTimer = null; }
+    save();
+  }
 
   // place in its shortest line (1 = next on some GPU)
   function lanePosition(t) {
@@ -563,6 +661,7 @@ module.exports = function gpuQueue({ dir, file = 'gpu-queue.json', config = {}, 
         heatLog: (st.heatLog || []).slice(-10),
         heatLimits: { hotC: cfg.hotC, hotTlimitC: cfg.hotTlimitC, hotCpuC: cfg.hotCpuC, hysteresisC: cfg.heatHysteresisC },
         history: st.tickets.filter((t) => !['granted', 'waiting'].includes(t.status)).sort((a, b) => b.endedAt - a.endedAt).slice(0, 12),
+        cpu: cpuState,
         ram: { ...sysRam(), reservedMB: active().filter(onLocalRam).reduce((x, t) => x + (t.ramMB || 0), 0), outstandingMB: ramOutstanding(now), marginMB: cfg.ramMarginMB },
         ramUse: Object.fromEntries(ramUse),
         error: probeError, config: { marginMB: cfg.marginMB, idleMB: cfg.idleMB },

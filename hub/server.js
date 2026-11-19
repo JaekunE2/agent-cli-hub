@@ -211,8 +211,10 @@ function recentSessions(limit = 40) {
 }
 
 const index = new SearchIndex(path.join(CLAUDE_DIR, 'projects'));
-index.refresh().then(() => console.log('search index ready:', index.docs.size, 'sessions'));
-setInterval(() => index.refresh(), 60000); // live sessions are refreshed by the overview anyway
+let lastIndexAt = 0;
+const refreshIndex = () => index.refresh().then((r) => { lastIndexAt = Date.now(); return r; });
+refreshIndex().then(() => console.log('search index ready:', index.docs.size, 'sessions'));
+setInterval(() => refreshIndex(), 10000);
 
 // ---------- overview snapshot ----------
 // Every open page (PC tabs, phone app) polls /api/overview every few seconds. It used to be rebuilt per
@@ -259,7 +261,7 @@ async function buildOverview() {
     ...c, claude: c.pids.map((x) => byPid.get(x)).filter(Boolean).map((s) => s.sessionId),
     managed: [...terms.values()].some((t) => c.pids.includes(t.pid)),
   }));
-  // name dashboard terminals after the Claude session running in them
+  // name dashboard terminals after the session running in them (Claude, Codex, or Antigravity)
   const termsOut = [...terms.values()].map((t) => {
     const info = termInfo(t);
     const c = t.pid && consoles.find((x) => x.pids.includes(t.pid));
@@ -268,9 +270,15 @@ async function buildOverview() {
       const d = index.get(s.sessionId);
       info.sessionId = s.sessionId;
       info.sessionName = d?.title || d?.firstPrompt?.split('\n')[0].slice(0, 80) || null;
-    } else if (info.codex) {
-      const d = codexDocOf(t);
-      if (d) { info.sessionId = d.id; info.sessionName = d.title || d.firstPrompt?.split('\n')[0].slice(0, 80) || null; }
+    } else {
+      const d = termDocOf(t);
+      if (d) {
+        info.sessionId = d.id;
+        info.sessionName = d.title || d.firstPrompt?.split('\n')[0].slice(0, 80) || null;
+      } else if (info.codex) {
+        const cid = codexSessionOf(t);
+        if (cid) info.sessionId = cid;
+      }
     }
     return info;
   });
@@ -693,12 +701,22 @@ async function aiUsage(force) {
 // Candidates = this PC's Claude Code login ("default", no env override) + claude-token
 // accounts registered in ai-usage-dashboard. Tokens stay server-side; the child claude
 // gets CLAUDE_CODE_OAUTH_TOKEN. Transcripts live in ~/.claude either way, so --resume works.
-const USAGE_DIR = process.env.CCD_USAGE_DIR || (CONFIG.usageDir && path.resolve(__dirname, CONFIG.usageDir)) || path.join(os.homedir(), 'ai-usage-dashboard');
+const USAGE_DIR = process.env.CCD_USAGE_DIR
+  || (CONFIG.usageDir && path.resolve(__dirname, CONFIG.usageDir))
+  || (fs.existsSync(path.resolve(__dirname, '..', 'ai-usage')) ? path.resolve(__dirname, '..', 'ai-usage') : path.join(os.homedir(), 'ai-usage-dashboard'));
+function readUsageAccounts() {
+  try { return JSON.parse(fs.readFileSync(path.join(USAGE_DIR, 'accounts.json'), 'utf8')).accounts || []; } catch { return []; }
+}
 function tokenAccounts() {
-  let cfg; try { cfg = JSON.parse(fs.readFileSync(path.join(USAGE_DIR, 'accounts.json'), 'utf8')); } catch { return []; }
-  return (cfg.accounts || []).filter((a) => a.type === 'claude-token' && (a.token || a.tokenPath)).map((a) => ({
+  return readUsageAccounts().filter((a) => (a.type === 'claude-token' && (a.token || a.tokenPath)) || (a.type === 'claude' && a.credentialsPath)).map((a) => ({
+    id: a.id, label: a.label, type: a.type, credentialsPath: a.credentialsPath,
+    token: () => a.type === 'claude-token' ? (a.token || fs.readFileSync(a.tokenPath, 'utf8')).trim() : null,
+  }));
+}
+function geminiAccounts() {
+  return readUsageAccounts().filter((a) => a.type === 'gemini').map((a) => ({
     id: a.id, label: a.label,
-    token: () => (a.token || fs.readFileSync(a.tokenPath, 'utf8')).trim(),
+    apiKey: () => { try { return (a.apiKey || (a.keyPath && fs.readFileSync(a.keyPath, 'utf8')) || '').trim() || null; } catch { return null; } },
   }));
 }
 function meterPct(acc, re) { const m = (acc?.meters || []).find((x) => re.test(x.name)); return m ? m.usedPercent : null; }
@@ -706,20 +724,20 @@ async function switchCandidates(currentId) {
   const u = await aiUsage(false);
   const usageById = new Map((u.accounts || []).map((a) => [a.id, a]));
   const localUsage = (u.accounts || []).find((a) => a.provider === 'Claude' && a.live && /Claude Code/.test(a.label));
-  const list = [{ id: 'default', label: '이 PC 로그인 (Claude Code)', usage: localUsage },
+  const list = [{ id: 'default', label: 'Claude Code (이 PC)', usage: localUsage },
     ...tokenAccounts().map((a) => ({ id: a.id, label: a.label, usage: usageById.get(a.id) }))];
   // A token can belong to the same account as the PC login; same email = same quota.
   const emailOf = (c) => (c.usage?.email || (c.id === 'default' ? null : c.label) || '').toLowerCase() || null;
   const cur = list.find((c) => c.id === currentId);
   const curEmail = cur && emailOf(cur);
   const out = list.map((c) => {
-    const fiveH = meterPct(c.usage, /5시간/), weekly = meterPct(c.usage, /주간 \(전체/);
-    const known = c.usage?.ok && fiveH !== null;
+    const fiveH = meterPct(c.usage, /5시간/), weekly = meterPct(c.usage, /주간 \(전체|주간/);
+    const known = c.usage?.ok && (fiveH !== null || weekly !== null);
     // headroom = the tighter of the two limits
-    const score = known ? Math.min(100 - fiveH, 100 - (weekly ?? 0)) : -1;
+    const score = known ? Math.min(100 - (fiveH ?? 0), 100 - (weekly ?? 0)) : 50;
     const reset = (c.usage?.meters || []).find((m) => /5시간/.test(m.name))?.resetsAt || null;
-    const current = c.id === currentId || (!!curEmail && emailOf(c) === curEmail);
-    return { id: c.id, label: c.label, fiveH, weekly, score, reset, current, sameAccount: current && c.id !== currentId, usable: known && score > 0 };
+    const current = !!currentId && (c.id === currentId || (!!curEmail && emailOf(c) === curEmail));
+    return { id: c.id, agent: 'claude', provider: 'Claude', label: c.label, fiveH, weekly, score, reset, current, sameAccount: current && c.id !== currentId, usable: c.usage?.ok !== false && score > 0 };
   });
   const best = out.filter((c) => c.usable && !c.current).sort((a, b) => b.score - a.score || (a.weekly ?? 0) - (b.weekly ?? 0))[0];
   if (best) best.best = true;
@@ -781,28 +799,100 @@ function codexLaunch(extra = []) {
 async function codexCandidates(currentId) {
   const u = await aiUsage(false);
   const ranked = CA.rank(CA.accounts(USAGE_DIR), u);
-  const cur = ranked.find((a) => a.id === currentId) || (!currentId ? ranked.find((a) => a.main) : null);
+  const cur = currentId ? (ranked.find((a) => a.id === currentId) || (currentId === 'auto-codex' ? ranked.find((a) => a.main) : null)) : null;
   const out = ranked.map((a) => {
     const current = !!cur && (a.id === cur.id || (!!cur.email && a.email === cur.email));
-    return { id: a.id, label: a.email || a.label, fiveH: a.fiveH, weekly: a.weekly, score: a.score, reset: a.reset, current, sameAccount: current && a.id !== cur.id, usable: a.usable };
+    return { id: a.id, agent: 'codex', provider: 'ChatGPT (Codex)', label: a.label || a.email, email: a.email, fiveH: a.fiveH, weekly: a.weekly, score: a.score, reset: a.reset, current, sameAccount: current && a.id !== cur.id, usable: a.usable };
   });
   const best = out.find((c) => c.usable && !c.current);
   if (best) best.best = true;
   return { candidates: out, stale: !!u.stale, usageAvailable: u.available !== false, codex: true };
 }
-// the conversation a codex terminal is in, from the search index: `codex resume <id>` in its args, else the
-// newest Codex rollout for its folder written since the terminal started (cheap: no file reads)
-function codexDocOf(t) {
-  const fromArgs = (t.meta?.args || []).join(' ').match(/resume ([0-9a-f-]{36})/i);
+async function allSwitchCandidates({ sessionId = '', termId = '' }) {
+  const cons = (await helperCall({ op: 'list' })).consoles || [];
+  const loc = sessionId ? locateSession(sessionId, cons) : { live: false };
+  const tt = termId ? [...terms.values()].find((x) => String(x.id) === String(termId)) : loc.term;
+  const d = sessionId ? index.get(sessionId) : (tt && isCodexTerm(tt) ? codexDocOf(tt) : null);
+  const sourceAgent = tt
+    ? (isCodexTerm(tt) ? 'codex' : isAgyTerm(tt) ? 'agy' : 'claude')
+    : (d?.agent || 'claude');
+  const isLive = tt ? tt.exited === null : !!loc.live;
+  // Only mark an account as 'current' (already running on it) when the session/terminal is actively running right now
+  const curClaudeId = isLive && sourceAgent === 'claude' ? (tt?.account?.id || loc.account || 'default') : null;
+  const curCodexId = isLive && sourceAgent === 'codex' ? (tt?.account?.id || 'auto-codex') : null;
+  const curAgyId = isLive && sourceAgent === 'agy' ? (tt?.account?.id || 'agy-cli') : null;
+
+  const [clRes, cxRes, u] = await Promise.all([
+    switchCandidates(curClaudeId),
+    codexCandidates(curCodexId),
+    aiUsage(false),
+  ]);
+  const agyG0 = agyQuotaCache?.groups?.[0];
+  const agyFiveH = agyG0?.fiveH ?? null;
+  const agyWeekly = agyG0?.weekly ?? null;
+  const agyScore = (agyFiveH != null || agyWeekly != null) ? Math.min(100 - (agyFiveH ?? 0), 100 - (agyWeekly ?? 0)) : 80;
+  const agyCands = [
+    {
+      id: 'agy-cli', agent: 'agy', provider: 'Antigravity (Gemini)',
+      label: agyQuotaCache?.account ? `Antigravity (${agyQuotaCache.account})` : 'Antigravity IDE / CLI',
+      fiveH: agyFiveH, weekly: agyWeekly, score: agyScore,
+      current: curAgyId === 'agy-cli', sameAccount: false, usable: agyScore > 0,
+    },
+    ...geminiAccounts().map((g) => {
+      const gu = (u.accounts || []).find((a) => a.id === g.id);
+      return {
+        id: g.id, agent: 'agy', provider: 'Gemini (Antigravity)',
+        label: `${g.label} (Gemini)`,
+        fiveH: agyFiveH, weekly: agyWeekly, score: agyScore,
+        current: curAgyId === g.id, sameAccount: false, usable: gu?.ok !== false,
+      };
+    }),
+  ];
+
+  // Put same-platform accounts first, then the other platforms so cross-platform handoff is 1 click away
+  const groups = {
+    claude: clRes.candidates.map((c) => ({ ...c, best: false })),
+    codex: cxRes.candidates.map((c) => ({ ...c, best: false })),
+    agy: agyCands.map((c) => ({ ...c, best: false })),
+  };
+  const order = sourceAgent === 'codex' ? ['codex', 'claude', 'agy']
+    : sourceAgent === 'agy' ? ['agy', 'codex', 'claude']
+      : ['claude', 'codex', 'agy'];
+  const all = order.flatMap((k) => groups[k]);
+  const bestSame = groups[sourceAgent].filter((c) => c.usable && !c.current).sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
+  const bestAny = all.filter((c) => c.usable && !c.current).sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
+  if (bestSame) bestSame.best = true;
+  else if (bestAny) bestAny.best = true;
+
+  return {
+    candidates: all,
+    sourceAgent,
+    stale: !!(clRes.stale || cxRes.stale),
+    usageAvailable: clRes.usageAvailable,
+    live: isLive,
+    fresh: !!tt && !sessionId && !d,
+    busy: loc.s?.status === 'busy',
+    where: tt ? `t:${tt.id}` : loc.console ? `c:${loc.console.id}` : null,
+  };
+}
+// the conversation a terminal is in, from the search index: explicit resume/conversation id in args/meta,
+// else the newest session of that agent for its folder written since the terminal started
+function termDocOf(t) {
+  if (t.meta?.sessionId && index.get(t.meta.sessionId)) return index.get(t.meta.sessionId);
+  const argStr = (t.meta?.args || []).join(' ');
+  const fromArgs = argStr.match(/(?:--resume|resume|--conversation)\s+([0-9a-f-]{8,64})/i);
   if (fromArgs && index.get(fromArgs[1])) return index.get(fromArgs[1]);
+  const ag = agentOf(t);
+  if (!ag) return null;
   const cwd = path.resolve(t.cwd || '').toLowerCase(), since = (t.meta?.spawnedAt || 0) - 60_000;
   let best = null;
   for (const d of index.docs.values()) {
-    if (d.agent !== 'codex' || !d.cwd || d.mtime < since || path.resolve(d.cwd).toLowerCase() !== cwd) continue;
+    if ((d.agent || 'claude') !== ag || !d.cwd || d.mtime < since || path.resolve(d.cwd).toLowerCase() !== cwd) continue;
     if (!best || d.mtime > best.mtime) best = d;
   }
   return best;
 }
+function codexDocOf(t) { return termDocOf(t); }
 // codex draws "esc to interrupt" under its spinner while a turn runs
 const CODEX_BUSY = /esc to interrupt|esc to cancel/i;
 function codexStatus(t) {
@@ -856,29 +946,87 @@ async function switchCodexTerm({ termId, account = 'auto', prompt }) {
   if (favs.includes(`term:${t0.id}`)) fs.writeFileSync(FAV_FILE, JSON.stringify(favs.map((k) => (k === `term:${t0.id}` ? `term:${t.id}` : k))));
   return { ok: true, term: termInfo(t), account: { id: pick.id, label: pick.label, fiveH: pick.fiveH, weekly: pick.weekly }, stopped: `t:${t0.id}`, resumed: sid || 'last' };
 }
-async function switchAccount({ sessionId, termId, account = 'auto', cont = true, skip = true, interrupt = false, force = false }) {
-  if (!sessionId && termId != null && isCodexTerm([...terms.values()].find((x) => String(x.id) === String(termId)))) return switchCodexTerm({ termId, account, prompt: cont ? '계속 진행해' : undefined });
-  if (!sessionId && termId != null) return switchTermAccount({ termId, account, skip });
-  const d = index.get(sessionId);
-  if (d) await index.updateFile(d.file);
-  const cons = (await helperCall({ op: 'list' })).consoles || [];
-  const loc = locateSession(sessionId, cons);
-  const { candidates } = await switchCandidates(loc.account);
-  const pick = account === 'auto' ? candidates.find((c) => c.best) : candidates.find((c) => c.id === account);
-  if (!pick) return { ok: false, error: account === 'auto' ? '여유 있는 다른 계정이 없습니다 (AI 사용량 확인)' : '알 수 없는 계정' };
-  const cwd = d?.cwd || loc.s?.cwd || os.homedir();
+function writeHandoffFile({ sessionId, d, t0, sourceAgent, targetAgent, cwd }) {
+  const dir = path.join(__dirname, 'uploads');
+  fs.mkdirSync(dir, { recursive: true });
+  const tag = (sessionId || (t0 && `term-${t0.id}`) || String(Date.now())).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 16);
+  const file = path.join(dir, `handoff-${tag}.md`);
+  const lines = [
+    `# 세션 이어받기 맥락 (${sourceAgent.toUpperCase()} → ${targetAgent.toUpperCase()})`,
+    `- 원본 세션 ID: ${sessionId || (t0 ? `t:${t0.id}` : 'unknown')}`,
+    `- 작업 폴더: ${cwd || ''}`,
+    d?.title || d?.firstPrompt ? `- 세션 제목: ${(d.title || d.firstPrompt).split('\n')[0]}` : '',
+    '',
+    '## 최근 대화 기록 (직전 맥락)',
+  ].filter((x) => x !== null);
+  if (d?.msgs?.length) {
+    const recent = d.msgs.filter((m) => !String(m.text || '').startsWith('⚙')).slice(-10);
+    for (const m of recent) {
+      const who = m.role === 'user' ? '사용자 (User)' : `이전 에이전트 (${sourceAgent})`;
+      const txt = String(m.text || '').replace(/<external_codex_apps_[^>]*>[\s\S]*?<\/external_codex_apps_[^>]*>/gi, '').trim().slice(0, 1500);
+      if (txt) lines.push(`\n### [${who}]\n${txt}`);
+    }
+  } else if (t0) {
+    const scr = readTerm(t0, 60).join('\n').trim();
+    if (scr) lines.push('\n```text\n' + scr.slice(-3000) + '\n```');
+  }
+  fs.writeFileSync(file, lines.join('\n') + '\n', 'utf8');
+  return file;
+}
 
-  // 1) stop the running instance so two processes never write the same session
-  // The limited session never has to answer: resume reads the transcript from disk.
-  // It only has to be gone. Exactly one Esc first (interrupts a busy turn or closes a
-  // limit/choice menu; two would open the rewind menu), then /exit, then a kill fallback.
-  if (loc.live) {
+function launchExternalWindow({ cwd, title, cmd, args = [], env = {}, openMode = 'external' }) {
+  const workCwd = (cwd && fs.existsSync(cwd)) ? cwd : os.homedir();
+  if (openMode === 'ide') {
+    const ideExe = [
+      path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'antigravity', 'Antigravity.exe'),
+      path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'cursor', 'Cursor.exe'),
+    ].find((f) => fs.existsSync(f)) || agyExe();
+    spawn(ideExe, [workCwd], { cwd: workCwd, env: { ...process.env, ...env }, detached: true, stdio: 'ignore', windowsHide: false }).unref();
+    return { ok: true, external: true, openMode: 'ide' };
+  }
+  const q = (s) => (/\s|[&()^|<>"]/.test(String(s)) ? `"${String(s).replace(/"/g, '\\"')}"` : String(s));
+  const fullCmd = [q(cmd), ...args.map(q)].join(' ');
+  const safeTitle = String(title || 'Agent CLI').replace(/["^&|<>]/g, '');
+  spawn('cmd.exe', ['/c', 'start', `"${safeTitle}"`, '/d', workCwd, 'cmd.exe', '/k', fullCmd], {
+    cwd: workCwd,
+    env: { ...process.env, ...env },
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: false,
+  }).unref();
+  return { ok: true, external: true, openMode: 'external' };
+}
+
+async function switchAccount({ sessionId, termId, account = 'auto', cont = true, skip = true, interrupt = false, force = false, openMode = 'dashboard' }) {
+  const t0 = termId != null ? [...terms.values()].find((x) => String(x.id) === String(termId)) : null;
+  let sid = sessionId || (t0 && (t0.sessionId || (isCodexTerm(t0) ? codexSessionOf(t0) : null))) || '';
+  const d = sid ? index.get(sid) : (t0 && isCodexTerm(t0) ? codexDocOf(t0) : null);
+  if (d) { sid = sid || d.id; await index.updateFile(d.file); }
+
+  const cons = (await helperCall({ op: 'list' })).consoles || [];
+  const loc = sid ? locateSession(sid, cons) : { live: false };
+  const allInfo = await allSwitchCandidates({ sessionId: sid, termId: t0?.id });
+  const { candidates, sourceAgent } = allInfo;
+  const pick = account === 'auto' ? (candidates.find((c) => c.best) || candidates.find((c) => c.usable && !c.current)) : candidates.find((c) => c.id === account);
+  if (!pick) return { ok: false, error: account === 'auto' ? '여유 있는 다른 계정이 없습니다 (AI 사용량 확인)' : '선택한 계정을 찾을 수 없습니다' };
+
+  const targetAgent = pick.agent || 'claude';
+  const samePlatform = sourceAgent === targetAgent;
+  const cwd = d?.cwd || t0?.cwd || loc.s?.cwd || os.homedir();
+
+  // 1) Stop running instance if live (so two processes never write the same transcript, or replace the dashboard terminal cleanly)
+  if (t0 && t0.exited === null && openMode === 'dashboard') {
+    if (isCodexTerm(t0)) { t0.proc.write('\x03'); await sleep(400); t0.proc.write('\x03'); }
+    else { t0.proc.write('\x1b'); await sleep(400); t0.proc.write('/exit'); await sleep(SUBMIT_DELAY); t0.proc.write('\r'); }
+    if (!(await waitFor(() => t0.exited !== null, 6000))) try { t0.proc.kill(); } catch {}
+    forgetTerm(t0);
+  } else if (loc.live && openMode === 'dashboard') {
     if (loc.s.status === 'busy' && !interrupt) return { ok: false, busy: true, error: '세션이 작업 중입니다. 중단하고 전환할까요?' };
     const gone = () => !pidAlive(loc.s.pid) || (loc.term && loc.term.exited !== null);
     if (loc.term) {
       loc.term.proc.write('\x1b'); await sleep(1000);
       loc.term.proc.write('/exit'); await sleep(SUBMIT_DELAY); loc.term.proc.write('\r');
-      if (!(await waitFor(gone, 8000))) try { loc.term.proc.kill(); } catch {} // our own pty: no need to ask
+      if (!(await waitFor(gone, 8000))) try { loc.term.proc.kill(); } catch {}
       await waitFor(gone, 5000);
       forgetTerm(loc.term);
     } else if (loc.console) {
@@ -889,29 +1037,70 @@ async function switchAccount({ sessionId, termId, account = 'auto', cont = true,
         await helperCall({ op: 'send', pid: loc.console.id, keys: ['enter'] });
       }
       if (!(await waitFor(gone, force ? 1000 : 15000))) {
-        if (!force) return { ok: false, stuck: true, error: '기존 창의 claude가 /exit에 반응하지 않습니다. 그 claude 프로세스만 강제 종료하고 전환할까요? (대화 기록은 보존됨)' };
-        // kill only that claude.exe (the window's shell stays), transcript is append-only so nothing is lost
+        if (!force) return { ok: false, stuck: true, error: '기존 창의 프로세스가 /exit에 반응하지 않습니다. 강제 종료하고 전환할까요? (대화 기록은 보존됨)' };
         try { process.kill(loc.s.pid); } catch {}
-        if (!(await waitFor(gone, 8000))) return { ok: false, error: `claude(pid ${loc.s.pid})를 종료하지 못했습니다.` };
+        if (!(await waitFor(gone, 8000))) return { ok: false, error: `기존 프로세스(pid ${loc.s.pid})를 종료하지 못했습니다.` };
       }
     }
-    if (!gone()) return { ok: false, error: '기존 세션이 아직 실행 중입니다.' };
   }
 
-  // 2) resume under the chosen account
-  const env = {};
-  if (pick.id !== 'default') {
-    const acc = tokenAccounts().find((a) => a.id === pick.id);
-    try { env.CLAUDE_CODE_OAUTH_TOKEN = acc.token(); } catch (e) { return { ok: false, error: `토큰을 읽지 못함: ${e.message}` }; }
+  // 2) Build env, command, and arguments for the target platform & account
+  let cmd, args = [], env = {};
+  let handoffPrompt = null;
+  if (!samePlatform && (d?.msgs?.length || t0)) {
+    const hf = writeHandoffFile({ sessionId: sid, d, t0, sourceAgent, targetAgent, cwd });
+    handoffPrompt = `이전 ${sourceAgent.toUpperCase()} 세션의 작업을 이어받았습니다. "${hf}" 파일에 정리된 직전 대화 맥락을 먼저 읽고, 마지막으로 논의하던 작업을 바로 이어서 진행해 주세요.`;
   }
-  const args = ['--resume', sessionId, ...(skip ? ['--dangerously-skip-permissions'] : [])];
-  // is this session a research director? then it stays one on the new account
+
+  if (targetAgent === 'codex') {
+    const acc = CA.accounts(USAGE_DIR).find((a) => a.id === pick.id);
+    env = CA.envFor(acc);
+    const extra = samePlatform && sid
+      ? ['resume', sid, ...(cont ? ['계속 진행해'] : [])]
+      : samePlatform && t0
+        ? ['resume', '--last', ...(cont ? ['계속 진행해'] : [])]
+        : handoffPrompt ? [handoffPrompt] : [];
+    ({ cmd, args } = codexLaunch(extra));
+  } else if (targetAgent === 'agy') {
+    cmd = agyExe();
+    const gAcc = geminiAccounts().find((a) => a.id === pick.id);
+    const gKey = gAcc?.apiKey?.();
+    if (gKey) env = { GEMINI_API_KEY: gKey, GOOGLE_API_KEY: gKey };
+    if (samePlatform && sid) args.push('--conversation', sid);
+    if (skip) args.push('--dangerously-skip-permissions');
+  } else {
+    cmd = 'claude.exe';
+    if (pick.id !== 'default') {
+      const acc = tokenAccounts().find((a) => a.id === pick.id);
+      if (acc?.type === 'claude' && acc.credentialsPath) {
+        env.CLAUDE_CONFIG_DIR = path.dirname(acc.credentialsPath);
+      } else if (acc) {
+        try { env.CLAUDE_CODE_OAUTH_TOKEN = acc.token(); } catch (e) { return { ok: false, error: `토큰을 읽지 못함: ${e.message}` }; }
+      }
+    }
+    if (samePlatform && sid) args.push('--resume', sid);
+    if (skip) args.push('--dangerously-skip-permissions');
+  }
+
+  const short = (pick.email || pick.label || targetAgent).replace(/@.*/, '');
+  const baseTitle = d?.title || d?.firstPrompt?.split('\n')[0].slice(0, 36) || (t0 ? String(t0.title || targetAgent).replace(/ [⇄·] .*$/, '') : sid ? sid.slice(0, 8) : targetAgent);
+  const title = `${baseTitle} ⇄ ${short}`;
+
+  if (openMode === 'external' || openMode === 'ide') {
+    launchExternalWindow({ cwd, title, cmd, args, env, openMode });
+    return { ok: true, external: true, openMode, account: { id: pick.id, label: pick.label, agent: targetAgent, fiveH: pick.fiveH, weekly: pick.weekly } };
+  }
+
   let project = null;
-  try { project = require('../research-harness/lib/project').listProjects().find((p) => p.state.director_session_id === sessionId) || null; } catch {}
-  if (project) Object.assign(env, { RESEARCH_ROLE: 'director', CLAUDE_CODE_STOP_HOOK_BLOCK_CAP: '200' });
-  const short = pick.label.replace(/@.*/, '');
-  const t = createTerm({ cwd, cmd: 'claude.exe', args, env, title: `${d?.title || d?.firstPrompt?.split('\n')[0].slice(0, 40) || sessionId.slice(0, 8)} ⇄ ${short}`,
-    account: { id: pick.id, label: pick.label }, research: project ? project.dir : null });
+  if (samePlatform && targetAgent === 'claude' && sid) {
+    try { project = require('../research-harness/lib/project').listProjects().find((p) => p.state.director_session_id === sid) || null; } catch {}
+    if (project) Object.assign(env, { RESEARCH_ROLE: 'director', CLAUDE_CODE_STOP_HOOK_BLOCK_CAP: '200' });
+  }
+  const t = createTerm({ cwd, cmd, args, env, title, account: { id: pick.id, label: pick.label, kind: targetAgent }, research: project ? project.dir : null });
+  if (t0) {
+    const favs = loadFavs();
+    if (favs.includes(`term:${t0.id}`)) fs.writeFileSync(FAV_FILE, JSON.stringify(favs.map((k) => (k === `term:${t0.id}` ? `term:${t.id}` : k))));
+  }
   if (project) {
     t.research = project.dir;
     require('../research-harness/lib/project').updateState(project.dir, (s) => {
@@ -920,26 +1109,93 @@ async function switchAccount({ sessionId, termId, account = 'auto', cont = true,
     });
   }
 
-  // 3) optionally nudge it to carry on once the input box is up
-  if (cont) (async () => {
-    if (await waitFor(() => t.exited === null && inputReady(t), 45000, 700)) {
+  // 3) Nudge the new session once its input prompt is ready
+  const promptToSend = !samePlatform && handoffPrompt && targetAgent !== 'codex'
+    ? handoffPrompt
+    : (cont && targetAgent !== 'codex' && (samePlatform && sid) ? '계속 진행해' : null);
+  if (promptToSend) (async () => {
+    const readyCheck = targetAgent === 'agy'
+      ? () => t.exited === null && /[>❯]|\/help|Shortcuts|Type your message/i.test(readTerm(t, 30).join('\n'))
+      : () => t.exited === null && inputReady(t);
+    if (await waitFor(readyCheck, 45000, 700)) {
       await sleep(600);
-      t.proc.write('계속 진행해'); await sleep(SUBMIT_DELAY); t.proc.write('\r');
+      t.proc.write(promptToSend); await sleep(SUBMIT_DELAY); t.proc.write('\r');
     }
   })();
-  return { ok: true, term: termInfo(t), account: { id: pick.id, label: pick.label, fiveH: pick.fiveH, weekly: pick.weekly }, stopped: loc.live ? (loc.term ? `t:${loc.term.id}` : `c:${loc.console?.id}`) : null };
+
+  return {
+    ok: true,
+    term: termInfo(t),
+    account: { id: pick.id, label: pick.label, agent: targetAgent, fiveH: pick.fiveH, weekly: pick.weekly },
+    crossPlatform: !samePlatform,
+    stopped: t0 ? `t:${t0.id}` : loc.live ? (loc.term ? `t:${loc.term.id}` : `c:${loc.console?.id}`) : null,
+  };
 }
 
-const agentOf = (t) => (/claude(\.exe)?$/i.test(t.meta?.cmd || '') ? 'claude' : isCodexTerm(t) ? 'codex' : /cursor-agent/i.test((t.meta?.args || []).join(' ')) ? 'cursor' : null);
-const termInfo = (t) => ({ id: t.id, title: t.title, liveTitle: t.liveTitle, account: t.account, agent: agentOf(t), operator: !!t.meta?.operator, claude: /claude(\.exe)?$/i.test(t.meta?.cmd || ''), codex: isCodexTerm(t),
+const AGY_QUOTA_FILE = path.join(__dirname, 'agy-quota.json');
+let agyQuotaCache = (() => { try { return JSON.parse(fs.readFileSync(AGY_QUOTA_FILE, 'utf8')); } catch { return null; } })();
+function saveAgyQuota(q) {
+  agyQuotaCache = q;
+  try { fs.writeFileSync(AGY_QUOTA_FILE, JSON.stringify(q, null, 2)); } catch {}
+}
+function parseAgyQuota(raw) {
+  if (!/Models & Quota/i.test(raw)) return null;
+  const lines = raw.split(/\r?\n/).map((l) => l.trim());
+  const accMatch = raw.match(/Account:\s*([^\s\r\n]+)/i);
+  const byName = new Map();
+  const groups = [];
+  let cur = null;
+  let metric = null;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (!l) continue;
+    if (/^(?:\(\d+[–-]\d+\s+of\s+\d+\s+lines\)|↑\/↓ Scroll|└ Models & Quota|Account:|Within each group)/i.test(l)) continue;
+    if (/^[A-Z0-9][A-Z0-9 ._-]+$/.test(l) && !/^(MODELS|QUOTA)$/.test(l) && (lines[i + 1]?.startsWith('Models within') || lines.slice(i + 1, i + 5).some((x) => /(?:Weekly|Five Hour) Limit/i.test(x)))) {
+      const name = l.replace(/\s+MODELS$/i, '');
+      cur = byName.get(name);
+      if (!cur) {
+        cur = { name, models: '', fiveH: null, weekly: null, fiveHReset: null, weeklyReset: null };
+        byName.set(name, cur);
+        groups.push(cur);
+      }
+      metric = null;
+      continue;
+    }
+    if (!cur) continue;
+    if (/^Models within this group:\s*(.+)/i.test(l)) { cur.models = RegExp.$1.trim(); continue; }
+    if (/Weekly Limit/i.test(l)) { metric = 'weekly'; continue; }
+    if (/Five Hour Limit/i.test(l)) { metric = 'fiveH'; continue; }
+    if (metric) {
+      const pct = l.match(/(\d+(?:\.\d+)?)%/);
+      if (pct) {
+        const rem = Number(pct[1]);
+        cur[metric] = Math.round(Math.max(0, Math.min(100, 100 - rem)) * 10) / 10;
+        cur[`${metric}Rem`] = Math.round(rem * 10) / 10;
+      }
+      const ref = l.match(/Refreshes in\s+(.+)/i);
+      if (ref) cur[`${metric}Reset`] = ref[1].trim();
+      if (/Quota available/i.test(l) && !cur[`${metric}Reset`]) cur[`${metric}Reset`] = 'Quota available';
+    }
+  }
+  const valid = groups.filter((g) => g.fiveH !== null || g.weekly !== null);
+  if (!valid.length) return null;
+  return { account: accMatch ? accMatch[1] : null, groups: valid, fetchedAt: new Date().toISOString() };
+}
+
+const agyExe = () => [CONFIG.agy, path.join(os.homedir(), 'AppData', 'Local', 'agy', 'bin', 'agy.exe')].find((f) => f && fs.existsSync(f)) || 'agy.exe';
+const isAgyTerm = (t) => /agy(\.exe)?$/i.test(t?.meta?.cmd || '');
+const agentOf = (t) => (/claude(\.exe)?$/i.test(t.meta?.cmd || '') ? 'claude' : isCodexTerm(t) ? 'codex' : isAgyTerm(t) ? 'agy' : /cursor-agent/i.test((t.meta?.args || []).join(' ')) ? 'cursor' : null);
+const termInfo = (t) => ({ id: t.id, title: t.title, liveTitle: t.liveTitle, account: t.account, agent: agentOf(t), operator: !!t.meta?.operator, claude: /claude(\.exe)?$/i.test(t.meta?.cmd || ''), codex: isCodexTerm(t), agy: isAgyTerm(t),
   ...(isCodexTerm(t) ? { status: codexStatus(t) } : {}), cwd: t.cwd, pid: t.pid, exited: t.exited, cols: t.cols, rows: t.rows });
 
 // ---------- HTTP ----------
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/manifest+json', '.svg': 'image/svg+xml' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const STATIC = {
   '/xterm.js': 'node_modules/@xterm/xterm/lib/xterm.js',
   '/xterm.css': 'node_modules/@xterm/xterm/css/xterm.css',
   '/addon-fit.js': 'node_modules/@xterm/addon-fit/lib/addon-fit.js',
+  '/icon-claude.png': 'public/icon-claude.png',
+  '/icon-openai.png': 'public/icon-openai.png',
 };
 
 function send(res, code, obj) {
@@ -999,6 +1255,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/recent') {
       const n = Number(url.searchParams.get('n') || 40), auto = url.searchParams.get('auto') === '1';
+      if (url.searchParams.get('fresh') === '1' || Date.now() - lastIndexAt > 5000) await refreshIndex();
       return send(res, 200, { sessions: index.ready ? index.recent(n, auto) : recentSessions(n) });
     }
     if (p === '/api/transcript') {
@@ -1071,14 +1328,36 @@ const server = http.createServer(async (req, res) => {
       } catch (e) { return send(res, 502, { error: `AI 사용량 대시보드(${USAGE_URL})에 연결할 수 없음: ${e.message}` }); }
     }
     if (p === '/api/switch/candidates') {
-      const cons = (await helperCall({ op: 'list' })).consoles || [];
-      const loc = locateSession(url.searchParams.get('id') || '', cons);
-      const tt = url.searchParams.get('term') && [...terms.values()].find((x) => String(x.id) === url.searchParams.get('term'));
-      if (tt && isCodexTerm(tt)) return send(res, 200, { ...(await codexCandidates(tt.account?.id)), live: tt.exited === null, where: `t:${tt.id}` });
-      if (tt) return send(res, 200, { ...(await switchCandidates(tt.account?.id || 'default')), live: tt.exited === null, fresh: true, where: `t:${tt.id}` });
-      return send(res, 200, { ...(await switchCandidates(loc.account)), live: loc.live, busy: loc.s?.status === 'busy', where: loc.term ? `t:${loc.term.id}` : loc.console ? `c:${loc.console.id}` : null });
+      return send(res, 200, await allSwitchCandidates({
+        sessionId: url.searchParams.get('id') || '',
+        termId: url.searchParams.get('term') || '',
+      }));
     }
     if (p === '/api/switch' && req.method === 'POST') return send(res, 200, await switchAccount(await body(req)));
+    if (p === '/api/term/external' && req.method === 'POST') {
+      const b = await body(req);
+      const d = b.resume ? index.get(b.resume) : null;
+      const cwd = b.cwd || d?.cwd || os.homedir();
+      const kind = b.kind || d?.agent || 'claude';
+      let cmd, args = [];
+      if (kind === 'codex') {
+        ({ cmd, args } = codexLaunch(b.resume ? ['resume', b.resume] : []));
+      } else if (kind === 'agy') {
+        cmd = agyExe();
+        if (b.resume) args.push('--conversation', b.resume);
+      } else {
+        cmd = 'claude.exe';
+        if (b.resume) args.push('--resume', b.resume);
+        if (b.skipPermissions !== false) args.push('--dangerously-skip-permissions');
+      }
+      return send(res, 200, launchExternalWindow({
+        cwd,
+        title: `${kind} ${b.resume ? b.resume.slice(0, 8) : ''}`.trim(),
+        cmd,
+        args,
+        openMode: b.openMode || 'external',
+      }));
+    }
     if (p === '/api/remote') {
       const info = remoteInfo();
       const target = info.urls[0] ? `${info.urls[0]}?t=${TOKEN}` : null;
@@ -1159,6 +1438,12 @@ const server = http.createServer(async (req, res) => {
         cmd = 'cmd.exe'; args = ['/c', ca];
         if (b.resume && /^[\w-]+$/.test(b.resume)) args.push('--resume', b.resume);
         title = 'Cursor agent';
+      } else if (b.kind === 'agy') {
+        cmd = agyExe();
+        if (b.resume && /^[\w-]+$/.test(b.resume)) args.push('--conversation', b.resume);
+        else if (b.continue) args.push('--continue');
+        if (b.skipPermissions) args.push('--dangerously-skip-permissions');
+        title = b.resume ? `agy ${b.resume.slice(0, 8)}` : 'agy';
       } else if (b.kind === 'cmd') { cmd = 'cmd.exe'; title = 'cmd'; }
       else { cmd = 'powershell.exe'; args = ['-NoLogo']; title = 'powershell'; }
       // claude finds a session by its project folder, so a resume must start in the
@@ -1178,6 +1463,60 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/codex/add' && req.method === 'POST') {
       const t = createTerm({ cwd: __dirname, cmd: process.execPath, args: ['--use-system-ca', path.join(__dirname, 'ccd.js'), 'codex', 'add'], title: 'Codex 계정 추가' });
       return send(res, 200, termInfo(t));
+    }
+    // 1-click Antigravity CLI (/usage) viewer: reuse a running agy terminal or launch one, submit /usage, and parse quota
+    if (p === '/api/agy/quota') {
+      for (const t of terms.values()) {
+        if (isAgyTerm(t)) {
+          const raw = readTerm(t, 120).join('\n');
+          const m = raw.match(/\((\d+)[–-](\d+)\s+of\s+(\d+)\s+lines\)/i);
+          if (!m || (Number(m[1]) === 1 && Number(m[2]) >= Number(m[3]))) {
+            const parsed = parseAgyQuota(raw);
+            if (parsed) saveAgyQuota(parsed);
+          }
+        }
+      }
+      return send(res, 200, { ok: true, quota: agyQuotaCache });
+    }
+    if (p === '/api/agy/usage' && req.method === 'POST') {
+      const b = await body(req);
+      let t = [...terms.values()].find((x) => isAgyTerm(x) && x.exited === null);
+      const created = !t;
+      if (!t) t = createTerm({ cwd: b.cwd || os.homedir(), cmd: agyExe(), args: [], title: 'agy' });
+      if (created) {
+        await waitFor(() => t.exited === null && /[>❯]|\/help|Shortcuts|Type your message/i.test(readTerm(t, 30).join('\n')), 15000, 300);
+        await sleep(800);
+      } else if (/Models & Quota/i.test(readTerm(t, 40).join('\n'))) {
+        t.proc.write('\x1b');
+        await sleep(350);
+      }
+      if (t.exited === null) {
+        t.proc.write('/usage');
+        await sleep(SUBMIT_DELAY);
+        t.proc.write('\r');
+        const pages = [];
+        const ready = await waitFor(() => {
+          const s = readTerm(t, 120).join('\n');
+          if (/Models & Quota/i.test(s) && /Limit/i.test(s)) { pages.push(s); return true; }
+          return false;
+        }, 7000, 300);
+        if (ready) {
+          for (let pg = 0; pg < 3; pg++) {
+            const m = pages[pages.length - 1].match(/\((\d+)[–-](\d+)\s+of\s+(\d+)\s+lines\)/i);
+            if (!m || Number(m[2]) >= Number(m[3])) break;
+            t.proc.write('\x1b[6~'); // Page Down
+            await sleep(350);
+            const next = readTerm(t, 120).join('\n');
+            if (next && next !== pages[pages.length - 1]) pages.push(next);
+          }
+          const parsed = parseAgyQuota(pages.join('\n'));
+          if (parsed) saveAgyQuota(parsed);
+          // Close the modal so the terminal returns cleanly to the prompt and won't leave a partial page visible
+          t.proc.write('\x1b');
+          await sleep(200);
+        }
+      }
+      return send(res, 200, { ok: true, term: termInfo(t), created, quota: agyQuotaCache });
     }
     if (p === '/api/term/close' && req.method === 'POST') {
       const b = await body(req);

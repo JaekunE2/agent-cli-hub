@@ -109,19 +109,22 @@ module.exports = function artifacts({ dir, index }) {
 
   const cache = new Map(); // sid -> { at, size, items }
   async function list(sid) {
+    if (!sid) return [];
     const d = index.get(sid);
-    if (!d) return [];
-    await index.updateFile(d.file);
+    if (d) await index.updateFile(d.file);
     const c = cache.get(sid);
     const e = entry(sid);
-    if (c && c.size === d.offset && Date.now() - c.at < 30_000 && c.pinnedN === e.pinned.length && c.hiddenN === e.hidden.length) return c.items;
+    const dOffset = d ? d.offset : 0;
+    if (c && c.size === dOffset && Date.now() - c.at < 30_000 && c.pinnedN === e.pinned.length && c.hiddenN === e.hidden.length) return c.items;
     const seen = new Map();
-    d.msgs.forEach((m, i) => {
-      for (const p of candidates(m.text, d.cwd)) {
-        const k = p.toLowerCase();
-        if (!seen.has(k)) seen.set(k, { path: p, source: 'auto', msg: i, role: m.role });
-      }
-    });
+    if (d?.msgs) {
+      d.msgs.forEach((m, i) => {
+        for (const p of candidates(m.text, d.cwd)) {
+          const k = p.toLowerCase();
+          if (!seen.has(k)) seen.set(k, { path: p, source: 'auto', msg: i, role: m.role });
+        }
+      });
+    }
     for (const x of e.pinned) seen.set(x.path.toLowerCase(), { path: x.path, source: 'pinned', title: x.title, msg: null, addedAt: x.addedAt });
     const hidden = new Set(e.hidden.map((h) => h.toLowerCase()));
     const items = [];
@@ -137,7 +140,7 @@ module.exports = function artifacts({ dir, index }) {
       items.push({ ...it, name: path.basename(it.path), ext, kind, main, size: st.size, mtime: st.mtimeMs });
     }
     items.sort((a, b) => (b.source === 'pinned') - (a.source === 'pinned') || b.mtime - a.mtime);
-    cache.set(sid, { at: Date.now(), size: d.offset, items: items.slice(0, 300), pinnedN: e.pinned.length, hiddenN: e.hidden.length });
+    cache.set(sid, { at: Date.now(), size: dOffset, items: items.slice(0, 300), pinnedN: e.pinned.length, hiddenN: e.hidden.length });
     return items.slice(0, 300);
   }
 

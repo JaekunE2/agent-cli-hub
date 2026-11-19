@@ -26,6 +26,7 @@ module.exports = function calendar({ config = {}, port = 7777 } = {}) {
   }
   const CLIENT = path.join(SECRETS, 'google-oauth-client.json');
   const TOKEN = path.join(SECRETS, 'gcal-token.json');
+  const MS_FILE = path.join(SECRETS, 'ms-calendar.json');
   const ACCOUNT = C.googleAccount || '';
   const TZ = C.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   const REDIRECT = `http://127.0.0.1:${port}/api/calendar/google/callback`;
@@ -181,10 +182,75 @@ module.exports = function calendar({ config = {}, port = 7777 } = {}) {
   let syncTimer = null, interval = null;
   const syncSoon = () => { if (!gState?.refresh_token) return; clearTimeout(syncTimer); syncTimer = setTimeout(() => sync(), 4000); };
 
+  // ---------- Microsoft Teams / Outlook (ICS) ----------
+  let msState = readJson(MS_FILE, C.msIcsUrl ? { url: C.msIcsUrl, label: C.msAccount || 'Teams' } : null);
+  let msCache = { events: [], at: 0, error: null };
+  let msSyncing = null;
+  const unescapeIcs = (s) => String(s || '').replace(/\\n/gi, '\n').replace(/\\([,;\\])/g, '$1').trim();
+  function parseIcsDate(val, isUtc) {
+    const m = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z)?)?$/.exec(String(val || '').trim());
+    if (!m) return null;
+    if (!m[4]) return { date: `${m[1]}-${m[2]}-${m[3]}`, time: null };
+    if (m[7] === 'Z' || isUtc) {
+      const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]));
+      const parts = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(d);
+      const get = (t) => parts.find((x) => x.type === t)?.value || '00';
+      return { date: `${get('year')}-${get('month')}-${get('day')}`, time: `${get('hour')}:${get('minute')}` };
+    }
+    return { date: `${m[1]}-${m[2]}-${m[3]}`, time: `${m[4]}:${m[5]}` };
+  }
+  function parseIcs(text) {
+    const unfolded = String(text || '').replace(/\r?\n[ \t]/g, '');
+    const blocks = unfolded.split(/BEGIN:VEVENT\r?\n/i).slice(1);
+    const out = [];
+    for (const blk of blocks) {
+      const body = blk.split(/END:VEVENT/i)[0] || '';
+      const props = {};
+      for (const line of body.split(/\r?\n/)) {
+        const idx = line.indexOf(':');
+        if (idx < 0) continue;
+        const keyPart = line.slice(0, idx), val = line.slice(idx + 1);
+        const [name, ...params] = keyPart.split(';');
+        props[name.toUpperCase()] = { val, params };
+      }
+      if ((props.STATUS?.val || '').toUpperCase() === 'CANCELLED') continue;
+      const st = parseIcsDate(props.DTSTART?.val);
+      if (!st) continue;
+      const en = parseIcsDate(props.DTEND?.val);
+      const uid = unescapeIcs(props.UID?.val || sha(st.date + (props.SUMMARY?.val || '')));
+      out.push({
+        kind: 'mscal',
+        id: 'ms:' + sha(uid + '|' + st.date + '|' + (st.time || '')),
+        title: unescapeIcs(props.SUMMARY?.val) || '(제목 없음)',
+        date: st.date,
+        time: st.time,
+        end: en && en.date === st.date ? en.time : null,
+        note: unescapeIcs(props.LOCATION?.val || ''),
+      });
+    }
+    return out;
+  }
+  async function syncMs() {
+    if (!msState?.url) return { ok: false, error: 'Teams(ICS) 캘린더가 연결되지 않았습니다' };
+    if (msSyncing) return msSyncing;
+    msSyncing = (async () => {
+      const r = await fetch(msState.url, { signal: AbortSignal.timeout(15000) });
+      if (!r.ok) throw new Error(`ICS 조회 실패 (HTTP ${r.status})`);
+      const text = await r.text();
+      if (!/BEGIN:VCALENDAR/i.test(text)) throw new Error('올바른 ICS 캘린더 응답이 아닙니다');
+      const events = parseIcs(text);
+      msCache = { events, at: Date.now(), error: null };
+      msState = { ...msState, lastSync: new Date().toISOString() };
+      writeJson(MS_FILE, msState);
+      return { ok: true, count: events.length };
+    })().catch((e) => { msCache.error = e.message; return { ok: false, error: e.message }; }).finally(() => { msSyncing = null; });
+    return msSyncing;
+  }
+
   function allItems() {
     const t = parseTodo();
     const ev = loadEvents().map((e) => ({ kind: 'event', ...e }));
-    return [...t.items, ...ev, ...gCache.events];
+    return [...t.items, ...ev, ...gCache.events, ...msCache.events];
   }
 
   async function oauthCallback(url, res) {
@@ -207,8 +273,9 @@ module.exports = function calendar({ config = {}, port = 7777 } = {}) {
   async function handle(p, url, req, getBody, send) {
     if (p === '/api/calendar') {
       const t = parseTodo();
-      return send(200, { items: [...t.items, ...loadEvents().map((e) => ({ kind: 'event', ...e })), ...gCache.events], todoError: t.error || null,
-        google: { configured: !!client(), connected: !!gState?.refresh_token, account: gState?.account || null, calendarId: gState?.calendarId || null, lastSync: gState?.lastSync || null, lastResult: gState?.lastResult || null, error: gCache.error, hint: ACCOUNT } });
+      return send(200, { items: [...t.items, ...loadEvents().map((e) => ({ kind: 'event', ...e })), ...gCache.events, ...msCache.events], todoError: t.error || null,
+        google: { configured: !!client(), connected: !!gState?.refresh_token, account: gState?.account || null, calendarId: gState?.calendarId || null, lastSync: gState?.lastSync || null, lastResult: gState?.lastResult || null, error: gCache.error, hint: ACCOUNT },
+        ms: { connected: !!msState?.url, label: msState?.label || 'Teams', lastSync: msState?.lastSync || null, count: msCache.events.length, error: msCache.error } });
     }
     if (p === '/api/calendar/event' && req.method === 'POST') { const ev = upsertEvent((await getBody()).event || {}); syncSoon(); return send(200, { ok: true, event: ev }); }
     if (p === '/api/calendar/event/delete' && req.method === 'POST') { const { id } = await getBody(); saveEvents(loadEvents().filter((x) => x.id !== id)); syncSoon(); return send(200, { ok: true }); }
@@ -223,6 +290,16 @@ module.exports = function calendar({ config = {}, port = 7777 } = {}) {
     }
     if (p === '/api/calendar/google/sync' && req.method === 'POST') return send(200, await sync());
     if (p === '/api/calendar/google/disconnect' && req.method === 'POST') { gState = null; gCache = { events: [], at: 0, error: null }; try { fs.unlinkSync(TOKEN); } catch {} return send(200, { ok: true }); }
+    if (p === '/api/calendar/ms/connect' && req.method === 'POST') {
+      const b = await getBody();
+      const u = String(b.url || '').trim();
+      if (!/^https?:\/\/.+/i.test(u)) return send(400, { error: '올바른 ICS URL(https://...)을 입력하세요' });
+      msState = { url: u, label: String(b.label || 'Teams').trim() || 'Teams' };
+      writeJson(MS_FILE, msState);
+      return send(200, await syncMs());
+    }
+    if (p === '/api/calendar/ms/sync' && req.method === 'POST') return send(200, await syncMs());
+    if (p === '/api/calendar/ms/disconnect' && req.method === 'POST') { msState = null; msCache = { events: [], at: 0, error: null }; try { fs.unlinkSync(MS_FILE); } catch {} return send(200, { ok: true }); }
     return false;
   }
 
@@ -233,8 +310,8 @@ module.exports = function calendar({ config = {}, port = 7777 } = {}) {
       let m = 0; try { m = fs.statSync(TODO).mtimeMs; } catch {}
       if (m !== lastTodo) { const first = !lastTodo; lastTodo = m; if (!first) syncSoon(); }
     }, 15000);
-    setTimeout(() => sync(), 5000);
-    interval.syncAll = setInterval(() => sync(), 10 * 60e3);
+    setTimeout(() => { sync(); syncMs(); }, 3000);
+    interval.syncAll = setInterval(() => { sync(); syncMs(); }, 10 * 60e3);
   }
   function stop() { clearInterval(interval); if (interval) clearInterval(interval.syncAll); clearTimeout(syncTimer); }
   return { handle, oauthCallback, start, stop, sync, upsertEvent, parseTodo };

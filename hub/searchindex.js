@@ -6,7 +6,7 @@ const path = require('path');
 const zlib = require('zlib');
 
 const CACHE_FILE = path.join(__dirname, '.search-cache.json.gz');
-const CACHE_VER = 5;
+const CACHE_VER = 7;
 
 function textOf(content) {
   if (typeof content === 'string') return content;
@@ -29,7 +29,23 @@ const isCodexFile = (f) => /^rollout-.*\.jsonl$/.test(path.basename(f));
 // rollout-2026-10-26T14-29-50-<session uuid>.jsonl → the uuid (what `codex resume <id>` takes)
 const codexIdOf = (f) => { const m = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i.exec(f); return m ? m[1] : path.basename(f, '.jsonl'); };
 // injected context, not something the user typed
-const codexNoise = (t) => /^\s*<(environment_context|user_instructions|skills_instructions|permissions|collaboration_mode|turn_aborted|subagent)/.test(t) || t.startsWith('# AGENTS.md');
+const codexNoise = (t) => /^\s*<(environment_context|user_instructions|skills_instructions|permissions|collaboration_mode|turn_aborted|subagent|external_codex_apps_|in-app-browser)/.test(t)
+  || /^\s*(# AGENTS\.md|# Files mentioned by the user:|## Referenced ChatGPT conversation:|\[\{"questionItemId":)/i.test(t);
+function cleanPromptTitle(raw) {
+  let s = String(raw || '').replace(/<external_codex_apps_[^>]*>[\s\S]*?<\/external_codex_apps_[^>]*>/gi, '').trim();
+  const lines = s.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  let skipBlock = false;
+  for (const l of lines) {
+    if (/^#{1,3}\s*(Referenced ChatGPT|Files mentioned by the user|Context from|Active file|Open files)/i.test(l)) { skipBlock = true; continue; }
+    if (skipBlock) {
+      if (/^[-*]\s+/.test(l) || /^`[^`]+`$/.test(l) || /^https?:\/\//i.test(l) || /^[A-Za-z]:\\/.test(l) || /^#{1,3}\s+/.test(l) || /^>/.test(l)) continue;
+      skipBlock = false;
+    }
+    if (/^<\/?[a-z_][\w-]*[^>]*>$/i.test(l)) continue;
+    return l.slice(0, 160);
+  }
+  return '';
+}
 function codexText(content) {
   if (!Array.isArray(content)) return typeof content === 'string' ? content : '';
   return content.map((c) => (c.type === 'input_text' || c.type === 'output_text' || c.type === 'text' ? c.text : null)).filter(Boolean).join('\n');
@@ -54,10 +70,36 @@ function codexLine(e) {
   return {};
 }
 
+// ---- Antigravity transcripts ----
+const AGY_ROOT = path.join(require('os').homedir(), '.gemini', 'antigravity', 'brain');
+const isAgyFile = (f) => /[\\/]\.system_generated[\\/]logs[\\/]transcript\.jsonl$/i.test(f);
+const agyIdOf = (f) => path.basename(path.resolve(path.dirname(f), '..', '..'));
+function agyUserText(raw) {
+  let s = String(raw || '');
+  const m = /<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/i.exec(s);
+  s = m ? m[1].trim() : s.replace(/<ADDITIONAL_METADATA>[\s\S]*$/i, '').replace(/<USER_SETTINGS_CHANGE>[\s\S]*$/i, '').trim();
+  const stripped = s.replace(/@\[[^\]]+\]\s*/g, '').trim();
+  return stripped || s.replace(/@\[([^\]]+)\]/g, (_, p) => path.basename(p)).trim();
+}
+function agyLine(e) {
+  if (e.type === 'USER_INPUT') {
+    const raw = String(e.content || '');
+    const m = /@\[([A-Za-z]:\\[^\]\r\n]+|\/[^\]\r\n]+)\]/.exec(raw);
+    const cwd = m ? m[1].trim() : null;
+    const text = agyUserText(raw);
+    return text ? { cwd, msg: { role: 'user', text, ts: e.created_at } } : { cwd };
+  }
+  if (e.type === 'PLANNER_RESPONSE' && typeof e.content === 'string' && e.content.trim()) {
+    return { msg: { role: 'assistant', text: e.content.trim(), ts: e.created_at } };
+  }
+  return {};
+}
+
 class SearchIndex {
-  constructor(root, codexRoot = CODEX_ROOT) {
+  constructor(root, codexRoot = CODEX_ROOT, agyRoot = AGY_ROOT) {
     this.root = root;
     this.codexRoot = codexRoot;
+    this.agyRoot = agyRoot;
     this.docs = new Map(); // sessionId -> {file, offset, mtime, cwd, title, firstPrompt, msgs:[{role,text,ts}]}
     this.ready = false;
     this.building = null;
@@ -101,6 +143,14 @@ class SearchIndex {
       }
     };
     if (this.codexRoot) await walk(this.codexRoot, 0);
+    if (this.agyRoot) {
+      let adirs; try { adirs = await fs.promises.readdir(this.agyRoot, { withFileTypes: true }); } catch { adirs = []; }
+      for (const e of adirs) {
+        if (!e.isDirectory() || !/^[0-9a-f-]{16,}$/i.test(e.name)) continue;
+        const tf = path.join(this.agyRoot, e.name, '.system_generated', 'logs', 'transcript.jsonl');
+        try { await fs.promises.access(tf); out.push(tf); } catch {}
+      }
+    }
     return out;
   }
 
@@ -118,12 +168,24 @@ class SearchIndex {
   // Parse bytes [doc.offset, size) of one file, appending complete lines only.
   async updateFile(file) {
     const codex = isCodexFile(file);
-    const id = codex ? codexIdOf(file) : path.basename(file, '.jsonl');
+    const agy = !codex && isAgyFile(file);
+    const id = codex ? codexIdOf(file) : agy ? agyIdOf(file) : path.basename(file, '.jsonl');
     let st; try { st = await fs.promises.stat(file); } catch { return; }
     let doc = this.docs.get(id);
-    if (doc && doc.file === file && doc.offset === st.size) return;
+    const bestMtime = (d, stMs) => {
+      for (let i = d.msgs.length - 1; i >= 0; i--) {
+        const ts = Date.parse(d.msgs[i]?.ts || '');
+        if (Number.isFinite(ts)) return Math.max(stMs, ts);
+      }
+      return stMs;
+    };
+    if (doc && doc.file === file && doc.offset === st.size) {
+      const m = bestMtime(doc, st.mtimeMs);
+      if (m > doc.mtime) { doc.mtime = m; this.dirty = true; }
+      return;
+    }
     if (!doc || doc.file !== file || st.size < doc.offset) {
-      doc = { id, file, offset: 0, mtime: 0, cwd: null, title: null, firstPrompt: null, auto: null, msgs: [], agent: codex ? 'codex' : 'claude' };
+      doc = { id, file, offset: 0, mtime: 0, cwd: null, title: null, firstPrompt: null, auto: null, msgs: [], agent: codex ? 'codex' : agy ? 'agy' : 'claude' };
       this.docs.set(id, doc);
     }
     const end = st.size;
@@ -143,10 +205,23 @@ class SearchIndex {
         if (r.limit) doc.limit = r.limit;
         if (!r.msg) return;
         if (r.msg.role === 'assistant' && !r.msg.text.startsWith('⚙')) doc.limit = null;
-        if (r.msg.role === 'user' && !doc.firstPrompt) doc.firstPrompt = r.msg.text.slice(0, 160);
+        if (r.msg.role === 'user' && !doc.firstPrompt) {
+          const clean = cleanPromptTitle(r.msg.text);
+          if (clean && !codexNoise(clean)) doc.firstPrompt = clean;
+        }
         doc.msgs.push({ ...r.msg, text: r.msg.text.slice(0, 6000) });
       };
-      const handle = codex ? handleCodex : (lineBuf) => {
+      const handleAgy = (lineBuf) => {
+        const head = lineBuf.subarray(0, 300).toString('utf8');
+        if (!/"type":"(USER_INPUT|PLANNER_RESPONSE)"/.test(head)) return;
+        let e; try { e = JSON.parse(lineBuf.toString('utf8')); } catch { return; }
+        const r = agyLine(e);
+        if (r.cwd && !doc.cwd) doc.cwd = r.cwd;
+        if (!r.msg) return;
+        if (r.msg.role === 'user' && !doc.firstPrompt) doc.firstPrompt = cleanPromptTitle(r.msg.text);
+        doc.msgs.push({ ...r.msg, text: r.msg.text.slice(0, 6000) });
+      };
+      const handle = codex ? handleCodex : agy ? handleAgy : (lineBuf) => {
         // Cheap pre-filter before JSON.parse; tool results / attachments can be MBs.
         // "type" sits near the start of user lines but near the end of assistant lines.
         const head = lineBuf.subarray(0, 400).toString('utf8') + lineBuf.subarray(Math.max(0, lineBuf.length - 600)).toString('utf8');
@@ -184,7 +259,7 @@ class SearchIndex {
       stream.on('end', () => { doc.offset = consumed; resolve(); });
       stream.on('error', resolve);
     });
-    doc.mtime = st.mtimeMs;
+    doc.mtime = bestMtime(doc, st.mtimeMs);
     this.dirty = true;
   }
 
@@ -193,7 +268,7 @@ class SearchIndex {
     if (this.building) return this.building;
     this.building = (async () => {
       const files = await this.listFilesAsync();
-      const live = new Set(files.map((f) => (isCodexFile(f) ? codexIdOf(f) : path.basename(f, '.jsonl'))));
+      const live = new Set(files.map((f) => (isCodexFile(f) ? codexIdOf(f) : isAgyFile(f) ? agyIdOf(f) : path.basename(f, '.jsonl'))));
       for (const id of this.docs.keys()) if (!live.has(id)) { this.docs.delete(id); this.dirty = true; }
       this.progress = { done: 0, total: files.length };
       for (const f of files) { await this.updateFile(f); this.progress.done++; }
@@ -261,4 +336,4 @@ function snippet(text, low, terms) {
   return (a > 0 ? '…' : '') + text.slice(a, b).replace(/\s+/g, ' ') + (b < text.length ? '…' : '');
 }
 
-module.exports = { SearchIndex, isCodexFile, codexIdOf, codexLine, CODEX_ROOT };
+module.exports = { SearchIndex, isCodexFile, codexIdOf, codexLine, CODEX_ROOT, isAgyFile, agyIdOf, agyLine, AGY_ROOT };

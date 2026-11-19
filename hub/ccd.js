@@ -76,7 +76,11 @@ for (let i = 0; i < argv.length; i++) {
 }
 const die = (msg, code = 1) => { console.error(msg); process.exit(code); };
 // the AI usage dashboard's folder (accounts.json: Claude tokens, Codex logins …), same rule as server.js
-const usageDir = () => { let c = {}; try { c = JSON.parse(fs.readFileSync(path.join(DIR, 'config.json'), 'utf8')); } catch {} return process.env.CCD_USAGE_DIR || (c.usageDir && path.resolve(DIR, c.usageDir)) || path.join(require('os').homedir(), 'ai-usage-dashboard'); };
+const usageDir = () => {
+  let c = {}; try { c = JSON.parse(fs.readFileSync(path.join(DIR, 'config.json'), 'utf8')); } catch {}
+  const localDir = path.resolve(DIR, '..', 'ai-usage');
+  return process.env.CCD_USAGE_DIR || (c.usageDir && path.resolve(DIR, c.usageDir)) || (fs.existsSync(localDir) ? localDir : path.join(require('os').homedir(), 'ai-usage-dashboard'));
+};
 
 // ---------- http ----------
 // Network hiccups (server restarting, keep-alive socket closed under us) used to throw

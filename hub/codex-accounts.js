@@ -80,9 +80,9 @@ function rank(list, usage) {
     const fiveH = meterPct(u, /5시간/), weekly = meterPct(u, /주간/);
     const limited = !!(u?.notes || []).some((n) => /한도에 도달/.test(n));
     const known = !!u?.ok && (fiveH !== null || weekly !== null);
-    const score = known ? Math.min(100 - (fiveH ?? 0), 100 - (weekly ?? 0)) : -1;
+    const score = known ? Math.min(100 - (fiveH ?? 0), 100 - (weekly ?? 0)) : 50;
     const reset = (u?.meters || []).find((m) => /5시간/.test(m.name))?.resetsAt || null;
-    return { ...a, email: a.email || u?.email || null, fiveH, weekly, score, usable: known && score > 0 && !limited, limited, reset, error: u?.ok === false ? u.error : null };
+    return { ...a, email: a.email || u?.email || null, fiveH, weekly, score, usable: u?.ok !== false && score > 0 && !limited, limited, reset, error: u?.ok === false ? u.error : null };
   }).sort((x, y) => (y.usable - x.usable) || (y.score - x.score));
 }
 

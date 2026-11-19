@@ -13,6 +13,8 @@ hub/gpu-queue*.json
 hub/gpu-logs/
 hub/terms-state.json
 hub/crash-state.json
+hub/agy-quota.json
+*.lnk
 hub/artifacts-store.json
 hub/restart-report.txt
 hub/uploads/
