@@ -996,9 +996,9 @@ function stopView() {
   $('#view').onclick = null; $('#bar').onclick = null;
   document.body.classList.remove('drawer');
 }
-const TERM_TABS = new Set(['screen', 'split', 'chat', 'files', 'floorplan']);
-const RECENT_TABS = new Set(['chat', 'files', 'floorplan']);
-function getSavedTermTab(fallback = 'screen') {
+const TERM_TABS = new Set(['screen', 'split', 'chat', 'dock', 'files', 'floorplan']);
+const RECENT_TABS = new Set(['chat', 'dock', 'files', 'floorplan']);
+function getSavedTermTab(fallback = 'dock') {
   try {
     const v = localStorage.getItem('ach-term-tab');
     if (v && TERM_TABS.has(v)) return v;
@@ -1009,7 +1009,7 @@ function saveTermTab(tab) {
   if (!TERM_TABS.has(tab)) return;
   try { localStorage.setItem('ach-term-tab', tab); } catch {}
 }
-function getSavedRecentTab(fallback = 'chat') {
+function getSavedRecentTab(fallback = 'dock') {
   try {
     const v = localStorage.getItem('ach-recent-tab');
     if (v && RECENT_TABS.has(v)) return v;
@@ -1035,15 +1035,19 @@ function select(sel, tab, persistTab = false) {
   state.sel = sel;
   if (sel.kind === 'term') { state.unreadTerms.delete(String(sel.id)); updateDocTitle(); }
   if (persistTab && tab) {
-    if (sel.kind === 'term' || sel.kind === 'console') saveTermTab(tab);
-    else if (sel.kind === 'recent') saveRecentTab(tab);
+    if (sel.kind === 'term' || sel.kind === 'console') {
+      saveTermTab(tab);
+      if (tab === 'screen') window.ACH_DOCK?.saveDockOpen('term', ['term']);
+      else if (tab === 'split') window.ACH_DOCK?.saveDockOpen('term', ['term', 'chat']);
+      else if (tab === 'chat') window.ACH_DOCK?.saveDockOpen('term', ['chat']);
+    } else if (sel.kind === 'recent') saveRecentTab(tab);
   }
   if (sel.kind === 'term' || sel.kind === 'console') {
-    state.tab = (tab && TERM_TABS.has(tab)) ? tab : getSavedTermTab('screen');
+    state.tab = (tab && TERM_TABS.has(tab)) ? tab : getSavedTermTab('dock');
   } else if (sel.kind === 'recent') {
-    state.tab = (tab && RECENT_TABS.has(tab)) ? tab : getSavedRecentTab('chat');
+    state.tab = (tab && RECENT_TABS.has(tab)) ? tab : getSavedRecentTab('dock');
   } else {
-    state.tab = tab || 'screen';
+    state.tab = tab || 'dock';
   }
   if (booted && sel.kind !== 'search') {
     const payload = { sel, tab: state.tab };
@@ -1478,7 +1482,7 @@ function viewTerms() {
       <div class="page-hd-left">
         <h1>터미널</h1>
         <div class="seg" role="tablist" aria-label="터미널 영역">
-          ${tbtn('active', '실행 화면', activeN)}
+          ${tbtn('active', '실행 중', activeN)}
           ${tbtn('recent', '최근 대화')}
           ${tbtn('favs', '즐겨찾기', favN)}
         </div>
@@ -1611,61 +1615,37 @@ function paintScreen(el, r, maxLines) {
   el.dataset.painted = '1';
 }
 
-function viewConsole() {
-  const gen = viewGen;
-  const c = state.consoles.find((x) => String(x.id) === state.sel.id);
-  const s = c && sessionOfConsole(c);
-  const sid = s?.sessionId || state.sel.session;
-  setBar(`<button id="btnBackTerms" class="ghost btn-sm">${ICO.chevLeft} 터미널</button><h2><span>${esc(c ? consoleLabel(c) : 'pid ' + state.sel.id)}</span></h2>
-    <div class="seg" role="tablist"><button data-tab="screen" class="${state.tab === 'screen' ? 'on' : ''}">화면</button>
-    ${sid ? `<button data-tab="split" class="${state.tab === 'split' ? 'on' : ''}">${ICO.split} 화면 + 대화</button><button data-tab="chat" class="${state.tab === 'chat' ? 'on' : ''}">대화 기록</button><button data-tab="files" class="${state.tab === 'files' ? 'on' : ''}">산출물</button>` : ''}<button data-tab="floorplan" class="${state.tab === 'floorplan' ? 'on' : ''}">${ICO.layers} 코드 구조</button></div>
-    ${sid ? switchBtnHTML(sid) : ''}
-    <button id="btnConMore" class="ghost icon-btn btn-sm desk" aria-label="콘솔 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
-  $('#bar').onclick = (e) => {
-    if (e.target.closest('#btnBackTerms')) return select({ kind: 'terms' });
-    const b = e.target.closest('[data-tab]');
-    if (b) return select(state.sel, b.dataset.tab, true);
-    const more = e.target.closest('#btnConMore');
-    if (more) {
-      e.stopPropagation();
-      openMoreMenu(more, [
-        { label: '창 앞으로 가져오기', icon: ICO.external, onClick: () => api('/api/console/focus', { method: 'POST', body: { pid: Number(state.sel.id) } }) },
-      ]);
-    }
-  };
-  if (state.tab === 'chat' && sid) {
-    $('#view').innerHTML = `<div class="chat-shell"><div class="chat-scroll" id="conChatHost"></div><div id="conChatComp"></div></div>`;
-    const ch = $('#conChatHost');
-    renderChat(sid, gen, -1, [], ch);
-    mountChatComposer({ barHost: $('#conChatComp'), chatHost: ch, sid, consolePid: Number(state.sel.id), agent: s?.agent || 'claude', cwd: s?.cwd || '', onJumpTerm: () => select(state.sel, 'screen', true) });
-    return;
-  }
-  if (state.tab === 'files' && sid) return renderArtifacts(sid, gen);
-  if (state.tab === 'floorplan' && typeof renderStandaloneFloorplan === 'function') {
-    return renderStandaloneFloorplan(s?.cwd || '', gen, {
-      sessionId: sid || '',
-      onInsertPrompt: async (txt, submit) => {
-        if (submit) {
-          await api('/api/console/send', { method: 'POST', body: { pid: Number(state.sel.id), text: txt, submit: true } });
-          toast('콘솔 창에 수정 지시를 전달했습니다');
-        } else {
-          await copyText(txt);
-        }
-        select(state.sel, 'screen', true);
-      },
-    });
-  }
+function dockTopSegHTML({ openSet, isContentTab = false, hasTerm = true, hasChat = true, showFiles = true, curTab = 'dock', termTitle = '터미널 패널 열기/닫기' }) {
+  const on = (id) => !isContentTab && openSet.has(id);
+  return `<div class="seg" role="tablist">
+    ${hasTerm ? `<button type="button" data-dock-toggle="term" aria-pressed="${on('term')}" class="${on('term') ? 'on' : ''}" title="${esc(termTitle)}">${ICO.terminal} 터미널</button>` : ''}
+    ${hasChat ? `<button type="button" data-dock-toggle="chat" aria-pressed="${on('chat')}" class="${on('chat') ? 'on' : ''}" title="대화 기록 패널 열기/닫기">${ICO.chat} 대화 기록</button>` : ''}
+    <button type="button" data-dock-toggle="windows" aria-pressed="${on('windows')}" class="${on('windows') ? 'on' : ''}" title="연결된 창 · 브라우저 미리보기 패널 열기/닫기">${ICO.monitor} 창 <span class="seg-cnt" data-dock-win-cnt>0</span></button>
+    ${showFiles ? `<button type="button" data-tab="files" class="${curTab === 'files' ? 'on' : ''}" title="이 세션의 산출물 보기 및 지정">산출물</button>` : ''}
+    <button type="button" data-tab="floorplan" class="${curTab === 'floorplan' ? 'on' : ''}" title="코드 구조(Floorplan) 및 보안·품질 점검">${ICO.layers} 코드 구조</button>
+  </div>`;
+}
 
-  const isSplit = state.tab === 'split' && sid;
+function syncBarDockButtons(openList) {
+  const set = new Set(openList || []);
+  $('#bar')?.querySelectorAll('[data-dock-toggle]').forEach((b) => {
+    const isOn = set.has(b.dataset.dockToggle);
+    b.classList.toggle('on', isOn);
+    b.setAttribute('aria-pressed', String(isOn));
+  });
+}
+
+function mountConsoleScreen(hostEl, { pid, gen, s }) {
+  if (!hostEl) return;
   const keysOpen = getTuiKeysOpen();
-  const screenHTML = `<div class="full">
-    <div class="scr-wrap"><pre class="screen" id="scr">불러오는 중…</pre><button type="button" class="scroll-bottom-btn term-bottom-float" id="btnConFloatBottom" hidden title="화면 최하단으로 이동" aria-label="화면 최하단으로 이동">${ICO.chevDown}<span>최하단</span></button></div>
+  hostEl.innerHTML = `<div class="full">
+    <div class="scr-wrap"><pre class="screen" id="scr">불러오는 중…</pre><button type="button" class="scroll-bottom-btn term-bottom-float" id="btnConFloatBottom" hidden title="터미널 최하단으로 이동" aria-label="터미널 최하단으로 이동">${ICO.chevDown}<span>최하단</span></button></div>
     <div class="term-dock">
       <div class="tdock-bar">
         <div class="tdock-tools">
           <label class="filebtn" title="PC 파일·스크린샷 첨부 → 경로 입력">${ICO.clip}<span>파일 첨부</span><input type="file" class="fpick" multiple hidden></label>
           <button data-copy="1" title="선택한 부분(없으면 화면 전체) 복사">${ICO.copy}<span>화면 복사</span></button>
-          <button type="button" id="btnConBottom" title="화면 최하단으로 이동">${ICO.chevDown}<span>최하단</span></button>
+          <button type="button" id="btnConBottom" title="터미널 최하단으로 이동">${ICO.chevDown}<span>최하단</span></button>
         </div>
         <div class="tdock-keys-wrap">
           <button class="ghost btn-sm" id="btnTuiKeys" aria-expanded="${keysOpen}" title="TUI 방향키·제어키 패드 접기/펼치기">${ICO.keyboard}<span>TUI 키</span></button>
@@ -1681,33 +1661,47 @@ function viewConsole() {
       </div>
     </div>
   </div>`;
-  if (isSplit) {
-    $('#view').innerHTML = `<div class="term-split"><div class="tsplit-left">${screenHTML}</div>
-      <div class="split-resizer" role="separator" aria-orientation="vertical" aria-label="패널 크기 조절"></div>
-      <div class="tsplit-right" id="conSplitRight"></div></div>`;
-    bindSplitResizer($('.term-split'), $('.tsplit-left'));
-    setupSplitRightPane({ rightEl: $('#conSplitRight'), consolePid: Number(state.sel.id), sid, gen, agent: s?.agent || 'claude', cwd: s?.cwd || '', onClose: () => select(state.sel, 'screen', true) });
-  } else {
-    $('#view').innerHTML = screenHTML;
-  }
-  const tkBtn = $('#btnTuiKeys'), tkBox = $('#tuiKeysBox');
+  const fullEl = $('.full', hostEl);
+  const tkBtn = $('#btnTuiKeys', fullEl), tkBox = $('#tuiKeysBox', fullEl);
   if (tkBtn && tkBox) tkBtn.onclick = () => {
     const next = tkBox.hidden;
     tkBox.hidden = !next;
     tkBtn.setAttribute('aria-expanded', String(next));
     try { localStorage.setItem('ccd.tuiKeysOpen', next ? '1' : '0'); } catch {}
   };
-  const inp = $('#inp');
+  const inp = $('#inp', fullEl);
   const fitInp = () => { inp.style.height = 'auto'; inp.style.height = Math.min(140, Math.max(36, inp.scrollHeight)) + 'px'; };
   inp.addEventListener('input', fitInp);
+  const scrEl = $('#scr', fullEl);
+  const conFloatBtn = $('#btnConFloatBottom', fullEl);
+  const syncConBottom = () => {
+    if (!conFloatBtn || !scrEl) return;
+    conFloatBtn.hidden = !(scrEl.scrollHeight - scrEl.scrollTop - scrEl.clientHeight > 40);
+  };
+  const scrollConBottom = () => {
+    if (!scrEl) return;
+    scrEl.scrollTo({ top: scrEl.scrollHeight, behavior: 'smooth' });
+    setTimeout(syncConBottom, 180);
+  };
+  if (scrEl) scrEl.addEventListener('scroll', syncConBottom, { passive: true });
+  if ($('#btnConBottom', fullEl)) $('#btnConBottom', fullEl).onclick = scrollConBottom;
+  if (conFloatBtn) conFloatBtn.onclick = scrollConBottom;
+  const tick = async () => {
+    const r = await api(`/api/console/read?pid=${pid}`).catch((e) => ({ error: e.message }));
+    if (gen !== viewGen || !hostEl.isConnected) return;
+    paintScreen(scrEl, r);
+    syncConBottom();
+    clearTimeout(viewTimer);
+    viewTimer = setTimeout(tick, 1000);
+  };
   const sendKey = async (k) => {
-    await api('/api/console/send', { method: 'POST', body: { pid: Number(state.sel.id), keys: [k] } });
+    await api('/api/console/send', { method: 'POST', body: { pid, keys: [k] } });
     setTimeout(tick, 150);
   };
   const sendText = async () => {
     const text = inp.value;
     inp.value = ''; fitInp();
-    const r = await api('/api/console/send', { method: 'POST', body: text ? { pid: Number(state.sel.id), text, submit: true } : { pid: Number(state.sel.id), keys: ['enter'] } });
+    const r = await api('/api/console/send', { method: 'POST', body: text ? { pid, text, submit: true } : { pid, keys: ['enter'] } });
     if (!r.ok) alertBar(r.error);
     setTimeout(tick, 150);
   };
@@ -1719,39 +1713,119 @@ function viewConsole() {
       sendKey(e.key === 'ArrowUp' ? 'up' : e.key === 'ArrowDown' ? 'down' : 'tab');
     }
   };
-  $('#btnSend').onclick = sendText;
-  $('#view .full').onclick = async (e) => {
-    if (e.target.closest('[data-copy]')) { const scr = $('#scr'); return copyText(selectionIn(scr) || scr.textContent); }
+  $('#btnSend', fullEl).onclick = sendText;
+  fullEl.onclick = async (e) => {
+    if (e.target.closest('[data-copy]')) return copyText(selectionIn(scrEl) || scrEl.textContent);
     const k = e.target.closest('[data-key]')?.dataset.key;
     if (k) sendKey(k);
   };
-  const scrEl = $('#scr');
-  const conFloatBtn = $('#btnConFloatBottom');
-  const syncConBottom = () => {
-    if (!conFloatBtn || !scrEl) return;
-    conFloatBtn.hidden = !(scrEl.scrollHeight - scrEl.scrollTop - scrEl.clientHeight > 40);
-  };
-  const scrollConBottom = () => {
-    if (!scrEl) return;
-    scrEl.scrollTo({ top: scrEl.scrollHeight, behavior: 'smooth' });
-    setTimeout(syncConBottom, 180);
-  };
-  if (scrEl) scrEl.addEventListener('scroll', syncConBottom, { passive: true });
-  if ($('#btnConBottom')) $('#btnConBottom').onclick = scrollConBottom;
-  if (conFloatBtn) conFloatBtn.onclick = scrollConBottom;
-  const tick = async () => {
-    const r = await api(`/api/console/read?pid=${state.sel.id}`).catch((e) => ({ error: e.message }));
-    if (gen !== viewGen) return;
-    paintScreen(scrEl, r);
-    syncConBottom();
-    clearTimeout(viewTimer);
-    viewTimer = setTimeout(tick, 1000);
-  };
   tick();
   const addPath = (txt) => { inp.value += (inp.value && !inp.value.endsWith(' ') ? ' ' : '') + txt; fitInp(); inp.focus(); };
-  attachFileInput($('#view .full'), addPath, s?.cwd);
-  bindFilePick($('#view .full'), addPath, s?.cwd);
+  attachFileInput(fullEl, addPath, s?.cwd);
+  bindFilePick(fullEl, addPath, s?.cwd);
   inp.focus();
+}
+
+function viewConsole() {
+  const gen = viewGen;
+  const pid = Number(state.sel.id);
+  const c = state.consoles.find((x) => String(x.id) === state.sel.id);
+  const s = c && sessionOfConsole(c);
+  const sid = s?.sessionId || state.sel.session;
+  const isContentTab = (state.tab === 'files' && !!sid) || state.tab === 'floorplan';
+  let initialPanels = window.ACH_DOCK ? window.ACH_DOCK.getDockOpen('term', isContentTab ? null : state.tab) : ['term'];
+  if (!sid) initialPanels = initialPanels.filter((p) => p !== 'chat');
+  if (!initialPanels.length) initialPanels = ['term'];
+
+  setBar(`<button id="btnBackTerms" class="ghost btn-sm">${ICO.chevLeft} 터미널</button><h2><span>${esc(c ? consoleLabel(c) : 'pid ' + state.sel.id)}</span></h2>
+    ${dockTopSegHTML({ openSet: new Set(initialPanels), isContentTab, hasTerm: true, hasChat: !!sid, showFiles: !!sid, curTab: state.tab })}
+    ${sid ? switchBtnHTML(sid) : ''}
+    <button id="btnConMore" class="ghost icon-btn btn-sm desk" aria-label="콘솔 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
+
+  let dock = null;
+  $('#bar').onclick = (e) => {
+    if (e.target.closest('#btnBackTerms')) return select({ kind: 'terms' });
+    const dt = e.target.closest('[data-dock-toggle]');
+    if (dt) {
+      const p = dt.dataset.dockToggle;
+      if (isContentTab || !dock) {
+        const next = new Set(initialPanels);
+        next.add(p);
+        window.ACH_DOCK?.saveDockOpen('term', [...next]);
+        return select(state.sel, 'dock', true);
+      }
+      dock.togglePanel(p);
+      return;
+    }
+    const b = e.target.closest('[data-tab]');
+    if (b) return select(state.sel, b.dataset.tab, true);
+    const more = e.target.closest('#btnConMore');
+    if (more) {
+      e.stopPropagation();
+      openMoreMenu(more, [
+        { label: '창 앞으로 가져오기', icon: ICO.external, onClick: () => api('/api/console/focus', { method: 'POST', body: { pid } }) },
+      ]);
+    }
+  };
+  if (state.tab === 'files' && sid) return renderArtifacts(sid, gen);
+  if (state.tab === 'floorplan' && typeof renderStandaloneFloorplan === 'function') {
+    return renderStandaloneFloorplan(s?.cwd || '', gen, {
+      sessionId: sid || '',
+      onInsertPrompt: async (txt, submit) => {
+        if (submit) {
+          await api('/api/console/send', { method: 'POST', body: { pid, text: txt, submit: true } });
+          toast('콘솔 창에 수정 지시를 전달했습니다');
+        } else {
+          await copyText(txt);
+        }
+        select(state.sel, 'dock', true);
+      },
+    });
+  }
+
+  let winCtl = null;
+  let chatMounted = false;
+  let chatScrollEl = null;
+  const ensureChatMounted = () => {
+    if (chatMounted || !sid || !dock) return;
+    chatMounted = true;
+    const body = dock.getBody('chat');
+    body.innerHTML = `<div class="chat-shell"><div class="chat-scroll" data-dock-chat-scroll></div><div data-dock-chat-comp></div></div>`;
+    chatScrollEl = $('[data-dock-chat-scroll]', body);
+    renderChat(sid, gen, -1, [], chatScrollEl);
+    mountChatComposer({
+      barHost: $('[data-dock-chat-comp]', body),
+      chatHost: chatScrollEl,
+      sid,
+      consolePid: pid,
+      agent: s?.agent || 'claude',
+      cwd: s?.cwd || '',
+      compact: true,
+      onJumpTerm: () => dock?.togglePanel('term', true),
+    });
+  };
+
+  dock = window.ACH_DOCK.createDockWorkspace({
+    hostEl: $('#view'),
+    mode: 'term',
+    openPanels: initialPanels,
+    panelsMeta: {
+      term: { title: '터미널', icon: ICO.terminal },
+      ...(sid ? { chat: { title: '대화 기록', icon: ICO.chat, onShow: ensureChatMounted } } : {}),
+      windows: { title: '창', icon: ICO.monitor, onShow: () => winCtl?.renderWindows() },
+    },
+    onOpenChange: (openList) => syncBarDockButtons(openList),
+  });
+
+  mountConsoleScreen(dock.getBody('term'), { pid, gen, s });
+  if (sid && dock.isOpen('chat')) ensureChatMounted();
+  winCtl = window.ACH_DOCK.mountWindowsPane({
+    rootEl: dock.getBody('windows'),
+    consolePid: pid,
+    gen,
+    isOpen: () => !!dock?.isOpen('windows'),
+    onCount: (n) => { const c = $('#bar [data-dock-win-cnt]'); if (c) c.textContent = String(n); },
+  });
 }
 function alertBar(msg) {
   toast(msg, 5000, 'danger');
@@ -1775,6 +1849,9 @@ function viewTranscript() {
   const sid = state.sel.id;
   const r = recentSession(sid);
   const live = state.live.find((x) => x.sessionId === sid);
+  const linkedTerm = state.terms.find((x) => x.exited === null && x.sessionId === sid) || null;
+  const linkedConPid = !linkedTerm && live && !isDesktopSession(live) ? consoleOf(live.pid)?.id : null;
+  const hasLivePane = !!(linkedTerm || linkedConPid);
   const hasCwd = !!(r?.cwd || live?.cwd);
   const openExternal = async (isIde) => {
     const kind = r?.agent === 'codex' ? 'codex' : r?.agent === 'agy' ? 'agy' : 'claude';
@@ -1786,12 +1863,40 @@ function viewTranscript() {
     toast(isIde ? 'IDE에서 작업 폴더를 열었습니다' : '외부 Windows 콘솔 창에서 세션을 열었습니다');
     setTimeout(refreshOverview, 1200);
   };
+  const resumeToDockTerm = async (openWithChat = true) => {
+    const body = r?.agent === 'codex'
+      ? { kind: 'codex', resume: sid, cwd: r.cwd }
+      : r?.agent === 'agy'
+        ? { kind: 'agy', resume: sid, cwd: r.cwd }
+        : { kind: 'claude', resume: sid, cwd: r?.cwd || live?.cwd, skipPermissions: true, fork: !!(live && isDesktopSession(live)) };
+    const t = await api('/api/term/new', { method: 'POST', body });
+    if (t.error) return toast(t.error, 6000, 'danger');
+    if (openWithChat) window.ACH_DOCK?.saveDockOpen('term', ['term', 'chat']);
+    await refreshOverview();
+    openResumedTerm(t, body);
+  };
+
+  const isContentTab = state.tab === 'files' || state.tab === 'floorplan';
+  let initialPanels = window.ACH_DOCK ? window.ACH_DOCK.getDockOpen('recent') : ['chat'];
+  if (!hasLivePane) initialPanels = initialPanels.filter((p) => p !== 'term');
+  if (!initialPanels.length) initialPanels = ['chat'];
+
   setBar(`<button id="btnBackRecent" class="ghost btn-sm">${ICO.chevLeft} 최근 대화</button><h2><span>${esc(sessionLabel(r, sid, live?.name))}</span></h2>
     <button id="btnRenameSess" class="ghost icon-btn btn-sm" title="대화 제목 수정" aria-label="대화 제목 수정">${ICO.edit}</button>
     ${branchTagHTML(r?.branch)}${agentBadge(r?.agent)}
-    <div class="seg" role="tablist"><button data-tab="chat" class="${state.tab === 'chat' ? 'on' : ''}">대화 기록</button><button data-tab="files" class="${state.tab === 'files' ? 'on' : ''}">산출물</button><button data-tab="floorplan" class="${state.tab === 'floorplan' ? 'on' : ''}">${ICO.layers} 코드 구조</button></div>
+    ${dockTopSegHTML({
+      openSet: new Set(initialPanels),
+      isContentTab,
+      hasTerm: true,
+      hasChat: true,
+      showFiles: true,
+      curTab: state.tab,
+      termTitle: hasLivePane ? '연결된 터미널 패널 열기/닫기' : '이 세션을 터미널로 열어 함께 보기',
+    })}
     ${!live ? `<button class="primary btn-sm" id="btnResume">${ICO.play} 대시보드에서 이어하기</button>` : isDesktopSession(live) ? `<button class="primary btn-sm" id="btnResume" data-fork="1" title="데스크톱 앱 대화를 여기까지 복제한 새 세션으로 이어갑니다">${ICO.play} 대시보드에서 이어하기 (복제)</button>` : switchBtnHTML(sid)}
     <button id="btnRecMore" class="ghost icon-btn btn-sm" aria-label="세션 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
+
+  let dock = null;
   $('#bar').onclick = async (e) => {
     if (e.target.closest('#btnBackRecent')) { state.termsTab = 'recent'; return select({ kind: 'terms' }); }
     if (e.target.closest('#btnRenameSess')) {
@@ -1804,6 +1909,21 @@ function viewTranscript() {
       await refreshOverview();
       toast('대화 제목을 수정했습니다');
       return viewTranscript();
+    }
+    const dt = e.target.closest('[data-dock-toggle]');
+    if (dt) {
+      const p = dt.dataset.dockToggle;
+      if (p === 'term' && !hasLivePane) {
+        return resumeToDockTerm(true);
+      }
+      if (isContentTab || !dock) {
+        const next = new Set(initialPanels);
+        next.add(p);
+        window.ACH_DOCK?.saveDockOpen('recent', [...next]);
+        return select(state.sel, 'dock', true);
+      }
+      dock.togglePanel(p);
+      return;
     }
     const tb = e.target.closest('[data-tab]');
     if (tb) return select(state.sel, tb.dataset.tab, true);
@@ -1821,39 +1941,65 @@ function viewTranscript() {
       ]);
     }
     if (e.target.id !== 'btnResume') return;
-    const body = r?.agent === 'codex'
-      ? { kind: 'codex', resume: sid, cwd: r.cwd }
-      : r?.agent === 'agy'
-        ? { kind: 'agy', resume: sid, cwd: r.cwd }
-        : { kind: 'claude', resume: sid, cwd: r?.cwd || live?.cwd, skipPermissions: true, fork: !!e.target.dataset.fork };
-    const t = await api('/api/term/new', { method: 'POST', body });
-    if (t.error) return toast(t.error, 6000, 'danger');
-    await refreshOverview();
-    openResumedTerm(t, body);
+    return resumeToDockTerm(true);
   };
   if (state.tab === 'files') return renderArtifacts(sid, gen);
   if (state.tab === 'floorplan' && typeof renderStandaloneFloorplan === 'function') {
     return renderStandaloneFloorplan(r?.cwd || live?.cwd || '', gen, { sessionId: sid || '' });
   }
-  // Inline messenger-style reply composer at the bottom of the transcript!
-  $('#view').innerHTML = `<div class="chat-shell">
+
+  let winCtl = null;
+  let termMounted = false;
+  let chatScrollEl = null;
+  const ensureTermMounted = () => {
+    if (termMounted || !hasLivePane || !dock) return;
+    termMounted = true;
+    const body = dock.getBody('term');
+    if (linkedTerm) mountManagedTermScreen(body, { t: linkedTerm, gen, chatHost: chatScrollEl });
+    else if (linkedConPid) mountConsoleScreen(body, { pid: linkedConPid, gen, s: live });
+  };
+
+  dock = window.ACH_DOCK.createDockWorkspace({
+    hostEl: $('#view'),
+    mode: 'recent',
+    openPanels: initialPanels,
+    panelsMeta: {
+      ...(hasLivePane ? { term: { title: '터미널', icon: ICO.terminal, onShow: ensureTermMounted } } : {}),
+      chat: { title: '대화 기록', icon: ICO.chat },
+      windows: { title: '창', icon: ICO.monitor, onShow: () => winCtl?.renderWindows() },
+    },
+    onOpenChange: (openList) => syncBarDockButtons(openList),
+  });
+
+  const chatBody = dock.getBody('chat');
+  chatBody.innerHTML = `<div class="chat-shell">
     <div class="chat-scroll" id="chatScrollHost"></div>
     <div id="transcriptCompHost"></div>
   </div>`;
-  const ch = $('#chatScrollHost');
-  renderChat(sid, gen, state.sel.at ?? -1, termsOf(state.sel.q), ch);
+  chatScrollEl = $('#chatScrollHost', chatBody);
+  renderChat(sid, gen, state.sel.at ?? -1, termsOf(state.sel.q), chatScrollEl);
   mountChatComposer({
-    barHost: $('#transcriptCompHost'),
-    chatHost: ch,
+    barHost: $('#transcriptCompHost', chatBody),
+    chatHost: chatScrollEl,
     sid,
-    consolePid: live && !isDesktopSession(live) ? consoleOf(live.pid)?.id : null,
+    consolePid: linkedConPid || null,
     agent: r?.agent || 'claude',
     cwd: r?.cwd || live?.cwd || '',
     liveDesktop: !!(live && isDesktopSession(live)),
     onJumpTerm: (tid, cpid) => {
-      if (tid) select({ kind: 'term', id: tid }, getSavedTermTab(null) || 'split');
-      else if (cpid) select({ kind: 'console', id: String(cpid) }, 'screen');
+      if (hasLivePane && dock) dock.togglePanel('term', true);
+      else if (tid) select({ kind: 'term', id: tid }, 'split');
+      else if (cpid) select({ kind: 'console', id: String(cpid) }, 'split');
     },
+  });
+  if (hasLivePane && dock.isOpen('term')) ensureTermMounted();
+  winCtl = window.ACH_DOCK.mountWindowsPane({
+    rootEl: dock.getBody('windows'),
+    termId: linkedTerm?.id || null,
+    consolePid: linkedConPid || null,
+    gen,
+    isOpen: () => !!dock?.isOpen('windows'),
+    onCount: (n) => { const c = $('#bar [data-dock-win-cnt]'); if (c) c.textContent = String(n); },
   });
 }
 
@@ -1976,193 +2122,6 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
   };
   repBtn.onclick = sendReply;
   repIn.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendReply(); } };
-}
-
-function setupSplitRightPane({ rightEl, termId = null, consolePid = null, sid = null, gen, agent = 'claude', cwd = '', onClose }) {
-  if (!rightEl) return;
-  let rtab = 'chat';
-  let winList = [];
-  let selectedHwnd = 'all';
-  let winAuto = true;
-  let snapNonce = Date.now();
-  let winPollTimer = null;
-  let snapTimer = null;
-
-  rightEl.innerHTML = `
-    <div class="tsplit-hd">
-      <div class="seg" role="tablist" aria-label="우측 패널 보기">
-        <button type="button" data-split-rtab="chat" class="on">실시간 대화</button>
-        <button type="button" data-split-rtab="windows">${ICO.monitor} 창 <span class="seg-cnt" id="splitWinCnt">0</span></button>
-      </div>
-      <button type="button" class="ghost icon-btn btn-sm" id="btnSplitClose" aria-label="분할 보기 닫기" title="터미널 단독 보기로 돌아가기">${ICO.close}</button>
-    </div>
-    <div class="tsplit-pane" id="splitChatPane">
-      <div class="tsplit-body" id="splitChatHost"></div>
-      <div id="splitChatComp"></div>
-    </div>
-    <div class="tsplit-pane" id="splitWinsPane" hidden>
-      <div class="win-bar">
-        <div class="win-tabs" id="splitWinTabs"></div>
-        <div class="row" style="gap:6px;flex:none">
-          <label class="win-auto-lbl"><input type="checkbox" id="chkWinAuto" checked> 자동 갱신</label>
-          <button type="button" class="btn-sm" id="btnWinRefresh" title="창 목록 · 스냅샷 새로고침">${ICO.refresh}<span>새로고침</span></button>
-        </div>
-      </div>
-      <div class="win-body" id="splitWinBody"><div class="empty">열린 창을 확인하는 중…</div></div>
-    </div>`;
-
-  $('#btnSplitClose', rightEl).onclick = onClose;
-  const sch = $('#splitChatHost', rightEl);
-  renderChat(sid, gen, -1, [], sch);
-  mountChatComposer({
-    barHost: $('#splitChatComp', rightEl),
-    chatHost: sch,
-    sid,
-    termId,
-    consolePid,
-    agent,
-    cwd,
-    compact: true,
-  });
-
-  const openLightbox = (w) => {
-    const dlg = document.createElement('dialog');
-    dlg.className = 'pj-dialog';
-    dlg.style.width = 'min(1040px, 95vw)';
-    dlg.setAttribute('aria-label', w.title || '창 미리보기');
-    const shotUrl = () => `/api/window/shot?hwnd=${encodeURIComponent(w.hwnd)}&w=1280&t=${encodeURIComponent(TOKEN)}&ts=${Date.now()}`;
-    dlg.innerHTML = `<div style="display:flex;flex-direction:column;gap:10px">
-      <div class="dlg-head">
-        <div style="min-width:0"><h3 style="margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(w.title)}</h3><small class="ums" style="margin:0">${esc(w.exe)} · ${w.rect.width}×${w.rect.height}</small></div>
-        <div class="row" style="gap:6px">
-          <button type="button" class="btn-sm" id="lbFocus">${ICO.external} 창 앞으로</button>
-          <button type="button" class="btn-sm" id="lbRefresh">${ICO.refresh} 새로고침</button>
-          <button type="button" class="ghost icon-btn btn-sm" data-lb-close aria-label="닫기">${ICO.close}</button>
-        </div>
-      </div>
-      <div class="win-shot" style="max-height:74vh;aspect-ratio:auto"><img id="lbImg" src="${shotUrl()}" alt="${esc(w.title)}"></div>
-    </div>`;
-    document.body.append(dlg);
-    dlg.onclose = () => dlg.remove();
-    $('[data-lb-close]', dlg).onclick = () => dlg.close();
-    $('#lbRefresh', dlg).onclick = () => { $('#lbImg', dlg).src = shotUrl(); };
-    $('#lbFocus', dlg).onclick = () => api('/api/window/focus', { method: 'POST', body: { hwnd: w.hwnd } });
-    dlg.showModal();
-  };
-
-  const renderWindows = () => {
-    const cntEl = $('#splitWinCnt', rightEl);
-    if (cntEl) cntEl.textContent = String(winList.length);
-    if (rtab !== 'windows') return;
-
-    const tabsEl = $('#splitWinTabs', rightEl);
-    const bodyEl = $('#splitWinBody', rightEl);
-    if (!tabsEl || !bodyEl) return;
-
-    if (selectedHwnd !== 'all' && !winList.some((w) => String(w.hwnd) === String(selectedHwnd))) {
-      selectedHwnd = winList.length === 1 ? String(winList[0].hwnd) : 'all';
-    }
-    if (winList.length > 1) {
-      tabsEl.innerHTML = `<button type="button" class="btn-sm${selectedHwnd === 'all' ? ' on' : ''}" data-win-sel="all">전체 (${winList.length})</button>`
-        + winList.map((w, idx) => `<button type="button" class="btn-sm${String(w.hwnd) === String(selectedHwnd) ? ' on' : ''}" data-win-sel="${esc(w.hwnd)}" title="${esc(w.title)}">${idx + 1}. ${esc(w.title)}</button>`).join('');
-    } else {
-      tabsEl.innerHTML = winList.length
-        ? `<span class="badge">${esc(winList[0].exe)}</span><span style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(winList[0].title)}</span>`
-        : `<span class="ums" style="margin:0">감지된 창 없음</span>`;
-    }
-
-    if (!winList.length) {
-      bodyEl.innerHTML = `<div class="h-empty-card" style="margin:12px auto">
-        <b>연결된 창이나 열린 브라우저가 없습니다</b>
-        <span class="ums">에이전트가 Chrome, Edge 또는 앱 창을 열면 이곳에서 여러 창을 동시에 미리보고 제어할 수 있습니다.</span>
-      </div>`;
-      return;
-    }
-
-    const targets = selectedHwnd === 'all' ? winList : winList.filter((w) => String(w.hwnd) === String(selectedHwnd));
-    const singleMode = targets.length === 1;
-    const widthParam = singleMode ? 1080 : 620;
-    const cardsHTML = targets.map((w) => {
-      const originBadge = w.linked ? '<span class="badge c">연결됨</span>' : '<span class="badge">브라우저</span>';
-      const sz = w.minimized ? '최소화됨' : `${w.rect.width}×${w.rect.height}`;
-      const shotHtml = w.minimized
-        ? `<div class="win-shot-empty"><span>창이 최소화되어 있어 화면을 캡처할 수 없습니다.</span><button type="button" class="btn-sm" data-win-focus="${esc(w.hwnd)}">${ICO.external} 창 복원 · 앞으로</button></div>`
-        : `<img src="/api/window/shot?hwnd=${encodeURIComponent(w.hwnd)}&w=${widthParam}&t=${encodeURIComponent(TOKEN)}&ts=${snapNonce}" alt="${esc(w.title)}" loading="lazy">`;
-      return `<article class="win-card${singleMode ? ' win-single' : ''}">
-        <div class="win-card-hd">${originBadge}<span class="win-card-title" title="${esc(w.title)}">${esc(w.title)}</span><span class="badge">${esc(w.exe)}</span></div>
-        <div class="win-shot" data-win-zoom="${esc(w.hwnd)}">${shotHtml}</div>
-        <div class="win-card-ft">
-          <span>${esc(sz)}</span>
-          <div class="row" style="gap:4px">
-            ${singleMode && winList.length > 1 ? `<button type="button" class="ghost btn-sm" data-win-sel="all">전체 보기</button>` : ''}
-            <button type="button" class="btn-sm" data-win-zoom="${esc(w.hwnd)}">크게 보기</button>
-            <button type="button" class="btn-sm" data-win-focus="${esc(w.hwnd)}" title="이 창을 화면 맨 앞으로 가져오기">${ICO.external} 앞으로</button>
-          </div>
-        </div>
-      </article>`;
-    }).join('');
-    bodyEl.innerHTML = singleMode ? cardsHTML : `<div class="win-grid">${cardsHTML}</div>`;
-  };
-
-  const refreshWindows = async (refreshSnaps = true) => {
-    if (gen !== viewGen || !rightEl.isConnected) return;
-    const qs = termId ? `id=${encodeURIComponent(termId)}` : `pid=${encodeURIComponent(consolePid || 0)}`;
-    const r = await api(`/api/term/windows?${qs}`).catch(() => ({ windows: [] }));
-    if (gen !== viewGen || !rightEl.isConnected) return;
-    winList = r.windows || [];
-    if (refreshSnaps) snapNonce = Date.now();
-    renderWindows();
-  };
-
-  rightEl.addEventListener('click', async (e) => {
-    const rtabBtn = e.target.closest('[data-split-rtab]');
-    if (rtabBtn) {
-      rtab = rtabBtn.dataset.splitRtab;
-      rightEl.querySelectorAll('[data-split-rtab]').forEach((b) => b.classList.toggle('on', b.dataset.splitRtab === rtab));
-      $('#splitChatPane', rightEl).hidden = rtab !== 'chat';
-      $('#splitWinsPane', rightEl).hidden = rtab !== 'windows';
-      if (rtab === 'windows') {
-        await refreshWindows(true);
-      }
-      return;
-    }
-    const selBtn = e.target.closest('[data-win-sel]');
-    if (selBtn) {
-      selectedHwnd = selBtn.dataset.winSel;
-      snapNonce = Date.now();
-      renderWindows();
-      return;
-    }
-    const focusBtn = e.target.closest('[data-win-focus]');
-    if (focusBtn) {
-      await api('/api/window/focus', { method: 'POST', body: { hwnd: Number(focusBtn.dataset.winFocus) } });
-      setTimeout(() => refreshWindows(true), 350);
-      return;
-    }
-    const zoomEl = e.target.closest('[data-win-zoom]');
-    if (zoomEl) {
-      const w = winList.find((x) => String(x.hwnd) === String(zoomEl.dataset.winZoom));
-      if (w && !w.minimized) openLightbox(w);
-    }
-  });
-
-  $('#btnWinRefresh', rightEl).onclick = () => refreshWindows(true);
-  $('#chkWinAuto', rightEl).onchange = (e) => { winAuto = !!e.target.checked; };
-
-  refreshWindows(false);
-  winPollTimer = setInterval(() => {
-    if (gen !== viewGen || !rightEl.isConnected) { clearInterval(winPollTimer); clearInterval(snapTimer); return; }
-    refreshWindows(false);
-  }, 4500);
-  snapTimer = setInterval(() => {
-    if (gen !== viewGen || !rightEl.isConnected) { clearInterval(winPollTimer); clearInterval(snapTimer); return; }
-    if (rtab === 'windows' && winAuto && winList.some((w) => !w.minimized)) {
-      snapNonce = Date.now();
-      rightEl.querySelectorAll('#splitWinBody img[src*="/api/window/shot"]').forEach((img) => {
-        img.src = img.src.replace(/ts=\d+/, `ts=${snapNonce}`);
-      });
-    }
-  }, 2200);
 }
 
 function openResumedTerm(t, request) {
@@ -2301,12 +2260,24 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
   const tCur = state.sel.kind === 'term' ? state.terms.find((x) => x.id === state.sel.id) : null;
   const ag = state.recent.find((x) => x.sessionId === curSid)?.agent || tCur?.agent || (tCur?.codex ? 'codex' : tCur?.agy ? 'agy' : 'claude');
   const who = ag === 'codex' ? 'Codex' : ag === 'agy' ? 'Antigravity' : 'Claude';
-  container.innerHTML = '<div class="chat">불러오는 중…</div>';
+  container.innerHTML = `<div class="chat">
+    <h2 class="sr-only">대화 내용</h2>
+    <div id="chatMsgsHost">불러오는 중…</div>
+    <div id="chatLiveHost"></div>
+    <div class="chat-bottom-float" hidden><button type="button" class="scroll-bottom-btn" title="대화 최하단으로 이동" aria-label="대화 최하단으로 이동">${ICO.chevDown}<span>최하단</span></button></div>
+  </div>`;
+  const box = $('.chat', container);
+  const msgsHost = $('#chatMsgsHost', box);
+  const liveHost = $('#chatLiveHost', box);
+  const floatWrap = $('.chat-bottom-float', box);
+
   let lastSig = '';
-  let lastLiveSig = '';
+  let lastLiveMode = '';
   let lastMessages = [];
-  let lastWasWorking = false;
-  let settlingUntil = 0;
+  let wasWorking = false;
+  let idleStreak = 0;
+  let lastPreviewText = '';
+  let lastPreviewAt = 0;
   let showLiveScreen = true;
   try { showLiveScreen = localStorage.getItem('ach.chatLiveScreen') !== '0'; } catch {}
   const jump = at >= 0;
@@ -2334,17 +2305,6 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
 
   const updateLiveBubble = async (messages) => {
     if (jump || gen !== viewGen || !container.isConnected) return false;
-    const box = $('.chat', container);
-    if (!box) return false;
-    let liveHost = $('#chatLiveHost', box);
-    if (!liveHost) {
-      liveHost = document.createElement('div');
-      liveHost.id = 'chatLiveHost';
-      const floatEl = $('.chat-bottom-float', box);
-      if (floatEl) box.insertBefore(liveHost, floatEl);
-      else box.appendChild(liveHost);
-    }
-
     const { lt, liveProc, conPid } = resolveLiveTarget();
     let termRead = null;
     if (lt) {
@@ -2352,68 +2312,89 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
       if (gen !== viewGen || !container.isConnected) return false;
     }
     const procBusy = liveProc?.status === 'busy';
-    const termBusy = termRead?.status === 'busy' || (lt && termStateOf(lt) === 'busy');
-    let isBusy = !!(termBusy || procBusy);
+    const hasFreshTermStatus = !!(termRead?.ok && termRead?.status);
+    const termBusy = hasFreshTermStatus ? (termRead.status === 'busy') : !!(lt && termStateOf(lt) === 'busy');
+    const rawBusy = hasFreshTermStatus ? termBusy : !!(termBusy || procBusy);
     const nonTool = (messages || []).filter((m) => !(m.role === 'assistant' && String(m.text || '').startsWith('⚙')));
     const tail = nonTool[nonTool.length - 1];
-    if (isBusy) {
-      settlingUntil = 0;
-    } else if (lastWasWorking && !settlingUntil && tail?.role === 'user') {
-      settlingUntil = Date.now() + 3500;
-    }
-    if (tail?.role === 'assistant' && !isBusy) settlingUntil = 0;
+    const tailTs = tail?.ts ? new Date(tail.ts).getTime() : 0;
 
     let hint = container._liveChatHint;
-    if (hint) {
-      const tailTs = tail?.ts ? new Date(tail.ts).getTime() : 0;
-      if (tail?.role === 'assistant' && (!isBusy || (tailTs && tailTs >= hint.sentAt - 1000))) {
-        container._liveChatHint = null;
-        hint = null;
-      } else if (hint.until <= Date.now() && !isBusy) {
-        container._liveChatHint = null;
-        hint = null;
-      }
+    if (rawBusy) {
+      idleStreak = 0;
+      wasWorking = true;
+    } else if (tail?.role === 'assistant' && (!hint || (tailTs && tailTs >= hint.sentAt - 1000) || (Date.now() - hint.sentAt > 2500))) {
+      // Finalized assistant answer landed and terminal is idle -> clear immediately
+      idleStreak = 99;
+      wasWorking = false;
+      if (hint) { container._liveChatHint = null; hint = null; }
+    } else if (wasWorking) {
+      idleStreak++;
+      // Hysteresis: hold across 1 transient idle poll (~1.1s) so brief TUI/tool redraws do not blink
+      if (idleStreak >= 2) wasWorking = false;
+    }
+
+    if (hint && hint.until <= Date.now() && !rawBusy && !wasWorking) {
+      container._liveChatHint = null;
+      hint = null;
     }
 
     let conPreview = '';
-    if (!lt && conPid && (isBusy || hint)) {
+    if (!lt && conPid && (rawBusy || wasWorking || hint)) {
       const cr = await api(`/api/console/read?pid=${encodeURIComponent(conPid)}`).catch(() => null);
       if (gen !== viewGen || !container.isConnected) return false;
       if (cr?.ok && Array.isArray(cr.lines)) conPreview = formatLiveTermPreview(cr.lines, 14);
     }
 
-    const activeWorking = isBusy || !!hint || settlingUntil > Date.now();
+    const activeWorking = rawBusy || wasWorking || !!hint;
     if (!activeWorking) {
-      settlingUntil = 0;
-      if (liveHost.innerHTML) {
-        liveHost.innerHTML = '';
-        lastLiveSig = '';
-      }
-      lastWasWorking = false;
+      if (liveHost.innerHTML) liveHost.innerHTML = '';
+      lastLiveMode = '';
+      lastPreviewText = '';
+      lastPreviewAt = 0;
       return false;
     }
 
-    lastWasWorking = isBusy || !!hint;
-    const preview = termRead?.ok ? formatLiveTermPreview(termRead.lines, 14) : conPreview;
+    const freshPreview = termRead?.ok ? formatLiveTermPreview(termRead.lines, 14) : conPreview;
+    if (freshPreview) {
+      lastPreviewText = freshPreview;
+      lastPreviewAt = Date.now();
+    }
+    // During momentary ConPTY clear/redraw gaps, keep last preview up to 2.5s so height stays rock steady
+    const preview = freshPreview || ((Date.now() - lastPreviewAt < 2500) ? lastPreviewText : '');
+
     const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
     const lastUser = [...(messages || [])].reverse().find((m) => m.role === 'user');
     const showPendingUser = !!(hint?.pendingText && (!lastUser || !norm(lastUser.text).includes(norm(hint.pendingText).slice(0, 60))));
-    const sigNow = `${showPendingUser ? hint.pendingText : ''}|${showLiveScreen ? '1' : '0'}|${preview}|${lt?.id || conPid || ''}`;
-    if (sigNow === lastLiveSig) return true;
-    lastLiveSig = sigNow;
-
-    const wasNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 120;
     const canJump = (lt || conPid) && state.sel.kind === 'recent';
+    const hasScreen = !!(showLiveScreen && preview);
+    const hasToggle = !!preview;
+    const modeKey = `${showPendingUser ? hint.pendingText : ''}|${hasScreen ? 'pre' : 'dots'}|${hasToggle ? '1' : '0'}|${canJump ? (lt?.id || conPid) : ''}`;
+    const wasNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 120;
+
+    if (modeKey === lastLiveMode && hasScreen) {
+      // Update text in-place so typing animation and scroll position stay silky smooth
+      const preEl = $('.chat-live-pre', liveHost);
+      if (preEl && preEl.textContent !== preview) {
+        preEl.textContent = preview;
+        preEl.scrollTop = preEl.scrollHeight;
+        if (wasNearBottom) container.scrollTop = container.scrollHeight;
+      }
+      return true;
+    }
+    if (modeKey === lastLiveMode) return true;
+    lastLiveMode = modeKey;
+
     const userHtml = showPendingUser
       ? `<div class="msg user msg-pending"><div class="msg-bubble"><div class="msg-body">${esc(hint.pendingText)}</div></div><div class="msg-meta"><span>전송됨 · 응답 대기 중</span></div></div>`
       : '';
-    const toggleBtn = preview
+    const toggleBtn = hasToggle
       ? `<button type="button" class="ghost btn-sm" data-live-toggle style="min-height:22px;height:22px;font-size:11px;padding:0 7px">${showLiveScreen ? '터미널 출력 숨기기' : '터미널 출력 보기'}</button>`
       : '';
     const jumpBtn = canJump
       ? `<button type="button" class="ghost btn-sm" data-live-jump="${esc(lt ? `t:${lt.id}` : `c:${conPid}`)}" style="min-height:22px;height:22px;font-size:11px;padding:0 7px">터미널로 이동 ↗</button>`
       : '';
-    const bodyHtml = showLiveScreen && preview
+    const bodyHtml = hasScreen
       ? `<pre class="chat-live-pre">${esc(preview)}</pre>`
       : `<div class="chat-typing-row"><span class="typing-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>터미널에서 응답을 생성하고 있습니다</span></div>`;
 
@@ -2435,7 +2416,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
       tgl.onclick = () => {
         showLiveScreen = !showLiveScreen;
         try { localStorage.setItem('ach.chatLiveScreen', showLiveScreen ? '1' : '0'); } catch {}
-        lastLiveSig = '';
+        lastLiveMode = '';
         updateLiveBubble(lastMessages);
       };
     }
@@ -2443,8 +2424,8 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
     if (jBtn) {
       jBtn.onclick = () => {
         const val = jBtn.dataset.liveJump || '';
-        if (val.startsWith('t:')) select({ kind: 'term', id: val.slice(2) }, getSavedTermTab(null) || 'split');
-        else if (val.startsWith('c:')) select({ kind: 'console', id: val.slice(2) }, 'screen');
+        if (val.startsWith('t:')) select({ kind: 'term', id: val.slice(2) }, 'split');
+        else if (val.startsWith('c:')) select({ kind: 'console', id: val.slice(2) }, 'split');
       };
     }
     if (wasNearBottom) {
@@ -2466,24 +2447,24 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
     if (!box) return;
     if (!curSid) {
       if (tCur?.agy) {
-        box.innerHTML = '<div class="empty">AGY 대화 기록을 기다리는 중입니다. 이 터미널에 기록이 생기면 자동으로 표시됩니다.</div><div id="chatLiveHost"></div>';
+        msgsHost.innerHTML = '<div class="empty">AGY 대화 기록을 기다리는 중입니다. 이 터미널에 기록이 생기면 자동으로 표시됩니다.</div>';
         const working = await updateLiveBubble([]);
         chatPollTimer = setTimeout(tick, working ? 1100 : 3000);
         return;
       }
-      box.innerHTML = `<div class="h-empty-card" style="margin:24px auto;max-width:480px">
+      msgsHost.innerHTML = `<div class="h-empty-card" style="margin:24px auto;max-width:480px">
         <b>아직 기록된 대화 내역이 없습니다</b>
         <span class="ums">터미널 화면에서 첫 프롬프트를 전송하면 대화 기록이 자동으로 여기에 실시간 표시됩니다.</span>
-        ${!hostEl ? `<div class="row" style="gap:8px;margin-top:6px"><button class="primary" data-goto-tab="screen">터미널 화면으로</button><button data-goto-tab="split">${ICO.split} 화면 + 대화 분할 보기</button></div>` : ''}
-      </div><div id="chatLiveHost"></div>`;
-      box.querySelectorAll('[data-goto-tab]').forEach((b) => (b.onclick = () => select(state.sel, b.dataset.gotoTab, true)));
+        ${!hostEl ? `<div class="row" style="gap:8px;margin-top:6px"><button class="primary" data-goto-tab="screen">터미널 화면으로</button><button data-goto-tab="split">${ICO.split} 터미널 + 대화 함께 보기</button></div>` : ''}
+      </div>`;
+      msgsHost.querySelectorAll('[data-goto-tab]').forEach((b) => (b.onclick = () => select(state.sel, b.dataset.gotoTab, true)));
       const working = await updateLiveBubble([]);
       chatPollTimer = setTimeout(tick, working ? 1100 : 3000);
       return;
     }
     const d = await api(`/api/transcript?id=${encodeURIComponent(curSid)}${jump ? '&at=' + at : ''}`).catch((e) => ({ error: e.message }));
     if (gen !== viewGen) return;
-    if (d.hidden) { box.textContent = d.error; return; }
+    if (d.hidden) { msgsHost.textContent = d.error; return; }
     const parentSig = d.lineage?.parent ? `${d.lineage.parent.parentSessionId}:${d.lineage.parent.atIndex}` : '';
     const childSig = (d.lineage?.children || []).map((c) => `${c.id || ''}:${c.childSessionId || ''}:${c.atIndex}`).join(',');
     const sig = `${d.size || 0}:${d.rev || 0}:${d.title || ''}:${parentSig}:${childSig}`;
@@ -2494,14 +2475,13 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
       const earlyLineage = d.lineage?.parent
         ? `<div class="chat-lineage" style="margin-bottom:10px"><button type="button" class="msg-branch-chip" data-open-parent-sid="${esc(d.lineage.parent.parentSessionId)}" data-open-parent-at="${d.lineage.parent.atIndex}" title="${esc(earlyParentTxt)}">${ICO.branch} <span class="br-chip-txt">${esc(earlyParentTxt)}</span></button></div>`
         : '';
-      box.innerHTML = `${earlyLineage}<div class="h-empty-card" style="margin:24px auto;max-width:480px">
+      msgsHost.innerHTML = `${earlyLineage}<div class="h-empty-card" style="margin:24px auto;max-width:480px">
         <b>대화 기록을 준비 중입니다 (${esc(curSid.slice(0, 8))})</b>
         <span class="ums">에이전트가 첫 응답을 기록하면 자동으로 대화 내역이 나타납니다.</span>
-      </div><div id="chatLiveHost"></div>`;
-    } else if (sig !== lastSig && (force || (!selectionIn(box) && !$('.msg-edit-box', box)))) { // keep active copy selection or inline editor unless forced
+      </div>`;
+    } else if (sig !== lastSig && (force || (!selectionIn(msgsHost) && !$('.msg-edit-box', msgsHost)))) { // keep active copy selection or inline editor unless forced
       lastSig = sig;
       lastMessages = d.messages || [];
-      lastLiveSig = '';
       const v = container;
       const atBottom = v.scrollHeight - v.scrollTop - v.clientHeight < 80 || !box.dataset.painted;
       const b = d.base || 0;
@@ -2578,8 +2558,8 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
         }
       });
       flushTools();
-      box.innerHTML = `<h2 class="sr-only">대화 내용</h2>` + lineageBanner + (b > 0 ? `<div class="empty" style="margin-bottom:6px">… 이전 메시지 ${b}개 생략</div>` : '') + (parts.join('') || '<div class="empty">메시지 없음</div>') + more;
-      box.onclick = (e) => {
+      msgsHost.innerHTML = lineageBanner + (b > 0 ? `<div class="empty" style="margin-bottom:6px">… 이전 메시지 ${b}개 생략</div>` : '') + (parts.join('') || '<div class="empty">메시지 없음</div>') + more;
+      msgsHost.onclick = (e) => {
         const cb = e.target.closest('[data-copy-mi]');
         if (cb) { const m = d.messages[Number(cb.dataset.copyMi)]; if (m) copyText(m.text); return; }
         const fb = e.target.closest('[data-fork-mi]');
@@ -2593,7 +2573,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
         if (eb) {
           const k = Number(eb.dataset.editMi);
           const m = d.messages[k];
-          const msgEl = box.querySelector(`.msg[data-mi="${k}"] .msg-bubble`);
+          const msgEl = msgsHost.querySelector(`.msg[data-mi="${k}"] .msg-bubble`);
           if (!m || !msgEl || $('.msg-edit-box', msgEl)) return;
           const canRewind = !!d.capabilities?.canRewindEdit;
           msgEl.innerHTML = `<div class="msg-edit-box">
@@ -2657,24 +2637,16 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
           return;
         }
       };
-      const btn = $('.btn-latest', box);
+      const btn = $('.btn-latest', msgsHost);
       const jumpLatest = () => select({ ...state.sel, at: -1 }, hostEl ? state.tab : 'chat');
       if (btn) btn.onclick = jumpLatest;
       const first = !box.dataset.painted;
       box.dataset.painted = '1';
-      const t = first && jump && $('.msg.target', box);
+      const t = first && jump && $('.msg.target', msgsHost);
       if (t) t.scrollIntoView({ block: 'center' });
       else if (atBottom) v.scrollTop = v.scrollHeight;
 
       const hasMore = jump && b + d.messages.length < (d.total || 0);
-      const floatWrap = document.createElement('div');
-      floatWrap.className = 'chat-bottom-float';
-      floatWrap.hidden = true;
-      floatWrap.innerHTML = `<button type="button" class="scroll-bottom-btn" title="대화 최하단으로 이동" aria-label="대화 최하단으로 이동">${ICO.chevDown}<span>최하단</span></button>`;
-      const liveSlot = document.createElement('div');
-      liveSlot.id = 'chatLiveHost';
-      box.appendChild(liveSlot);
-      box.appendChild(floatWrap);
       const syncChatBottom = () => {
         if (!v.isConnected || !floatWrap.isConnected) return;
         const dist = v.scrollHeight - v.scrollTop - v.clientHeight;
@@ -2727,107 +2699,11 @@ function getTuiKeysOpen() {
 }
 const termPromptHist = [];
 
-function viewTerm() {
-  const gen = viewGen;
-  clearTimeout(chatPollTimer);
-  const t = state.terms.find((x) => x.id === state.sel.id);
-  const sid = resolveTermSessionId(t);
-  const artSid = sid || (t ? `term:${t.id}` : '');
-  const ag = t?.agent || (t?.codex ? 'codex' : t?.agy ? 'agy' : t?.claude ? 'claude' : null);
-
-  const pj = projectOfTerm(t);
-  const stNow = termStateOf(t);
-  const justDoneNow = stNow === 'idle' && state.justDoneTerms.has(String(t?.id));
-  const pillCls = stNow === 'busy' ? 'busy' : justDoneNow ? 'done' : stNow === 'exited' ? 'exited' : 'idle';
-  const pillText = stNow === 'busy'
-    ? '<span class="dot busy" style="width:6px;height:6px"></span>실행 중'
-    : justDoneNow
-      ? `${ICO.check} 작업 완료`
-      : stNow === 'exited'
-        ? `<span class="dot dead" style="width:6px;height:6px"></span>종료됨 (${t.exited})`
-        : '대기';
-  setBar(`${state.sel.project || pj ? `<button id="btnBackProject" class="ghost btn-sm" data-proj-id="${esc(state.sel.project || pj.id)}">${ICO.chevLeft} ${esc(pj?.name || 'Project')}</button>` : `<button id="btnBackTerms" class="ghost btn-sm">${ICO.chevLeft} 터미널</button>`}<h2>${ag ? agentIcon(ag) : ''}<span>${esc(t ? termLabel(t) : '터미널')}</span></h2><span id="termLiveBadge" class="term-live-pill ${pillCls}">${pillText}</span>${branchTagHTML(t?.branch)}${t?.account ? `<span class="badge c">${esc(t.account.label.replace(/@.*/, ''))}</span>` : ''}
-    <div class="seg" role="tablist">
-      <button data-tab="screen" class="${state.tab === 'screen' ? 'on' : ''}" title="터미널 콘솔 화면 전체 보기">화면</button>
-      <button data-tab="split" class="${state.tab === 'split' ? 'on' : ''}" title="좌측: 터미널 화면 · 우측: 실시간 대화 기록 분할 보기">${ICO.split} 화면 + 대화</button>
-      <button data-tab="chat" class="${state.tab === 'chat' ? 'on' : ''}" title="전체 마크다운 대화 기록 보기">대화 기록</button>
-      <button data-tab="files" class="${state.tab === 'files' ? 'on' : ''}" title="이 세션의 산출물 보기 및 지정">산출물</button>
-      <button data-tab="floorplan" class="${state.tab === 'floorplan' ? 'on' : ''}" title="이 터미널 작업 폴더의 코드 구조(Floorplan) 및 보안·품질 점검">${ICO.layers} 코드 구조</button>
-    </div>
-    ${sid ? switchBtnHTML(sid, t?.id || '') : t?.claude || t?.codex || t?.agy ? switchBtnHTML('', t.id) : ''}
-    <button id="btnTermMore" class="ghost icon-btn btn-sm" aria-label="터미널 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
-  $('#bar').onclick = async (e) => {
-    const bp = e.target.closest('#btnBackProject');
-    if (bp) return openProject(bp.dataset.projId || state.sel.project);
-    if (e.target.closest('#btnBackTerms')) return select({ kind: 'terms' });
-    const tb = e.target.closest('[data-tab]');
-    if (tb) return select(state.sel, tb.dataset.tab, true);
-    const more = e.target.closest('#btnTermMore');
-    if (more) {
-      e.stopPropagation();
-      return openMoreMenu(more, [
-        t?.cwd ? { label: `작업 폴더 복사 (${base(t.cwd) || t.cwd})`, icon: ICO.folder, onClick: () => copyText(t.cwd) } : null,
-        t?.agy ? { label: 'Antigravity /usage 실행', icon: ICO.chart, onClick: () => openAgyUsage(null, true) } : null,
-        { divider: true },
-        {
-          label: '터미널 종료',
-          icon: ICO.trash,
-          tone: 'danger',
-          onClick: async () => {
-            if (!confirm('이 터미널의 프로세스를 종료하고 닫을까요?')) return;
-            await api('/api/term/close', { method: 'POST', body: { id: state.sel.id } });
-            await refreshOverview();
-            select({ kind: 'home' });
-          },
-        },
-      ]);
-    }
-  };
-  if (state.tab === 'chat') {
-    $('#view').innerHTML = `<div class="chat-shell"><div class="chat-scroll" id="termChatHost"></div><div id="termChatComp"></div></div>`;
-    const ch = $('#termChatHost');
-    renderChat(sid, gen, -1, [], ch);
-    mountChatComposer({
-      barHost: $('#termChatComp'),
-      chatHost: ch,
-      sid,
-      termId: t?.id || state.sel.id,
-      agent: ag || 'claude',
-      cwd: t?.cwd || pj?.cwd || '',
-      onJumpTerm: () => select(state.sel, 'screen', true),
-    });
-    return;
-  }
-  if (state.tab === 'files') return renderArtifacts(artSid, gen);
-  if (state.tab === 'floorplan' && typeof renderStandaloneFloorplan === 'function') {
-    const termCwd = t?.cwd || pj?.cwd || '';
-    const backTab = getSavedTermTab('screen');
-    const restoreTab = backTab === 'floorplan' ? 'split' : backTab;
-    return renderStandaloneFloorplan(termCwd, gen, {
-      sessionId: artSid || sid || '',
-      onInsertPrompt: async (txt, submit) => {
-        if (submit) {
-          await api('/api/term/send', { method: 'POST', body: { id: t.id, text: txt, submit: true } });
-          toast('터미널에 수정 지시를 전달했습니다');
-          select(state.sel, restoreTab, true);
-        } else {
-          select(state.sel, restoreTab, true);
-          setTimeout(() => {
-            const inp = $('#tin');
-            if (inp) {
-              inp.value = (inp.value ? inp.value + ' ' : '') + txt;
-              inp.dispatchEvent(new Event('input'));
-              inp.focus();
-            }
-          }, 80);
-        }
-      },
-    });
-  }
-
-  const isSplit = state.tab === 'split';
+function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = null }) {
+  if (!hostEl) return;
+  const termId = t?.id || state.sel.id;
   const keysOpen = getTuiKeysOpen();
-  const termFullHTML = `<div class="full"><div id="termwrap"><button type="button" class="scroll-bottom-btn term-bottom-float" id="btnTermFloatBottom" hidden title="터미널 최하단으로 이동" aria-label="터미널 최하단으로 이동">${ICO.chevDown}<span>최하단</span></button></div>
+  hostEl.innerHTML = `<div class="full"><div id="termwrap"><button type="button" class="scroll-bottom-btn term-bottom-float" id="btnTermFloatBottom" hidden title="터미널 최하단으로 이동" aria-label="터미널 최하단으로 이동">${ICO.chevDown}<span>최하단</span></button></div>
     <div class="term-dock">
       <div class="tdock-bar">
         <button class="ghost btn-sm" id="tDockToggle" aria-expanded="${!dockCollapsed}" title="하단 프롬프트 작성창 접기/펼치기">${dockCollapsed ? `${ICO.chevUp} 입력창` : `${ICO.chevDown} 입력창`}</button>
@@ -2857,23 +2733,13 @@ function viewTerm() {
     </div>
     <div class="note"></div></div>`;
 
-  if (isSplit) {
-    $('#view').innerHTML = `<div class="term-split">
-      <div class="tsplit-left">${termFullHTML}</div>
-      <div class="split-resizer" role="separator" aria-orientation="vertical" aria-label="패널 크기 조절"></div>
-      <div class="tsplit-right" id="termSplitRight"></div>
-    </div>`;
-    bindSplitResizer($('.term-split'), $('.tsplit-left'));
-    setupSplitRightPane({ rightEl: $('#termSplitRight'), termId: t?.id || state.sel.id, sid, gen, agent: ag || 'claude', cwd: t?.cwd || pj?.cwd || '', onClose: () => select(state.sel, 'screen', true) });
-  } else {
-    $('#view').innerHTML = termFullHTML;
-  }
-
+  const fullEl = $('.full', hostEl);
+  const wrapEl = $('#termwrap', fullEl);
   xterm = new Terminal({ fontFamily: '"Cascadia Mono", Consolas, "D2Coding", monospace', fontSize: IS_MOBILE ? 11 : 13, cursorBlink: true, scrollback: 10000, theme: { background: '#0e0e11' } });
   const fit = new FitAddon.FitAddon();
   xterm.loadAddon(fit);
-  xterm.open($('#termwrap'));
-  const termFloatBtn = $('#btnTermFloatBottom');
+  xterm.open(wrapEl);
+  const termFloatBtn = $('#btnTermFloatBottom', fullEl);
   const syncTermBottom = () => {
     if (!termFloatBtn || !xterm) return;
     const buf = xterm.buffer?.active;
@@ -2886,28 +2752,30 @@ function viewTerm() {
     syncTermBottom();
     if (!IS_MOBILE) xterm.focus();
   };
-  if ($('#btnTermBottom')) $('#btnTermBottom').onclick = scrollTermBottom;
+  if ($('#btnTermBottom', fullEl)) $('#btnTermBottom', fullEl).onclick = scrollTermBottom;
   if (termFloatBtn) termFloatBtn.onclick = scrollTermBottom;
   xterm.onScroll(syncTermBottom);
   xterm.onWriteParsed(syncTermBottom);
-  // Claude Code / Codex on Windows (ConPTY) redraws in place on a fixed-size screen, so almost nothing reaches
-  // the terminal's scrollback — scrolling up stops after one screen. Point to split view or transcript instead.
-  if (!isSplit) {
-    let hintAt = 0;
-    $('#termwrap').addEventListener('wheel', (e) => {
-      if (e.deltaY >= 0 || xterm.buffer.active.viewportY > 0 || Date.now() - hintAt < 8000) return;
-      hintAt = Date.now();
-      const h = document.createElement('div');
-      h.className = 'termhint';
-      h.innerHTML = '터미널에는 화면 한 장 분량만 남습니다 (Windows 콘솔 특성). 이전 대화는 <button class="linkbtn" data-htab="split">"화면 + 대화" 분할 보기</button> 또는 <button class="linkbtn" data-htab="chat">"대화 기록" 탭 →</button>';
-      h.querySelectorAll('[data-htab]').forEach((b) => (b.onclick = () => select(state.sel, b.dataset.htab, true)));
-      $('#termwrap').appendChild(h);
-      setTimeout(() => h.remove(), 7000);
-    }, { passive: true });
-  }
-  const ws = xws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/term?id=${state.sel.id}&t=${TOKEN}`);
+
+  let hintAt = 0;
+  wrapEl.addEventListener('wheel', (e) => {
+    if (e.deltaY >= 0 || xterm.buffer.active.viewportY > 0 || Date.now() - hintAt < 8000) return;
+    hintAt = Date.now();
+    const h = document.createElement('div');
+    h.className = 'termhint';
+    h.innerHTML = '터미널에는 화면 한 장 분량만 남습니다 (Windows 콘솔 특성). 이전 대화는 <button class="linkbtn" data-htab="chat">"대화 기록" 패널 함께 열기</button>';
+    h.querySelectorAll('[data-htab]').forEach((b) => (b.onclick = () => (onHintTab ? onHintTab(b.dataset.htab) : select(state.sel, b.dataset.htab, true))));
+    wrapEl.appendChild(h);
+    setTimeout(() => h.remove(), 7000);
+  }, { passive: true });
+
+  const ws = xws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/term?id=${termId}&t=${TOKEN}`);
   const send = (data) => ws.readyState === 1 && ws.send(JSON.stringify({ type: 'input', data }));
-  const resize = () => { try { fit.fit(); } catch {} if (ws.readyState === 1 && xterm) ws.send(JSON.stringify({ type: 'resize', cols: xterm.cols, rows: xterm.rows })); };
+  const resize = () => {
+    if (gen !== viewGen || !wrapEl.isConnected || wrapEl.offsetParent === null) return;
+    try { fit.fit(); } catch {}
+    if (ws.readyState === 1 && xterm) ws.send(JSON.stringify({ type: 'resize', cols: xterm.cols, rows: xterm.rows }));
+  };
   ws.onopen = resize;
   ws.onmessage = (m) => {
     const msg = JSON.parse(m.data);
@@ -2920,27 +2788,28 @@ function viewTerm() {
     if (e.type !== 'keydown') return true;
     const k = e.key.toLowerCase();
     if ((e.ctrlKey || e.metaKey) && k === 'c' && (e.shiftKey || xterm.hasSelection())) { copyText(xterm.getSelection()); xterm.clearSelection(); return false; }
-    if ((e.ctrlKey || e.metaKey) && k === 'v') { pasteWithShift = !!e.shiftKey; return false; } // let browser paste text, or forward ^V for native TUI image paste
+    if ((e.ctrlKey || e.metaKey) && k === 'v') { pasteWithShift = !!e.shiftKey; return false; }
     return true;
   });
-  $('#termwrap').addEventListener('contextmenu', (e) => { if (xterm?.hasSelection()) { e.preventDefault(); copyText(xterm.getSelection()); xterm.clearSelection(); } });
-  const tin = $('#tin');
-  const comp = $('#tDockComp');
+  wrapEl.addEventListener('contextmenu', (e) => { if (xterm?.hasSelection()) { e.preventDefault(); copyText(xterm.getSelection()); xterm.clearSelection(); } });
+
+  const tin = $('#tin', fullEl);
+  const comp = $('#tDockComp', fullEl);
   const fitTin = () => {
     if (!tin) return;
     tin.style.height = 'auto';
     tin.style.height = Math.min(140, Math.max(36, tin.scrollHeight)) + 'px';
   };
   tin.addEventListener('input', fitTin);
-  $('#tDockToggle').onclick = () => {
+  $('#tDockToggle', fullEl).onclick = () => {
     dockCollapsed = !dockCollapsed;
     try { localStorage.setItem('ccd.dockCollapsed', dockCollapsed ? '1' : '0'); } catch {}
     comp.hidden = dockCollapsed;
-    $('#tDockToggle').innerHTML = dockCollapsed ? `${ICO.chevUp} 입력창` : `${ICO.chevDown} 입력창`;
-    $('#tDockToggle').setAttribute('aria-expanded', String(!dockCollapsed));
+    $('#tDockToggle', fullEl).innerHTML = dockCollapsed ? `${ICO.chevUp} 입력창` : `${ICO.chevDown} 입력창`;
+    $('#tDockToggle', fullEl).setAttribute('aria-expanded', String(!dockCollapsed));
     setTimeout(() => { resize(); if (dockCollapsed && !IS_MOBILE) xterm?.focus(); else if (!dockCollapsed) tin.focus(); }, 30);
   };
-  const tkBtn = $('#btnTuiKeys'), tkBox = $('#tuiKeysBox');
+  const tkBtn = $('#btnTuiKeys', fullEl), tkBox = $('#tuiKeysBox', fullEl);
   if (tkBtn && tkBox) tkBtn.onclick = () => {
     const next = tkBox.hidden;
     tkBox.hidden = !next;
@@ -2948,7 +2817,6 @@ function viewTerm() {
     try { localStorage.setItem('ccd.tuiKeysOpen', next ? '1' : '0'); } catch {}
     setTimeout(resize, 30);
   };
-  // file paths (drop / paste / 📎 / 산출물): if composer is open, insert into composer; if collapsed, send straight to terminal!
   const insert = (txt) => {
     if (dockCollapsed) {
       send((txt.endsWith(' ') ? txt : txt + ' '));
@@ -2960,7 +2828,7 @@ function viewTerm() {
     fitTin();
     tin.focus();
   };
-  attachFileInput($('#view .full'), insert, t?.cwd, {
+  attachFileInput(fullEl, insert, t?.cwd, {
     shouldPassCtrlV: (e, dt, files) => {
       const shifted = pasteWithShift;
       pasteWithShift = false;
@@ -2978,11 +2846,14 @@ function viewTerm() {
       if (termPromptHist[0] !== v) termPromptHist.unshift(v);
       if (termPromptHist.length > 50) termPromptHist.pop();
     }
-    // claude/codex treats text+CR in one burst as a paste; send Enter separately (longer text → longer pause)
     if (v) { send(v); setTimeout(() => send('\r'), 350 + Math.min(3000, v.length * 2)); } else send('\r');
+    if (chatHost && v.trim()) {
+      chatHost._liveChatHint = { termId: String(termId), pendingText: v.trim(), sentAt: Date.now(), until: Date.now() + 30000 };
+      chatHost._triggerPoll?.();
+    }
   };
-  $('#tsend').onclick = submit;
-  $('#tArt').onclick = () => pickArtifact((abs) => insert(quotePath(abs)));
+  $('#tsend', fullEl).onclick = submit;
+  $('#tArt', fullEl).onclick = () => pickArtifact((abs) => insert(quotePath(abs)));
   tin.onkeydown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); return; }
     if (e.key === 'Escape') { e.preventDefault(); send(PTY_KEYS.esc); if (!IS_MOBILE) xterm?.focus(); return; }
@@ -2998,7 +2869,7 @@ function viewTerm() {
       fitTin();
     }
   };
-  $('#view .full').addEventListener('click', (e) => {
+  fullEl.addEventListener('click', (e) => {
     if (e.target.closest('[data-copy]')) {
       if (xterm?.hasSelection()) { copyText(xterm.getSelection()); xterm.clearSelection(); return; }
       const b = xterm.buffer.active, lines = [];
@@ -3009,12 +2880,158 @@ function viewTerm() {
     const k = e.target.closest('[data-key]')?.dataset.key;
     if (k) { send(PTY_KEYS[k]); if (!IS_MOBILE) xterm?.focus(); }
   });
-  bindFilePick($('#view .full'), insert, t?.cwd);
-  // whichever device is being looked at owns the pty size
+  bindFilePick(fullEl, insert, t?.cwd);
   window.onresize = resize;
   window.onfocus = resize;
   document.onvisibilitychange = () => { if (!document.hidden) resize(); };
   setTimeout(() => { resize(); if (!IS_MOBILE) xterm?.focus(); }, 60);
+  return { resize };
+}
+
+function viewTerm() {
+  const gen = viewGen;
+  clearTimeout(chatPollTimer);
+  const t = state.terms.find((x) => x.id === state.sel.id);
+  const sid = resolveTermSessionId(t);
+  const artSid = sid || (t ? `term:${t.id}` : '');
+  const ag = t?.agent || (t?.codex ? 'codex' : t?.agy ? 'agy' : t?.claude ? 'claude' : null);
+
+  const pj = projectOfTerm(t);
+  const stNow = termStateOf(t);
+  const justDoneNow = stNow === 'idle' && state.justDoneTerms.has(String(t?.id));
+  const pillCls = stNow === 'busy' ? 'busy' : justDoneNow ? 'done' : stNow === 'exited' ? 'exited' : 'idle';
+  const pillText = stNow === 'busy'
+    ? '<span class="dot busy" style="width:6px;height:6px"></span>실행 중'
+    : justDoneNow
+      ? `${ICO.check} 작업 완료`
+      : stNow === 'exited'
+        ? `<span class="dot dead" style="width:6px;height:6px"></span>종료됨 (${t.exited})`
+        : '대기';
+  const isContentTab = state.tab === 'files' || state.tab === 'floorplan';
+  let initialPanels = window.ACH_DOCK ? window.ACH_DOCK.getDockOpen('term', isContentTab ? null : state.tab) : ['term', 'chat'];
+  if (!initialPanels.length) initialPanels = ['term'];
+
+  setBar(`${state.sel.project || pj ? `<button id="btnBackProject" class="ghost btn-sm" data-proj-id="${esc(state.sel.project || pj.id)}">${ICO.chevLeft} ${esc(pj?.name || 'Project')}</button>` : `<button id="btnBackTerms" class="ghost btn-sm">${ICO.chevLeft} 터미널</button>`}<h2>${ag ? agentIcon(ag) : ''}<span>${esc(t ? termLabel(t) : '터미널')}</span></h2><span id="termLiveBadge" class="term-live-pill ${pillCls}">${pillText}</span>${branchTagHTML(t?.branch)}${t?.account ? `<span class="badge c">${esc(t.account.label.replace(/@.*/, ''))}</span>` : ''}
+    ${dockTopSegHTML({ openSet: new Set(initialPanels), isContentTab, hasTerm: true, hasChat: true, showFiles: true, curTab: state.tab })}
+    ${sid ? switchBtnHTML(sid, t?.id || '') : t?.claude || t?.codex || t?.agy ? switchBtnHTML('', t.id) : ''}
+    <button id="btnTermMore" class="ghost icon-btn btn-sm" aria-label="터미널 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
+
+  let dock = null;
+  $('#bar').onclick = async (e) => {
+    const bp = e.target.closest('#btnBackProject');
+    if (bp) return openProject(bp.dataset.projId || state.sel.project);
+    if (e.target.closest('#btnBackTerms')) return select({ kind: 'terms' });
+    const dt = e.target.closest('[data-dock-toggle]');
+    if (dt) {
+      const p = dt.dataset.dockToggle;
+      if (isContentTab || !dock) {
+        const next = new Set(initialPanels);
+        next.add(p);
+        window.ACH_DOCK?.saveDockOpen('term', [...next]);
+        return select(state.sel, 'dock', true);
+      }
+      dock.togglePanel(p);
+      return;
+    }
+    const tb = e.target.closest('[data-tab]');
+    if (tb) return select(state.sel, tb.dataset.tab, true);
+    const more = e.target.closest('#btnTermMore');
+    if (more) {
+      e.stopPropagation();
+      return openMoreMenu(more, [
+        t?.cwd ? { label: `작업 폴더 복사 (${base(t.cwd) || t.cwd})`, icon: ICO.folder, onClick: () => copyText(t.cwd) } : null,
+        t?.agy ? { label: 'Antigravity /usage 실행', icon: ICO.chart, onClick: () => openAgyUsage(null, true) } : null,
+        { divider: true },
+        {
+          label: '터미널 종료',
+          icon: ICO.trash,
+          tone: 'danger',
+          onClick: async () => {
+            if (!confirm('이 터미널의 프로세스를 종료하고 닫을까요?')) return;
+            await api('/api/term/close', { method: 'POST', body: { id: state.sel.id } });
+            await refreshOverview();
+            select({ kind: 'home' });
+          },
+        },
+      ]);
+    }
+  };
+  if (state.tab === 'files') return renderArtifacts(artSid, gen);
+  if (state.tab === 'floorplan' && typeof renderStandaloneFloorplan === 'function') {
+    const termCwd = t?.cwd || pj?.cwd || '';
+    return renderStandaloneFloorplan(termCwd, gen, {
+      sessionId: artSid || sid || '',
+      onInsertPrompt: async (txt, submit) => {
+        if (submit) {
+          await api('/api/term/send', { method: 'POST', body: { id: t.id, text: txt, submit: true } });
+          toast('터미널에 수정 지시를 전달했습니다');
+          select(state.sel, 'dock', true);
+        } else {
+          window.ACH_DOCK?.saveDockOpen('term', ['term', ...initialPanels.filter((p) => p !== 'term')]);
+          select(state.sel, 'dock', true);
+          setTimeout(() => {
+            const inp = $('#tin');
+            if (inp) {
+              inp.value = (inp.value ? inp.value + ' ' : '') + txt;
+              inp.dispatchEvent(new Event('input'));
+              inp.focus();
+            }
+          }, 80);
+        }
+      },
+    });
+  }
+
+  let termCtl = null;
+  let winCtl = null;
+  let chatMounted = false;
+  let chatScrollEl = null;
+
+  const ensureChatMounted = () => {
+    if (chatMounted || !dock) return;
+    chatMounted = true;
+    const body = dock.getBody('chat');
+    body.innerHTML = `<div class="chat-shell"><div class="chat-scroll" id="termChatHost"></div><div id="termChatComp"></div></div>`;
+    chatScrollEl = $('#termChatHost', body);
+    renderChat(sid, gen, -1, [], chatScrollEl);
+    mountChatComposer({
+      barHost: $('#termChatComp', body),
+      chatHost: chatScrollEl,
+      sid,
+      termId: t?.id || state.sel.id,
+      agent: ag || 'claude',
+      cwd: t?.cwd || pj?.cwd || '',
+      compact: true,
+      onJumpTerm: () => dock?.togglePanel('term', true),
+    });
+  };
+
+  dock = window.ACH_DOCK.createDockWorkspace({
+    hostEl: $('#view'),
+    mode: 'term',
+    openPanels: initialPanels,
+    panelsMeta: {
+      term: { title: '터미널', icon: ICO.terminal, onShow: () => setTimeout(() => termCtl?.resize(), 30) },
+      chat: { title: '대화 기록', icon: ICO.chat, onShow: ensureChatMounted },
+      windows: { title: '창', icon: ICO.monitor, onShow: () => winCtl?.renderWindows() },
+    },
+    onOpenChange: (openList) => syncBarDockButtons(openList),
+  });
+
+  if (dock.isOpen('chat')) ensureChatMounted();
+  termCtl = mountManagedTermScreen(dock.getBody('term'), {
+    t,
+    gen,
+    chatHost: chatScrollEl,
+    onHintTab: () => dock?.togglePanel('chat', true),
+  });
+  winCtl = window.ACH_DOCK.mountWindowsPane({
+    rootEl: dock.getBody('windows'),
+    termId: t?.id || state.sel.id,
+    gen,
+    isOpen: () => !!dock?.isOpen('windows'),
+    onCount: (n) => { const c = $('#bar [data-dock-win-cnt]'); if (c) c.textContent = String(n); },
+  });
 }
 
 // ---------- files → paths (drag & drop / paste), like Windows Terminal ----------

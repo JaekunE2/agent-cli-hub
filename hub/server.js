@@ -1758,6 +1758,7 @@ const termInfo = (t) => ({ id: t.id, title: t.title, liveTitle: t.liveTitle, acc
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const STATIC = {
   '/ui.js': 'public/ui.js',
+  '/dock.js': 'public/dock.js',
   '/vault.js': 'public/vault.js',
   '/projects.js': 'public/projects.js',
   '/project-forms.js': 'public/project-forms.js',
@@ -1815,7 +1816,7 @@ const server = http.createServer(async (req, res) => {
     const text = file.startsWith('public/') ? I18N.forFile(path.join(__dirname, file)) : null;
     if (p === '/') {
       let html = text ?? fs.readFileSync(path.join(__dirname, file), 'utf8');
-      html = html.replace(/((?:src|href)="\/(?:ui|calendar|vault|app|projects|project-[a-z-]+)\.js|(?:href)="\/(?:projects\.css|icon\.svg|manifest\.json))"/g, `$1?v=${SERVER_BUILD_ID}"`);
+      html = html.replace(/((?:src|href)="\/(?:ui|dock|calendar|vault|app|projects|project-[a-z-]+)\.js|(?:href)="\/(?:projects\.css|icon\.svg|manifest\.json))"/g, `$1?v=${SERVER_BUILD_ID}"`);
       if (local) return res.end(html.replace('<head>', `<head><script>window.__CCD_LOCAL_TOKEN=${JSON.stringify(TOKEN)};window.__ACH_LANG=${JSON.stringify(I18N.language())};</script>`));
       return res.end(html);
     }

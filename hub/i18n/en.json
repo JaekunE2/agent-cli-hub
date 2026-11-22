@@ -2319,5 +2319,18 @@
   "터미널 출력 숨기기": "Hide Terminal Output",
   "터미널 출력 보기": "Show Terminal Output",
   "터미널로 이동 ↗": "Open Terminal ↗",
-  "터미널에서 응답을 생성하고 있습니다": "Generating response in terminal"
+  "터미널에서 응답을 생성하고 있습니다": "Generating response in terminal",
+  "터미널 패널 열기/닫기": "Toggle Terminal Panel",
+  "대화 기록 패널 열기/닫기": "Toggle Chat Transcript Panel",
+  "연결된 창 · 브라우저 미리보기 패널 열기/닫기": "Toggle Linked Windows & Browser Preview Panel",
+  "코드 구조(Floorplan) 및 보안·품질 점검": "Code Structure (Floorplan) & Audit",
+  "연결된 터미널 패널 열기/닫기": "Toggle Linked Terminal Panel",
+  "이 세션을 터미널로 열어 함께 보기": "Open This Session in Terminal Dock",
+  "터미널 + 대화 함께 보기": "Open Terminal + Chat Together",
+  "\"대화 기록\" 패널 함께 열기": "Open \"Chat Transcript\" Panel",
+  "드래그하여 패널 위치 이동": "Drag to reorder panel",
+  "패널 왼쪽으로 이동": "Move panel left",
+  "패널 오른쪽으로 이동": "Move panel right",
+  "이 패널 닫기": "Close this panel",
+  "최소 하나의 패널은 열려 있어야 합니다": "At least one panel must remain open"
 }
