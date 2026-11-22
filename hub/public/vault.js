@@ -290,8 +290,8 @@
     const paintDrawer = () => {
       const drwBody = $('.drw-body', d);
       if (!drwBody || !cliData) return;
-      const skills = (cliData.skills || []).filter((s) => !onlyUnvaulted || !s.inVault || !s.isLinkedToVault);
-      const mcps = (cliData.mcps || []).filter((m) => !onlyUnvaulted || !m.inVault);
+      const skills = (cliData.skills || []).filter((s) => !s.isForeignShared && (!onlyUnvaulted || !s.inVault || !s.isLinkedToVault));
+      const mcps = (cliData.mcps || []).filter((m) => !m.isForeignShared && (!onlyUnvaulted || !m.inVault));
       const rules = cliData.rules || [];
       const h = cliData.harness || {};
       const unlinkedSkills = (cliData.skills || []).filter((s) => !s.inVault || !s.isLinkedToVault).map((s) => s.name);
@@ -507,7 +507,7 @@
       const c = clis[k] || {};
       return `<button type="button" class="h-stat v-cli-card" data-v-cli="${k}" title="스킬 · MCP · 하네스 목록 열기 및 가져오기">
         <div class="h-stat-lbl"><span>${agentIcon(k)} ${esc(c.label || k)}</span><span class="badge ${c.hasHarness ? 'c' : ''}">${c.hasHarness ? '하네스 연결' : '미설정'}</span></div>
-        <div class="h-stat-val" style="font-size:16px">스킬 ${c.skillsCount || 0} · MCP ${c.mcpCount || 0}</div>
+        <div class="h-stat-val" style="font-size:16px">로컬 스킬 ${c.skillsCount || 0} · MCP ${c.mcpCount || 0}</div>
         <div class="h-stat-sub mono" title="${esc(c.skillDir || '')}">${esc(c.skillDir || '')}</div>
         <div class="v-cli-hint">눌러서 보기 · 가져오기 ↗</div>
       </button>`;

@@ -185,6 +185,16 @@ args = ["-y", "seq-mcp"]
     assert.ok(sync1.report.clis.codex.skillsLinked >= 4);
     assert.ok(sync1.report.clis.agy.skillsLinked >= 4);
 
+    // Top CLI status cards must NOT count vault-linked skills or vault-managed shared MCPs
+    const st1 = vault.getState();
+    assert.equal(st1.clis.claude.skillsCount, 0);
+    assert.equal(st1.clis.codex.skillsCount, 0);
+    assert.equal(st1.clis.agy.skillsCount, 0);
+    assert.equal(st1.clis.claude.mcpCount, 0);
+    assert.equal(st1.clis.codex.mcpCount, 0);
+    assert.equal(st1.clis.agy.mcpCount, 0);
+    assert.deepEqual(vault.inspectCli('agy').mcps.filter((m) => !m.isForeignShared).map((m) => m.name), ['remote_doc']);
+
     // Verify skill accessibility in all 3 CLIs
     assert.ok(fs.existsSync(path.join(env.homeDir, '.claude', 'skills', 'shared-team-skill', 'SKILL.md')));
     assert.ok(fs.existsSync(path.join(env.homeDir, '.codex', 'skills', 'shared-team-skill', 'SKILL.md')));
@@ -273,6 +283,20 @@ args = ["-y", "seq-mcp"]
     const impOnly = vault.importFromCli({ cli: 'codex', skills: ['codex-only-skill'], targets: ['codex'], moveSkills: true });
     const recOnly = impOnly.state.skills.find((s) => s.name === 'codex-only-skill');
     assert.deepEqual(recOnly.targets, ['codex']);
+
+    // Shared items synced to all CLIs must NOT inflate per-CLI card counts on other CLIs
+    // (In altVault, agy still has seq + remote_doc synced from the earlier vaultDir; only altVault's github & late-added-skill are managed here)
+    vault.syncToClis({ clis: ['claude', 'codex', 'agy'] });
+    const stAfter = vault.getState();
+    assert.ok(!vault.inspectCli('agy').mcps.filter((m) => !m.isForeignShared).some((m) => m.name === 'github'));
+    assert.equal(vault.inspectCli('codex').mcps.some((m) => m.name === 'github' && m.isForeignShared), true);
+    // Count only non-vault-managed local items (codex-only-skill was imported & linked into altVault, so it counts as 0 when inspecting shared vs local; late-added-skill is foreign in agy/codex)
+    const agSkillsNonForeign = vault.inspectCli('agy').skills.filter((s) => !s.isForeignShared);
+    assert.ok(!agSkillsNonForeign.some((s) => s.name === 'late-added-skill'));
+    // Pre-existing MCPs synced from previous vaultDir remain 2, whereas shared 'github' in altVault does NOT increase agy.mcpCount to 3
+    assert.equal(stAfter.clis.agy.mcpCount, 2);
+    // codex-only-skill + late-added-skill linked to altVault do NOT count, while old env.vaultDir links remain separate
+    assert.ok(!fs.existsSync(path.join(env.homeDir, '.gemini', 'antigravity-cli', 'skills', 'codex-only-skill')));
 
     // Verify un-imported local skills stay strictly isolated from other CLIs, and disabling / untargeting removes applied resources cleanly
     const unimportedLocal = path.join(env.homeDir, '.claude', 'skills', 'unimported-only');

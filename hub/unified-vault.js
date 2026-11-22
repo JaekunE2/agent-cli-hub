@@ -428,15 +428,17 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
 
   const writeMcps = (obj) => writeJsonAtomic(layout().mcpFile, obj);
 
-  const countSkillsInDirs = (dirs) => {
+  const countLocalSkillsInDirs = (dirs, vaultSkillsDir) => {
     const seen = new Set();
     for (const dir of (Array.isArray(dirs) ? dirs : [dirs])) {
       if (!dir || !fs.existsSync(dir)) continue;
       try {
         for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-          if (!BUNDLED_SYSTEM_SKILLS.has(e.name) && !e.name.startsWith('.') && (e.isDirectory() || e.isSymbolicLink())) {
-            seen.add(e.name);
-          }
+          if (BUNDLED_SYSTEM_SKILLS.has(e.name) || e.name.startsWith('.')) continue;
+          if (!e.isDirectory() && !e.isSymbolicLink()) continue;
+          const full = path.join(dir, e.name);
+          if (vaultSkillsDir && isSymlinkOrJunction(full) && pointsInside(full, path.join(vaultSkillsDir, e.name))) continue;
+          seen.add(e.name);
         }
       } catch {}
     }
@@ -486,15 +488,18 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
   };
 
   const getCliStatus = () => {
+    const l = layout();
     const p = cliPaths();
+    const vaultMcps = readMcps();
     const claudeMcp = readRawCliMcps('claude', p);
     const codexMcp = readRawCliMcps('codex', p);
     const agyMcp = readRawCliMcps('agy', p);
+    const countLocalMcps = (rawMap) => Object.keys(rawMap).filter((n) => !vaultMcps[n]).length;
     return {
       claude: {
         label: p.claude.label,
-        skillsCount: countSkillsInDirs(p.claude.skillDirs),
-        mcpCount: Object.keys(claudeMcp).length,
+        skillsCount: countLocalSkillsInDirs(p.claude.skillDirs, l.skillsDir),
+        mcpCount: countLocalMcps(claudeMcp),
         hasHarness: fs.existsSync(p.claude.harnessFile),
         skillDir: p.claude.skillDirs[0],
         mcpFile: p.claude.mcpFile,
@@ -502,8 +507,8 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
       },
       codex: {
         label: p.codex.label,
-        skillsCount: countSkillsInDirs(p.codex.skillDirs),
-        mcpCount: Object.keys(codexMcp).length,
+        skillsCount: countLocalSkillsInDirs(p.codex.skillDirs, l.skillsDir),
+        mcpCount: countLocalMcps(codexMcp),
         hasHarness: fs.existsSync(p.codex.harnessFile),
         skillDir: p.codex.skillDirs[0],
         mcpFile: p.codex.mcpFile,
@@ -511,8 +516,8 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
       },
       agy: {
         label: p.agy.label,
-        skillsCount: countSkillsInDirs(p.agy.skillDirs),
-        mcpCount: Object.keys(agyMcp).length,
+        skillsCount: countLocalSkillsInDirs(p.agy.skillDirs, l.skillsDir),
+        mcpCount: countLocalMcps(agyMcp),
         hasHarness: fs.existsSync(p.agy.harnessFile) || fs.existsSync(path.join(p.agy.rulesDir, 'hub-vault-harness.md')),
         skillDir: p.agy.skillDirs[0],
         mcpFile: p.agy.mcpFile,
@@ -1000,6 +1005,9 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
         const mdContent = hasSkillMd ? fs.readFileSync(mdPath, 'utf8') : '';
         const meta = parseSkillFrontmatter(mdContent);
         const vaultDst = path.join(l.skillsDir, ent.name);
+        const isLinked = isSymlinkOrJunction(skillPath) && pointsInside(skillPath, vaultDst);
+        const mInfo = manifest.skills[ent.name];
+        const isForeignShared = !!(isLinked && (!mInfo?.sources || !mInfo.sources.includes(cliKey)));
         skillMap.set(ent.name, {
           name: ent.name,
           displayName: meta.name || ent.name,
@@ -1009,7 +1017,8 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
           dir: skillPath,
           parentDir: sdir,
           inVault: fs.existsSync(vaultDst),
-          isLinkedToVault: isSymlinkOrJunction(skillPath) && pointsInside(skillPath, vaultDst),
+          isLinkedToVault: isLinked,
+          isForeignShared,
         });
       }
     }
@@ -1018,6 +1027,7 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
     const mcps = Object.entries(rawMcps).map(([name, mcfg]) => maskMcpForView(name, mcfg, {
       cliOnly: CODEX_INTERNAL_MCPS.has(name),
       inVault: !!vaultMcps[name],
+      isForeignShared: !!(vaultMcps[name] && vaultMcps[name].source !== cliKey),
       inVaultTargets: vaultMcps[name]?.targets || [],
     })).sort((a, b) => a.name.localeCompare(b.name));
 
