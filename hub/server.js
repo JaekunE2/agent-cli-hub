@@ -26,6 +26,13 @@ const { runTaskSubChatTurn } = require('./task-subchat');
 const { deleteCliRecord, uuid: recordUuid } = require('./delete-cli-record');
 const { ownedRoots, verifiedRoot, probeRoot, stopTerminal } = require('./project-stop');
 const { pickDirectory } = require('./win-folder-picker');
+const {
+  forkClaudeJsonlAt,
+  editClaudeJsonlAt,
+  editCodexJsonlAt,
+  writeBranchContextFile,
+  createBranchStore,
+} = require('./conversation-branches');
 let projectPlanning = false;
 let projectPlanState = { active: false, agent: '', name: '', startedAt: 0, stage: '', pct: 0, logs: [] };
 const taskChatActive = new Map(); // `${projectId}:${taskId}` -> { chatId, agent, stage, startedAt, logs }
@@ -37,6 +44,10 @@ const PORT = Number(process.env.CCD_PORT || 7777);
 const HOST = '127.0.0.1';
 const SERVER_BUILD_ID = String(Date.now());
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
+const BRANCH_STORE_FILE = path.join(__dirname, '.branches.json');
+const BRANCH_BACKUP_DIR = path.join(__dirname, '.session-backups');
+const conversationBranches = createBranchStore(BRANCH_STORE_FILE);
+const sessionDisplayTitle = (id, doc) => conversationBranches.getTitle(id) || doc?.title || null;
 // Per-install settings (config.json next to server.js; all optional):
 //   lang: "en" | "ko", remote: "off" | (default tailscale), python: path, usageUrl, usageDir, locateRoots: [dirs],
 //   consoles: false (don't list this PC's other console windows), codex / cursorAgent: CLI paths, calendar: {...}
@@ -190,7 +201,24 @@ function transcript(sessionId, maxMsgs = 80) {
     if (!text || /^<(command|local-command|system-reminder)/.test(text.trim())) continue;
     msgs.push({ role: e.type, text: text.slice(0, 4000), ts: e.timestamp });
   }
-  return { file, title, messages: msgs.slice(-maxMsgs), size: fs.statSync(file).size };
+  const sliced = msgs.slice(-maxMsgs);
+  const base = Math.max(0, msgs.length - sliced.length);
+  const edits = conversationBranches.getMsgEdits(sessionId);
+  const patched = sliced.map((m, i) => {
+    const ov = edits[String(base + i)];
+    return ov ? { ...m, text: String(ov.text || '').slice(0, 4000), edited: true } : m;
+  });
+  return {
+    file,
+    title: conversationBranches.getTitle(sessionId) || title,
+    messages: patched,
+    total: msgs.length,
+    base,
+    size: fs.statSync(file).size,
+    rev: conversationBranches.rev(),
+    lineage: conversationBranches.lineageFor(sessionId, (id) => sessionDisplayTitle(id, index.get(id))),
+    capabilities: { canNativeFork: true, canRewindEdit: true, canEditSource: true },
+  };
 }
 
 function recentSessions(limit = 40) {
@@ -297,12 +325,12 @@ async function buildOverview() {
     } else if (s) {
       const d = index.get(s.sessionId);
       info.sessionId = s.sessionId;
-      info.sessionName = d?.title || d?.firstPrompt?.split('\n')[0].slice(0, 80) || null;
+      info.sessionName = sessionDisplayTitle(s.sessionId, d) || d?.firstPrompt?.split('\n')[0].slice(0, 80) || null;
     } else {
       const d = info.agy ? index.get(info.sessionId) : termDocOf(t);
       if (d) {
         info.sessionId = d.id;
-        info.sessionName = d.title || d.firstPrompt?.split('\n')[0].slice(0, 80) || null;
+        info.sessionName = sessionDisplayTitle(d.id, d) || d.firstPrompt?.split('\n')[0].slice(0, 80) || null;
       } else if (info.codex) {
         const cid = codexSessionOf(t);
         if (cid) info.sessionId = cid;
@@ -463,11 +491,33 @@ async function closeProjectTerminal({ term, root }) {
 function transcriptFromIndex(sessionId, at) {
   const d = index.get(sessionId);
   if (!d) return null;
+  conversationBranches.resolveLinks(terms, termSessionId);
   const n = d.msgs.length;
   const start = at >= 0 ? Math.max(0, at - 40) : Math.max(0, n - 80);
   const end = at >= 0 ? Math.min(n, at + 40) : n;
-  return { title: d.title, cwd: d.cwd, size: d.offset, total: n, base: start,
-    messages: d.msgs.slice(start, end).map((m) => ({ ...m, text: m.text.slice(0, 4000) })) };
+  const edits = conversationBranches.getMsgEdits(sessionId);
+  const ag = d.agent || 'claude';
+  return {
+    title: sessionDisplayTitle(sessionId, d),
+    agent: ag,
+    cwd: d.cwd,
+    size: d.offset,
+    rev: conversationBranches.rev(),
+    total: n,
+    base: start,
+    messages: d.msgs.slice(start, end).map((m, idx) => {
+      const ov = edits[String(start + idx)];
+      return ov
+        ? { ...m, text: String(ov.text || '').slice(0, 4000), edited: true }
+        : { ...m, text: m.text.slice(0, 4000) };
+    }),
+    lineage: conversationBranches.lineageFor(sessionId, (id) => sessionDisplayTitle(id, index.get(id))),
+    capabilities: {
+      canNativeFork: ag === 'claude',
+      canRewindEdit: ag === 'claude',
+      canEditSource: ag === 'claude' || ag === 'codex',
+    },
+  };
 }
 
 async function searchScreens(q) {
@@ -2147,7 +2197,9 @@ const server = http.createServer(async (req, res) => {
       if (url.searchParams.get('fresh') === '1' || Date.now() - lastIndexAt > 5000) await refreshIndex();
       const agent = url.searchParams.get('agent') || '';
       const hidden = projects.hidden();
-      return send(res, 200, { sessions: index.ready ? index.recent(n, auto, agent, hidden) : recentSessions(n).filter(s => !hidden.has(s.sessionId) && (!agent || (s.agent || 'claude') === agent)) });
+      const raw = index.ready ? index.recent(n, auto, agent, hidden) : recentSessions(n).filter(s => !hidden.has(s.sessionId) && (!agent || (s.agent || 'claude') === agent));
+      const sessions = raw.map((s) => ({ ...s, title: conversationBranches.getTitle(s.sessionId) || s.title }));
+      return send(res, 200, { sessions });
     }
     if (p === '/api/recent/hide' && req.method === 'POST') {
       const { id } = await body(req);
@@ -2162,12 +2214,203 @@ const server = http.createServer(async (req, res) => {
       if (d) await index.updateFile(d.file);
       return send(res, 200, transcriptFromIndex(id, at) || transcript(id));
     }
+    if (p === '/api/transcript/title' && req.method === 'POST') {
+      const b = await body(req);
+      const id = String(b.id || '').trim();
+      const title = String(b.title || '').trim().slice(0, 140);
+      if (!validSessionId(id)) return send(res, 400, { error: '대화 ID가 올바르지 않습니다.' });
+      const saved = conversationBranches.setTitle(id, title);
+      const d = index.get(id);
+      if (d) {
+        d.title = saved || d.title;
+        if ((d.agent || 'claude') === 'claude' && d.file && fs.existsSync(d.file) && saved) {
+          try { fs.appendFileSync(d.file, JSON.stringify({ type: 'custom-title', customTitle: saved, sessionId: id }) + '\n', 'utf8'); } catch {}
+        }
+      }
+      overviewStale();
+      return send(res, 200, { ok: true, title: saved });
+    }
+    if ((p === '/api/transcript/fork' || p === '/api/transcript/edit') && req.method === 'POST') {
+      const b = await body(req);
+      const id = String(b.id || '').trim();
+      if (!validSessionId(id)) return send(res, 400, { error: '대화 ID가 올바르지 않습니다.' });
+      const d = index.get(id);
+      if (d?.file) await index.updateFile(d.file);
+      const fallback = !d ? transcript(id, 500) : null;
+      const sourceFile = d?.file || fallback?.file || null;
+      const sourceAgent = d?.agent || (sourceFile ? 'claude' : '');
+      const messages = d?.msgs || fallback?.messages || [];
+      if (!messages.length) return send(res, 404, { error: '대화 기록을 찾을 수 없습니다.' });
+
+      const atIndex = Math.max(0, Math.min(messages.length - 1, Number(b.atIndex ?? (messages.length - 1))));
+      const cwd = b.cwd || d?.cwd || os.homedir();
+      const sourceTitle = sessionDisplayTitle(id, d) || fallback?.title || d?.firstPrompt?.split('\n')[0]?.slice(0, 60) || id.slice(0, 8);
+      const isEdit = p === '/api/transcript/edit';
+      const mode = isEdit ? String(b.mode || 'fork-edit') : 'fork';
+      const newText = String(b.text || b.prompt || '').trim();
+
+      if (isEdit && !newText) return send(res, 400, { error: '수정할 내용을 입력하세요.' });
+
+      // 1) In-place text save (no new terminal launched)
+      if (mode === 'save') {
+        if (sourceAgent === 'claude' && sourceFile) {
+          try {
+            editClaudeJsonlAt({ sourceFile, sessionId: id, atIndex, newText, mode: 'save', backupDir: BRANCH_BACKUP_DIR });
+            index.docs.delete(id);
+            await index.updateFile(sourceFile);
+          } catch (e) { return send(res, 400, { error: e.message }); }
+        } else if (sourceAgent === 'codex' && sourceFile) {
+          try {
+            editCodexJsonlAt({ sourceFile, sessionId: id, atIndex, newText, backupDir: BRANCH_BACKUP_DIR });
+            index.docs.delete(id);
+            await index.updateFile(sourceFile);
+          } catch (e) { return send(res, 400, { error: e.message }); }
+        } else {
+          conversationBranches.setMsgEdit(id, atIndex, newText);
+        }
+        overviewStale();
+        return send(res, 200, { ok: true, mode: 'save' });
+      }
+
+      const targetAgent = ['claude', 'codex', 'agy'].includes(b.targetAgent) ? b.targetAgent : (sourceAgent || 'claude');
+      let launchAccount;
+      try {
+        launchAccount = projectAccounts.resolve(targetAgent, String(b.account || ''));
+      } catch (e) { return send(res, 400, { error: e.message }); }
+      if (launchAccount?.switchAgySwap) {
+        try { await ensureAgySwap(launchAccount); }
+        catch (e) { return send(res, 502, { error: `Antigravity 계정 전환 실패: ${e.message}` }); }
+      } else if (targetAgent === 'agy' && !launchAccount?.account && agySwap.available()) {
+        const activeSwap = (agySwap.getFast().accounts || []).find((a) => a.active);
+        if (activeSwap) {
+          launchAccount = {
+            ...launchAccount,
+            account: { id: activeSwap.id, label: activeSwap.name ? `${activeSwap.name} (${activeSwap.email})` : activeSwap.email, kind: 'agy', email: activeSwap.email },
+          };
+        }
+      }
+
+      const launchAndDeliver = async ({ agent, resumeId, title, promptToSend }) => {
+        let cmd, args = [];
+        if (agent === 'codex') {
+          const extra = ['--dangerously-bypass-approvals-and-sandbox', ...(resumeId ? ['resume', resumeId] : []), ...(!resumeId && promptToSend ? [promptToSend] : [])];
+          ({ cmd, args } = codexLaunch(extra));
+        } else if (agent === 'agy') {
+          cmd = agyExe();
+          if (resumeId) args.push('--conversation', resumeId);
+          args.push('--dangerously-skip-permissions');
+          if (!resumeId && promptToSend) args.push('--prompt-interactive', promptToSend);
+        } else {
+          cmd = 'claude.exe';
+          if (resumeId) args.push('--resume', resumeId);
+          args.push('--dangerously-skip-permissions');
+        }
+        const term = createTerm({ cwd, cmd, args, env: launchAccount?.env || {}, title, account: launchAccount?.account || null });
+        if (promptToSend && (agent === 'claude' || resumeId)) {
+          (async () => {
+            if (await waitFor(() => term.exited === null && inputReady(term), 45000, 700)) {
+              await sleep(600);
+              const payload = /\r|\n/.test(promptToSend) ? `\x1b[200~${promptToSend.replace(/\r\n/g, '\n')}\x1b[201~` : promptToSend;
+              term.proc.write(payload);
+              await sleep(SUBMIT_DELAY);
+              term.proc.write('\r');
+            }
+          })().catch(() => {});
+        }
+        return term;
+      };
+
+      // 2) Rewind & edit original session (Claude JSONL only)
+      if (mode === 'rewind-edit') {
+        if (sourceAgent !== 'claude' || !sourceFile) {
+          return send(res, 400, { error: '원본 되감기 재실행은 Claude 로컬 대화 기록에서만 지원됩니다. (대신 분기해서 재실행을 사용하세요)' });
+        }
+        const live = liveSessions().find((s) => s.sessionId === id);
+        if (live) {
+          const openTerm = [...terms.values()].find((x) => x.exited === null && x.pid && consoleOf(live.pid)?.pids?.includes(x.pid));
+          if (!openTerm) return send(res, 409, { error: `이 세션이 외부 창(pid ${live.pid})에서 실행 중입니다. 먼저 닫거나 분기 재실행을 사용하세요.` });
+          openTerm.proc.write('\x1b'); await sleep(400); openTerm.proc.write('/exit'); await sleep(SUBMIT_DELAY); openTerm.proc.write('\r');
+          if (!(await waitFor(() => openTerm.exited !== null, 5000))) try { openTerm.proc.kill(); } catch {}
+          forgetTerm(openTerm);
+        }
+        try {
+          editClaudeJsonlAt({ sourceFile, sessionId: id, atIndex, newText, mode: 'rewind', backupDir: BRANCH_BACKUP_DIR });
+          conversationBranches.clearMsgEditsFrom(id, atIndex);
+          index.docs.delete(id);
+          await index.updateFile(sourceFile);
+        } catch (e) { return send(res, 400, { error: e.message }); }
+
+        const term = await launchAndDeliver({ agent: 'claude', resumeId: id, title: `${sourceTitle.slice(0, 28)} (되감기)`, promptToSend: newText });
+        overviewStale();
+        return send(res, 200, { ok: true, mode: 'rewind-edit', term: termInfo(term), childSessionId: id });
+      }
+
+      // 3) Fork (at message atIndex inclusive) OR Fork+Edit (before atIndex with edited prompt)
+      const inclusive = !isEdit;
+      const anchorText = String(messages[atIndex]?.text || '').replace(/\s+/g, ' ').trim().slice(0, 100);
+      const branchTitle = `(분기) ${sourceTitle.slice(0, 32)}`;
+
+      if (sourceAgent === 'claude' && targetAgent === 'claude' && sourceFile) {
+        let forked;
+        try {
+          forked = forkClaudeJsonlAt({ sourceFile, cutIndex: atIndex, inclusive, title: branchTitle });
+          conversationBranches.setTitle(forked.newSessionId, branchTitle);
+          await index.updateFile(forked.file);
+        } catch (e) { return send(res, 400, { error: e.message }); }
+
+        const term = await launchAndDeliver({ agent: 'claude', resumeId: forked.newSessionId, title: branchTitle, promptToSend: newText });
+        const branch = conversationBranches.addBranch({
+          parentSessionId: id,
+          childSessionId: forked.newSessionId,
+          termId: term.id,
+          sourceAgent,
+          targetAgent,
+          mode,
+          atIndex,
+          anchorText,
+          editedText: isEdit ? newText.slice(0, 500) : '',
+          native: true,
+        });
+        overviewStale();
+        return send(res, 200, { ok: true, mode, native: true, term: termInfo(term), branch, childSessionId: forked.newSessionId });
+      }
+
+      // Context-seeded branch for Codex / AGY / cross-CLI
+      const { instruction } = writeBranchContextFile({
+        uploadsDir: path.join(__dirname, 'uploads'),
+        sourceSessionId: id,
+        sourceTitle,
+        sourceAgent: sourceAgent || 'claude',
+        targetAgent,
+        cwd,
+        messages,
+        atIndex,
+        inclusive,
+        editedText: isEdit ? newText : '',
+        followUp: !isEdit ? newText : '',
+      });
+      const term = await launchAndDeliver({ agent: targetAgent, resumeId: null, title: branchTitle, promptToSend: instruction });
+      const branch = conversationBranches.addBranch({
+        parentSessionId: id,
+        childSessionId: null,
+        termId: term.id,
+        sourceAgent: sourceAgent || 'claude',
+        targetAgent,
+        mode,
+        atIndex,
+        anchorText,
+        editedText: isEdit ? newText.slice(0, 500) : '',
+        native: false,
+      });
+      overviewStale();
+      return send(res, 200, { ok: true, mode, native: false, term: termInfo(term), branch, childSessionId: null });
+    }
     if (p === '/api/search') {
       const q = (url.searchParams.get('q') || '').trim();
       if (!q) return send(res, 200, { sessions: [], screens: [] });
       const t0 = Date.now();
       const opts = { role: url.searchParams.get('role') || 'all', includeAuto: url.searchParams.get('auto') === '1', cwd: url.searchParams.get('cwd') || '', agent: url.searchParams.get('agent') || '', hidden: projects.hidden() };
-      const sessions = index.search(q, opts);
+      const sessions = index.search(q, opts).map((s) => ({ ...s, title: conversationBranches.getTitle(s.sessionId) || s.title }));
       const screens = url.searchParams.get('screens') === '0' ? [] : await searchScreens(q);
       return send(res, 200, { sessions, screens, ms: Date.now() - t0, ready: index.ready, progress: index.progress });
     }

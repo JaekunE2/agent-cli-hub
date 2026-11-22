@@ -49,6 +49,7 @@
     check: svg('<polyline points="20 6 9 17 4 12"/>', 13, 2.2),
     chat: svg('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>', 13),
     spark: svg('<path d="m12 3 1.9 5.8L20 10.7l-6.1 1.9L12 18.4l-1.9-5.8L4 10.7l6.1-1.9Z"/>', 13),
+    branch: svg('<circle cx="6" cy="6" r="2.6"/><circle cx="18" cy="8" r="2.6"/><circle cx="6" cy="18" r="2.6"/><path d="M6 8.6v6.8"/><path d="M18 10.6a7.4 7.4 0 0 1-7.4 7.4H8.6"/>', 13),
   };
   window.UI_ICO = UI_ICO;
 

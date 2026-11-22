@@ -1728,18 +1728,31 @@ function viewTranscript() {
     setTimeout(refreshOverview, 1200);
   };
   setBar(`<button id="btnBackRecent" class="ghost btn-sm">${ICO.chevLeft} 최근 대화</button><h2><span>${esc(sessionLabel(r, sid, live?.name))}</span></h2>
+    <button id="btnRenameSess" class="ghost icon-btn btn-sm" title="대화 제목 수정" aria-label="대화 제목 수정">${ICO.edit}</button>
     ${agentBadge(r?.agent)}
     <div class="seg" role="tablist"><button data-tab="chat" class="${state.tab === 'chat' ? 'on' : ''}">대화 기록</button><button data-tab="files" class="${state.tab === 'files' ? 'on' : ''}">산출물</button><button data-tab="floorplan" class="${state.tab === 'floorplan' ? 'on' : ''}">${ICO.layers} 코드 구조</button></div>
     ${!live ? `<button class="primary btn-sm" id="btnResume">${ICO.play} 대시보드에서 이어하기</button>` : isDesktopSession(live) ? `<button class="primary btn-sm" id="btnResume" data-fork="1" title="데스크톱 앱 대화를 여기까지 복제한 새 세션으로 이어갑니다">${ICO.play} 대시보드에서 이어하기 (복제)</button>` : switchBtnHTML(sid)}
     <button id="btnRecMore" class="ghost icon-btn btn-sm" aria-label="세션 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
   $('#bar').onclick = async (e) => {
     if (e.target.closest('#btnBackRecent')) { state.termsTab = 'recent'; return select({ kind: 'terms' }); }
+    if (e.target.closest('#btnRenameSess')) {
+      const curTitle = sessionLabel(r, sid, live?.name);
+      const next = prompt('새 대화 제목을 입력하세요:', curTitle);
+      if (next === null) return;
+      const res = await api('/api/transcript/title', { method: 'POST', body: { id: sid, title: next.trim() } });
+      if (res.error) return toast(res.error, 4000, 'danger');
+      if (r) r.title = res.title || null;
+      await refreshOverview();
+      toast('대화 제목을 수정했습니다');
+      return viewTranscript();
+    }
     const tb = e.target.closest('[data-tab]');
     if (tb) return select(state.sel, tb.dataset.tab, true);
     const more = e.target.closest('#btnRecMore');
     if (more) {
       e.stopPropagation();
       return openMoreMenu(more, [
+        { label: '현재 시점에서 분기 만들기', icon: ICO.branch, onClick: () => openBranchDialog({ sid, atIndex: null, agent: r?.agent || 'claude', cwd: r?.cwd || live?.cwd }) },
         { label: '다른 계정 · 에이전트로 이어하기', icon: ICO.swap, onClick: () => openSwitch(sid) },
         { label: '외부 창으로 열기', icon: ICO.external, onClick: () => openExternal(false) },
         hasCwd && !IS_REMOTE ? { label: 'IDE에서 열기', icon: ICO.folder, onClick: () => openExternal(true) } : null,
@@ -1831,6 +1844,95 @@ function resolveTermSessionId(t) {
   return hit?.sessionId || null;
 }
 
+async function openBranchDialog({ sid, atIndex = null, message = null, agent = 'claude', cwd = '', capabilities = {} }) {
+  const sourceAg = ['claude', 'codex', 'agy'].includes(agent) ? agent : 'claude';
+  const d = document.createElement('dialog');
+  d.className = 'pj-dialog';
+  d.style.width = 'min(520px, 94vw)';
+  d.setAttribute('aria-label', '대화 분기점 만들기');
+  const snippet = message?.text ? String(message.text).replace(/\s+/g, ' ').trim().slice(0, 140) : '대화 마지막 시점까지';
+  const pointText = atIndex != null ? `#${atIndex + 1}번째 메시지 (${message?.role === 'user' ? '사용자' : '어시스턴트'})` : '현재 마지막 메시지까지';
+  d.innerHTML = `<form style="display:flex;flex-direction:column;gap:12px">
+    <div class="dlg-head"><h3>${ICO.branch} 대화 분기점 만들기</h3><button type="button" class="ghost icon-btn btn-sm" data-br-close aria-label="닫기">${ICO.close}</button></div>
+    <div class="chat-lineage" style="flex-direction:column;align-items:flex-start;gap:4px">
+      <div><b>분기 시점</b> · ${esc(pointText)}</div>
+      <div class="ums" style="margin:0;word-break:break-word">${esc(snippet)}${message?.text?.length > 140 ? '…' : ''}</div>
+    </div>
+    <label>분기할 CLI 에이전트
+      <select name="targetAgent" id="brAgent">
+        <option value="claude"${sourceAg === 'claude' ? ' selected' : ''}>Claude Code</option>
+        <option value="codex"${sourceAg === 'codex' ? ' selected' : ''}>Codex CLI</option>
+        <option value="agy"${sourceAg === 'agy' ? ' selected' : ''}>Antigravity (agy)</option>
+      </select>
+      <small class="ums" id="brModeHint" style="margin:2px 0 0"></small>
+    </label>
+    <label>사용할 계정
+      <select name="account" id="brAccount"><option value="">기본 / 현재 활성 계정</option></select>
+    </label>
+    <label>분기 후 바로 보낼 첫 메시지 (선택)
+      <textarea name="prompt" rows="3" placeholder="비워두면 이 분기점까지의 맥락이 준비된 새 터미널만 엽니다."></textarea>
+    </label>
+    <p role="alert" class="pj-error"></p>
+    <div class="dlg-foot">
+      <button type="button" data-br-close>취소</button>
+      <button type="submit" class="primary" id="brSubmit">${ICO.branch} 여기서 분기 시작</button>
+    </div>
+  </form>`;
+  document.body.append(d);
+  d.onclose = () => d.remove();
+  d.querySelectorAll('[data-br-close]').forEach((b) => (b.onclick = () => d.close()));
+
+  const agSel = $('#brAgent', d);
+  const accSel = $('#brAccount', d);
+  const hintEl = $('#brModeHint', d);
+  const updateModeHint = () => {
+    const tAg = agSel.value;
+    hintEl.textContent = (sourceAg === 'claude' && tAg === 'claude' && capabilities?.canNativeFork !== false)
+      ? 'Claude 원본 JSONL을 이 지점까지만 복제해 네이티브 분기 세션으로 엽니다.'
+      : '이 지점까지의 대화 맥락을 브리핑 파일로 정리해 새 세션에 전달합니다.';
+  };
+  const loadAccounts = async () => {
+    updateModeHint();
+    try {
+      const r = await api(`/api/projects/accounts?agent=${encodeURIComponent(agSel.value)}`);
+      const list = r.accounts || [];
+      accSel.innerHTML = `<option value="">기본 / 현재 활성 계정</option>` + list.map((a) => `<option value="${esc(a.id)}">${esc(a.label)}</option>`).join('');
+    } catch {}
+  };
+  agSel.onchange = loadAccounts;
+  loadAccounts();
+
+  $('form', d).onsubmit = async (e) => {
+    e.preventDefault();
+    const btn = $('#brSubmit', d);
+    btn.disabled = true;
+    try {
+      const fd = new FormData(e.target);
+      const res = await api('/api/transcript/fork', {
+        method: 'POST',
+        body: {
+          id: sid,
+          atIndex,
+          targetAgent: fd.get('targetAgent'),
+          account: fd.get('account'),
+          prompt: String(fd.get('prompt') || '').trim(),
+          cwd,
+        },
+      });
+      if (res.error) throw new Error(res.error);
+      d.close();
+      await refreshOverview();
+      const targetAg = String(fd.get('targetAgent') || sourceAg);
+      select({ kind: 'term', id: res.term.id, ...(targetAg === 'agy' && res.childSessionId ? { agyResume: res.childSessionId } : {}) }, getSavedTermTab(null) || 'split');
+      toast(res.native ? '이 지점에서 네이티브 분기 대화를 시작했습니다' : '분기점 맥락을 전달한 새 대화를 시작했습니다');
+    } catch (err) {
+      $('.pj-error', d).textContent = err.message;
+      btn.disabled = false;
+    }
+  };
+  d.showModal();
+}
+
 let chatPollTimer = null;
 async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
   clearTimeout(chatPollTimer);
@@ -1845,14 +1947,14 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
   const ag = state.recent.find((x) => x.sessionId === curSid)?.agent || tCur?.agent || (tCur?.codex ? 'codex' : tCur?.agy ? 'agy' : 'claude');
   const who = ag === 'codex' ? 'Codex' : ag === 'agy' ? 'Antigravity' : 'Claude';
   container.innerHTML = '<div class="chat">불러오는 중…</div>';
-  let lastSize = -1;
+  let lastSig = '';
   const jump = at >= 0;
-  const tick = async () => {
+  const tick = async (force = false) => {
     if (gen !== viewGen) return;
     if ((!curSid || tCur?.agy) && state.sel.kind === 'term') {
       const t = state.terms.find((x) => x.id === state.sel.id);
       const updated = resolveTermSessionId(t);
-      if (curSid !== updated) lastSize = -1;
+      if (curSid !== updated) lastSig = '';
       curSid = updated;
     }
     const box = $('.chat', container);
@@ -1875,16 +1977,27 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
     const d = await api(`/api/transcript?id=${encodeURIComponent(curSid)}${jump ? '&at=' + at : ''}`).catch((e) => ({ error: e.message }));
     if (gen !== viewGen) return;
     if (d.hidden) { box.textContent = d.error; return; }
+    const sig = `${d.size || 0}:${d.rev || 0}:${d.title || ''}:${(d.lineage?.children || []).length}`;
     if (d.error && !d.messages?.length) {
       box.innerHTML = `<div class="h-empty-card" style="margin:24px auto;max-width:480px">
         <b>대화 기록을 준비 중입니다 (${esc(curSid.slice(0, 8))})</b>
         <span class="ums">에이전트가 첫 응답을 기록하면 자동으로 대화 내역이 나타납니다.</span>
       </div>`;
-    } else if (d.size !== lastSize && !selectionIn(box)) { // keep a selection the user is copying
-      lastSize = d.size;
+    } else if (sig !== lastSig && (force || (!selectionIn(box) && !$('.msg-edit-box', box)))) { // keep active copy selection or inline editor unless forced
+      lastSig = sig;
       const v = container;
       const atBottom = v.scrollHeight - v.scrollTop - v.clientHeight < 80 || !box.dataset.painted;
       const b = d.base || 0;
+      const childBranches = d.lineage?.children || [];
+      const branchesByIdx = new Map();
+      for (const ch of childBranches) {
+        (branchesByIdx.get(ch.atIndex) || branchesByIdx.set(ch.atIndex, []).get(ch.atIndex)).push(ch);
+      }
+      const lineageBanner = (d.lineage?.parent || childBranches.length)
+        ? `<div class="chat-lineage">
+          ${d.lineage?.parent ? `<button type="button" class="msg-branch-chip" data-open-parent-sid="${esc(d.lineage.parent.parentSessionId)}" data-open-parent-at="${d.lineage.parent.atIndex}">${ICO.branch} 원본: ${esc(d.lineage.parent.parentTitle || d.lineage.parent.parentSessionId.slice(0, 8))} (#${d.lineage.parent.atIndex + 1}에서 분기)</button>` : ''}
+          ${childBranches.length ? `<span class="ums" style="margin:0">${ICO.branch} 이 대화에서 파생된 분기 <b>${childBranches.length}</b>개</span>` : ''}
+        </div>` : '';
       const more = jump && b + d.messages.length < (d.total || 0)
         ? `<div class="row" style="justify-content:center;margin:10px"><button class="btn-latest">최신 대화로 이동</button></div>` : '';
       const parts = [];
@@ -1895,10 +2008,21 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
         parts.push(`<details class="toolgrp"><summary>⚙ 도구 실행 ${toolBuf.length}건 · ${esc(firstLine)}</summary><div class="toolgrp-body">${toolBuf.map((x) => `<div>${linkPaths(hl(x.text, terms))}</div>`).join('')}</div></details>`);
         toolBuf = [];
       };
+      const branchChipsHTML = (gi) => {
+        const list = branchesByIdx.get(gi);
+        if (!list?.length) return '';
+        return `<div class="msg-branches">${list.map((ch) => {
+          const lbl = ch.childTitle || (ch.childSessionId ? `분기 ${ch.childSessionId.slice(0, 8)}` : `터미널 t:${ch.termId}`);
+          return ch.childSessionId
+            ? `<button type="button" class="msg-branch-chip" data-open-branch-sid="${esc(ch.childSessionId)}">${ICO.branch} ${esc(lbl)} ↗</button>`
+            : `<button type="button" class="msg-branch-chip" data-open-branch-term="${esc(ch.termId)}">${ICO.branch} ${esc(lbl)} ↗</button>`;
+        }).join('')}</div>`;
+      };
       let lastDay = '';
       d.messages.forEach((m, k) => {
         const tool = m.role === 'assistant' && m.text.startsWith('⚙');
-        const tgt = jump && b + k === at;
+        const gi = b + k;
+        const tgt = jump && gi === at;
         if (tool && !tgt) { toolBuf.push(m); return; }
         flushTools();
         const rawTxt = String(m.text || '').replace(/<external_codex_apps_[^>]*>[\s\S]*?<\/external_codex_apps_[^>]*>/gi, '').trim();
@@ -1913,22 +2037,99 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
           }
         }
         const when = dt && !Number.isNaN(dt.getTime()) ? dt.toLocaleTimeString(uiLocale(), { hour: '2-digit', minute: '2-digit' }) : '';
-        const copyBtn = `<button class="ghost icon-btn btn-sm msg-copy" data-copy-mi="${k}" aria-label="이 메시지 복사" title="이 메시지 복사">${ICO.copy}</button>`;
+        const copyBtn = `<button class="ghost icon-btn btn-sm" data-copy-mi="${k}" aria-label="이 메시지 복사" title="이 메시지 복사">${ICO.copy}</button>`;
+        const forkBtn = `<button class="ghost icon-btn btn-sm" data-fork-mi="${k}" aria-label="이 지점에서 분기 만들기" title="이 지점에서 분기 만들기">${ICO.branch}</button>`;
+        const editBtn = m.role === 'user' ? `<button class="ghost icon-btn btn-sm" data-edit-mi="${k}" aria-label="이 메시지 수정" title="이 메시지 수정 · 재실행">${ICO.edit}</button>` : '';
+        const editedBadge = m.edited ? `<span class="badge">수정됨</span>` : '';
         if (tool) {
           parts.push(`<div class="msg tool${tgt ? ' target' : ''}" data-mi="${k}">${linkPaths(hl(rawTxt, terms))}</div>`);
         } else if (m.role === 'user') {
           const bodyHtml = linkPaths(hl(rawTxt, terms));
-          parts.push(`<div class="msg user${tgt ? ' target' : ''}" data-mi="${k}"><div class="msg-bubble"><div class="msg-body">${bodyHtml}</div></div><div class="msg-meta">${copyBtn}${when ? `<span>${esc(when)}</span>` : ''}</div></div>`);
+          parts.push(`<div class="msg user${tgt ? ' target' : ''}" data-mi="${k}"><div class="msg-bubble"><div class="msg-body">${bodyHtml}</div></div><div class="msg-meta">${editedBadge}<span class="msg-acts">${editBtn}${forkBtn}${copyBtn}</span>${when ? `<span>${esc(when)}</span>` : ''}</div>${branchChipsHTML(gi)}</div>`);
         } else {
           const bodyHtml = !terms.length ? md(rawTxt) : `<div class="msg-body" style="white-space:pre-wrap">${linkPaths(hl(rawTxt, terms))}</div>`;
-          parts.push(`<div class="msg assistant${tgt ? ' target' : ''}" data-mi="${k}"><div class="msg-av">${agentIcon(ag || 'claude')}</div><div class="msg-col"><div class="msg-hd"><span class="w-role">${esc(who)}</span>${when ? `<span class="w-ts">${esc(when)}</span>` : ''}<span style="flex:1"></span>${copyBtn}</div><div class="msg-bubble">${bodyHtml}</div></div></div>`);
+          parts.push(`<div class="msg assistant${tgt ? ' target' : ''}" data-mi="${k}"><div class="msg-av">${agentIcon(ag || 'claude')}</div><div class="msg-col"><div class="msg-hd"><span class="w-role">${esc(who)}</span>${when ? `<span class="w-ts">${esc(when)}</span>` : ''}${editedBadge}<span style="flex:1"></span><span class="msg-acts">${forkBtn}${copyBtn}</span></div><div class="msg-bubble">${bodyHtml}</div>${branchChipsHTML(gi)}</div></div>`);
         }
       });
       flushTools();
-      box.innerHTML = `<h2 class="sr-only">대화 내용</h2>` + (b > 0 ? `<div class="empty" style="margin-bottom:6px">… 이전 메시지 ${b}개 생략</div>` : '') + (parts.join('') || '<div class="empty">메시지 없음</div>') + more;
+      box.innerHTML = `<h2 class="sr-only">대화 내용</h2>` + lineageBanner + (b > 0 ? `<div class="empty" style="margin-bottom:6px">… 이전 메시지 ${b}개 생략</div>` : '') + (parts.join('') || '<div class="empty">메시지 없음</div>') + more;
       box.onclick = (e) => {
         const cb = e.target.closest('[data-copy-mi]');
-        if (cb) { const m = d.messages[Number(cb.dataset.copyMi)]; if (m) copyText(m.text); }
+        if (cb) { const m = d.messages[Number(cb.dataset.copyMi)]; if (m) copyText(m.text); return; }
+        const fb = e.target.closest('[data-fork-mi]');
+        if (fb) {
+          const k = Number(fb.dataset.forkMi);
+          const m = d.messages[k];
+          if (m) openBranchDialog({ sid: curSid, atIndex: b + k, message: m, agent: d.agent || ag, cwd: d.cwd, capabilities: d.capabilities || {} });
+          return;
+        }
+        const eb = e.target.closest('[data-edit-mi]');
+        if (eb) {
+          const k = Number(eb.dataset.editMi);
+          const m = d.messages[k];
+          const msgEl = box.querySelector(`.msg[data-mi="${k}"] .msg-bubble`);
+          if (!m || !msgEl || $('.msg-edit-box', msgEl)) return;
+          const canRewind = !!d.capabilities?.canRewindEdit;
+          msgEl.innerHTML = `<div class="msg-edit-box">
+            <textarea>${esc(m.text)}</textarea>
+            <div class="msg-edit-foot">
+              <button type="button" class="ghost btn-sm" data-ed-cancel>취소</button>
+              <button type="button" class="btn-sm" data-ed-save title="기록된 텍스트만 수정합니다">내용만 수정</button>
+              ${canRewind ? `<button type="button" class="btn-sm" data-ed-rewind title="이 시점 이전으로 대화를 되감고 수정된 내용으로 재실행합니다">되감고 재실행</button>` : ''}
+              <button type="button" class="primary btn-sm" data-ed-fork title="이 시점까지 맥락으로 새 분기 대화를 열고 수정된 내용을 전송합니다">${ICO.branch} 분기해서 재실행</button>
+            </div>
+          </div>`;
+          const ta = $('textarea', msgEl);
+          ta.focus();
+          ta.setSelectionRange(ta.value.length, ta.value.length);
+          const runEditAction = async (mode) => {
+            const text = ta.value.trim();
+            if (!text) return toast('수정할 내용을 입력하세요', 3000, 'danger');
+            if (mode === 'rewind-edit' && !confirm('원본 대화에서 이 메시지 이후 기록을 되돌리고 수정된 프롬프트로 다시 실행할까요? (원본 백업 저장됨)')) return;
+            msgEl.querySelectorAll('button').forEach((btn) => (btn.disabled = true));
+            try {
+              const res = await api('/api/transcript/edit', {
+                method: 'POST',
+                body: { id: curSid, atIndex: b + k, text, mode, targetAgent: d.agent || ag, cwd: d.cwd },
+              });
+              if (res.error) throw new Error(res.error);
+              if (mode === 'save') {
+                lastSig = '';
+                await refreshOverview();
+                await tick(true);
+                toast('대화 내용을 수정했습니다');
+                return;
+              }
+              await refreshOverview();
+              select({ kind: 'term', id: res.term.id, ...((d.agent || ag) === 'agy' && res.childSessionId ? { agyResume: res.childSessionId } : {}) }, getSavedTermTab(null) || 'split');
+              toast(mode === 'rewind-edit' ? '대화를 되감고 수정된 요청을 전송했습니다' : '수정된 요청으로 새 분기 대화를 시작했습니다');
+            } catch (err) {
+              toast(err.message, 5000, 'danger');
+              msgEl.querySelectorAll('button').forEach((btn) => (btn.disabled = false));
+            }
+          };
+          $('[data-ed-cancel]', msgEl).onclick = () => { lastSig = ''; tick(true); };
+          $('[data-ed-save]', msgEl).onclick = () => runEditAction('save');
+          $('[data-ed-fork]', msgEl).onclick = () => runEditAction('fork-edit');
+          const rewBtn = $('[data-ed-rewind]', msgEl);
+          if (rewBtn) rewBtn.onclick = () => runEditAction('rewind-edit');
+          return;
+        }
+        const pBtn = e.target.closest('[data-open-parent-sid]');
+        if (pBtn) {
+          select({ kind: 'recent', id: pBtn.dataset.openParentSid, at: Number(pBtn.dataset.openParentAt ?? -1) }, 'chat');
+          return;
+        }
+        const chSidBtn = e.target.closest('[data-open-branch-sid]');
+        if (chSidBtn) {
+          select({ kind: 'recent', id: chSidBtn.dataset.openBranchSid, at: -1 }, 'chat');
+          return;
+        }
+        const chTermBtn = e.target.closest('[data-open-branch-term]');
+        if (chTermBtn) {
+          select({ kind: 'term', id: chTermBtn.dataset.openBranchTerm }, getSavedTermTab(null) || 'split');
+          return;
+        }
       };
       const btn = $('.btn-latest', box);
       if (btn) btn.onclick = () => select({ ...state.sel, at: -1 }, hostEl ? state.tab : 'chat');

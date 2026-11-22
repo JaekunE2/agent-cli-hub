@@ -406,4 +406,4 @@ function snippet(text, low, terms) {
   return (a > 0 ? '…' : '') + text.slice(a, b).replace(/\s+/g, ' ') + (b < text.length ? '…' : '');
 }
 
-module.exports = { SearchIndex, isCodexFile, codexIdOf, codexLine, CODEX_ROOT, isAgyFile, agyIdOf, agyLine, AGY_ROOT };
+module.exports = { SearchIndex, textOf, isNoise, isCodexFile, codexIdOf, codexLine, CODEX_ROOT, isAgyFile, agyIdOf, agyLine, AGY_ROOT };
