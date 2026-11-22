@@ -1894,7 +1894,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
         }
       });
       flushTools();
-      box.innerHTML = (b > 0 ? `<div class="empty" style="margin-bottom:6px">… 이전 메시지 ${b}개 생략</div>` : '') + (parts.join('') || '<div class="empty">메시지 없음</div>') + more;
+      box.innerHTML = `<h2 class="sr-only">대화 내용</h2>` + (b > 0 ? `<div class="empty" style="margin-bottom:6px">… 이전 메시지 ${b}개 생략</div>` : '') + (parts.join('') || '<div class="empty">메시지 없음</div>') + more;
       box.onclick = (e) => {
         const cb = e.target.closest('[data-copy-mi]');
         if (cb) { const m = d.messages[Number(cb.dataset.copyMi)]; if (m) copyText(m.text); }
@@ -2385,7 +2385,7 @@ function openDrawer({ title, bodyHTML = '', footerHTML = '', width = 460 } = {})
   const d = document.createElement('div');
   d.className = 'drw-backdrop';
   d.innerHTML = `<div class="drw-panel" style="--drw-w:${width}px" role="dialog" aria-label="${esc(title || '')}">
-    <div class="drw-head"><h3>${esc(title || '')}</h3><button class="ghost icon-btn btn-sm" data-drw-close aria-label="닫기" title="닫기 (Esc)">${ICO.close}</button></div>
+    <div class="drw-head"><h2>${esc(title || '')}</h2><button class="ghost icon-btn btn-sm" data-drw-close aria-label="닫기" title="닫기 (Esc)">${ICO.close}</button></div>
     <div class="drw-body">${bodyHTML}</div>
     ${footerHTML ? `<div class="drw-foot">${footerHTML}</div>` : ''}
   </div>`;
@@ -2912,10 +2912,12 @@ async function renderArtifacts(sid, gen) {
         <button id="artAdd" class="btn-sm">${ICO.plus} 산출물 지정</button>
       </div>
       <div class="rwrap">
-      ${items.length ? artTimeline(items.map((it, i) => [it, i]), card) : '<div class="empty">아직 인식된 산출물이 없습니다. 대화에 나온 파일 경로가 자동으로 모이고, ＋ 산출물 지정으로 직접 추가할 수도 있습니다.</div>'}</div>`;
+      ${items.length ? artTimeline(items.map((it, i) => [it, i]), card) : `<div class="h-empty-card" style="margin-top:8px"><b>아직 등록된 산출물이 없습니다</b><span class="ums" style="margin:0;max-width:460px">대화에 나온 파일 경로가 자동으로 모이며, 직접 파일을 지정하거나 코드 구조 탭에서 보고서(FLOORPLAN.md)를 저장할 수 있습니다.</span><button type="button" class="primary btn-sm" id="artEmptyAdd" style="margin-top:6px">${ICO.plus} 산출물 지정</button></div>`}</div>`;
     bindArtOrder(paint);
     $('#view').querySelectorAll('[data-art-scope]').forEach((b) => (b.onclick = () => { artShowAll = b.dataset.artScope === 'all'; paint(); }));
     $('#artAdd').onclick = () => addArtifactDialog(sid, paint);
+    const emptyAdd = $('#artEmptyAdd');
+    if (emptyAdd) emptyAdd.onclick = () => addArtifactDialog(sid, paint);
     $('#view').querySelectorAll('[data-ai]').forEach((el) => (el.onclick = (e) => {
       if (e.target.closest('[data-ahide]')) return;
       const sb = e.target.closest('[data-asend]');
@@ -3265,12 +3267,13 @@ function paintGpu() {
         <button class="danger ghost btn-sm" data-gact="release" data-id="${esc(t.id)}">${t.adopted ? '등록 해제' : isWaiting ? '취소' : '해제'}</button>
       </div>
     </div>`;
-    content = `<section class="sheet">
-        <div class="sheet-hd"><h3>사용 중 <span class="badge c">${active.length}</span></h3><span class="ums" style="margin:0">항목 클릭 시 상세 정보</span></div>
+    content = `<h1 class="sr-only">GPU 대기열</h1>
+      <section class="sheet">
+        <div class="sheet-hd"><h2>사용 중 <span class="badge c">${active.length}</span></h2><span class="ums" style="margin:0">항목 클릭 시 상세 정보</span></div>
         ${active.map((t) => qRow(t, false)).join('') || '<div class="empty" style="padding:20px 16px">현재 GPU를 사용 중인 작업이 없습니다.</div>'}
       </section>
       <section class="sheet">
-        <div class="sheet-hd"><h3>대기 중 <span class="badge">${waiting.length}</span></h3></div>
+        <div class="sheet-hd"><h2>대기 중 <span class="badge">${waiting.length}</span></h2></div>
         ${waiting.map((t) => qRow(t, true)).join('') || '<div class="empty" style="padding:20px 16px">대기 중인 작업이 없습니다.</div>'}
       </section>`;
   } else if (tab === 'devices') {
@@ -3301,16 +3304,16 @@ function paintGpu() {
       <div class="m-row-main"><div class="m-row-t">${esc(v.name)} <span class="badge">${esc(v.id)}</span></div><div class="m-row-s">${v.reachable == null ? '확인 중' : v.reachable ? '연결됨' : '연결 안 됨'}</div></div>
       ${sw(v.id, v.enabled)}
     </div>`).join('');
-    content = `${(cpuCard || ramCard) ? `<div class="ugrid-sys">${cpuCard}${ramCard}</div>` : ''}
+    content = `<h1 class="sr-only">GPU · 서버 장치</h1>${(cpuCard || ramCard) ? `<div class="ugrid-sys">${cpuCard}${ramCard}</div>` : ''}
       <div class="ugrid">${cards || `<div class="err">${esc(q.error || 'GPU를 찾지 못함 (nvidia-smi)')}</div>`}</div>
-      ${servers ? `<section class="sheet"><div class="sheet-hd"><h3>원격 GPU 서버</h3></div>${servers}</section>` : ''}`;
+      ${servers ? `<section class="sheet"><div class="sheet-hd"><h2>원격 GPU 서버</h2></div>${servers}</section>` : ''}`;
   } else {
     const histRows = history.map((t) => `<div class="m-row" style="cursor:default">
       <span class="dot ${t.status === 'released' ? 'idle' : 'dead'}"></span>
       <div class="m-row-main"><div class="m-row-t">${esc(t.label || t.id)}</div><div class="m-row-s">${t.status === 'released' ? '해제됨' : '취소됨'}${t.endReason ? ` · ${esc(t.endReason)}` : ''}</div></div>
       <span class="ums" style="margin:0">${esc(new Date(t.endedAt).toLocaleTimeString())}</span>
     </div>`).join('');
-    content = `<section class="sheet"><div class="sheet-hd"><h3>최근 작업 기록</h3></div>${histRows || '<div class="empty" style="padding:20px 16px">최근 기록이 없습니다.</div>'}</section>`;
+    content = `<h1 class="sr-only">GPU 최근 기록</h1><section class="sheet"><div class="sheet-hd"><h2>최근 작업 기록</h2></div>${histRows || '<div class="empty" style="padding:20px 16px">최근 기록이 없습니다.</div>'}</section>`;
   }
   $('#view').innerHTML = `<div class="sys-shell">${sysTop}<div class="sys-body"><div class="page-wrap">${pills}${tabs}${content}</div></div></div>`;
 }

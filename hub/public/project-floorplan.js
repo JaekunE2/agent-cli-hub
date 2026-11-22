@@ -424,12 +424,12 @@
 
         body = `${kpiHTML}
           <section class="list-sec">
-            <div class="list-sec-hd"><h4>계층별 핵심 구성 요약 (클릭 시 파일 상세)</h4><span class="ums" style="margin:0">${fp.externalServices?.length ? `외부 연동: ${esc(fp.externalServices.join(' · '))}` : 'UI → API → 코어 → 데이터 흐름'}</span></div>
+            <div class="list-sec-hd"><h2>계층별 핵심 구성 요약 (클릭 시 파일 상세)</h2><span class="ums" style="margin:0">${fp.externalServices?.length ? `외부 연동: ${esc(fp.externalServices.join(' · '))}` : 'UI → API → 코어 → 데이터 흐름'}</span></div>
             <div class="fm-arch-grid">${archCols}</div>
           </section>
           <section class="sheet">
             <div class="sheet-hd" style="flex-wrap:wrap">
-              <h3>중요도 순 핵심 파일 목록 <span class="badge">${filtered.length}</span></h3>
+              <h2>중요도 순 핵심 파일 목록 <span class="badge">${filtered.length}</span></h2>
               <div class="row" style="gap:8px;flex-wrap:wrap">
                 <div class="seg" role="tablist">
                   ${fBtn('all', '전체')}
@@ -511,7 +511,7 @@
 
         body = `<section class="sheet">
           <div class="sheet-hd" style="flex-wrap:wrap">
-            <h3>시스템 아키텍처 계층 맵</h3>
+            <h2>시스템 아키텍처 계층 맵</h2>
             <div class="fm-map-bar">
               <div class="seg" role="tablist">
                 <button type="button" data-fm-map-scope="core" class="${mapScope === 'core' ? 'on' : ''}">핵심 허브 맵</button>
@@ -558,14 +558,14 @@
 
         body = `<section class="sheet">
           <div class="sheet-hd">
-            <h3>${ico.flask || ''} 코드 보안 · 구조 점검 <span class="badge ${scoreCls}">${score}점</span></h3>
+            <h2>${ico.flask || ''} 코드 보안 · 구조 점검 <span class="badge ${scoreCls}">${score}점</span></h2>
             <span class="ums" style="margin:0">시크릿 노출 · 인증 누락 · 비대 모듈 자동 진단</span>
           </div>
           <div>${issueHTML}</div>
         </section>`;
       }
 
-      host.innerHTML = `<div class="fm-wrap">${toolbar}${body}</div>`;
+      host.innerHTML = `<div class="fm-wrap">${!p ? '<h1 class="sr-only">코드 구조</h1>' : ''}${toolbar}${body}</div>`;
 
       const srch = $('#fmSearchIn', host);
       if (srch) {
