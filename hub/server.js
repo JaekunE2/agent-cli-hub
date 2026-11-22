@@ -602,9 +602,34 @@ function mirrorData(t, d) {
   if (stripAnsi(d).trim()) t.lastOutputAt = Date.now();
   for (const ws of t.clients) ws.send(JSON.stringify({ type: 'data', data: d }));
 }
+function launchSpecWithShared(cmd, args = [], env = {}) {
+  const base = path.basename(String(cmd || '')).toLowerCase();
+  const kind = /^claude(?:\.exe)?$/.test(base)
+    ? 'claude'
+    : (/^codex(?:\.exe)?$/.test(base) || (base === 'wsl.exe' && Array.isArray(args) && args.includes('codex')))
+      ? 'codex'
+      : /^agy(?:\.exe)?$/.test(base)
+        ? 'agy'
+        : null;
+  if (!kind) return { args, env };
+  try {
+    const resume = Array.isArray(args) && args.includes('--resume');
+    const prep = unifiedVault.prepareLaunch(kind, { resume });
+    return {
+      args: prep.extraArgs?.length ? [...args, ...prep.extraArgs] : args,
+      env: prep.env && Object.keys(prep.env).length ? { ...env, ...prep.env } : env,
+    };
+  } catch {
+    return { args, env };
+  }
+}
+
 function createTerm({ cwd, cmd, args = [], title, env = {}, account = null, research = null, operator = false, projectTask, projectPrompt }) {
   const id = String(++termSeq);
   if (!cwd || !fs.existsSync(cwd)) cwd = os.homedir();
+  const shared = launchSpecWithShared(cmd, args, env);
+  args = shared.args;
+  env = shared.env;
   // meta is what we need to re-create the terminal after a pty-host restart — never secrets
   const envFlags = Object.fromEntries(Object.entries(env).filter(([k]) => !/TOKEN|KEY|SECRET/i.test(k)));
   if (/\bagy(?:\.exe)?$/i.test(cmd)) {
@@ -1464,6 +1489,9 @@ function writeHandoffFile({ sessionId, d, t0, sourceAgent, targetAgent, cwd }) {
 }
 
 function launchExternalWindow({ cwd, title, cmd, args = [], env = {}, openMode = 'external' }) {
+  const shared = launchSpecWithShared(cmd, args, env);
+  args = shared.args;
+  env = shared.env;
   const workCwd = (cwd && fs.existsSync(cwd)) ? cwd : os.homedir();
   if (openMode === 'ide') {
     const ideExe = [
@@ -1990,6 +2018,7 @@ const server = http.createServer(async (req, res) => {
         await ensureAgySwap(auth);
         dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-project-sub-'));
         const exe = effAgent === 'agy' ? agyExe() : effAgent === 'claude' ? 'claude.exe' : codexExe();
+        try { unifiedVault.prepareLaunch(effAgent, { resume: false }); } catch {}
         const { tasks, sessionId } = await generateSubtasks(exe, project, task, dir, { ...cleanEnv(), ...auth.env }, {
           agent: effAgent, model: effModel, effort: effEffort, onProgress,
         });
@@ -2041,6 +2070,7 @@ const server = http.createServer(async (req, res) => {
         await ensureAgySwap(auth);
         dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-project-plan-'));
         const exe = b.agent === 'agy' ? agyExe() : b.agent === 'claude' ? 'claude.exe' : codexExe();
+        try { unifiedVault.prepareLaunch(b.agent, { resume: false }); } catch {}
         const { tasks, sessionId } = await generatePlan(exe, b, dir, { ...cleanEnv(), ...auth.env }, { onProgress });
         projectPlanState.stage = `작업 ${tasks.length}개 생성 완료`;
         projectPlanState.pct = 100;
@@ -2118,6 +2148,7 @@ const server = http.createServer(async (req, res) => {
       const exe = effAgent === 'agy' ? agyExe() : effAgent === 'claude' ? 'claude.exe' : codexExe();
       try {
         await ensureAgySwap(auth);
+        try { unifiedVault.prepareLaunch(effAgent, { resume: !!chat.sessionId }); } catch {}
         const resTurn = await runTaskSubChatTurn({
           exe, agent: effAgent, cwd: workCwd, env: { ...cleanEnv(), ...auth.env },
           model: effModel, effort: effEffort, sessionId: chat.sessionId,
@@ -2904,6 +2935,10 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/vault/gather' && req.method === 'POST') {
       return send(res, 200, { ok: true, ...unifiedVault.gatherFromClis() });
+    }
+    if (p === '/api/vault/autoload' && req.method === 'POST') {
+      const b = await body(req);
+      return send(res, 200, { ok: true, state: unifiedVault.setAutoLoad(b.enabled) });
     }
     if (p === '/api/vault/sync' && req.method === 'POST') {
       const b = await body(req);

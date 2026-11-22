@@ -28,7 +28,7 @@
       <p role="alert" class="pj-error"></p>
       <div class="dlg-foot">
         <button type="button" data-v-close>취소</button>
-        <button type="submit" class="primary">볼트에 저장</button>
+        <button type="submit" class="primary">공통 자원에 저장</button>
       </div>
     </form>`;
     document.body.append(d);
@@ -63,7 +63,7 @@
         vaultState = r.state;
         d.close();
         paintVault();
-        toast('스킬을 통합 볼트에 저장했습니다');
+        toast('스킬을 공통 자원에 저장했습니다');
       } catch (err) {
         $('.pj-error', d).textContent = err.message;
       }
@@ -142,7 +142,7 @@
         vaultState = r.state;
         d.close();
         paintVault();
-        toast('MCP 설정을 통합 볼트에 저장했습니다');
+        toast('MCP 설정을 공통 자원에 저장했습니다');
       } catch (err) {
         $('.pj-error', d).textContent = err.message;
       }
@@ -197,7 +197,7 @@
   async function openCliInspectDrawer(cliKey) {
     if (typeof openDrawer !== 'function') return;
     const d = openDrawer({
-      title: `${CLI_LABELS[cliKey] || cliKey} · 상세 및 통합 볼트 가져오기`,
+      title: `${CLI_LABELS[cliKey] || cliKey} · 상세 및 공통 자원 가져오기`,
       bodyHTML: '<div class="empty">항목을 불러오는 중…</div>',
       footerHTML: '<button type="button" data-drw-close>닫기</button>',
       width: 620,
@@ -221,11 +221,11 @@
       if (dTab === 'skills') {
         listHtml = skills.length ? skills.map((sk) => {
           const stBadge = sk.isLinkedToVault
-            ? '<span class="badge c">볼트 연결됨</span>'
+            ? '<span class="badge c">링크 연결됨</span>'
             : sk.inVault
-              ? '<span class="badge">볼트에 있음</span>'
+              ? '<span class="badge">공통에 등록됨</span>'
               : '<span class="badge lim">로컬 전용</span>';
-          const btnLbl = sk.isLinkedToVault ? '다시 연결' : sk.inVault ? '링크 전환' : (moveSkills ? '통합으로 이동' : '가져오기');
+          const btnLbl = sk.isLinkedToVault ? '다시 연결' : sk.inVault ? '링크 전환' : (moveSkills ? '공통으로 이동' : '가져오기');
           return `<div class="v-row" style="align-items:flex-start">
             <div class="v-row-main">
               <div class="row" style="gap:6px;flex-wrap:wrap">
@@ -243,7 +243,7 @@
         }).join('') : '<div class="empty">표시할 스킬이 없습니다.</div>';
       } else if (dTab === 'mcp') {
         listHtml = mcps.length ? mcps.map((m) => {
-          const stBadge = m.inVault ? '<span class="badge c">볼트에 있음</span>' : '<span class="badge lim">로컬 전용</span>';
+          const stBadge = m.inVault ? '<span class="badge c">공통에 등록됨</span>' : '<span class="badge lim">로컬 전용</span>';
           return `<div class="v-row">
             <div class="v-row-main">
               <div class="row" style="gap:6px;flex-wrap:wrap">
@@ -265,13 +265,13 @@
             <div><b>전역 하네스 파일</b><div class="ums mono" style="margin:2px 0 0">${esc(h.path || '없음')}</div></div>
             ${h.hasCustomContent ? `<button type="button" class="primary btn-sm" id="dcImpHarness">${h.customImported ? '공통 지침에 반영됨' : 'shared.md로 가져오기'}</button>` : '<span class="badge">커스텀 지침 없음</span>'}
           </div>
-          ${h.customContent ? `<pre class="mdpre" style="max-height:200px;overflow:auto;margin:6px 0 0">${esc(h.customContent)}</pre>` : '<div class="empty" style="padding:8px 0">볼트 블록 외의 추가 하네스 내용이 없습니다.</div>'}
+          ${h.customContent ? `<pre class="mdpre" style="max-height:200px;overflow:auto;margin:6px 0 0">${esc(h.customContent)}</pre>` : '<div class="empty" style="padding:8px 0">공통 블록 외의 추가 하네스 내용이 없습니다.</div>'}
         </div>
         <div class="v-list">${rules.length ? rules.map((rl) => `<div class="v-row">
           <div class="v-row-main">
             <div class="row" style="gap:6px">
               <b>${esc(rl.name)}</b>
-              <span class="badge ${rl.inVault ? 'c' : 'lim'}">${rl.inVault ? '볼트에 있음' : '로컬 전용'}</span>
+              <span class="badge ${rl.inVault ? 'c' : 'lim'}">${rl.inVault ? '공통에 등록됨' : '로컬 전용'}</span>
             </div>
             <pre class="mdpre" style="max-height:110px;overflow:auto;margin:4px 0 0">${esc(rl.preview || '')}</pre>
           </div>
@@ -293,8 +293,8 @@
           </div>
         </div>
         <div class="row" style="justify-content:space-between;gap:10px;flex-wrap:wrap">
-          <label class="v-en" style="font-size:12px"><input type="checkbox" id="dcMoveChk" ${moveSkills ? 'checked' : ''}><span>가져올 때 원본 스킬 폴더를 볼트 링크(Junction)로 이동 전환</span></label>
-          <label class="v-en" style="font-size:12px"><input type="checkbox" id="dcUnvaultChk" ${onlyUnvaulted ? 'checked' : ''}><span>볼트에 없는 항목만 보기</span></label>
+          <label class="v-en" style="font-size:12px"><input type="checkbox" id="dcMoveChk" ${moveSkills ? 'checked' : ''}><span>가져올 때 원본 스킬 폴더를 공통 링크(Junction)로 이동 전환</span></label>
+          <label class="v-en" style="font-size:12px"><input type="checkbox" id="dcUnvaultChk" ${onlyUnvaulted ? 'checked' : ''}><span>미등록 항목만 보기</span></label>
         </div>
         <div class="v-list">${listHtml}</div>
       </div>`;
@@ -311,7 +311,7 @@
         if (res.importedMcps) parts.push(`MCP +${res.importedMcps}`);
         if (res.importedRules) parts.push(`규칙 +${res.importedRules}`);
         if (res.importedHarness) parts.push('하네스 병합');
-        toast(parts.length ? `통합 볼트 이동 완료: ${parts.join(' · ')}` : '통합 볼트 상태를 갱신했습니다');
+        toast(parts.length ? `공통 자원 이동 완료: ${parts.join(' · ')}` : '공통 자원 상태를 갱신했습니다');
       };
 
       $('#dcMoveChk', drwBody).onchange = (e) => { moveSkills = !!e.target.checked; paintDrawer(); };
@@ -390,7 +390,7 @@
         <div class="v-row-right">
           <div class="v-tgts">${targetPillsHTML('skill', sk.name, sk.targets)}</div>
           <button type="button" class="btn-sm" data-v-edit-skill="${esc(sk.name)}">${UI_ICO.edit} 수정</button>
-          <button type="button" class="ghost icon-btn btn-sm" data-v-del="skill" data-v-id="${esc(sk.name)}" title="볼트에서 삭제">${UI_ICO.trash}</button>
+          <button type="button" class="ghost icon-btn btn-sm" data-v-del="skill" data-v-id="${esc(sk.name)}" title="공통 자원에서 삭제">${UI_ICO.trash}</button>
         </div>
       </div>`).join('') : '<div class="empty">수집된 스킬이 없습니다. 상단의 “모든 CLI에서 모으기”를 눌러 기존 스킬을 한곳에 모아보세요.</div>'}</div>`;
     } else if (vaultTab === 'mcp') {
@@ -447,7 +447,7 @@
     body.innerHTML = `<div class="rcard" style="gap:10px">
       <div class="row" style="justify-content:space-between;gap:10px;flex-wrap:wrap">
         <div style="min-width:0;flex:1">
-          <div style="font-weight:700;font-size:14.5px">통합 자산 경로 (Single Vault Path)</div>
+          <div style="font-weight:700;font-size:14.5px">공통 자원 경로 (Shared Path)</div>
           <div class="mono ums" style="margin:3px 0 0;word-break:break-all">${esc(st.vaultDir)}</div>
         </div>
         <div class="row" style="gap:6px;flex-wrap:wrap">
@@ -457,6 +457,10 @@
           <button type="button" class="primary btn-sm" id="vSyncAllBtn">${UI_ICO.swap} 모든 CLI로 동기화</button>
         </div>
       </div>
+      <label class="v-en" style="font-size:12.5px;padding:6px 10px;border-radius:8px;background:color-mix(in srgb,var(--accent) 8%,var(--panel));border:1px solid color-mix(in srgb,var(--accent) 24%,var(--line))">
+        <input type="checkbox" id="vAutoLoadChk" ${st.autoLoad !== false ? 'checked' : ''}>
+        <span><b>허브에서 CLI 실행 시 공통 자원 자동 로드</b> · Claude · Codex · Antigravity 실행할 때 공통 스킬 · MCP · 하네스를 자동으로 불러옵니다</span>
+      </label>
       <div class="h-stats" style="grid-template-columns:repeat(3,minmax(0,1fr))">${cliCards}</div>
     </div>
     <div class="seg" role="tablist" style="align-self:flex-start">
@@ -473,9 +477,18 @@
         if (r.error) return toast(r.error, 4000, 'danger');
         vaultState = r.state;
         paintVault();
-        toast('통합 볼트 경로를 변경했습니다');
+        toast('공통 자원 경로를 변경했습니다');
       });
     };
+    const autoChk = $('#vAutoLoadChk', body);
+    if (autoChk) {
+      autoChk.onchange = async () => {
+        const r = await api('/api/vault/autoload', { method: 'POST', body: { enabled: !!autoChk.checked } });
+        if (r.error) return toast(r.error, 4000, 'danger');
+        vaultState = r.state;
+        toast(autoChk.checked ? 'CLI 실행 시 공통 자원을 자동 로드합니다' : 'CLI 실행 시 자동 로드를 껐습니다');
+      };
+    }
     const openBtn = $('#vOpenDir', body);
     if (openBtn) openBtn.onclick = () => api('/api/vault/open-dir', { method: 'POST' });
 
@@ -548,14 +561,14 @@
       if (del) {
         const kind = del.dataset.vDel;
         const id = del.dataset.vId;
-        if (!confirm(`"${id}" 항목을 통합 볼트에서 삭제할까요?`)) return;
+        if (!confirm(`"${id}" 항목을 공통 자원에서 삭제할까요?`)) return;
         const endpoint = kind === 'skill' ? '/api/vault/skill' : kind === 'mcp' ? '/api/vault/mcp' : '/api/vault/harness';
         const action = kind === 'rule' ? 'delete-rule' : 'delete';
         const r = await api(endpoint, { method: 'POST', body: { action, name: id } });
         if (r.error) return toast(r.error, 4000, 'danger');
         vaultState = r.state;
         paintVault();
-        toast('볼트에서 삭제했습니다');
+        toast('공통 자원에서 삭제했습니다');
       }
     };
 
@@ -586,8 +599,8 @@
 
   async function viewVault() {
     const gen = viewGen;
-    setBar(`<h2 style="font-size:15px;font-weight:700;margin:0">통합 볼트 · 스킬 · MCP · 하네스</h2>`);
-    $('#view').innerHTML = `<div class="sys-shell">${systemTopHTML('vault')}<div class="page-wrap" id="vaultBody"><div class="empty">통합 볼트 정보를 불러오는 중…</div></div></div>`;
+    setBar(`<h2 style="font-size:15px;font-weight:700;margin:0">공통 자원 · 스킬 · MCP · 하네스</h2>`);
+    $('#view').innerHTML = `<div class="sys-shell">${systemTopHTML('vault')}<div class="page-wrap" id="vaultBody"><div class="empty">공통 자원 정보를 불러오는 중…</div></div></div>`;
     $('#view').onclick = (e) => {
       const st = e.target.closest('[data-systab]');
       if (st) return select({ kind: st.dataset.systab });

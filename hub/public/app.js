@@ -547,7 +547,7 @@ function systemTopHTML(activeTab, actionsHTML = '') {
     <div class="tablist" role="tablist" aria-label="설정 메뉴">
       ${tab('usage', ICO.chart, 'AI 사용량')}
       ${tab('gpu', ICO.gpu, 'GPU 대기열', gpuWait ? ` <span class="badge lim" style="margin-left:3px">${gpuWait}</span>` : '')}
-      ${tab('vault', ICO.layers, '통합 볼트')}
+      ${tab('vault', ICO.layers, '공통 자원')}
     </div>
     ${actionsHTML ? `<div class="sys-acts">${actionsHTML}</div>` : ''}
   </div>`;
@@ -663,7 +663,7 @@ function renderSide() {
   let h = `<nav class="snav" aria-label="주요 메뉴">
     <div class="snav-item${curKind === 'home' ? ' sel' : ''}" data-key="home">${ICO.home}<span class="snav-lbl">홈</span></div>
     <div class="snav-item${curKind === 'search' ? ' sel' : ''}" data-key="cmdk">${ICO.search}<span class="snav-lbl">빠른 이동 · 검색</span><span class="snav-kbd">Ctrl+K</span></div>
-    <div class="snav-item${isSys ? ' sel' : ''}" data-key="system">${ICO.settings}<span class="snav-lbl">설정</span>${sysAlert ? '<span class="snav-dot danger" title="확인할 항목 있음"></span>' : '<span class="snav-meta">사용량·GPU·볼트</span>'}</div>
+    <div class="snav-item${isSys ? ' sel' : ''}" data-key="system">${ICO.settings}<span class="snav-lbl">설정</span>${sysAlert ? '<span class="snav-dot danger" title="확인할 항목 있음"></span>' : '<span class="snav-meta">사용량·GPU·자원</span>'}</div>
     <div class="snav-item${curKind === 'calendar' ? ' sel' : ''}" data-key="calendar">${ICO.calendar}<span class="snav-lbl">캘린더</span>${overN ? '<span class="snav-dot danger" title="기한 지난 할 일 있음"></span>' : '<span class="snav-meta">일정·할 일</span>'}</div>
   </nav>`;
 
@@ -1055,7 +1055,7 @@ function select(sel, tab, persistTab = false) {
     } catch {}
   }
   renderSide();
-  ({ home: viewHome, terms: viewTerms, projects: window.viewProjects || (() => { setBar('<h2>Project</h2>'); $('#view').textContent = 'Project 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }), console: viewConsole, recent: viewTranscript, term: viewTerm, search: viewSearch, usage: viewUsage, research: viewResearch, gpu: viewGpu, calendar: viewCalendar, vault: window.viewVault || (() => { setBar('<h2>통합 볼트</h2>'); $('#view').textContent = '통합 볼트 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }) })[sel.kind]?.();
+  ({ home: viewHome, terms: viewTerms, projects: window.viewProjects || (() => { setBar('<h2>Project</h2>'); $('#view').textContent = 'Project 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }), console: viewConsole, recent: viewTranscript, term: viewTerm, search: viewSearch, usage: viewUsage, research: viewResearch, gpu: viewGpu, calendar: viewCalendar, vault: window.viewVault || (() => { setBar('<h2>공통 자원</h2>'); $('#view').textContent = '공통 자원 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }) })[sel.kind]?.();
 }
 
 function setBar(html) {
@@ -4779,7 +4779,7 @@ function openCommandPalette() {
       { icon: ICO.chart, title: 'AI 사용량', sub: '설정', keys: 'usage ai 사용량 한도 설정 settings', run: () => select({ kind: 'usage' }) },
       { icon: ICO.gpu, title: 'GPU 대기열', sub: '설정', keys: 'gpu vram 대기열 설정 settings', run: () => select({ kind: 'gpu' }) },
       { icon: ICO.calendar, title: '캘린더', sub: '일정 · 할 일', keys: 'calendar 캘린더 일정', run: () => select({ kind: 'calendar' }) },
-      { icon: ICO.layers, title: '통합 볼트', sub: '설정 · 스킬/MCP/하네스', keys: 'vault unified skills mcp harness 통합 볼트 스킬 하네스 설정 settings', run: () => select({ kind: 'vault' }) },
+      { icon: ICO.layers, title: '공통 자원', sub: '설정 · 스킬/MCP/하네스', keys: 'vault shared resources skills mcp harness 공통 자원 통합 볼트 스킬 하네스 설정 settings', run: () => select({ kind: 'vault' }) },
       { icon: ICO.sun, title: '테마 전환 (시스템 · 라이트 · 다크)', sub: '화면 밝기 변경', keys: 'theme dark light 테마 다크 라이트', run: () => cycleTheme() },
     ].filter((a) => hit(a.title, a.sub, a.keys));
     pushGrp('빠른 이동 · 작업', actions);

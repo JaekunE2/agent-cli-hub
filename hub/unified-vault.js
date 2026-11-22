@@ -386,7 +386,7 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
     }
     if (!fs.existsSync(l.mcpFile)) writeJsonAtomic(l.mcpFile, {});
     if (!fs.existsSync(l.manifestFile)) {
-      writeJsonAtomic(l.manifestFile, { skills: {}, rules: {}, lastGatherAt: 0, lastSyncAt: 0, lastSyncSummary: null });
+      writeJsonAtomic(l.manifestFile, { skills: {}, rules: {}, autoLoad: true, lastGatherAt: 0, lastSyncAt: 0, lastSyncSummary: null });
     }
     return l;
   };
@@ -397,6 +397,7 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
     return {
       skills: m?.skills && typeof m.skills === 'object' ? m.skills : {},
       rules: m?.rules && typeof m.rules === 'object' ? m.rules : {},
+      autoLoad: m?.autoLoad !== false,
       lastGatherAt: Number(m?.lastGatherAt || 0),
       lastSyncAt: Number(m?.lastSyncAt || 0),
       lastSyncSummary: m?.lastSyncSummary || null,
@@ -586,6 +587,7 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
     const manifest = readManifest();
     return {
       vaultDir: l.root,
+      autoLoad: manifest.autoLoad !== false,
       clis: getCliStatus(),
       skills: listSkills(),
       mcps: maskedMcps(),
@@ -737,8 +739,7 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
       }
       if (cli === 'claude') {
         const cur = readJsonSafe(cliCfg.mcpFile, {}) || {};
-        const bak = backupFile(cliCfg.mcpFile, 'hub-vault');
-        if (bak) report.backedUp.push(bak);
+        const prevStr = JSON.stringify(cur.mcpServers || {});
         const nextServers = { ...(cur.mcpServers || {}) };
         for (const [name, cfg] of Object.entries(mcps)) {
           if (!activeMcps[name]) {
@@ -750,12 +751,15 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
             : { command: cfg.command, args: cfg.args || [], ...(cfg.env ? { env: cfg.env } : {}) };
           summary.mcpsWritten++;
         }
-        cur.mcpServers = nextServers;
-        writeJsonAtomic(cliCfg.mcpFile, cur);
+        if (JSON.stringify(nextServers) !== prevStr) {
+          const bak = backupFile(cliCfg.mcpFile, 'hub-vault');
+          if (bak) report.backedUp.push(bak);
+          cur.mcpServers = nextServers;
+          writeJsonAtomic(cliCfg.mcpFile, cur);
+        }
       } else if (cli === 'agy') {
         const cur = readJsonSafe(cliCfg.mcpFile, {}) || {};
-        const bak = backupFile(cliCfg.mcpFile, 'hub-vault');
-        if (bak) report.backedUp.push(bak);
+        const prevStr = JSON.stringify(cur.mcpServers || {});
         const nextServers = { ...(cur.mcpServers || {}) };
         for (const [name, cfg] of Object.entries(mcps)) {
           if (!activeMcps[name]) {
@@ -769,18 +773,24 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
             : { command: cfg.command, args: cfg.args || [], ...(cfg.env ? { env: cfg.env } : {}) };
           summary.mcpsWritten++;
         }
-        cur.mcpServers = nextServers;
-        writeJsonAtomic(cliCfg.mcpFile, cur);
+        if (JSON.stringify(nextServers) !== prevStr) {
+          const bak = backupFile(cliCfg.mcpFile, 'hub-vault');
+          if (bak) report.backedUp.push(bak);
+          cur.mcpServers = nextServers;
+          writeJsonAtomic(cliCfg.mcpFile, cur);
+        }
       } else if (cli === 'codex') {
         const curText = fs.existsSync(cliCfg.mcpFile) ? fs.readFileSync(cliCfg.mcpFile, 'utf8') : '';
-        const bak = backupFile(cliCfg.mcpFile, 'hub-vault');
-        if (bak) report.backedUp.push(bak);
         const managedNames = new Set(Object.keys(activeMcps));
         const stripped = stripManagedTomlSections(curText, managedNames);
         const block = serializeCodexMcpBlock(activeMcps);
         const nextText = [stripped, block].filter(Boolean).join('\n\n') + '\n';
-        fs.mkdirSync(path.dirname(cliCfg.mcpFile), { recursive: true });
-        fs.writeFileSync(cliCfg.mcpFile, nextText, 'utf8');
+        if (nextText !== curText) {
+          const bak = backupFile(cliCfg.mcpFile, 'hub-vault');
+          if (bak) report.backedUp.push(bak);
+          fs.mkdirSync(path.dirname(cliCfg.mcpFile), { recursive: true });
+          fs.writeFileSync(cliCfg.mcpFile, nextText, 'utf8');
+        }
         summary.mcpsWritten = Object.keys(activeMcps).length;
       }
 
@@ -796,7 +806,10 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
       }
       if (cli === 'agy' && cliCfg.rulesDir) {
         fs.mkdirSync(cliCfg.rulesDir, { recursive: true });
-        fs.writeFileSync(path.join(cliCfg.rulesDir, 'hub-vault-harness.md'), combined + '\n', 'utf8');
+        const agyHarnessRule = path.join(cliCfg.rulesDir, 'hub-vault-harness.md');
+        const nextRule = combined + '\n';
+        const curRule = fs.existsSync(agyHarnessRule) ? fs.readFileSync(agyHarnessRule, 'utf8') : '';
+        if (curRule !== nextRule) fs.writeFileSync(agyHarnessRule, nextRule, 'utf8');
       }
       report.clis[cli] = summary;
     }
@@ -1155,12 +1168,86 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
     };
   };
 
+  const setAutoLoad = (enabled) => {
+    const manifest = readManifest();
+    manifest.autoLoad = enabled !== false;
+    writeManifest(manifest);
+    return getState();
+  };
+
+  // Prepare runtime assets & launch args/env so any CLI spawned by Hub auto-loads Shared Resources
+  const prepareLaunch = (cliKey, { resume = false } = {}) => {
+    if (!ALL_CLIS.includes(cliKey)) return { extraArgs: [], env: {}, synced: false };
+    const manifest = readManifest();
+    if (manifest.autoLoad === false) return { extraArgs: [], env: {}, synced: false };
+
+    // Keep CLI native configs/junctions up-to-date (no-op if already matching)
+    syncToClis({ clis: [cliKey] });
+
+    if (cliKey !== 'claude') {
+      return { extraArgs: [], env: {}, synced: true };
+    }
+
+    const l = ensureVaultDirs();
+    const runtimeDir = path.join(l.root, '.runtime', 'claude');
+    const rtSkillsDir = path.join(runtimeDir, '.claude', 'skills');
+    fs.mkdirSync(rtSkillsDir, { recursive: true });
+
+    const skills = listSkills();
+    const activeSkillNames = new Set();
+    for (const sk of skills) {
+      if (sk.enabled && sk.targets.includes('claude')) {
+        activeSkillNames.add(sk.name);
+        linkOrCopySkillDir(sk.path, path.join(rtSkillsDir, sk.name), path.join(l.backupDir, 'rt-claude'));
+      }
+    }
+    for (const ent of fs.readdirSync(rtSkillsDir, { withFileTypes: true })) {
+      if (!activeSkillNames.has(ent.name)) {
+        fs.rmSync(path.join(rtSkillsDir, ent.name), { recursive: true, force: true });
+      }
+    }
+
+    const mcps = readMcps();
+    const activeMcps = {};
+    for (const [name, cfg] of Object.entries(mcps)) {
+      if (cfg.enabled !== false && (Array.isArray(cfg.targets) ? cfg.targets : ALL_CLIS).includes('claude')) {
+        activeMcps[name] = cfg.url
+          ? { type: 'http', url: cfg.url, ...(cfg.headers ? { headers: cfg.headers } : {}) }
+          : { command: cfg.command, args: cfg.args || [], ...(cfg.env ? { env: cfg.env } : {}) };
+      }
+    }
+    const mcpFile = path.join(runtimeDir, 'mcp-config.json');
+    const hasMcps = Object.keys(activeMcps).length > 0;
+    if (hasMcps) writeJsonAtomic(mcpFile, { mcpServers: activeMcps });
+
+    const sharedText = fs.readFileSync(l.sharedHarnessFile, 'utf8').trim();
+    const enabledRules = listRules().filter((r) => r.enabled && r.targets.includes('claude'));
+    const combined = [sharedText, ...enabledRules.map((r) => `\n## [규칙: ${r.name}]\n${r.content.trim()}`)].filter(Boolean).join('\n').trim();
+    const harnessFile = path.join(runtimeDir, 'CLAUDE.md');
+    const nextHarness = combined ? `${combined}\n` : '';
+    if (!fs.existsSync(harnessFile) || fs.readFileSync(harnessFile, 'utf8') !== nextHarness) {
+      fs.writeFileSync(harnessFile, nextHarness, 'utf8');
+    }
+
+    const extraArgs = ['--add-dir', runtimeDir];
+    if (hasMcps) extraArgs.push('--mcp-config', mcpFile);
+    if (!resume && combined) extraArgs.push('--append-system-prompt-file', harnessFile);
+
+    return {
+      extraArgs,
+      env: { CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1' },
+      synced: true,
+    };
+  };
+
   return {
     getState,
     inspectCli,
     importFromCli,
     gatherFromClis,
     syncToClis,
+    prepareLaunch,
+    setAutoLoad,
     readSkillContent,
     saveSkill,
     deleteSkill,

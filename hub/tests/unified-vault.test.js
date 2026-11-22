@@ -224,12 +224,33 @@ args = ["-y", "seq-mcp"]
     assert.equal(foundLate.inVault, false);
     assert.equal(foundLate.isLinkedToVault, false);
 
-    const imp = vault.importFromCli({ cli: 'claude', skills: ['late-added-skill'], moveSkills: true, importHarness: true });
+    const imp = vault.importFromCli({ cli: 'claude', skills: ['late-added-skill'], mcps: ['github'], moveSkills: true, importHarness: true });
     assert.equal(imp.importedSkills, 1);
+    assert.equal(imp.importedMcps, 1);
     assert.ok(imp.cliData.skills.find((s) => s.name === 'late-added-skill')?.isLinkedToVault);
     assert.ok(fs.existsSync(path.join(altVault, 'skills', 'late-added-skill', 'SKILL.md')));
     assert.ok(fs.lstatSync(lateSkill).isSymbolicLink());
     assert.ok(fs.readFileSync(path.join(altVault, 'harness', 'shared.md'), 'utf8').includes('# My Claude Prompt'));
+
+    // prepareLaunch generates runtime dirs/MCP/harness args for Claude and honors autoLoad flag
+    const prepClaude = vault.prepareLaunch('claude', { resume: false });
+    assert.equal(prepClaude.synced, true);
+    assert.ok(prepClaude.extraArgs.includes('--add-dir'));
+    assert.ok(prepClaude.extraArgs.includes('--mcp-config'));
+    assert.ok(prepClaude.extraArgs.includes('--append-system-prompt-file'));
+    assert.equal(prepClaude.env.CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD, '1');
+    assert.ok(fs.existsSync(path.join(altVault, '.runtime', 'claude', '.claude', 'skills', 'late-added-skill', 'SKILL.md')));
+    assert.ok(fs.existsSync(path.join(altVault, '.runtime', 'claude', 'mcp-config.json')));
+
+    // On resume, do not duplicate --append-system-prompt-file
+    const prepResume = vault.prepareLaunch('claude', { resume: true });
+    assert.ok(!prepResume.extraArgs.includes('--append-system-prompt-file'));
+
+    // Toggling autoLoad off returns empty launch args
+    vault.setAutoLoad(false);
+    const prepOff = vault.prepareLaunch('claude');
+    assert.equal(prepOff.synced, false);
+    assert.deepEqual(prepOff.extraArgs, []);
   } finally {
     fs.rmSync(env.base, { recursive: true, force: true });
   }
