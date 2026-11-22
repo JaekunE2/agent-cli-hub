@@ -47,9 +47,14 @@ function paintCalendar() {
     <button class="btn-sm" data-cal="addtask" title="todo.md에 마감 있는 할 일 추가">${ico.plus || ''} 할 일</button>
     <button class="primary btn-sm" data-cal="addev">${ico.plus || ''} 일정</button>
     <button class="ghost icon-btn btn-sm" data-cal="more" aria-label="캘린더 연동 메뉴" aria-haspopup="menu" aria-expanded="false" title="${esc(calMoreTitle)}">${ico.more || '⋯'}</button>`;
-  const sysTop = typeof systemTopHTML === 'function' ? systemTopHTML('calendar', calActs) : '';
-
+  const t = todayStr();
   const items = d.items || [], byDate = new Map();
+  const overN = items.filter((x) => x.kind === 'task' && !x.done && x.date < t).length;
+  const sysTop = `<div class="sys-top">
+    <div class="row" style="gap:8px;align-items:center">${ico.calendar || ''}<h2 style="margin:0;font-size:15px;font-weight:700">캘린더</h2>${overN ? `<span class="badge lim">지연 ${overN}</span>` : ''}</div>
+    <div class="sys-acts">${calActs}</div>
+  </div>`;
+
   for (const it of items) { if (!byDate.has(it.date)) byDate.set(it.date, []); byDate.get(it.date).push(it); }
   const order = { event: 0, mscal: 1, gcal: 1, task: 2, milestone: 3 };
   for (const list of byDate.values()) list.sort((a, b) => (order[a.kind] - order[b.kind]) || String(a.time || '').localeCompare(String(b.time || '')) || a.title.localeCompare(b.title));
@@ -58,7 +63,6 @@ function paintCalendar() {
 
   // month grid (Mon-first), 6 weeks
   const first = new Date(y, mo, 1), start = new Date(first); start.setDate(1 - ((first.getDay() + 6) % 7));
-  const t = todayStr();
   let cells = '';
   for (let i = 0; i < 42; i++) {
     const day = new Date(start); day.setDate(start.getDate() + i);

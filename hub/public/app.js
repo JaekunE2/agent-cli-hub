@@ -539,19 +539,14 @@ function branchTagHTML(br, compact = false) {
 
 // ---------- Linear-Style Minimal Workspace Sidebar (Projects + Terminals + Recent; System Grouped) ----------
 function systemTopHTML(activeTab, actionsHTML = '') {
-  state.sysTab = activeTab;
-  const calItems = ((typeof CAL !== 'undefined' && CAL?.data?.items) || []).filter((x) => !(x.kind === 'task' && x.done));
-  const now = new Date();
-  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-  const overN = calItems.filter((x) => x.kind === 'task' && !x.done && x.date < today).length;
+  state.sysTab = ['usage', 'gpu', 'vault'].includes(activeTab) ? activeTab : 'usage';
   const gpuWait = state.gpu?.waiting?.length || 0;
   const tab = (id, icon, label, badge = '') =>
     `<button role="tab" data-systab="${id}" aria-selected="${activeTab === id}" class="${activeTab === id ? 'on' : ''}">${icon} ${label}${badge}</button>`;
   return `<div class="sys-top">
-    <div class="tablist" role="tablist" aria-label="시스템 · 데이터 메뉴">
+    <div class="tablist" role="tablist" aria-label="설정 메뉴">
       ${tab('usage', ICO.chart, 'AI 사용량')}
       ${tab('gpu', ICO.gpu, 'GPU 대기열', gpuWait ? ` <span class="badge lim" style="margin-left:3px">${gpuWait}</span>` : '')}
-      ${tab('calendar', ICO.calendar, '캘린더', overN ? ` <span class="badge lim" style="margin-left:3px">${overN}</span>` : '')}
       ${tab('vault', ICO.layers, '통합 볼트')}
     </div>
     ${actionsHTML ? `<div class="sys-acts">${actionsHTML}</div>` : ''}
@@ -653,14 +648,14 @@ function renderSide() {
   const prevTop = side.scrollTop;
   const folded = sideFolded();
   const curKind = state.sel.kind;
-  const isSys = ['usage', 'gpu', 'calendar', 'vault'].includes(curKind);
+  const isSys = ['usage', 'gpu', 'vault'].includes(curKind);
 
   const calItems = ((typeof CAL !== 'undefined' && CAL?.data?.items) || []).filter((x) => !(x.kind === 'task' && x.done));
   const now = new Date();
   const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   const overN = calItems.filter((x) => x.kind === 'task' && !x.done && x.date < today).length;
   const gpuWait = state.gpu?.waiting?.length || 0;
-  const sysAlert = overN > 0 || gpuWait > 0;
+  const sysAlert = gpuWait > 0;
 
   const fTerms = termsOf(state.sideFilter);
   const matchSide = (...parts) => !fTerms.length || fTerms.every((q) => parts.join(' ').toLowerCase().includes(q));
@@ -668,7 +663,8 @@ function renderSide() {
   let h = `<nav class="snav" aria-label="주요 메뉴">
     <div class="snav-item${curKind === 'home' ? ' sel' : ''}" data-key="home">${ICO.home}<span class="snav-lbl">홈</span></div>
     <div class="snav-item${curKind === 'search' ? ' sel' : ''}" data-key="cmdk">${ICO.search}<span class="snav-lbl">빠른 이동 · 검색</span><span class="snav-kbd">Ctrl+K</span></div>
-    <div class="snav-item${isSys ? ' sel' : ''}" data-key="system">${ICO.chart}<span class="snav-lbl">시스템 · 데이터</span>${sysAlert ? '<span class="snav-dot danger" title="확인할 항목 있음"></span>' : '<span class="snav-meta">사용량·GPU·일정</span>'}</div>
+    <div class="snav-item${isSys ? ' sel' : ''}" data-key="system">${ICO.settings}<span class="snav-lbl">설정</span>${sysAlert ? '<span class="snav-dot danger" title="확인할 항목 있음"></span>' : '<span class="snav-meta">사용량·GPU·볼트</span>'}</div>
+    <div class="snav-item${curKind === 'calendar' ? ' sel' : ''}" data-key="calendar">${ICO.calendar}<span class="snav-lbl">캘린더</span>${overN ? '<span class="snav-dot danger" title="기한 지난 할 일 있음"></span>' : '<span class="snav-meta">일정·할 일</span>'}</div>
   </nav>`;
 
   // Section 0: Dedicated Favorites (Projects + Terminals + Recent Sessions — resolved live items only!)
@@ -972,7 +968,8 @@ $('#side')?.addEventListener('click', async (e) => {
   if (k === 'home') return select({ kind: 'home' });
   if (k === 'cmdk') return openCommandPalette();
   if (k === 'search') return select({ kind: 'search' });
-  if (k === 'system') return select({ kind: state.sysTab || 'usage' });
+  if (k === 'system') return select({ kind: ['usage', 'gpu', 'vault'].includes(state.sysTab) ? state.sysTab : 'usage' });
+  if (k === 'calendar') return select({ kind: 'calendar' });
   if (k === 'terms') { state.termsTab = 'active'; return select({ kind: 'terms' }); }
   if (k === 'terms-recent') { state.termsTab = 'recent'; return select({ kind: 'terms' }); }
   if (k === 'terms-favs') { state.termsTab = 'favs'; return select({ kind: 'terms' }); }
@@ -4779,10 +4776,10 @@ function openCommandPalette() {
     const actions = [
       { icon: ICO.plus, title: '새 터미널 열기', sub: 'Claude · Codex · Antigravity · 셸', keys: 'new terminal 새 터미널', run: () => openNewTermDrawer() },
       { icon: ICO.folder, title: '새 Project 만들기', sub: '목표 · 작업 흐름 설계', keys: 'new project 새 프로젝트', run: () => (typeof projectForm === 'function' ? projectForm() : select({ kind: 'projects' })) },
-      { icon: ICO.chart, title: 'AI 사용량', sub: '시스템 · 데이터', keys: 'usage ai 사용량 한도', run: () => select({ kind: 'usage' }) },
-      { icon: ICO.gpu, title: 'GPU 대기열', sub: '시스템 · 데이터', keys: 'gpu vram 대기열', run: () => select({ kind: 'gpu' }) },
-      { icon: ICO.calendar, title: '캘린더', sub: '시스템 · 데이터', keys: 'calendar 캘린더 일정', run: () => select({ kind: 'calendar' }) },
-      { icon: ICO.layers, title: '통합 볼트', sub: '시스템 · 데이터 · 스킬/MCP/하네스', keys: 'vault unified skills mcp harness 통합 볼트 스킬 하네스', run: () => select({ kind: 'vault' }) },
+      { icon: ICO.chart, title: 'AI 사용량', sub: '설정', keys: 'usage ai 사용량 한도 설정 settings', run: () => select({ kind: 'usage' }) },
+      { icon: ICO.gpu, title: 'GPU 대기열', sub: '설정', keys: 'gpu vram 대기열 설정 settings', run: () => select({ kind: 'gpu' }) },
+      { icon: ICO.calendar, title: '캘린더', sub: '일정 · 할 일', keys: 'calendar 캘린더 일정', run: () => select({ kind: 'calendar' }) },
+      { icon: ICO.layers, title: '통합 볼트', sub: '설정 · 스킬/MCP/하네스', keys: 'vault unified skills mcp harness 통합 볼트 스킬 하네스 설정 settings', run: () => select({ kind: 'vault' }) },
       { icon: ICO.sun, title: '테마 전환 (시스템 · 라이트 · 다크)', sub: '화면 밝기 변경', keys: 'theme dark light 테마 다크 라이트', run: () => cycleTheme() },
     ].filter((a) => hit(a.title, a.sub, a.keys));
     pushGrp('빠른 이동 · 작업', actions);

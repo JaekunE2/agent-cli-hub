@@ -2332,5 +2332,15 @@
   "패널 왼쪽으로 이동": "Move panel left",
   "패널 오른쪽으로 이동": "Move panel right",
   "이 패널 닫기": "Close this panel",
-  "최소 하나의 패널은 열려 있어야 합니다": "At least one panel must remain open"
+  "최소 하나의 패널은 열려 있어야 합니다": "At least one panel must remain open",
+  "설정 메뉴": "Settings Menu",
+  "설정": "Settings",
+  "사용량·GPU·볼트": "Usage·GPU·Vault",
+  "기한 지난 할 일 있음": "Overdue tasks present",
+  "일정·할 일": "Events·Tasks",
+  "usage ai 사용량 한도 설정 settings": "usage ai limits settings",
+  "gpu vram 대기열 설정 settings": "gpu vram queue settings",
+  "일정 · 할 일": "Events · Tasks",
+  "설정 · 스킬/MCP/하네스": "Settings · Skills/MCP/Harness",
+  "vault unified skills mcp harness 통합 볼트 스킬 하네스 설정 settings": "vault unified skills mcp harness settings"
 }
