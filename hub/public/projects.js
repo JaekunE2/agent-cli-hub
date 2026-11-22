@@ -121,7 +121,7 @@ function openProjectTaskDrawer(p, task, focusSubChat = false) {
     </div>
     <div class="drw-sec">
       <div class="row" style="justify-content:space-between">
-        <div class="drw-lbl" style="margin:0">💬 서브 개발 채팅 (이 태스크 안에서 바로 대화형 개발)</div>
+        <div class="drw-lbl" style="margin:0;display:inline-flex;align-items:center;gap:5px">${ico.chat || ''} 서브 개발 채팅 (이 태스크 안에서 바로 대화형 개발)</div>
         <select id="scAgentPick" class="btn-sm" aria-label="서브 개발 CLI 선택">
           ${['codex', 'claude', 'agy'].map((id) => `<option value="${id}" ${(cfg.agent === id || (cfg.agent === 'cursor' && id === 'codex')) ? 'selected' : ''}>${esc(providerName(id))}</option>`).join('')}
         </select>
@@ -146,7 +146,7 @@ function openProjectTaskDrawer(p, task, focusSubChat = false) {
       <div class="row" style="justify-content:space-between">
         <div class="drw-lbl" style="margin:0">하위 서브태스크 (${subs.length})</div>
         <div class="row" style="gap:6px">
-          <button type="button" class="btn-sm" data-drw-ai-sub title="선택한 CLI로 이 작업을 2~6개 서브 개발 단계로 자동 분해">✨ AI 서브 분해</button>
+          <button type="button" class="btn-sm" data-drw-ai-sub title="선택한 CLI로 이 작업을 2~6개 서브 개발 단계로 자동 분해">${ico.spark || ''} AI 서브 분해</button>
           <button type="button" class="btn-sm" data-drw-add-sub>＋ 서브 추가</button>
         </div>
       </div>

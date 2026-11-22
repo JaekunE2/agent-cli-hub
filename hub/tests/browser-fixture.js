@@ -50,8 +50,24 @@ module.exports = async function fixture(store) {
       if (t.agy) setTimeout(() => { t.sessionId = sessions[0].sessionId; }, 300);
       return json(t);
     }
+    if (url.pathname === '/api/projects/task-chat') {
+      const projectId = url.searchParams.get('projectId') || '';
+      const taskId = url.searchParams.get('taskId') || '';
+      if (req.method === 'GET') return json({ chats: store.listSubChats(projectId, taskId), active: null });
+    }
+    if (url.pathname === '/api/fs/dirs') {
+      const reqP = url.searchParams.get('path') || 'D:\\demo';
+      return json({
+        host: 'TEST-PC', current: reqP, parent: 'D:\\', drives: ['C:\\', 'D:\\'],
+        dirs: [{ name: 'src', path: reqP + '\\src', markers: ['Git', 'Node.js'] }],
+        files: ['package.json', 'README.md'],
+        quick: [{ path: 'D:\\demo', label: 'demo', kind: 'project' }],
+        info: { exists: true, isExistingProject: true, fileCount: 12, markers: ['Git', 'Node.js'] },
+        targetInfo: { exists: true, isExistingProject: true, fileCount: 12, markers: ['Git', 'Node.js'], isInternal: false },
+      });
+    }
     if (url.pathname === '/api/projects') {
-      if (req.method === 'GET') return json({ projects: store.list().map((pr) => ({ ...pr, tokens: store.tokenSummary(pr.id) })) });
+      if (req.method === 'GET') return json({ projects: store.list().map((pr) => ({ ...pr, tokens: store.tokenSummary(pr.id), subChats: store.allSubChats(pr.id) })), defaultCwd: 'D:\\demo\\projects' });
       let body = ''; for await (const chunk of req) body += chunk;
       if (req.method === 'DELETE') {
         const { id, revision, stopRunning } = JSON.parse(body);

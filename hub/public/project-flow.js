@@ -177,7 +177,7 @@ function projectFlow(p) {
       </div>
       ${t.detail ? `<p class="pj-card-desc">${esc(t.detail)}</p>` : ''}
       <div class="pj-task-foot">
-        <div class="row" style="gap:5px;min-width:0">${projectCliBadgeHTML(p, t)}<button class="ghost btn-sm" data-subchat-task="${esc(t.id)}" title="서브 개발 채팅 열기">💬${chatCnt ? ` ${chatCnt}` : ''}</button></div>
+        <div class="row" style="gap:5px;min-width:0">${projectCliBadgeHTML(p, t)}<button class="ghost btn-sm" data-subchat-task="${esc(t.id)}" title="서브 개발 채팅 열기" aria-label="서브 개발 채팅">${ico.chat || ''}${chatCnt ? ` ${chatCnt}` : ''}</button></div>
         ${projectStartBtnHTML(p, t)}
       </div>
     </article>`;
@@ -185,13 +185,14 @@ function projectFlow(p) {
 
   const controls = `<div class="pj-flow-bar">
     <div class="row" style="gap:8px;flex-wrap:wrap">
-      <button type="button" class="btn-sm" id="flowAutoLayout" title="겹침 없이 계층·교차 최소화 기준으로 자동 재배치">${ico.refresh || '✨'} 자동 정렬${hasCustomPos ? ' (초기화)' : ''}</button>
+      <button type="button" class="btn-sm" id="flowAutoLayout" title="겹침 없이 계층·교차 최소화 기준으로 자동 재배치">${ico.refresh || ''} 자동 정렬${hasCustomPos ? ' (초기화)' : ''}</button>
       <button type="button" class="btn-sm${simplify ? ' on' : ''}" id="flowToggleSimplify" title="중간 단계를 거쳐 이미 연결된 중복 화살표를 숨겨 그래프 겹침을 줄입니다">
         간선 단순화 ${simplify ? `켜짐${hiddenCount ? ` (-${hiddenCount})` : ''}` : '꺼짐'}
       </button>
-      <span class="ums" style="margin:0">💡 카드를 드래그해 원하는 위치로 자유 이동 · 카드 클릭 시 서브 개발·하위 태스크 확인</span>
+      <span class="ums" style="margin:0">카드를 드래그해 자유 이동 · 카드 클릭 시 서브 개발·하위 태스크 확인</span>
     </div>
     <div class="row" style="gap:4px">
+      <button type="button" class="ghost btn-sm" id="flowZoomFit" title="전체 노드가 한눈에 보이도록 화면 맞춤">화면 맞춤</button>
       <button type="button" class="ghost btn-sm" id="flowZoomOut" title="축소">－</button>
       <button type="button" class="ghost btn-sm mono" id="flowZoomReset" title="100% 기본 배율">100%</button>
       <button type="button" class="ghost btn-sm" id="flowZoomIn" title="확대">＋</button>
@@ -436,8 +437,16 @@ function bindProjectFlow(p, gen) {
       drawEdges();
     };
   }
-  const zOut = $('#flowZoomOut'), zIn = $('#flowZoomIn'), zReset = $('#flowZoomReset');
+  const zOut = $('#flowZoomOut'), zIn = $('#flowZoomIn'), zReset = $('#flowZoomReset'), zFit = $('#flowZoomFit');
+  const fitToViewport = () => {
+    const vw = viewport.clientWidth || 1100;
+    const cw = parseFloat(canvas.style.width) || 720;
+    if (cw > vw - 16) applyZoom(Math.max(0.65, Math.min(1, (vw - 24) / cw)));
+    else applyZoom(1);
+  };
   if (zOut) zOut.onclick = () => applyZoom(zoom - 0.1);
   if (zIn) zIn.onclick = () => applyZoom(zoom + 0.1);
   if (zReset) zReset.onclick = () => applyZoom(1);
+  if (zFit) zFit.onclick = fitToViewport;
+  requestAnimationFrame(() => { drawEdges(); fitToViewport(); });
 }

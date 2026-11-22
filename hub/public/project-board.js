@@ -13,7 +13,7 @@ function openProjectTaskMenu(p, task, anchor, onMove) {
   openMoreMenu(anchor, [
     ...moveItems,
     { divider: true },
-    { label: '💬 서브 개발 채팅 열기', onClick: () => openProjectTaskDrawer(p, task, true) },
+    { label: '서브 개발 채팅 열기', icon: ico.chat || '', onClick: () => openProjectTaskDrawer(p, task, true) },
     !task.parentId ? { label: '하위 서브태스크 추가', icon: ico.plus || '', onClick: () => taskForm(p, null, false, task.id) } : null,
     { label: '담당 CLI·모델 변경', icon: ico.settings || '', onClick: () => taskForm(p, task, true) },
     { label: '작업 수정', icon: ico.edit || '', onClick: () => taskForm(p, task) },
@@ -57,7 +57,7 @@ function projectBoard(p) {
       </div>
       ${t.detail ? `<p class="pj-card-desc">${esc(t.detail)}</p>` : ''}
       <div class="pj-task-foot">
-        <div class="row" style="gap:5px;min-width:0">${projectCliBadgeHTML(p, t)}<button class="ghost btn-sm" data-subchat-task="${esc(t.id)}" title="서브 개발 채팅 열기">💬${chatCnt ? ` ${chatCnt}` : ''}</button></div>
+        <div class="row" style="gap:5px;min-width:0">${projectCliBadgeHTML(p, t)}<button class="ghost btn-sm" data-subchat-task="${esc(t.id)}" title="서브 개발 채팅 열기" aria-label="서브 개발 채팅">${ico.chat || ''}${chatCnt ? ` ${chatCnt}` : ''}</button></div>
         ${projectStartBtnHTML(p, t)}
       </div>
     </article>`;
