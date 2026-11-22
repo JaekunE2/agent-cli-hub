@@ -413,24 +413,72 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
 
   const writeMcps = (obj) => writeJsonAtomic(layout().mcpFile, obj);
 
-  const countSkillsInDir = (dir) => {
-    if (!fs.existsSync(dir)) return 0;
-    try {
-      return fs.readdirSync(dir, { withFileTypes: true })
-        .filter((e) => !BUNDLED_SYSTEM_SKILLS.has(e.name) && (e.isDirectory() || e.isSymbolicLink()))
-        .length;
-    } catch { return 0; }
+  const countSkillsInDirs = (dirs) => {
+    const seen = new Set();
+    for (const dir of (Array.isArray(dirs) ? dirs : [dirs])) {
+      if (!dir || !fs.existsSync(dir)) continue;
+      try {
+        for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+          if (!BUNDLED_SYSTEM_SKILLS.has(e.name) && !e.name.startsWith('.') && (e.isDirectory() || e.isSymbolicLink())) {
+            seen.add(e.name);
+          }
+        }
+      } catch {}
+    }
+    return seen.size;
+  };
+
+  const readRawCliMcps = (cliKey, p) => {
+    const cfg = p[cliKey];
+    if (!cfg) return {};
+    if (cliKey === 'codex') {
+      return fs.existsSync(cfg.mcpFile) ? parseCodexMcpToml(fs.readFileSync(cfg.mcpFile, 'utf8')) : {};
+    }
+    if (cliKey === 'claude') {
+      return readJsonSafe(cfg.mcpFile, {})?.mcpServers || {};
+    }
+    const merged = {};
+    for (const mf of [cfg.mcpFile, ...(cfg.extraMcpFiles || [])]) {
+      const s = readJsonSafe(mf, {})?.mcpServers || {};
+      for (const [k, v] of Object.entries(s)) {
+        if (!merged[k]) merged[k] = v;
+      }
+    }
+    return merged;
+  };
+
+  const maskMcpForView = (name, cfg, extra = {}) => {
+    const env = {};
+    for (const [k, v] of Object.entries(cfg.env || {})) {
+      env[k] = SECRET_KEY_RE.test(k) ? maskSecret(v) : String(v);
+    }
+    const headers = {};
+    for (const [k, v] of Object.entries(cfg.headers || {})) {
+      headers[k] = SECRET_KEY_RE.test(k) ? maskSecret(v) : String(v);
+    }
+    const url = cfg.url || cfg.httpUrl || cfg.serverUrl || '';
+    return {
+      name,
+      transport: url ? 'http' : 'stdio',
+      command: cfg.command || '',
+      args: Array.isArray(cfg.args) ? cfg.args : [],
+      url,
+      hasBearerToken: !!cfg.bearer_token,
+      env,
+      headers,
+      ...extra,
+    };
   };
 
   const getCliStatus = () => {
     const p = cliPaths();
-    const claudeMcp = readJsonSafe(p.claude.mcpFile, {})?.mcpServers || {};
-    const codexMcp = fs.existsSync(p.codex.mcpFile) ? parseCodexMcpToml(fs.readFileSync(p.codex.mcpFile, 'utf8')) : {};
-    const agyMcp = readJsonSafe(p.agy.mcpFile, {})?.mcpServers || {};
+    const claudeMcp = readRawCliMcps('claude', p);
+    const codexMcp = readRawCliMcps('codex', p);
+    const agyMcp = readRawCliMcps('agy', p);
     return {
       claude: {
         label: p.claude.label,
-        skillsCount: countSkillsInDir(p.claude.skillDirs[0]),
+        skillsCount: countSkillsInDirs(p.claude.skillDirs),
         mcpCount: Object.keys(claudeMcp).length,
         hasHarness: fs.existsSync(p.claude.harnessFile),
         skillDir: p.claude.skillDirs[0],
@@ -439,7 +487,7 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
       },
       codex: {
         label: p.codex.label,
-        skillsCount: countSkillsInDir(p.codex.skillDirs[0]),
+        skillsCount: countSkillsInDirs(p.codex.skillDirs),
         mcpCount: Object.keys(codexMcp).length,
         hasHarness: fs.existsSync(p.codex.harnessFile),
         skillDir: p.codex.skillDirs[0],
@@ -448,7 +496,7 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
       },
       agy: {
         label: p.agy.label,
-        skillsCount: countSkillsInDir(p.agy.skillDirs[0]),
+        skillsCount: countSkillsInDirs(p.agy.skillDirs),
         mcpCount: Object.keys(agyMcp).length,
         hasHarness: fs.existsSync(p.agy.harnessFile) || fs.existsSync(path.join(p.agy.rulesDir, 'hub-vault-harness.md')),
         skillDir: p.agy.skillDirs[0],
@@ -898,8 +946,219 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
     return fs.readFileSync(mdPath, 'utf8');
   };
 
+  const inspectCli = (cliKey) => {
+    if (!ALL_CLIS.includes(cliKey)) throw new Error('알 수 없는 CLI입니다.');
+    const l = ensureVaultDirs();
+    const p = cliPaths();
+    const cfg = p[cliKey];
+    const vaultMcps = readMcps();
+    const manifest = readManifest();
+
+    const skillMap = new Map();
+    for (const sdir of cfg.skillDirs) {
+      if (!sdir || !fs.existsSync(sdir)) continue;
+      for (const ent of fs.readdirSync(sdir, { withFileTypes: true })) {
+        if (BUNDLED_SYSTEM_SKILLS.has(ent.name) || ent.name.startsWith('.')) continue;
+        if (!ent.isDirectory() && !ent.isSymbolicLink()) continue;
+        if (skillMap.has(ent.name)) continue;
+        const skillPath = path.join(sdir, ent.name);
+        let realDir = skillPath;
+        try { realDir = fs.realpathSync(skillPath); } catch {}
+        const mdPath = path.join(realDir, 'SKILL.md');
+        const hasSkillMd = fs.existsSync(mdPath);
+        const mdContent = hasSkillMd ? fs.readFileSync(mdPath, 'utf8') : '';
+        const meta = parseSkillFrontmatter(mdContent);
+        const vaultDst = path.join(l.skillsDir, ent.name);
+        skillMap.set(ent.name, {
+          name: ent.name,
+          displayName: meta.name || ent.name,
+          description: meta.description || '',
+          hasSkillMd,
+          preview: mdContent.slice(0, 2400),
+          dir: skillPath,
+          parentDir: sdir,
+          inVault: fs.existsSync(vaultDst),
+          isLinkedToVault: isSymlinkOrJunction(skillPath) && pointsInside(skillPath, vaultDst),
+        });
+      }
+    }
+
+    const rawMcps = readRawCliMcps(cliKey, p);
+    const mcps = Object.entries(rawMcps).map(([name, mcfg]) => maskMcpForView(name, mcfg, {
+      cliOnly: CODEX_INTERNAL_MCPS.has(name),
+      inVault: !!vaultMcps[name],
+      inVaultTargets: vaultMcps[name]?.targets || [],
+    })).sort((a, b) => a.name.localeCompare(b.name));
+
+    const harnessRaw = cfg.harnessFile && fs.existsSync(cfg.harnessFile) ? fs.readFileSync(cfg.harnessFile, 'utf8') : '';
+    const hasVaultBlock = /<!-- hub-vault:begin -->[\s\S]*?<!-- hub-vault:end -->/.test(harnessRaw);
+    const customHarness = harnessRaw.replace(/<!-- hub-vault:begin -->[\s\S]*?<!-- hub-vault:end -->\r?\n?/g, '').trim();
+    const sharedText = fs.readFileSync(l.sharedHarnessFile, 'utf8');
+
+    const rules = [];
+    if (cfg.rulesDir && fs.existsSync(cfg.rulesDir)) {
+      for (const ent of fs.readdirSync(cfg.rulesDir, { withFileTypes: true })) {
+        if (!ent.isFile() || ent.name === 'hub-vault-harness.md' || !/\.(md|rules|txt)$/i.test(ent.name)) continue;
+        const fp = path.join(cfg.rulesDir, ent.name);
+        const content = fs.readFileSync(fp, 'utf8');
+        const vaultName = `${cliKey}-${ent.name}`;
+        rules.push({
+          name: ent.name,
+          vaultName,
+          path: fp,
+          size: Buffer.byteLength(content, 'utf8'),
+          preview: content.slice(0, 1200),
+          inVault: fs.existsSync(path.join(l.rulesDir, vaultName)) || !!manifest.rules[vaultName],
+        });
+      }
+    }
+
+    return {
+      cli: cliKey,
+      label: cfg.label,
+      skillDirs: cfg.skillDirs,
+      mcpFile: cfg.mcpFile,
+      harnessFile: cfg.harnessFile,
+      skills: [...skillMap.values()].sort((a, b) => a.name.localeCompare(b.name)),
+      mcps,
+      harness: {
+        exists: !!(cfg.harnessFile && fs.existsSync(cfg.harnessFile)),
+        path: cfg.harnessFile,
+        hasVaultBlock,
+        customContent: customHarness.slice(0, 4000),
+        hasCustomContent: !!customHarness,
+        customImported: !customHarness || sharedText.includes(customHarness.slice(0, 120)),
+      },
+      rules: rules.sort((a, b) => a.name.localeCompare(b.name)),
+    };
+  };
+
+  const importFromCli = ({ cli, skills = [], mcps = [], rules = [], importHarness = false, moveSkills = true }) => {
+    if (!ALL_CLIS.includes(cli)) throw new Error('알 수 없는 CLI입니다.');
+    const l = ensureVaultDirs();
+    const p = cliPaths();
+    const cfg = p[cli];
+    const manifest = readManifest();
+    const vaultMcps = readMcps();
+    let importedSkills = 0;
+    let movedSkills = 0;
+    let importedMcps = 0;
+    let importedRules = 0;
+    let importedHarness = false;
+
+    for (const rawSkillName of (skills || [])) {
+      const name = safeName(rawSkillName);
+      if (!name) continue;
+      let foundDir = '';
+      for (const sdir of cfg.skillDirs) {
+        const candidate = path.join(sdir, name);
+        if (fs.existsSync(candidate)) { foundDir = candidate; break; }
+      }
+      if (!foundDir) continue;
+      let realFrom;
+      try { realFrom = fs.realpathSync(foundDir); } catch { continue; }
+      const dstDir = path.join(l.skillsDir, name);
+      if (realFrom !== path.resolve(dstDir) && !fs.existsSync(dstDir)) {
+        copyDirRecursive(realFrom, dstDir);
+        importedSkills++;
+      }
+      const prev = manifest.skills[name] || { enabled: true, targets: [...ALL_CLIS], sources: [] };
+      prev.enabled = true;
+      if (!Array.isArray(prev.targets)) prev.targets = [...ALL_CLIS];
+      if (!prev.targets.includes(cli)) prev.targets.push(cli);
+      if (!Array.isArray(prev.sources)) prev.sources = [];
+      if (!prev.sources.includes(cli)) prev.sources.push(cli);
+      manifest.skills[name] = prev;
+
+      if (moveSkills && fs.existsSync(dstDir)) {
+        const st = linkOrCopySkillDir(dstDir, foundDir, path.join(l.backupDir, cli));
+        if (st === 'linked') movedSkills++;
+      }
+    }
+
+    const rawCliMcps = readRawCliMcps(cli, p);
+    for (const rawMcpName of (mcps || [])) {
+      const name = String(rawMcpName || '').trim();
+      const rawCfg = rawCliMcps[name];
+      if (!name || !rawCfg) continue;
+      const isCodexInternal = CODEX_INTERNAL_MCPS.has(name);
+      const url = rawCfg.url || rawCfg.httpUrl || rawCfg.serverUrl || '';
+      if (!vaultMcps[name]) {
+        vaultMcps[name] = {
+          ...(rawCfg.command ? { command: rawCfg.command } : {}),
+          ...(Array.isArray(rawCfg.args) ? { args: rawCfg.args } : {}),
+          ...(url ? { url } : {}),
+          ...(rawCfg.bearer_token ? { bearer_token: rawCfg.bearer_token } : {}),
+          ...(rawCfg.env && Object.keys(rawCfg.env).length ? { env: rawCfg.env } : {}),
+          ...(rawCfg.headers && Object.keys(rawCfg.headers).length ? { headers: rawCfg.headers } : {}),
+          ...(rawCfg.startup_timeout_sec ? { startup_timeout_sec: rawCfg.startup_timeout_sec } : {}),
+          ...(rawCfg.tool_timeout_sec ? { tool_timeout_sec: rawCfg.tool_timeout_sec } : {}),
+          enabled: rawCfg.enabled !== false,
+          targets: isCodexInternal ? ['codex'] : [...ALL_CLIS],
+          source: cli,
+          ...(isCodexInternal ? { cliOnly: true } : {}),
+        };
+        importedMcps++;
+      } else {
+        const curTargets = Array.isArray(vaultMcps[name].targets) ? vaultMcps[name].targets : [...ALL_CLIS];
+        if (!curTargets.includes(cli)) curTargets.push(cli);
+        vaultMcps[name].targets = curTargets;
+        vaultMcps[name].enabled = true;
+      }
+    }
+
+    if (cfg.rulesDir && fs.existsSync(cfg.rulesDir)) {
+      for (const rawRule of (rules || [])) {
+        const cleanRule = safeName(rawRule);
+        if (!cleanRule) continue;
+        const srcFp = path.join(cfg.rulesDir, cleanRule);
+        if (!fs.existsSync(srcFp)) continue;
+        const dstName = `${cli}-${cleanRule}`;
+        const dstFp = path.join(l.rulesDir, dstName);
+        if (!fs.existsSync(dstFp)) {
+          fs.copyFileSync(srcFp, dstFp);
+          importedRules++;
+        }
+        manifest.rules[dstName] = {
+          ...(manifest.rules[dstName] || {}),
+          enabled: true,
+          targets: Array.isArray(manifest.rules[dstName]?.targets) ? manifest.rules[dstName].targets : [...ALL_CLIS],
+          source: cli,
+        };
+      }
+    }
+
+    if (importHarness && cfg.harnessFile && fs.existsSync(cfg.harnessFile)) {
+      const rawMd = fs.readFileSync(cfg.harnessFile, 'utf8');
+      const customMd = rawMd.replace(/<!-- hub-vault:begin -->[\s\S]*?<!-- hub-vault:end -->\r?\n?/g, '').trim();
+      if (customMd) {
+        const curShared = fs.readFileSync(l.sharedHarnessFile, 'utf8');
+        if (!curShared.includes(customMd)) {
+          const nextShared = `${curShared.trimEnd()}\n\n<!-- imported-from: ${cli} -->\n${customMd}\n`;
+          fs.writeFileSync(l.sharedHarnessFile, nextShared, 'utf8');
+          importedHarness = true;
+        }
+      }
+    }
+
+    writeMcps(vaultMcps);
+    writeManifest(manifest);
+    return {
+      ok: true,
+      importedSkills,
+      movedSkills,
+      importedMcps,
+      importedRules,
+      importedHarness,
+      cliData: inspectCli(cli),
+      state: getState(),
+    };
+  };
+
   return {
     getState,
+    inspectCli,
+    importFromCli,
     gatherFromClis,
     syncToClis,
     readSkillContent,

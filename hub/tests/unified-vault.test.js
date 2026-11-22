@@ -213,6 +213,23 @@ args = ["-y", "seq-mcp"]
     assert.equal(moved.vaultDir, path.resolve(altVault));
     const savedCfg = JSON.parse(fs.readFileSync(env.configPath, 'utf8'));
     assert.equal(savedCfg.vaultDir, path.resolve(altVault));
+
+    // Per-CLI inspectCli + selective importFromCli (including moveSkills Junction conversion)
+    const lateSkill = path.join(env.homeDir, '.claude', 'skills', 'late-added-skill');
+    fs.mkdirSync(lateSkill, { recursive: true });
+    fs.writeFileSync(path.join(lateSkill, 'SKILL.md'), '---\nname: late-added-skill\ndescription: Added later in Claude\n---\n\n# Late\n', 'utf8');
+    const inspBefore = vault.inspectCli('claude');
+    const foundLate = inspBefore.skills.find((s) => s.name === 'late-added-skill');
+    assert.ok(foundLate);
+    assert.equal(foundLate.inVault, false);
+    assert.equal(foundLate.isLinkedToVault, false);
+
+    const imp = vault.importFromCli({ cli: 'claude', skills: ['late-added-skill'], moveSkills: true, importHarness: true });
+    assert.equal(imp.importedSkills, 1);
+    assert.ok(imp.cliData.skills.find((s) => s.name === 'late-added-skill')?.isLinkedToVault);
+    assert.ok(fs.existsSync(path.join(altVault, 'skills', 'late-added-skill', 'SKILL.md')));
+    assert.ok(fs.lstatSync(lateSkill).isSymbolicLink());
+    assert.ok(fs.readFileSync(path.join(altVault, 'harness', 'shared.md'), 'utf8').includes('# My Claude Prompt'));
   } finally {
     fs.rmSync(env.base, { recursive: true, force: true });
   }

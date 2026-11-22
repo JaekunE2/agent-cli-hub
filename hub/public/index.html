@@ -780,6 +780,9 @@ mark { background: #f4c542; color: #1f1e1c; border-radius: 2px; padding: 0 1px; 
 .v-tgts { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .v-tgt { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg); cursor: pointer; }
 .v-tgt:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.v-cli-card { text-align: left; cursor: pointer; width: 100%; font: inherit; color: inherit; transition: border-color .14s, box-shadow .14s; }
+.v-cli-card:hover, .v-cli-card:focus-visible { border-color: var(--accent); box-shadow: var(--shadow-low); }
+.v-cli-hint { font-size: 11px; color: var(--accent); font-weight: 600; margin-top: 2px; }
 body.remote .desk { display: none; }
 </style>
 <link rel="stylesheet" href="/projects.css">

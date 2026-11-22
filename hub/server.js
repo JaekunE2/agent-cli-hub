@@ -2879,6 +2879,14 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/vault' && req.method === 'GET') {
       return send(res, 200, unifiedVault.getState());
     }
+    if (p === '/api/vault/cli' && req.method === 'GET') {
+      const cli = String(url.searchParams.get('cli') || '');
+      return send(res, 200, { ok: true, cliData: unifiedVault.inspectCli(cli) });
+    }
+    if (p === '/api/vault/import' && req.method === 'POST') {
+      const b = await body(req);
+      return send(res, 200, unifiedVault.importFromCli(b));
+    }
     if (p === '/api/vault/skill' && req.method === 'GET') {
       const name = String(url.searchParams.get('name') || '');
       return send(res, 200, { ok: true, name, content: unifiedVault.readSkillContent(name) });

@@ -194,6 +194,164 @@
     d.showModal();
   }
 
+  async function openCliInspectDrawer(cliKey) {
+    if (typeof openDrawer !== 'function') return;
+    const d = openDrawer({
+      title: `${CLI_LABELS[cliKey] || cliKey} · 상세 및 통합 볼트 가져오기`,
+      bodyHTML: '<div class="empty">항목을 불러오는 중…</div>',
+      footerHTML: '<button type="button" data-drw-close>닫기</button>',
+      width: 620,
+    });
+    let cliData = null;
+    let dTab = 'skills';
+    let onlyUnvaulted = false;
+    let moveSkills = true;
+
+    const paintDrawer = () => {
+      const drwBody = $('.drw-body', d);
+      if (!drwBody || !cliData) return;
+      const skills = (cliData.skills || []).filter((s) => !onlyUnvaulted || !s.inVault || !s.isLinkedToVault);
+      const mcps = (cliData.mcps || []).filter((m) => !onlyUnvaulted || !m.inVault);
+      const rules = cliData.rules || [];
+      const h = cliData.harness || {};
+      const unlinkedSkills = (cliData.skills || []).filter((s) => !s.inVault || !s.isLinkedToVault).map((s) => s.name);
+      const unvaultedMcps = (cliData.mcps || []).filter((m) => !m.inVault).map((m) => m.name);
+
+      let listHtml = '';
+      if (dTab === 'skills') {
+        listHtml = skills.length ? skills.map((sk) => {
+          const stBadge = sk.isLinkedToVault
+            ? '<span class="badge c">볼트 연결됨</span>'
+            : sk.inVault
+              ? '<span class="badge">볼트에 있음</span>'
+              : '<span class="badge lim">로컬 전용</span>';
+          const btnLbl = sk.isLinkedToVault ? '다시 연결' : sk.inVault ? '링크 전환' : (moveSkills ? '통합으로 이동' : '가져오기');
+          return `<div class="v-row" style="align-items:flex-start">
+            <div class="v-row-main">
+              <div class="row" style="gap:6px;flex-wrap:wrap">
+                <label class="v-en"><input type="checkbox" data-dc-chk="skill" value="${esc(sk.name)}" ${!sk.isLinkedToVault ? 'checked' : ''}><b>${esc(sk.name)}</b></label>
+                ${stBadge}
+              </div>
+              ${sk.description ? `<div class="ums" style="margin:3px 0 0">${esc(sk.description)}</div>` : ''}
+              <div class="ums mono" style="margin:2px 0 0;font-size:11px;word-break:break-all">${esc(sk.dir)}</div>
+              ${sk.preview ? `<details style="margin-top:4px"><summary class="ums" style="cursor:pointer;margin:0">SKILL.md 내용 보기</summary><pre class="mdpre" style="margin-top:4px;max-height:180px;overflow:auto">${esc(sk.preview)}</pre></details>` : ''}
+            </div>
+            <div class="v-row-right">
+              <button type="button" class="btn-sm" data-dc-imp-skill="${esc(sk.name)}">${btnLbl}</button>
+            </div>
+          </div>`;
+        }).join('') : '<div class="empty">표시할 스킬이 없습니다.</div>';
+      } else if (dTab === 'mcp') {
+        listHtml = mcps.length ? mcps.map((m) => {
+          const stBadge = m.inVault ? '<span class="badge c">볼트에 있음</span>' : '<span class="badge lim">로컬 전용</span>';
+          return `<div class="v-row">
+            <div class="v-row-main">
+              <div class="row" style="gap:6px;flex-wrap:wrap">
+                <label class="v-en"><input type="checkbox" data-dc-chk="mcp" value="${esc(m.name)}" ${!m.inVault ? 'checked' : ''}><b>${esc(m.name)}</b></label>
+                <span class="badge">${esc(m.transport.toUpperCase())}</span>
+                ${stBadge}
+                ${m.cliOnly ? '<span class="badge">CLI 전용</span>' : ''}
+              </div>
+              <div class="ums mono" style="margin:2px 0 0">${esc(m.url || `${m.command} ${(m.args || []).join(' ')}`)}</div>
+            </div>
+            <div class="v-row-right">
+              <button type="button" class="btn-sm" data-dc-imp-mcp="${esc(m.name)}">${m.inVault ? '대상 추가' : '가져오기'}</button>
+            </div>
+          </div>`;
+        }).join('') : '<div class="empty">표시할 MCP 서버가 없습니다.</div>';
+      } else {
+        listHtml = `<div class="rcard" style="margin-bottom:10px">
+          <div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap">
+            <div><b>전역 하네스 파일</b><div class="ums mono" style="margin:2px 0 0">${esc(h.path || '없음')}</div></div>
+            ${h.hasCustomContent ? `<button type="button" class="primary btn-sm" id="dcImpHarness">${h.customImported ? '공통 지침에 반영됨' : 'shared.md로 가져오기'}</button>` : '<span class="badge">커스텀 지침 없음</span>'}
+          </div>
+          ${h.customContent ? `<pre class="mdpre" style="max-height:200px;overflow:auto;margin:6px 0 0">${esc(h.customContent)}</pre>` : '<div class="empty" style="padding:8px 0">볼트 블록 외의 추가 하네스 내용이 없습니다.</div>'}
+        </div>
+        <div class="v-list">${rules.length ? rules.map((rl) => `<div class="v-row">
+          <div class="v-row-main">
+            <div class="row" style="gap:6px">
+              <b>${esc(rl.name)}</b>
+              <span class="badge ${rl.inVault ? 'c' : 'lim'}">${rl.inVault ? '볼트에 있음' : '로컬 전용'}</span>
+            </div>
+            <pre class="mdpre" style="max-height:110px;overflow:auto;margin:4px 0 0">${esc(rl.preview || '')}</pre>
+          </div>
+          <div class="v-row-right">
+            <button type="button" class="btn-sm" data-dc-imp-rule="${esc(rl.name)}">가져오기</button>
+          </div>
+        </div>`).join('') : '<div class="empty">개별 규칙 파일이 없습니다.</div>'}</div>`;
+      }
+
+      drwBody.innerHTML = `<div style="display:flex;flex-direction:column;gap:10px">
+        <div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap">
+          <div class="seg" role="tablist">
+            <button type="button" data-dc-tab="skills" class="${dTab === 'skills' ? 'on' : ''}">스킬 (${(cliData.skills || []).length})</button>
+            <button type="button" data-dc-tab="mcp" class="${dTab === 'mcp' ? 'on' : ''}">MCP (${(cliData.mcps || []).length})</button>
+            <button type="button" data-dc-tab="harness" class="${dTab === 'harness' ? 'on' : ''}">하네스 · 규칙</button>
+          </div>
+          <div class="row" style="gap:6px">
+            ${dTab !== 'harness' ? `<button type="button" class="btn-sm" id="dcImpAll">미등록 전체 가져오기 (${unlinkedSkills.length + unvaultedMcps.length})</button><button type="button" class="primary btn-sm" id="dcImpSel">선택 항목 가져오기</button>` : ''}
+          </div>
+        </div>
+        <div class="row" style="justify-content:space-between;gap:10px;flex-wrap:wrap">
+          <label class="v-en" style="font-size:12px"><input type="checkbox" id="dcMoveChk" ${moveSkills ? 'checked' : ''}><span>가져올 때 원본 스킬 폴더를 볼트 링크(Junction)로 이동 전환</span></label>
+          <label class="v-en" style="font-size:12px"><input type="checkbox" id="dcUnvaultChk" ${onlyUnvaulted ? 'checked' : ''}><span>볼트에 없는 항목만 보기</span></label>
+        </div>
+        <div class="v-list">${listHtml}</div>
+      </div>`;
+
+      const runImport = async (payload) => {
+        const res = await api('/api/vault/import', { method: 'POST', body: { cli: cliKey, moveSkills, ...payload } });
+        if (res.error) return toast(res.error, 4000, 'danger');
+        if (res.cliData) cliData = res.cliData;
+        if (res.state) { vaultState = res.state; paintVault(); }
+        paintDrawer();
+        const parts = [];
+        if (res.importedSkills) parts.push(`스킬 +${res.importedSkills}`);
+        if (res.movedSkills) parts.push(`링크 전환 ${res.movedSkills}`);
+        if (res.importedMcps) parts.push(`MCP +${res.importedMcps}`);
+        if (res.importedRules) parts.push(`규칙 +${res.importedRules}`);
+        if (res.importedHarness) parts.push('하네스 병합');
+        toast(parts.length ? `통합 볼트 이동 완료: ${parts.join(' · ')}` : '통합 볼트 상태를 갱신했습니다');
+      };
+
+      $('#dcMoveChk', drwBody).onchange = (e) => { moveSkills = !!e.target.checked; paintDrawer(); };
+      $('#dcUnvaultChk', drwBody).onchange = (e) => { onlyUnvaulted = !!e.target.checked; paintDrawer(); };
+      if ($('#dcImpSel', drwBody)) {
+        $('#dcImpSel', drwBody).onclick = () => {
+          const pickedSkills = [...drwBody.querySelectorAll('[data-dc-chk="skill"]:checked')].map((c) => c.value);
+          const pickedMcps = [...drwBody.querySelectorAll('[data-dc-chk="mcp"]:checked')].map((c) => c.value);
+          if (!pickedSkills.length && !pickedMcps.length) return toast('가져올 항목을 선택하세요', 2500);
+          runImport({ skills: pickedSkills, mcps: pickedMcps });
+        };
+      }
+      if ($('#dcImpAll', drwBody)) {
+        $('#dcImpAll', drwBody).onclick = () => runImport({ skills: unlinkedSkills, mcps: unvaultedMcps });
+      }
+      if ($('#dcImpHarness', drwBody)) {
+        $('#dcImpHarness', drwBody).onclick = () => runImport({ importHarness: true });
+      }
+      drwBody.onclick = (e) => {
+        const tb = e.target.closest('[data-dc-tab]');
+        if (tb) { dTab = tb.dataset.dcTab; paintDrawer(); return; }
+        const skb = e.target.closest('[data-dc-imp-skill]');
+        if (skb) { runImport({ skills: [skb.dataset.dcImpSkill] }); return; }
+        const mcb = e.target.closest('[data-dc-imp-mcp]');
+        if (mcb) { runImport({ mcps: [mcb.dataset.dcImpMcp] }); return; }
+        const rlb = e.target.closest('[data-dc-imp-rule]');
+        if (rlb) { runImport({ rules: [rlb.dataset.dcImpRule] }); }
+      };
+    };
+
+    try {
+      const r = await api('/api/vault/cli?cli=' + encodeURIComponent(cliKey));
+      cliData = r.cliData;
+      paintDrawer();
+    } catch (e) {
+      const drwBody = $('.drw-body', d);
+      if (drwBody) drwBody.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    }
+  }
+
   function paintVault() {
     const st = vaultState;
     if (!st) return;
@@ -207,11 +365,12 @@
 
     const cliCards = ['claude', 'codex', 'agy'].map((k) => {
       const c = clis[k] || {};
-      return `<div class="h-stat" style="cursor:default">
+      return `<button type="button" class="h-stat v-cli-card" data-v-cli="${k}" title="스킬 · MCP · 하네스 목록 열기 및 가져오기">
         <div class="h-stat-lbl"><span>${agentIcon(k)} ${esc(c.label || k)}</span><span class="badge ${c.hasHarness ? 'c' : ''}">${c.hasHarness ? '하네스 연결' : '미설정'}</span></div>
         <div class="h-stat-val" style="font-size:16px">스킬 ${c.skillsCount || 0} · MCP ${c.mcpCount || 0}</div>
         <div class="h-stat-sub mono" title="${esc(c.skillDir || '')}">${esc(c.skillDir || '')}</div>
-      </div>`;
+        <div class="v-cli-hint">눌러서 보기 · 가져오기 ↗</div>
+      </button>`;
     }).join('');
 
     let tabBody = '';
@@ -363,6 +522,8 @@
     }
 
     body.onclick = async (e) => {
+      const cliBtn = e.target.closest('[data-v-cli]');
+      if (cliBtn) { openCliInspectDrawer(cliBtn.dataset.vCli); return; }
       const tb = e.target.closest('[data-vtab]');
       if (tb) { vaultTab = tb.dataset.vtab; paintVault(); return; }
       const editSkill = e.target.closest('[data-v-edit-skill]');
