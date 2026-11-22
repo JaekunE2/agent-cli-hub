@@ -90,8 +90,10 @@
 .pj-empty { max-width: 600px; padding: 32px 24px; background: var(--panel); border: 1px dashed var(--line-strong); border-radius: var(--radius-lg); display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
 .pj-empty h3 { margin: 0; }
 .pj-empty p { margin: 0; color: var(--muted); font-size: 13.5px; }
-.pj-choices { min-width: 0; max-height: 180px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-md); padding: 6px 10px; }
-.pj-choices label { padding: 4px 0; overflow-wrap: anywhere; }
+.pj-choices { min-width: 0; max-height: 180px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-md); padding: 6px 8px; display: flex; flex-direction: column; gap: 2px; }
+.pj-choices label { padding: 5px 6px; border-radius: var(--radius-sm); overflow-wrap: anywhere; }
+.pj-choices label:hover { background: color-mix(in srgb, var(--panel2) 65%, transparent); }
+.pj-choices label span { flex: 1; min-width: 0; line-height: 1.4; }
 .pj-choices small { display: block; color: var(--muted); }
 [data-plan-preview]:not(:empty) { padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--bg); }
 [data-plan-preview] ol { margin: 8px 0 0; padding-left: 20px; }
@@ -156,13 +158,15 @@
 .pj-edges marker path.hi { fill: var(--accent); }
 
 /* Unified native dialog */
-.pj-dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 18px 20px; width: min(540px, 92vw); max-height: 86vh; overflow: auto; box-shadow: var(--shadow-med); }
+.pj-dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 18px 20px; width: min(540px, 92vw); max-width: calc(100vw - 24px); max-height: 86vh; overflow: auto; box-sizing: border-box; box-shadow: var(--shadow-med); }
 .pj-dialog.est-dialog { width: min(380px, 92vw); }
 .pj-dialog::backdrop { background: rgba(0,0,0,.42); }
-.pj-dialog form { display: flex; flex-direction: column; gap: 12px; }
-.pj-dialog label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
-.pj-dialog label:has(input[type=checkbox]) { flex-direction: row; align-items: baseline; gap: 6px; }
-.pj-dialog textarea { resize: vertical; width: 100%; box-sizing: border-box; font: inherit; }
+.pj-dialog form { display: flex; flex-direction: column; gap: 12px; min-width: 0; max-width: 100%; }
+.pj-dialog label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; min-width: 0; max-width: 100%; }
+.pj-dialog label:has(input[type=checkbox]), .pj-dialog label:has(input[type=radio]) { flex-direction: row; align-items: center; gap: 8px; cursor: pointer; }
+.pj-dialog input[type=checkbox], .pj-dialog input[type=radio] { width: auto; flex: none; margin: 0; }
+.pj-dialog select, .pj-dialog input:not([type=checkbox]):not([type=radio]) { width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; }
+.pj-dialog textarea { resize: vertical; width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; font: inherit; }
 .pj-error { color: var(--danger); margin: 0; font-size: 12.5px; }
 .pj-error:empty { display: none; }
 
