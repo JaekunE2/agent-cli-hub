@@ -514,6 +514,29 @@ const sessionLabel = (r, id = r?.sessionId, liveName = '') =>
   cleanSideTitle(r?.title) || cleanSideTitle(r?.firstPrompt) || cleanSideTitle(liveName)
   || [providerName(r?.agent || 'claude'), id?.slice(0, 8)].filter(Boolean).join(' · ');
 
+function branchTooltip(br) {
+  if (!br) return '';
+  const parts = [];
+  if (br.isBranch) parts.push(`원본: ${br.parentTitle || br.parentSessionId?.slice(0, 8) || '대화'}${br.atIndex != null ? ` (#${br.atIndex + 1})` : ''}`);
+  if (br.childCount > 0) parts.push(`이 대화에서 파생된 분기 ${br.childCount}개`);
+  return parts.join(' · ');
+}
+
+function branchTagHTML(br, compact = false) {
+  if (!br) return '';
+  const cls = compact ? 'srow-tag' : 'badge';
+  const tip = branchTooltip(br);
+  const out = [];
+  if (br.isBranch) {
+    out.push(`<span class="${cls} branch"${tip ? ` title="${esc(tip)}"` : ''}>${ICO.branch} 분기</span>`);
+  }
+  if (br.childCount > 0) {
+    const srcTip = `이 대화에서 파생된 분기 ${br.childCount}개`;
+    out.push(`<span class="${cls} branch-src" title="${esc(srcTip)}">${ICO.branch} ${br.childCount}</span>`);
+  }
+  return out.join('');
+}
+
 // ---------- Linear-Style Minimal Workspace Sidebar (Projects + Terminals + Recent; System Grouped) ----------
 function systemTopHTML(activeTab, actionsHTML = '') {
   state.sysTab = activeTab;
@@ -672,10 +695,11 @@ function renderSide() {
         const dot = st === 'exited' ? 'dead' : st === 'busy' ? 'busy' : 'idle';
         const isSel = curKind === 'term' && String(state.sel.id) === String(t.id);
         const unread = state.unreadTerms.has(String(t.id));
-        favRowsArr.push(`<div class="srow${isSel ? ' sel' : ''}${unread ? ' just-done' : ''}" data-key="term:${esc(t.id)}">
+        const isBr = !!t.branch?.isBranch;
+        favRowsArr.push(`<div class="srow${isSel ? ' sel' : ''}${unread ? ' just-done' : ''}${isBr ? ' is-branch' : ''}" data-key="term:${esc(t.id)}"${isBr ? ` title="${esc(branchTooltip(t.branch))}"` : ''}>
           ${agentIcon(t.operator ? 'operator' : t.agent || 'shell', dot)}
           <div class="srow-main"><div class="srow-t">${esc(termLabel(t))}</div></div>
-          <span class="srow-end">${unread ? '<span class="srow-tag done">완료</span>' : ''}<span class="fav on" data-fav="${esc(fk)}" data-fav-keys="${esc((entry.allKeys || [fk]).join(','))}" role="button" tabindex="0" aria-label="즐겨찾기 해제">${ICO.starFill}</span></span>
+          <span class="srow-end">${branchTagHTML(t.branch, true)}${unread ? '<span class="srow-tag done">완료</span>' : ''}<span class="fav on" data-fav="${esc(fk)}" data-fav-keys="${esc((entry.allKeys || [fk]).join(','))}" role="button" tabindex="0" aria-label="즐겨찾기 해제">${ICO.starFill}</span></span>
         </div>`);
       } else if (entry.kind === 'sid') {
         const sid = entry.sid;
@@ -683,10 +707,11 @@ function renderSide() {
         const lbl = r ? sessionLabel(r) : sid.slice(0, 8);
         if (!matchSide(lbl, r?.cwd || '')) continue;
         const isSel = curKind === 'recent' && state.sel.id === sid;
-        favRowsArr.push(`<div class="srow${isSel ? ' sel' : ''}" data-key="recent:${esc(sid)}">
+        const isBr = !!r?.branch?.isBranch;
+        favRowsArr.push(`<div class="srow${isSel ? ' sel' : ''}${isBr ? ' is-branch' : ''}" data-key="recent:${esc(sid)}"${isBr ? ` title="${esc(branchTooltip(r.branch))}"` : ''}>
           ${agentIcon(r?.agent || 'claude')}
           <div class="srow-main"><div class="srow-t">${esc(lbl)}</div></div>
-          <span class="srow-end"><span class="fav on" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="즐겨찾기 해제">${ICO.starFill}</span></span>
+          <span class="srow-end">${branchTagHTML(r?.branch, true)}<span class="fav on" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="즐겨찾기 해제">${ICO.starFill}</span></span>
         </div>`);
       }
     }
@@ -769,7 +794,10 @@ function renderSide() {
         ? '<span class="srow-tag">관제</span>'
         : (!t.agent ? '<span class="srow-tag">셸</span>' : '');
       const folderLbl = esc(base(t.cwd) || (t.agent === 'agy' ? 'Antigravity' : t.agent || '대기'));
+      const isBr = !!t.branch?.isBranch;
+      const brTip = branchTooltip(t.branch);
       const tags = [
+        branchTagHTML(t.branch, true),
         pj && !hidePjTag ? `<span class="srow-tag proj" title="Project: ${esc(pj.name)}">${esc(pj.name)}</span>` : '',
         subKindTag,
         st === 'busy'
@@ -780,7 +808,7 @@ function renderSide() {
               ? '<span class="srow-tag">종료됨</span>'
               : `<span>${folderLbl}</span>`,
       ].filter(Boolean).join('');
-      return `<div class="srow${isSel ? ' sel' : ''}${unread ? ' just-done' : ''}" data-key="term:${esc(t.id)}" title="${esc(termLabel(t))}${pj ? ` · Project: ${esc(pj.name)}` : ''}">
+      return `<div class="srow${isSel ? ' sel' : ''}${unread ? ' just-done' : ''}${isBr ? ' is-branch' : ''}" data-key="term:${esc(t.id)}" title="${esc(termLabel(t))}${pj ? ` · Project: ${esc(pj.name)}` : ''}${brTip ? ` · ${esc(brTip)}` : ''}">
         ${agentIcon(kind, dot)}
         <div class="srow-main"><div class="srow-t">${esc(termLabel(t))}</div><div class="srow-s">${tags}</div></div>
         <span class="srow-end">${unread ? '<span class="srow-unread" title="방금 작업 완료"></span>' : ''}${fk ? `<span class="fav${isStar ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${isStar ? '즐겨찾기 해제' : '즐겨찾기'}">${isStar ? ICO.starFill : ICO.star}</span>` : ''}</span>
@@ -838,11 +866,17 @@ function renderSide() {
     const ag = r.agent || 'claude';
     const fk = `sid:${r.sessionId}`, on = favs.has(fk);
     const isSel = curKind === 'recent' && state.sel.id === r.sessionId;
+    const isBr = !!r.branch?.isBranch;
+    const brTip = branchTooltip(r.branch);
     const delRecTitle = '기록 삭제';
     const delRecAria = `기록 삭제: ${sessionLabel(r)}`;
-    return `<div class="srow${isSel ? ' sel' : ''}" data-key="recent:${esc(r.sessionId)}" title="${esc(sessionLabel(r))}">
+    const subHTML = [
+      branchTagHTML(r.branch, true),
+      `<span>${esc([base(r.cwd), ago(r.mtime)].filter(Boolean).join(' · '))}</span>`,
+    ].filter(Boolean).join('');
+    return `<div class="srow${isSel ? ' sel' : ''}${isBr ? ' is-branch' : ''}" data-key="recent:${esc(r.sessionId)}" title="${esc(sessionLabel(r))}${brTip ? ` · ${esc(brTip)}` : ''}">
       ${agentIcon(ag)}
-      <div class="srow-main"><div class="srow-t">${esc(sessionLabel(r))}</div><div class="srow-s">${esc([base(r.cwd), ago(r.mtime)].filter(Boolean).join(' · '))}</div></div>
+      <div class="srow-main"><div class="srow-t">${esc(sessionLabel(r))}</div><div class="srow-s">${subHTML}</div></div>
       <span class="srow-end">
         <span class="fav${on ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${on ? '즐겨찾기 해제' : '즐겨찾기'}">${on ? ICO.starFill : ICO.star}</span>
         <button class="record-delete danger ghost icon-btn" data-hide-record="${esc(r.sessionId)}" title="${delRecTitle}" aria-label="${esc(delRecAria)}">${ICO.trash}</button>
@@ -1107,7 +1141,7 @@ function homeListsHTML() {
       return `<div class="m-row" data-open-term="${esc(t.id)}">
         ${agentIcon(kind, st === 'busy' ? 'busy' : 'idle')}
         <div class="m-row-main"><div class="m-row-t">${esc(termLabel(t))}</div><div class="m-row-s">${pj ? `Project: ${esc(pj.name)} · ` : ''}${esc(termKindLabel(t))}${base(t.cwd) ? ` · ${esc(base(t.cwd))}` : ''}</div></div>
-        <div class="m-row-end">${pj ? `<span class="badge c">${esc(pj.name)}</span>` : ''}<span class="badge ${st === 'busy' ? 'warn' : 'ok'}">${st === 'busy' ? '실행 중' : '대기'}</span></div>
+        <div class="m-row-end">${branchTagHTML(t.branch)}${pj ? `<span class="badge c">${esc(pj.name)}</span>` : ''}<span class="badge ${st === 'busy' ? 'warn' : 'ok'}">${st === 'busy' ? '실행 중' : '대기'}</span></div>
       </div>`;
     }
     const c = entry.item;
@@ -1125,8 +1159,8 @@ function homeListsHTML() {
     const ag = r.agent || 'claude';
     return `<div class="m-row" data-hrecent="${esc(r.sessionId)}">
       ${agentIcon(ag)}
-      <div class="m-row-main"><div class="m-row-t">${esc(sessionLabel(r))}</div><div class="m-row-s">${esc([base(r.cwd), ago(r.mtime)].filter(Boolean).join(' · '))}</div></div>
-      <div class="m-row-end"><button class="btn-sm" data-hresume="${esc(r.sessionId)}">이어하기</button></div>
+      <div class="m-row-main"><div class="m-row-t">${esc(sessionLabel(r))}</div><div class="m-row-s">${esc([r.branch?.isBranch && r.branch?.parentTitle ? `원본: ${r.branch.parentTitle}` : '', base(r.cwd), ago(r.mtime)].filter(Boolean).join(' · '))}</div></div>
+      <div class="m-row-end">${branchTagHTML(r.branch)}<button class="btn-sm" data-hresume="${esc(r.sessionId)}">이어하기</button></div>
     </div>`;
   }).join('') || '<div class="empty" style="padding:24px 16px;text-align:center">최근 대화 기록이 없습니다.</div>';
 
@@ -1162,9 +1196,9 @@ function termCardHTML(t, extraBadge = '') {
   const closeBtn = st === 'exited'
     ? `<button class="ghost icon-btn btn-sm" data-term-close="${esc(t.id)}" aria-label="종료된 터미널 닫기" title="종료된 터미널 제거">${ICO.close}</button>`
     : '';
-  return `<div class="card" data-term="${t.id}"><div class="hd">${agentIcon(kind, dot)}
+  return `<div class="card${t.branch?.isBranch ? ' is-branch' : ''}" data-term="${t.id}"><div class="hd">${agentIcon(kind, dot)}
     <span class="t">${esc(termLabel(t))}</span>
-    ${pjBadge}${extraBadge}${kindBadge}${stBadge}${closeBtn}</div>
+    ${branchTagHTML(t.branch)}${pjBadge}${extraBadge}${kindBadge}${stBadge}${closeBtn}</div>
     <div class="mini" id="mini-${t.id}"><div class="mini-in"></div></div></div>`;
 }
 function conCardHTML(c) {
@@ -1267,13 +1301,15 @@ function recentRowHTML(r) {
   const ag = r.agent || 'claude';
   const fk = `sid:${r.sessionId}`, on = (state.favs || new Set()).has(fk);
   const acc = ag === 'agy' && state.agyQuota?.account ? state.agyQuota.account.replace(/@.*/, '') : '';
-  const sub = [base(r.cwd), acc, ago(r.mtime)].filter(Boolean).join(' · ') || providerName(ag);
+  const parentNote = r.branch?.isBranch && r.branch?.parentTitle ? `원본: ${r.branch.parentTitle}` : '';
+  const sub = [parentNote, base(r.cwd), acc, ago(r.mtime)].filter(Boolean).join(' · ') || providerName(ag);
   const delRecTitle = '기록 삭제';
   const delRecAria = `기록 삭제: ${sessionLabel(r)}`;
   return `<div class="m-row" data-key="recent:${esc(r.sessionId)}">
     ${agentIcon(ag)}
     <div class="m-row-main"><div class="m-row-t">${esc(sessionLabel(r))}</div><div class="m-row-s">${esc(sub)}</div></div>
     <div class="m-row-end">
+      ${branchTagHTML(r.branch)}
       <span class="fav${on ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${on ? '즐겨찾기 해제' : '즐겨찾기'}">${on ? ICO.starFill : ICO.star}</span>
       <button class="record-delete danger ghost icon-btn btn-sm" data-hide-record="${esc(r.sessionId)}" title="${delRecTitle}" aria-label="${esc(delRecAria)}">${ICO.trash}</button>
       <button class="btn-sm" data-hresume="${esc(r.sessionId)}">이어하기</button>
@@ -1336,6 +1372,7 @@ function paintTermsBody() {
             ${agentIcon(kind, st === 'exited' ? 'dead' : st === 'busy' ? 'busy' : 'idle')}
             <div class="m-row-main"><div class="m-row-t">${esc(termLabel(t))}</div><div class="m-row-s">${esc(termKindLabel(t))}${base(t.cwd) ? ` · ${esc(base(t.cwd))}` : ''}</div></div>
             <div class="m-row-end">
+              ${branchTagHTML(t.branch)}
               ${fk ? `<span class="fav${on ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0">${on ? ICO.starFill : ICO.star}</span>` : ''}
               ${pj ? `<span class="badge c">${esc(pj.name)}</span>` : ''}
               <span class="badge ${st === 'exited' ? '' : st === 'busy' ? 'warn' : 'ok'}">${termStatusLabel(t)}</span>
@@ -1615,12 +1652,13 @@ function viewConsole() {
   const isSplit = state.tab === 'split' && sid;
   const keysOpen = getTuiKeysOpen();
   const screenHTML = `<div class="full">
-    <pre class="screen" id="scr">불러오는 중…</pre>
+    <div class="scr-wrap"><pre class="screen" id="scr">불러오는 중…</pre><button type="button" class="scroll-bottom-btn term-bottom-float" id="btnConFloatBottom" hidden title="화면 최하단으로 이동" aria-label="화면 최하단으로 이동">${ICO.chevDown}<span>최하단</span></button></div>
     <div class="term-dock">
       <div class="tdock-bar">
         <div class="tdock-tools">
           <label class="filebtn" title="PC 파일·스크린샷 첨부 → 경로 입력">${ICO.clip}<span>파일 첨부</span><input type="file" class="fpick" multiple hidden></label>
           <button data-copy="1" title="선택한 부분(없으면 화면 전체) 복사">${ICO.copy}<span>화면 복사</span></button>
+          <button type="button" id="btnConBottom" title="화면 최하단으로 이동">${ICO.chevDown}<span>최하단</span></button>
         </div>
         <div class="tdock-keys-wrap">
           <button class="ghost btn-sm" id="btnTuiKeys" aria-expanded="${keysOpen}" title="TUI 방향키·제어키 패드 접기/펼치기">${ICO.keyboard}<span>TUI 키</span></button>
@@ -1681,10 +1719,25 @@ function viewConsole() {
     const k = e.target.closest('[data-key]')?.dataset.key;
     if (k) sendKey(k);
   };
+  const scrEl = $('#scr');
+  const conFloatBtn = $('#btnConFloatBottom');
+  const syncConBottom = () => {
+    if (!conFloatBtn || !scrEl) return;
+    conFloatBtn.hidden = !(scrEl.scrollHeight - scrEl.scrollTop - scrEl.clientHeight > 40);
+  };
+  const scrollConBottom = () => {
+    if (!scrEl) return;
+    scrEl.scrollTo({ top: scrEl.scrollHeight, behavior: 'smooth' });
+    setTimeout(syncConBottom, 180);
+  };
+  if (scrEl) scrEl.addEventListener('scroll', syncConBottom, { passive: true });
+  if ($('#btnConBottom')) $('#btnConBottom').onclick = scrollConBottom;
+  if (conFloatBtn) conFloatBtn.onclick = scrollConBottom;
   const tick = async () => {
     const r = await api(`/api/console/read?pid=${state.sel.id}`).catch((e) => ({ error: e.message }));
     if (gen !== viewGen) return;
-    paintScreen($('#scr'), r);
+    paintScreen(scrEl, r);
+    syncConBottom();
     clearTimeout(viewTimer);
     viewTimer = setTimeout(tick, 1000);
   };
@@ -1729,7 +1782,7 @@ function viewTranscript() {
   };
   setBar(`<button id="btnBackRecent" class="ghost btn-sm">${ICO.chevLeft} 최근 대화</button><h2><span>${esc(sessionLabel(r, sid, live?.name))}</span></h2>
     <button id="btnRenameSess" class="ghost icon-btn btn-sm" title="대화 제목 수정" aria-label="대화 제목 수정">${ICO.edit}</button>
-    ${agentBadge(r?.agent)}
+    ${branchTagHTML(r?.branch)}${agentBadge(r?.agent)}
     <div class="seg" role="tablist"><button data-tab="chat" class="${state.tab === 'chat' ? 'on' : ''}">대화 기록</button><button data-tab="files" class="${state.tab === 'files' ? 'on' : ''}">산출물</button><button data-tab="floorplan" class="${state.tab === 'floorplan' ? 'on' : ''}">${ICO.layers} 코드 구조</button></div>
     ${!live ? `<button class="primary btn-sm" id="btnResume">${ICO.play} 대시보드에서 이어하기</button>` : isDesktopSession(live) ? `<button class="primary btn-sm" id="btnResume" data-fork="1" title="데스크톱 앱 대화를 여기까지 복제한 새 세션으로 이어갑니다">${ICO.play} 대시보드에서 이어하기 (복제)</button>` : switchBtnHTML(sid)}
     <button id="btnRecMore" class="ghost icon-btn btn-sm" aria-label="세션 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
@@ -1848,15 +1901,15 @@ async function openBranchDialog({ sid, atIndex = null, message = null, agent = '
   const sourceAg = ['claude', 'codex', 'agy'].includes(agent) ? agent : 'claude';
   const d = document.createElement('dialog');
   d.className = 'pj-dialog';
-  d.style.width = 'min(520px, 94vw)';
+  d.style.width = 'min(520px, calc(100vw - 24px))';
   d.setAttribute('aria-label', '대화 분기점 만들기');
   const snippet = message?.text ? String(message.text).replace(/\s+/g, ' ').trim().slice(0, 140) : '대화 마지막 시점까지';
   const pointText = atIndex != null ? `#${atIndex + 1}번째 메시지 (${message?.role === 'user' ? '사용자' : '어시스턴트'})` : '현재 마지막 메시지까지';
-  d.innerHTML = `<form style="display:flex;flex-direction:column;gap:12px">
+  d.innerHTML = `<form style="display:flex;flex-direction:column;gap:12px;min-width:0;max-width:100%">
     <div class="dlg-head"><h3>${ICO.branch} 대화 분기점 만들기</h3><button type="button" class="ghost icon-btn btn-sm" data-br-close aria-label="닫기">${ICO.close}</button></div>
     <div class="chat-lineage" style="flex-direction:column;align-items:flex-start;gap:4px">
-      <div><b>분기 시점</b> · ${esc(pointText)}</div>
-      <div class="ums" style="margin:0;word-break:break-word">${esc(snippet)}${message?.text?.length > 140 ? '…' : ''}</div>
+      <div style="max-width:100%;overflow-wrap:anywhere"><b>분기 시점</b> · ${esc(pointText)}</div>
+      <div class="ums" style="margin:0;width:100%;max-width:100%;overflow-wrap:anywhere;word-break:break-word">${esc(snippet)}${message?.text?.length > 140 ? '…' : ''}</div>
     </div>
     <label>분기할 CLI 에이전트
       <select name="targetAgent" id="brAgent">
@@ -1977,9 +2030,17 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
     const d = await api(`/api/transcript?id=${encodeURIComponent(curSid)}${jump ? '&at=' + at : ''}`).catch((e) => ({ error: e.message }));
     if (gen !== viewGen) return;
     if (d.hidden) { box.textContent = d.error; return; }
-    const sig = `${d.size || 0}:${d.rev || 0}:${d.title || ''}:${(d.lineage?.children || []).length}`;
+    const parentSig = d.lineage?.parent ? `${d.lineage.parent.parentSessionId}:${d.lineage.parent.atIndex}` : '';
+    const childSig = (d.lineage?.children || []).map((c) => `${c.id || ''}:${c.childSessionId || ''}:${c.atIndex}`).join(',');
+    const sig = `${d.size || 0}:${d.rev || 0}:${d.title || ''}:${parentSig}:${childSig}`;
     if (d.error && !d.messages?.length) {
-      box.innerHTML = `<div class="h-empty-card" style="margin:24px auto;max-width:480px">
+      const earlyParentTxt = d.lineage?.parent
+        ? `원본: ${d.lineage.parent.parentTitle || d.lineage.parent.parentSessionId.slice(0, 8)} (#${d.lineage.parent.atIndex + 1}에서 분기)`
+        : '';
+      const earlyLineage = d.lineage?.parent
+        ? `<div class="chat-lineage" style="margin-bottom:10px"><button type="button" class="msg-branch-chip" data-open-parent-sid="${esc(d.lineage.parent.parentSessionId)}" data-open-parent-at="${d.lineage.parent.atIndex}" title="${esc(earlyParentTxt)}">${ICO.branch} <span class="br-chip-txt">${esc(earlyParentTxt)}</span></button></div>`
+        : '';
+      box.innerHTML = `${earlyLineage}<div class="h-empty-card" style="margin:24px auto;max-width:480px">
         <b>대화 기록을 준비 중입니다 (${esc(curSid.slice(0, 8))})</b>
         <span class="ums">에이전트가 첫 응답을 기록하면 자동으로 대화 내역이 나타납니다.</span>
       </div>`;
@@ -1993,37 +2054,43 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
       for (const ch of childBranches) {
         (branchesByIdx.get(ch.atIndex) || branchesByIdx.set(ch.atIndex, []).get(ch.atIndex)).push(ch);
       }
+      const branchChipBtn = (ch, withIndex = false) => {
+        const rawLbl = ch.childTitle || (ch.childSessionId ? `분기 ${ch.childSessionId.slice(0, 8)}` : `터미널 t:${ch.termId}`);
+        const lbl = withIndex ? `#${Number(ch.atIndex) + 1} · ${rawLbl}` : rawLbl;
+        const tip = `${lbl}${ch.targetAgent ? ` (${ch.targetAgent.toUpperCase()})` : ''}`;
+        return ch.childSessionId
+          ? `<button type="button" class="msg-branch-chip" data-open-branch-sid="${esc(ch.childSessionId)}" title="${esc(tip)}">${ICO.branch} <span class="br-chip-txt">${esc(lbl)}</span> ↗</button>`
+          : `<button type="button" class="msg-branch-chip" data-open-branch-term="${esc(ch.termId)}" title="${esc(tip)}">${ICO.branch} <span class="br-chip-txt">${esc(lbl)}</span> ↗</button>`;
+      };
+      const parentTitle = d.lineage?.parent ? (d.lineage.parent.parentTitle || d.lineage.parent.parentSessionId.slice(0, 8)) : '';
+      const parentChipTxt = d.lineage?.parent ? `원본: ${parentTitle} (#${d.lineage.parent.atIndex + 1}에서 분기)` : '';
       const lineageBanner = (d.lineage?.parent || childBranches.length)
         ? `<div class="chat-lineage">
-          ${d.lineage?.parent ? `<button type="button" class="msg-branch-chip" data-open-parent-sid="${esc(d.lineage.parent.parentSessionId)}" data-open-parent-at="${d.lineage.parent.atIndex}">${ICO.branch} 원본: ${esc(d.lineage.parent.parentTitle || d.lineage.parent.parentSessionId.slice(0, 8))} (#${d.lineage.parent.atIndex + 1}에서 분기)</button>` : ''}
-          ${childBranches.length ? `<span class="ums" style="margin:0">${ICO.branch} 이 대화에서 파생된 분기 <b>${childBranches.length}</b>개</span>` : ''}
+          ${d.lineage?.parent ? `<button type="button" class="msg-branch-chip" data-open-parent-sid="${esc(d.lineage.parent.parentSessionId)}" data-open-parent-at="${d.lineage.parent.atIndex}" title="${esc(parentChipTxt)}">${ICO.branch} <span class="br-chip-txt">${esc(parentChipTxt)}</span></button>` : ''}
+          ${childBranches.length ? `<div class="chat-lineage-list"><span class="ums" style="margin:0">${ICO.branch} 이 대화에서 파생된 분기 <b>${childBranches.length}</b>개</span>${childBranches.map((ch) => branchChipBtn(ch, true)).join('')}</div>` : ''}
         </div>` : '';
       const more = jump && b + d.messages.length < (d.total || 0)
         ? `<div class="row" style="justify-content:center;margin:10px"><button class="btn-latest">최신 대화로 이동</button></div>` : '';
       const parts = [];
       let toolBuf = [];
-      const flushTools = () => {
-        if (!toolBuf.length) return;
-        const firstLine = (toolBuf[0].text || '').split('\n')[0].slice(0, 70);
-        parts.push(`<details class="toolgrp"><summary>⚙ 도구 실행 ${toolBuf.length}건 · ${esc(firstLine)}</summary><div class="toolgrp-body">${toolBuf.map((x) => `<div>${linkPaths(hl(x.text, terms))}</div>`).join('')}</div></details>`);
-        toolBuf = [];
-      };
       const branchChipsHTML = (gi) => {
         const list = branchesByIdx.get(gi);
         if (!list?.length) return '';
-        return `<div class="msg-branches">${list.map((ch) => {
-          const lbl = ch.childTitle || (ch.childSessionId ? `분기 ${ch.childSessionId.slice(0, 8)}` : `터미널 t:${ch.termId}`);
-          return ch.childSessionId
-            ? `<button type="button" class="msg-branch-chip" data-open-branch-sid="${esc(ch.childSessionId)}">${ICO.branch} ${esc(lbl)} ↗</button>`
-            : `<button type="button" class="msg-branch-chip" data-open-branch-term="${esc(ch.termId)}">${ICO.branch} ${esc(lbl)} ↗</button>`;
-        }).join('')}</div>`;
+        return `<div class="msg-branches"><span class="msg-branch-lbl">${ICO.branch} 분기됨</span>${list.map((ch) => branchChipBtn(ch, false)).join('')}</div>`;
+      };
+      const flushTools = () => {
+        if (!toolBuf.length) return;
+        const firstLine = (toolBuf[0].m.text || '').split('\n')[0].slice(0, 70);
+        const toolBranches = toolBuf.map((x) => branchChipsHTML(x.gi)).filter(Boolean).join('');
+        parts.push(`<details class="toolgrp"><summary>⚙ 도구 실행 ${toolBuf.length}건 · ${esc(firstLine)}</summary><div class="toolgrp-body">${toolBuf.map((x) => `<div>${linkPaths(hl(x.m.text, terms))}</div>`).join('')}</div></details>${toolBranches}`);
+        toolBuf = [];
       };
       let lastDay = '';
       d.messages.forEach((m, k) => {
         const tool = m.role === 'assistant' && m.text.startsWith('⚙');
         const gi = b + k;
         const tgt = jump && gi === at;
-        if (tool && !tgt) { toolBuf.push(m); return; }
+        if (tool && !tgt) { toolBuf.push({ m, gi }); return; }
         flushTools();
         const rawTxt = String(m.text || '').replace(/<external_codex_apps_[^>]*>[\s\S]*?<\/external_codex_apps_[^>]*>/gi, '').trim();
         if (!rawTxt) return;
@@ -2041,11 +2108,14 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
         const forkBtn = `<button class="ghost icon-btn btn-sm" data-fork-mi="${k}" aria-label="이 지점에서 분기 만들기" title="이 지점에서 분기 만들기">${ICO.branch}</button>`;
         const editBtn = m.role === 'user' ? `<button class="ghost icon-btn btn-sm" data-edit-mi="${k}" aria-label="이 메시지 수정" title="이 메시지 수정 · 재실행">${ICO.edit}</button>` : '';
         const editedBadge = m.edited ? `<span class="badge">수정됨</span>` : '';
+        const branchOriginNote = gi === 0 && d.lineage?.parent
+          ? `<div class="msg-branch-origin">${ICO.branch} <span>분기 시작 · 원본 #${d.lineage.parent.atIndex + 1}${d.lineage.parent.editedText ? ` · 요청: ${esc(String(d.lineage.parent.editedText).replace(/\s+/g, ' ').trim().slice(0, 80))}` : ''}</span></div>`
+          : '';
         if (tool) {
-          parts.push(`<div class="msg tool${tgt ? ' target' : ''}" data-mi="${k}">${linkPaths(hl(rawTxt, terms))}</div>`);
+          parts.push(`<div class="msg tool${tgt ? ' target' : ''}" data-mi="${k}">${linkPaths(hl(rawTxt, terms))}</div>${branchChipsHTML(gi)}`);
         } else if (m.role === 'user') {
           const bodyHtml = linkPaths(hl(rawTxt, terms));
-          parts.push(`<div class="msg user${tgt ? ' target' : ''}" data-mi="${k}"><div class="msg-bubble"><div class="msg-body">${bodyHtml}</div></div><div class="msg-meta">${editedBadge}<span class="msg-acts">${editBtn}${forkBtn}${copyBtn}</span>${when ? `<span>${esc(when)}</span>` : ''}</div>${branchChipsHTML(gi)}</div>`);
+          parts.push(`<div class="msg user${tgt ? ' target' : ''}" data-mi="${k}">${branchOriginNote}<div class="msg-bubble"><div class="msg-body">${bodyHtml}</div></div><div class="msg-meta">${editedBadge}<span class="msg-acts">${editBtn}${forkBtn}${copyBtn}</span>${when ? `<span>${esc(when)}</span>` : ''}</div>${branchChipsHTML(gi)}</div>`);
         } else {
           const bodyHtml = !terms.length ? md(rawTxt) : `<div class="msg-body" style="white-space:pre-wrap">${linkPaths(hl(rawTxt, terms))}</div>`;
           parts.push(`<div class="msg assistant${tgt ? ' target' : ''}" data-mi="${k}"><div class="msg-av">${agentIcon(ag || 'claude')}</div><div class="msg-col"><div class="msg-hd"><span class="w-role">${esc(who)}</span>${when ? `<span class="w-ts">${esc(when)}</span>` : ''}${editedBadge}<span style="flex:1"></span><span class="msg-acts">${forkBtn}${copyBtn}</span></div><div class="msg-bubble">${bodyHtml}</div>${branchChipsHTML(gi)}</div></div>`);
@@ -2132,12 +2202,34 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
         }
       };
       const btn = $('.btn-latest', box);
-      if (btn) btn.onclick = () => select({ ...state.sel, at: -1 }, hostEl ? state.tab : 'chat');
+      const jumpLatest = () => select({ ...state.sel, at: -1 }, hostEl ? state.tab : 'chat');
+      if (btn) btn.onclick = jumpLatest;
       const first = !box.dataset.painted;
       box.dataset.painted = '1';
       const t = first && jump && $('.msg.target', box);
       if (t) t.scrollIntoView({ block: 'center' });
       else if (atBottom) v.scrollTop = v.scrollHeight;
+
+      const hasMore = jump && b + d.messages.length < (d.total || 0);
+      const floatWrap = document.createElement('div');
+      floatWrap.className = 'chat-bottom-float';
+      floatWrap.hidden = true;
+      floatWrap.innerHTML = `<button type="button" class="scroll-bottom-btn" title="대화 최하단으로 이동" aria-label="대화 최하단으로 이동">${ICO.chevDown}<span>최하단</span></button>`;
+      box.appendChild(floatWrap);
+      const syncChatBottom = () => {
+        if (!v.isConnected || !floatWrap.isConnected) return;
+        const dist = v.scrollHeight - v.scrollTop - v.clientHeight;
+        floatWrap.hidden = !(dist > 48 || hasMore);
+      };
+      if (v._chatScrollFn) v.removeEventListener('scroll', v._chatScrollFn);
+      v._chatScrollFn = syncChatBottom;
+      v.addEventListener('scroll', syncChatBottom, { passive: true });
+      floatWrap.querySelector('button').onclick = () => {
+        if (hasMore) return jumpLatest();
+        v.scrollTo({ top: v.scrollHeight, behavior: 'smooth' });
+        setTimeout(syncChatBottom, 220);
+      };
+      requestAnimationFrame(syncChatBottom);
     }
     if (!jump) chatPollTimer = setTimeout(tick, 3000);
   };
@@ -2190,7 +2282,7 @@ function viewTerm() {
       : stNow === 'exited'
         ? `<span class="dot dead" style="width:6px;height:6px"></span>종료됨 (${t.exited})`
         : '대기';
-  setBar(`${state.sel.project || pj ? `<button id="btnBackProject" class="ghost btn-sm" data-proj-id="${esc(state.sel.project || pj.id)}">${ICO.chevLeft} ${esc(pj?.name || 'Project')}</button>` : `<button id="btnBackTerms" class="ghost btn-sm">${ICO.chevLeft} 터미널</button>`}<h2>${ag ? agentIcon(ag) : ''}<span>${esc(t ? termLabel(t) : '터미널')}</span></h2><span id="termLiveBadge" class="term-live-pill ${pillCls}">${pillText}</span>${t?.account ? `<span class="badge c">${esc(t.account.label.replace(/@.*/, ''))}</span>` : ''}
+  setBar(`${state.sel.project || pj ? `<button id="btnBackProject" class="ghost btn-sm" data-proj-id="${esc(state.sel.project || pj.id)}">${ICO.chevLeft} ${esc(pj?.name || 'Project')}</button>` : `<button id="btnBackTerms" class="ghost btn-sm">${ICO.chevLeft} 터미널</button>`}<h2>${ag ? agentIcon(ag) : ''}<span>${esc(t ? termLabel(t) : '터미널')}</span></h2><span id="termLiveBadge" class="term-live-pill ${pillCls}">${pillText}</span>${branchTagHTML(t?.branch)}${t?.account ? `<span class="badge c">${esc(t.account.label.replace(/@.*/, ''))}</span>` : ''}
     <div class="seg" role="tablist">
       <button data-tab="screen" class="${state.tab === 'screen' ? 'on' : ''}" title="터미널 콘솔 화면 전체 보기">화면</button>
       <button data-tab="split" class="${state.tab === 'split' ? 'on' : ''}" title="좌측: 터미널 화면 · 우측: 실시간 대화 기록 분할 보기">${ICO.split} 화면 + 대화</button>
@@ -2257,7 +2349,7 @@ function viewTerm() {
 
   const isSplit = state.tab === 'split';
   const keysOpen = getTuiKeysOpen();
-  const termFullHTML = `<div class="full"><div id="termwrap"></div>
+  const termFullHTML = `<div class="full"><div id="termwrap"><button type="button" class="scroll-bottom-btn term-bottom-float" id="btnTermFloatBottom" hidden title="터미널 최하단으로 이동" aria-label="터미널 최하단으로 이동">${ICO.chevDown}<span>최하단</span></button></div>
     <div class="term-dock">
       <div class="tdock-bar">
         <button class="ghost btn-sm" id="tDockToggle" aria-expanded="${!dockCollapsed}" title="하단 프롬프트 작성창 접기/펼치기">${dockCollapsed ? `${ICO.chevUp} 입력창` : `${ICO.chevDown} 입력창`}</button>
@@ -2265,6 +2357,7 @@ function viewTerm() {
           <label class="filebtn" title="이 PC의 파일·스크린샷 첨부 → 경로 자동 입력 (드래그/Ctrl+V 가능)">${ICO.clip}<span>파일 첨부</span><input type="file" class="fpick" multiple hidden></label>
           <button id="tArt" title="세션이나 연구의 산출물 경로 선택">${ICO.folder}<span>산출물</span></button>
           <button data-copy="1" title="선택 텍스트(없으면 화면 전체) 복사">${ICO.copy}<span>복사</span></button>
+          <button type="button" id="btnTermBottom" title="터미널 최하단으로 이동">${ICO.chevDown}<span>최하단</span></button>
         </div>
         <div class="tdock-keys-wrap">
           <button class="ghost btn-sm" id="btnTuiKeys" aria-expanded="${keysOpen}" title="TUI 방향키·제어키 패드 접기/펼치기">${ICO.keyboard}<span>TUI 키</span></button>
@@ -2309,6 +2402,23 @@ function viewTerm() {
   const fit = new FitAddon.FitAddon();
   xterm.loadAddon(fit);
   xterm.open($('#termwrap'));
+  const termFloatBtn = $('#btnTermFloatBottom');
+  const syncTermBottom = () => {
+    if (!termFloatBtn || !xterm) return;
+    const buf = xterm.buffer?.active;
+    const up = buf ? (buf.baseY - buf.viewportY) > 1 : false;
+    termFloatBtn.hidden = !up;
+  };
+  const scrollTermBottom = () => {
+    if (!xterm) return;
+    xterm.scrollToBottom();
+    syncTermBottom();
+    if (!IS_MOBILE) xterm.focus();
+  };
+  if ($('#btnTermBottom')) $('#btnTermBottom').onclick = scrollTermBottom;
+  if (termFloatBtn) termFloatBtn.onclick = scrollTermBottom;
+  xterm.onScroll(syncTermBottom);
+  xterm.onWriteParsed(syncTermBottom);
   // Claude Code / Codex on Windows (ConPTY) redraws in place on a fixed-size screen, so almost nothing reaches
   // the terminal's scrollback — scrolling up stops after one screen. Point to split view or transcript instead.
   if (!isSplit) {
@@ -4092,7 +4202,7 @@ function viewSearch() {
         return `<div class="rgroup">
         <div class="rh" data-sid="${r.sessionId}" data-at="-1"><span class="dot ${live ? 'idle' : 'dead'}" style="margin-top:0"></span>
         <span class="t">${hl(sessionLabel(r), terms)}</span>
-          ${r.idMatch ? '<span class="badge lim">세션 ID 일치</span>' : ''}${r.auto ? '<span class="badge">sdk</span>' : ''}${agentBadge(r.agent)}
+          ${r.idMatch ? '<span class="badge lim">세션 ID 일치</span>' : ''}${branchTagHTML(r.branch)}${r.auto ? '<span class="badge">sdk</span>' : ''}${agentBadge(r.agent)}
           <span class="ums" style="margin:0">${esc([base(r.cwd), ago(r.mtime)].filter(Boolean).join(' · '))}</span>
           <span class="badge c">${r.idMatch ? `메시지 ${r.total}개` : `${r.total}건`}</span></div>
         ${r.hits.map((x) => `<div class="hit${x.snippet.startsWith('⚙') ? ' mono' : ''}" data-sid="${r.sessionId}" data-at="${x.i}">

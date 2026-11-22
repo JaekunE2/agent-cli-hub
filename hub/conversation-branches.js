@@ -282,6 +282,9 @@ function createBranchStore(filePath) {
             const sid = termSessionIdFn(t);
             if (sid && sid !== b.parentSessionId) {
               b.childSessionId = sid;
+              if (b.branchTitle && !state.titles[sid]) {
+                state.titles[sid] = String(b.branchTitle).trim().slice(0, 140);
+              }
               dirty = true;
             }
           }
@@ -290,15 +293,40 @@ function createBranchStore(filePath) {
       if (dirty) save();
     },
     lineageFor(sessionId, lookupTitleFn = () => null) {
-      const parentRec = state.branches.find((b) => b.childSessionId === sessionId) || null;
-      const children = state.branches
-        .filter((b) => b.parentSessionId === sessionId)
-        .map((b) => ({
-          ...b,
-          childTitle: b.childSessionId ? lookupTitleFn(b.childSessionId) : null,
-        }));
+      const parentRec = sessionId ? (state.branches.find((b) => b.childSessionId === sessionId) || null) : null;
+      const children = sessionId
+        ? state.branches
+          .filter((b) => b.parentSessionId === sessionId)
+          .map((b) => {
+            const fallbackLabel = b.branchTitle || (b.editedText ? `(분기) ${String(b.editedText).split('\n')[0].slice(0, 36)}` : null);
+            return {
+              ...b,
+              childTitle: (b.childSessionId ? lookupTitleFn(b.childSessionId) : null) || fallbackLabel,
+            };
+          })
+        : [];
       const parent = parentRec ? { ...parentRec, parentTitle: lookupTitleFn(parentRec.parentSessionId) } : null;
       return { parent, children };
+    },
+    branchMetaFor({ sessionId = null, termId = null, lookupTitleFn = () => null } = {}) {
+      const parentRec = (sessionId && state.branches.find((b) => b.childSessionId === sessionId))
+        || (termId != null ? state.branches.find((b) => !b.childSessionId && String(b.termId) === String(termId)) : null)
+        || null;
+      const childCount = sessionId ? state.branches.filter((b) => b.parentSessionId === sessionId).length : 0;
+      if (!parentRec && !childCount) return null;
+      const fallbackTitle = parentRec
+        ? (parentRec.branchTitle || (parentRec.editedText ? `(분기) ${String(parentRec.editedText).split('\n')[0].slice(0, 36)}` : null))
+        : null;
+      return {
+        isBranch: !!parentRec,
+        parentSessionId: parentRec?.parentSessionId || null,
+        parentTitle: parentRec ? lookupTitleFn(parentRec.parentSessionId) : null,
+        branchTitle: fallbackTitle,
+        atIndex: parentRec?.atIndex ?? null,
+        mode: parentRec?.mode || null,
+        editedText: parentRec?.editedText || '',
+        childCount,
+      };
     },
   };
 }

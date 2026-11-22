@@ -141,9 +141,17 @@ test('writeBranchContextFile writes bounded handoff markdown and createBranchSto
     store.setMsgEdit('parent-sid-1234', 0, 'Edited via overlay');
     assert.equal(store.getMsgEdits('parent-sid-1234')['0'].text, 'Edited via overlay');
 
-    store.addBranch({ parentSessionId: 'parent-sid-1234', childSessionId: null, termId: '9', atIndex: 2 });
+    store.addBranch({
+      parentSessionId: 'parent-sid-1234',
+      childSessionId: null,
+      termId: '9',
+      atIndex: 2,
+      branchTitle: '(분기) Branch Child',
+      editedText: 'Try alternative approach',
+    });
     const fakeTerms = new Map([['9', { id: '9' }]]);
     store.resolveLinks(fakeTerms, () => 'child-sid-5678');
+    assert.equal(store.getTitle('child-sid-5678'), '(분기) Branch Child');
 
     const parentLin = store.lineageFor('parent-sid-1234', (id) => (id === 'child-sid-5678' ? 'Branch Child' : null));
     assert.equal(parentLin.children.length, 1);
@@ -153,6 +161,29 @@ test('writeBranchContextFile writes bounded handoff markdown and createBranchSto
     const childLin = store.lineageFor('child-sid-5678', (id) => store.getTitle(id));
     assert.equal(childLin.parent.parentSessionId, 'parent-sid-1234');
     assert.equal(childLin.parent.parentTitle, 'Renamed Parent');
+
+    const parentMeta = store.branchMetaFor({ sessionId: 'parent-sid-1234', lookupTitleFn: (id) => store.getTitle(id) });
+    assert.equal(parentMeta.isBranch, false);
+    assert.equal(parentMeta.childCount, 1);
+
+    const childMeta = store.branchMetaFor({ sessionId: 'child-sid-5678', lookupTitleFn: (id) => store.getTitle(id) });
+    assert.equal(childMeta.isBranch, true);
+    assert.equal(childMeta.parentSessionId, 'parent-sid-1234');
+    assert.equal(childMeta.parentTitle, 'Renamed Parent');
+    assert.equal(childMeta.atIndex, 2);
+
+    // Unlinked live terminal should still resolve branch metadata by termId before sessionId exists
+    store.addBranch({
+      parentSessionId: 'parent-sid-1234',
+      childSessionId: null,
+      termId: '12',
+      atIndex: 1,
+      branchTitle: '(분기) Pending AGY',
+    });
+    const pendingTermMeta = store.branchMetaFor({ termId: '12', lookupTitleFn: (id) => store.getTitle(id) });
+    assert.equal(pendingTermMeta.isBranch, true);
+    assert.equal(pendingTermMeta.parentSessionId, 'parent-sid-1234');
+    assert.equal(pendingTermMeta.branchTitle, '(분기) Pending AGY');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

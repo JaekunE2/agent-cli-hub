@@ -316,6 +316,7 @@ async function buildOverview() {
     managed: [...terms.values()].some((t) => c.pids.includes(t.pid)),
   }));
   // name dashboard terminals after the session running in them (Claude, Codex, or Antigravity)
+  conversationBranches.resolveLinks(terms, termSessionId);
   const termsOut = [...terms.values()].map((t) => {
     const info = termInfo(t);
     const c = t.pid && consoles.find((x) => x.pids.includes(t.pid));
@@ -336,6 +337,12 @@ async function buildOverview() {
         if (cid) info.sessionId = cid;
       }
     }
+    const br = conversationBranches.branchMetaFor({
+      sessionId: info.sessionId || null,
+      termId: t.id,
+      lookupTitleFn: (id) => sessionDisplayTitle(id, index.get(id)),
+    });
+    if (br) info.branch = br;
     return info;
   });
   projects.remember(termsOut.filter(t => t.projectTask && t.sessionId).map(t => ({
@@ -2195,10 +2202,25 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/recent') {
       const n = Number(url.searchParams.get('n') || 40), auto = url.searchParams.get('auto') === '1';
       if (url.searchParams.get('fresh') === '1' || Date.now() - lastIndexAt > 5000) await refreshIndex();
+      conversationBranches.resolveLinks(terms, termSessionId);
       const agent = url.searchParams.get('agent') || '';
       const hidden = projects.hidden();
       const raw = index.ready ? index.recent(n, auto, agent, hidden) : recentSessions(n).filter(s => !hidden.has(s.sessionId) && (!agent || (s.agent || 'claude') === agent));
-      const sessions = raw.map((s) => ({ ...s, title: conversationBranches.getTitle(s.sessionId) || s.title }));
+      const sessions = raw.map((s) => {
+        const branch = conversationBranches.branchMetaFor({
+          sessionId: s.sessionId,
+          lookupTitleFn: (id) => sessionDisplayTitle(id, index.get(id)),
+        });
+        const customTitle = conversationBranches.getTitle(s.sessionId);
+        const fallbackBranchTitle = branch?.isBranch
+          ? (branch.branchTitle || (branch.parentTitle ? `(분기) ${String(branch.parentTitle).slice(0, 36)}` : null))
+          : null;
+        return {
+          ...s,
+          title: customTitle || fallbackBranchTitle || s.title,
+          ...(branch ? { branch } : {}),
+        };
+      });
       return send(res, 200, { sessions });
     }
     if (p === '/api/recent/hide' && req.method === 'POST') {
@@ -2210,9 +2232,18 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/transcript') {
       const id = url.searchParams.get('id'), at = Number(url.searchParams.get('at') ?? -1);
       if (projects.hidden().has(id)) return send(res, 404, { error: '허브에서 제거한 대화 기록입니다.', hidden: true });
-      const d = index.get(id);
+      conversationBranches.resolveLinks(terms, termSessionId);
+      let d = index.get(id);
+      if (!d && id && Date.now() - lastIndexAt > 1500) {
+        await refreshIndex();
+        d = index.get(id);
+      }
       if (d) await index.updateFile(d.file);
-      return send(res, 200, transcriptFromIndex(id, at) || transcript(id));
+      const out = transcriptFromIndex(id, at) || transcript(id);
+      if (out && !out.lineage && id) {
+        out.lineage = conversationBranches.lineageFor(id, (sid) => sessionDisplayTitle(sid, index.get(sid)));
+      }
+      return send(res, 200, out);
     }
     if (p === '/api/transcript/title' && req.method === 'POST') {
       const b = await body(req);
@@ -2348,7 +2379,9 @@ const server = http.createServer(async (req, res) => {
       // 3) Fork (at message atIndex inclusive) OR Fork+Edit (before atIndex with edited prompt)
       const inclusive = !isEdit;
       const anchorText = String(messages[atIndex]?.text || '').replace(/\s+/g, ' ').trim().slice(0, 100);
-      const branchTitle = `(분기) ${sourceTitle.slice(0, 32)}`;
+      const branchTitle = isEdit && newText
+        ? `(분기) ${newText.replace(/\s+/g, ' ').trim().slice(0, 36)}`
+        : `(분기) ${sourceTitle.slice(0, 32)}`;
 
       if (sourceAgent === 'claude' && targetAgent === 'claude' && sourceFile) {
         let forked;
@@ -2367,6 +2400,7 @@ const server = http.createServer(async (req, res) => {
           targetAgent,
           mode,
           atIndex,
+          branchTitle,
           anchorText,
           editedText: isEdit ? newText.slice(0, 500) : '',
           native: true,
@@ -2398,6 +2432,7 @@ const server = http.createServer(async (req, res) => {
         targetAgent,
         mode,
         atIndex,
+        branchTitle,
         anchorText,
         editedText: isEdit ? newText.slice(0, 500) : '',
         native: false,
@@ -2410,7 +2445,17 @@ const server = http.createServer(async (req, res) => {
       if (!q) return send(res, 200, { sessions: [], screens: [] });
       const t0 = Date.now();
       const opts = { role: url.searchParams.get('role') || 'all', includeAuto: url.searchParams.get('auto') === '1', cwd: url.searchParams.get('cwd') || '', agent: url.searchParams.get('agent') || '', hidden: projects.hidden() };
-      const sessions = index.search(q, opts).map((s) => ({ ...s, title: conversationBranches.getTitle(s.sessionId) || s.title }));
+      const sessions = index.search(q, opts).map((s) => {
+        const branch = conversationBranches.branchMetaFor({
+          sessionId: s.sessionId,
+          lookupTitleFn: (id) => sessionDisplayTitle(id, index.get(id)),
+        });
+        return {
+          ...s,
+          title: conversationBranches.getTitle(s.sessionId) || branch?.branchTitle || s.title,
+          ...(branch ? { branch } : {}),
+        };
+      });
       const screens = url.searchParams.get('screens') === '0' ? [] : await searchScreens(q);
       return send(res, 200, { sessions, screens, ms: Date.now() - t0, ready: index.ready, progress: index.progress });
     }
