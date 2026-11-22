@@ -20,6 +20,7 @@ const projects = require('./projects')();
 const { agents: projectAgents } = require('./project-validation');
 const { fingerprint, projectSession, sessionId: validSessionId } = require('./project-history');
 const { generatePlan, generateSubtasks, cliModelEffortArgs, inspectWorkspace } = require('./project-plan');
+const { scanFloorplan } = require('./workspace-floorplan');
 const { runTaskSubChatTurn } = require('./task-subchat');
 const { deleteCliRecord, uuid: recordUuid } = require('./delete-cli-record');
 const { ownedRoots, verifiedRoot, probeRoot, stopTerminal } = require('./project-stop');
@@ -32,6 +33,7 @@ const { Terminal: HeadlessTerminal } = require('@xterm/headless');
 
 const PORT = Number(process.env.CCD_PORT || 7777);
 const HOST = '127.0.0.1';
+const SERVER_BUILD_ID = String(Date.now());
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 // Per-install settings (config.json next to server.js; all optional):
 //   lang: "en" | "ko", remote: "off" | (default tailscale), python: path, usageUrl, usageDir, locateRoots: [dirs],
@@ -318,7 +320,7 @@ async function buildOverview() {
     agyQuota: { ok: !!agyQuota.get(), refreshing: agyQuota.getFast().refreshing, account: agyQuota.get()?.account || null },
     helper: { ok: !helperMissing, error: helperMissing || null },
   };
-  return { live, consoles, terms: termsOut, consoleError: cons.error, favs: liveFavs(), disk: diskLow, consolesOff: CONFIG.consoles === false, services };
+  return { live, consoles, terms: termsOut, consoleError: cons.error, favs: liveFavs(), disk: diskLow, consolesOff: CONFIG.consoles === false, services, buildId: SERVER_BUILD_ID };
 }
 
 function projectRecord(t) {
@@ -1642,6 +1644,7 @@ const STATIC = {
   '/project-board.js': 'public/project-board.js',
   '/project-task-form.js': 'public/project-task-form.js',
   '/project-flow.js': 'public/project-flow.js',
+  '/project-floorplan.js': 'public/project-floorplan.js',
   '/project-terminals.js': 'public/project-terminals.js',
   '/projects.css': 'public/projects.css',
   '/xterm.js': 'node_modules/@xterm/xterm/lib/xterm.js',
@@ -1683,9 +1686,18 @@ const server = http.createServer(async (req, res) => {
     // sites can't read this page anyway (no CORS).
     const local = p === '/' && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress)
       && new RegExp(`^(127\\.0\\.0\\.1|localhost|\\[::1\\]):${PORT}$`).test(req.headers.host || '');
-    res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream', 'cache-control': 'no-cache' });
+    res.writeHead(200, {
+      'content-type': MIME[path.extname(file)] || 'application/octet-stream',
+      'cache-control': 'no-store, no-cache, must-revalidate, max-age=0',
+      pragma: 'no-cache',
+    });
     const text = file.startsWith('public/') ? I18N.forFile(path.join(__dirname, file)) : null;
-    if (local) return res.end((text ?? fs.readFileSync(path.join(__dirname, file), 'utf8')).replace('<head>', `<head><script>window.__CCD_LOCAL_TOKEN=${JSON.stringify(TOKEN)};window.__ACH_LANG=${JSON.stringify(I18N.language())};</script>`));
+    if (p === '/') {
+      let html = text ?? fs.readFileSync(path.join(__dirname, file), 'utf8');
+      html = html.replace(/((?:src|href)="\/(?:ui|calendar|app|projects|project-[a-z-]+)\.js|(?:href)="\/projects\.css)"/g, `$1?v=${SERVER_BUILD_ID}"`);
+      if (local) return res.end(html.replace('<head>', `<head><script>window.__CCD_LOCAL_TOKEN=${JSON.stringify(TOKEN)};window.__ACH_LANG=${JSON.stringify(I18N.language())};</script>`));
+      return res.end(html);
+    }
     if (text != null) return res.end(text);
     return fs.createReadStream(path.join(__dirname, file)).pipe(res);
   }
@@ -1807,6 +1819,14 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/projects/cli-options' && req.method === 'GET') {
       return send(res, 200, { options: projectCliOptions() });
+    }
+    if (p === '/api/projects/floorplan' && req.method === 'GET') {
+      const pid = url.searchParams.get('id') || '';
+      const rawCwd = url.searchParams.get('cwd') || '';
+      const proj = pid ? projects.list().find((x) => x.id === pid) : null;
+      const targetDir = rawCwd || proj?.cwd || '';
+      if (!targetDir) return send(res, 400, { error: '분석할 작업 폴더를 찾을 수 없습니다.' });
+      return send(res, 200, { ok: true, floorplan: scanFloorplan(targetDir) });
     }
     if (p === '/api/projects/subtasks' && req.method === 'POST') {
       const b = await body(req);

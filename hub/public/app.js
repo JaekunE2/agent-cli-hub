@@ -39,6 +39,8 @@ async function api(path, opts = {}) {
 }
 
 let booted = false;
+let activeBuildId = null;
+let updateNoticeShown = false;
 const state = {
   sel: { kind: 'home' }, tab: 'screen', showHidden: false, favs: new Set(), showDesktop: (() => { try { return !!localStorage.getItem('ccd-show-desktop'); } catch { return false; } })(),
   live: [], consoles: [], terms: [], recent: [], projects: [], err: null,
@@ -291,6 +293,26 @@ function paintActiveTermStatus() {
 async function refreshOverview() {
   try {
     const o = await api('/api/overview');
+    if (o.buildId) {
+      if (activeBuildId && o.buildId !== activeBuildId) {
+        const ae = document.activeElement;
+        const isTyping = !!(ae && (ae.matches('input, textarea') && ae.value) || ae?.classList?.contains('xterm-helper-textarea'));
+        const isLiveTerm = state.sel.kind === 'term' || state.sel.kind === 'console';
+        if (!isLiveTerm && !isTyping) {
+          toast('허브가 업데이트되어 새 화면을 불러옵니다…', 1500);
+          setTimeout(() => location.reload(), 350);
+          return;
+        }
+        if (!updateNoticeShown) {
+          updateNoticeShown = true;
+          toast('허브 서버가 업데이트되었습니다. 새 UI를 적용하려면 새로고침하세요.', 60000, 'default', {
+            label: '지금 새로고침',
+            onClick: () => location.reload(),
+          });
+        }
+      }
+      activeBuildId = o.buildId;
+    }
     Object.assign(state, { live: o.live || [], consoles: o.consoles || [], terms: o.terms || [], err: o.consoleError || null, services: o.services || state.services, hubDown: false });
     if (Array.isArray(o.favs)) state.favs = new Set(o.favs);
     state.disk = o.disk || null;
@@ -911,7 +933,32 @@ function stopView() {
   $('#view').onclick = null; $('#bar').onclick = null;
   document.body.classList.remove('drawer');
 }
-function select(sel, tab) {
+const TERM_TABS = new Set(['screen', 'split', 'chat', 'files']);
+const RECENT_TABS = new Set(['chat', 'files']);
+function getSavedTermTab(fallback = 'screen') {
+  try {
+    const v = localStorage.getItem('ach-term-tab');
+    if (v && TERM_TABS.has(v)) return v;
+  } catch {}
+  return fallback;
+}
+function saveTermTab(tab) {
+  if (!TERM_TABS.has(tab)) return;
+  try { localStorage.setItem('ach-term-tab', tab); } catch {}
+}
+function getSavedRecentTab(fallback = 'chat') {
+  try {
+    const v = localStorage.getItem('ach-recent-tab');
+    if (v && RECENT_TABS.has(v)) return v;
+  } catch {}
+  return fallback;
+}
+function saveRecentTab(tab) {
+  if (!RECENT_TABS.has(tab)) return;
+  try { localStorage.setItem('ach-recent-tab', tab); } catch {}
+}
+
+function select(sel, tab, persistTab = false) {
   // A live session selected from the sidebar opens its console window, if it has one.
   if (sel.kind === 'session') {
     const s = state.live.find((x) => x.sessionId === sel.id);
@@ -924,7 +971,17 @@ function select(sel, tab) {
   stopView();
   state.sel = sel;
   if (sel.kind === 'term') { state.unreadTerms.delete(String(sel.id)); updateDocTitle(); }
-  state.tab = tab || (sel.kind === 'recent' ? 'chat' : 'screen');
+  if (persistTab && tab) {
+    if (sel.kind === 'term' || sel.kind === 'console') saveTermTab(tab);
+    else if (sel.kind === 'recent') saveRecentTab(tab);
+  }
+  if (sel.kind === 'term' || sel.kind === 'console') {
+    state.tab = (tab && TERM_TABS.has(tab)) ? tab : getSavedTermTab('screen');
+  } else if (sel.kind === 'recent') {
+    state.tab = (tab && RECENT_TABS.has(tab)) ? tab : getSavedRecentTab('chat');
+  } else {
+    state.tab = tab || 'screen';
+  }
   if (booted && sel.kind !== 'search') {
     const payload = { sel, tab: state.tab };
     try { localStorage.setItem('ach-last-sel', JSON.stringify(payload)); } catch {}
@@ -1493,7 +1550,7 @@ function viewConsole() {
   $('#bar').onclick = (e) => {
     if (e.target.closest('#btnBackTerms')) return select({ kind: 'terms' });
     const b = e.target.closest('[data-tab]');
-    if (b) return select(state.sel, b.dataset.tab);
+    if (b) return select(state.sel, b.dataset.tab, true);
     const more = e.target.closest('#btnConMore');
     if (more) {
       e.stopPropagation();
@@ -1533,7 +1590,7 @@ function viewConsole() {
     $('#view').innerHTML = `<div class="term-split"><div class="tsplit-left">${screenHTML}</div>
       <div class="split-resizer" role="separator" aria-orientation="vertical" aria-label="패널 크기 조절"></div>
       <div class="tsplit-right"><div class="tsplit-hd"><span>실시간 대화 기록</span><button class="ghost icon-btn btn-sm" id="btnSplitClose" aria-label="분할 보기 닫기">${ICO.close}</button></div><div class="tsplit-body" id="splitChatHost"></div></div></div>`;
-    $('#btnSplitClose').onclick = () => select(state.sel, 'screen');
+    $('#btnSplitClose').onclick = () => select(state.sel, 'screen', true);
     bindSplitResizer($('.term-split'), $('.tsplit-left'));
     renderChat(sid, gen, -1, [], $('#splitChatHost'));
   } else {
@@ -1628,7 +1685,7 @@ function viewTranscript() {
   $('#bar').onclick = async (e) => {
     if (e.target.closest('#btnBackRecent')) { state.termsTab = 'recent'; return select({ kind: 'terms' }); }
     const tb = e.target.closest('[data-tab]');
-    if (tb) return select(state.sel, tb.dataset.tab);
+    if (tb) return select(state.sel, tb.dataset.tab, true);
     const more = e.target.closest('#btnRecMore');
     if (more) {
       e.stopPropagation();
@@ -1676,7 +1733,7 @@ function viewTranscript() {
       const existing = state.terms.find((x) => x.exited === null && x.sessionId === sid);
       if (existing) {
         await api('/api/term/send', { method: 'POST', body: { id: existing.id, text, submit: true } });
-        select({ kind: 'term', id: existing.id }, 'split');
+        select({ kind: 'term', id: existing.id }, getSavedTermTab(null) || 'split');
         return;
       }
       const body = r?.agent === 'codex'
@@ -1687,7 +1744,7 @@ function viewTranscript() {
       const t = await api('/api/term/new', { method: 'POST', body });
       if (t.error) throw new Error(t.error);
       await refreshOverview();
-      select({ kind: 'term', id: t.id, ...(body.kind === 'agy' ? { agyResume: sid } : {}) }, 'split');
+      select({ kind: 'term', id: t.id, ...(body.kind === 'agy' ? { agyResume: sid } : {}) }, getSavedTermTab(null) || 'split');
       setTimeout(() => {
         api('/api/term/send', { method: 'POST', body: { id: t.id, text, submit: true } }).catch(() => {});
       }, 2400);
@@ -1704,7 +1761,8 @@ function viewTranscript() {
 
 function openResumedTerm(t, request) {
   const isAgy = request.kind === 'agy';
-  select({ kind: 'term', id: t.id, ...(isAgy ? { agyResume: request.resume } : {}) }, isAgy ? 'split' : undefined);
+  const saved = getSavedTermTab(null);
+  select({ kind: 'term', id: t.id, ...(isAgy ? { agyResume: request.resume } : {}) }, saved || (isAgy ? 'split' : undefined));
 }
 
 function resolveTermSessionId(t) {
@@ -1757,7 +1815,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
         <span class="ums">터미널 화면에서 첫 프롬프트를 전송하면 대화 기록이 자동으로 여기에 실시간 표시됩니다.</span>
         ${!hostEl ? `<div class="row" style="gap:8px;margin-top:6px"><button class="primary" data-goto-tab="screen">터미널 화면으로</button><button data-goto-tab="split">${ICO.split} 화면 + 대화 분할 보기</button></div>` : ''}
       </div>`;
-      box.querySelectorAll('[data-goto-tab]').forEach((b) => (b.onclick = () => select(state.sel, b.dataset.gotoTab)));
+      box.querySelectorAll('[data-goto-tab]').forEach((b) => (b.onclick = () => select(state.sel, b.dataset.gotoTab, true)));
       chatPollTimer = setTimeout(tick, 3000);
       return;
     }
@@ -1892,7 +1950,7 @@ function viewTerm() {
     if (bp) return openProject(bp.dataset.projId || state.sel.project);
     if (e.target.closest('#btnBackTerms')) return select({ kind: 'terms' });
     const tb = e.target.closest('[data-tab]');
-    if (tb) return select(state.sel, tb.dataset.tab);
+    if (tb) return select(state.sel, tb.dataset.tab, true);
     const more = e.target.closest('#btnTermMore');
     if (more) {
       e.stopPropagation();
@@ -1960,7 +2018,7 @@ function viewTerm() {
         <div class="tsplit-body" id="splitChatHost"></div>
       </div>
     </div>`;
-    $('#btnSplitClose').onclick = () => select(state.sel, 'screen');
+    $('#btnSplitClose').onclick = () => select(state.sel, 'screen', true);
     bindSplitResizer($('.term-split'), $('.tsplit-left'));
     renderChat(sid, gen, -1, [], $('#splitChatHost'));
   } else {
@@ -1981,7 +2039,7 @@ function viewTerm() {
       const h = document.createElement('div');
       h.className = 'termhint';
       h.innerHTML = '터미널에는 화면 한 장 분량만 남습니다 (Windows 콘솔 특성). 이전 대화는 <button class="linkbtn" data-htab="split">"화면 + 대화" 분할 보기</button> 또는 <button class="linkbtn" data-htab="chat">"대화 기록" 탭 →</button>';
-      h.querySelectorAll('[data-htab]').forEach((b) => (b.onclick = () => select(state.sel, b.dataset.htab)));
+      h.querySelectorAll('[data-htab]').forEach((b) => (b.onclick = () => select(state.sel, b.dataset.htab, true)));
       $('#termwrap').appendChild(h);
       setTimeout(() => h.remove(), 7000);
     }, { passive: true });

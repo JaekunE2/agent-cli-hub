@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { validate, kinds, MODEL_RE, efforts, inferTaskKind } = require('./project-validation');
 const { readSession } = require('./agy-session');
+const { scanFloorplan } = require('./workspace-floorplan');
 
 const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const stripAnsi = (s) => String(s || '').replace(ANSI_RE, '');
@@ -81,6 +82,17 @@ function inspectWorkspace(dir) {
       } catch {}
     }
   }
+
+  // Enrich with Floorplan architecture & endpoint summary for higher-precision incremental plans
+  try {
+    const fp = scanFloorplan(dir, { maxFiles: 220 });
+    if (fp.parts.length) {
+      details.push(`Architecture layers: ${fp.parts.map((pt) => `${pt.title}(${pt.fileCount} files)`).join(', ')}`);
+    }
+    if (fp.endpoints.length) {
+      details.push(`Detected API endpoints (${fp.endpoints.length}): ${fp.endpoints.slice(0, 16).map((ep) => `${ep.method} ${ep.path}`).join(', ')}`);
+    }
+  } catch {}
 
   return {
     exists: true,

@@ -1,6 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { readPlan, parseProgressLine, spawnCli, cliModelEffortArgs, inspectWorkspace } = require('../project-plan');
+const { scanFloorplan } = require('../workspace-floorplan');
 const { validate, inferTaskKind } = require('../project-validation');
 const { parseCodexJsonl, parseClaudeJson, parseAgyJson } = require('../task-subchat');
 const projectsStore = require('../projects');
@@ -21,6 +22,34 @@ test('inspectWorkspace detects existing project markers and builds workspace sum
     assert.ok(info.markers.includes('Node.js'));
     assert.ok(info.summaryText.includes('existing-app'));
     assert.ok(info.summaryText.includes('src/index.js'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('scanFloorplan extracts layers, API endpoints, frontend-backend connections, and health issues', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-floorplan-'));
+  try {
+    fs.mkdirSync(path.join(dir, 'public'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'server'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'server', 'routes.js'), [
+      '// Main API routes',
+      'const db = require("./store");',
+      'const OPENAI_API_KEY = "sk-proj-1234567890abcdef1234567890abcdef";',
+      'app.get("/api/items", (req, res) => res.json(db.list()));',
+    ].join('\n'));
+    fs.writeFileSync(path.join(dir, 'server', 'store.js'), 'exports.list = () => [];\n');
+    fs.writeFileSync(path.join(dir, 'public', 'app.js'), 'fetch("/api/items").then(r => r.json());\n');
+
+    const fp = scanFloorplan(dir);
+    assert.equal(fp.exists, true);
+    assert.equal(fp.stats.files, 3);
+    assert.equal(fp.stats.endpoints, 1);
+    assert.equal(fp.stats.matchedCalls, 1);
+    assert.ok(fp.edges.some((e) => e.from === 'public/app.js' && e.to === 'server/routes.js' && e.kind === 'api'));
+    assert.ok(fp.edges.some((e) => e.from === 'server/routes.js' && e.to === 'server/store.js' && e.kind === 'import'));
+    assert.ok(fp.health.criticalCount >= 1); // detected sk-proj-... secret
+    assert.ok(fp.health.issues.some((x) => x.severity === 'warn')); // unauth endpoint warning
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

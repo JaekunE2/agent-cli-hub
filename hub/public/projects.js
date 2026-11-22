@@ -1,7 +1,7 @@
 let projectId = '', projectTab = 'board';
 const projectStages = [['planned', '대기'], ['doing', '진행'], ['review', '검토'], ['done', '완료']];
 const projectTaskKinds = [['plan', '설계·기획'], ['dev', '개발·구현'], ['test', '테스트·검증'], ['ops', '배포·문서']];
-const projectViews = [['design', '작업 설계'], ['board', '칸반 보드'], ['flow', '작업 흐름'], ['terms', '터미널 모아보기']];
+const projectViews = [['design', '작업 설계'], ['board', '칸반 보드'], ['flow', '작업 흐름'], ['floorplan', '코드 구조'], ['terms', '터미널 모아보기']];
 const newTaskId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, '0')).join('');
 
 function taskKindOf(t) {
@@ -576,6 +576,7 @@ async function viewProjects() {
       ]);
     };
     if (projectTab === 'design') projectDesign(p);
+    else if (projectTab === 'floorplan' && typeof projectFloorplan === 'function') projectFloorplan(p, gen);
     else if (projectTab === 'terms') projectTerminals(p, gen);
     else projectBoard(p);
   } catch (e) {
