@@ -16,6 +16,7 @@ const { SearchIndex } = require('./searchindex');
 const codexRecoveryArgs = require('./terminal-recovery');
 const { readSession: readAgySession, agyStatusFromScreen, stripAnsi } = require('./agy-session');
 const { createAgyQuotaService, parseAgyQuotaTui } = require('./agy-quota');
+const { findAgySwapExe, createAgySwapService } = require('./agy-swap');
 const projects = require('./projects')();
 const { agents: projectAgents } = require('./project-validation');
 const { fingerprint, projectSession, sessionId: validSessionId } = require('./project-history');
@@ -1145,8 +1146,24 @@ async function switchTermAccount({ termId, account = 'auto', skip = true }) {
 // "다른 계정" restarts a codex terminal's conversation (codex resume) on another login of your own.
 // It only happens when you press the button (or run `ccd switch`); nothing rotates accounts by itself.
 const CA = require('./codex-accounts');
+const agySwapExe = () => findAgySwapExe(CONFIG.agySwap);
+const agySwap = createAgySwapService({ exeFn: agySwapExe, envFn: cleanEnv });
+function agySwapProjectAccounts() {
+  const f = agySwap.getFast();
+  return (f.accounts || []).map((a) => ({
+    id: a.id,
+    label: a.name ? `${a.name} (${a.email})` : a.email,
+    email: a.email,
+  }));
+}
+async function ensureAgySwap(auth) {
+  if (auth?.switchAgySwap && agySwap.available()) {
+    await agySwap.switchTo(auth.switchAgySwap);
+    agyQuota.noteAccount(auth.switchAgySwap);
+  }
+}
 const projectAccounts = require('./project-accounts')({
-  claude: tokenAccounts, codex: () => CA.accounts(USAGE_DIR), agy: geminiAccounts, codexEnv: CA.envFor,
+  claude: tokenAccounts, codex: () => CA.accounts(USAGE_DIR), agy: () => [...agySwapProjectAccounts(), ...geminiAccounts()], codexEnv: CA.envFor,
 });
 // an npm install of the Codex CLI is a .cmd shim → it runs through cmd.exe /c
 const isCodexTerm = (t) => /codex(\.exe)?$/i.test(t?.meta?.cmd || '') || (/cmd(\.exe)?$/i.test(t?.meta?.cmd || '') && /codex(\.cmd)?$/i.test(t?.meta?.args?.[1] || ''));
@@ -1182,25 +1199,44 @@ async function allSwitchCandidates({ sessionId = '', termId = '' }) {
   const curClaudeId = isLive && sourceAgent === 'claude' ? (tt?.account?.id || loc.account || 'default') : null;
   const curCodexId = isLive && sourceAgent === 'codex' ? (tt?.account?.id || 'auto-codex') : null;
   const curAgyId = isLive && sourceAgent === 'agy' ? (tt?.account?.id || 'agy-cli') : null;
+  const curAgyEmail = isLive && sourceAgent === 'agy' ? (tt?.account?.email || null) : null;
 
   const [clRes, cxRes, u] = await Promise.all([
     switchCandidates(curClaudeId),
     codexCandidates(curCodexId),
     aiUsage(false),
   ]);
+  let swapAccounts = agySwap.getFast().accounts || [];
+  if (agySwap.available() && !swapAccounts.length) {
+    try { swapAccounts = (await agySwap.refresh({ force: false })).accounts || []; } catch {}
+  }
   const agyQ = agyQuota.get();
   const agyG0 = agyQ?.groups?.[0];
   const agyFiveH = agyG0?.fiveH ?? null;
   const agyWeekly = agyG0?.weekly ?? null;
   const agyStale = !agyQ?.fetchedAt || (Date.now() - Date.parse(agyQ.fetchedAt)) > 6 * 3600e3;
   const agyScore = (!agyStale && (agyFiveH != null || agyWeekly != null)) ? Math.min(100 - (agyFiveH ?? 0), 100 - (agyWeekly ?? 0)) : 80;
+  const swapCands = swapAccounts.map((a) => {
+    const g0 = a.groups?.[0];
+    const fiveH = g0?.fiveH ?? null;
+    const weekly = g0?.weekly ?? null;
+    const known = fiveH != null || weekly != null;
+    const score = known ? Math.min(100 - (fiveH ?? 0), 100 - (weekly ?? 0)) : 80;
+    const current = isLive && sourceAgent === 'agy' && (curAgyEmail ? curAgyEmail.toLowerCase() === a.email.toLowerCase() : (curAgyId === a.id || (curAgyId === 'agy-cli' && a.active)));
+    return {
+      id: a.id, agent: 'agy', provider: 'Antigravity (agy-swap)',
+      label: a.name ? `${a.name} (${a.email})` : a.email, email: a.email,
+      fiveH, weekly, score, reset: g0?.fiveHResetAt || null, active: !!a.active,
+      current, sameAccount: false, usable: !known || score > 0,
+    };
+  });
   const agyCands = [
-    {
+    ...(swapCands.length ? swapCands : [{
       id: 'agy-cli', agent: 'agy', provider: 'Antigravity (Gemini)',
       label: agyQ?.account ? `Antigravity (${agyQ.account})` : 'Antigravity IDE / CLI',
       fiveH: agyFiveH, weekly: agyWeekly, score: agyScore,
       current: curAgyId === 'agy-cli', sameAccount: false, usable: agyStale || agyScore > 0,
-    },
+    }]),
     ...geminiAccounts().map((g) => {
       const gu = (u.accounts || []).find((a) => a.id === g.id);
       return {
@@ -1472,9 +1508,19 @@ async function switchAccount({ sessionId, termId, account = 'auto', cont = false
     ({ cmd, args } = codexLaunch(extra));
   } else if (targetAgent === 'agy') {
     cmd = agyExe();
-    const gAcc = geminiAccounts().find((a) => a.id === pick.id);
-    const gKey = gAcc?.apiKey?.();
-    if (gKey) env = { GEMINI_API_KEY: gKey, GOOGLE_API_KEY: gKey };
+    if (String(pick.id).startsWith('agyswap:')) {
+      try {
+        await agySwap.switchTo(pick.email || pick.id);
+        agyQuota.noteAccount(pick.email || String(pick.id).slice(8));
+        agyQuota.refresh({ force: true }).catch(() => {});
+      } catch (e) {
+        return { ok: false, error: `Antigravity 계정 전환 실패: ${e.message}` };
+      }
+    } else {
+      const gAcc = geminiAccounts().find((a) => a.id === pick.id);
+      const gKey = gAcc?.apiKey?.();
+      if (gKey) env = { GEMINI_API_KEY: gKey, GOOGLE_API_KEY: gKey };
+    }
     if (samePlatform && sid) args.push('--conversation', sid);
     if (skip) args.push('--dangerously-skip-permissions');
     const agyPrompt = !samePlatform ? handoffPrompt : (cont && sid ? '계속 진행해' : null);
@@ -1509,7 +1555,7 @@ async function switchAccount({ sessionId, termId, account = 'auto', cont = false
   }
   const t = createTerm({
     cwd, cmd, args, env, title,
-    account: { id: pick.id, label: pick.label, kind: targetAgent },
+    account: { id: pick.id, label: pick.label, kind: targetAgent, ...(pick.email ? { email: pick.email } : {}) },
     research: project ? project.dir : null,
     projectTask: inheritedProjectTask || undefined,
     projectPrompt: inheritedProjectTask ? (handoffPrompt ? fingerprint(handoffPrompt) : t0?.meta?.projectPrompt) : undefined,
@@ -1708,7 +1754,11 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (p === '/api/projects/accounts' && req.method === 'GET') {
-      return send(res, 200, { accounts: projectAccounts.list(url.searchParams.get('agent')) });
+      const ag = url.searchParams.get('agent');
+      if (ag === 'agy' && agySwap.available() && !(agySwap.getFast().accounts || []).length) {
+        await agySwap.refresh({ force: false }).catch(() => {});
+      }
+      return send(res, 200, { accounts: projectAccounts.list(ag) });
     }
     if (p === '/api/fs/dirs' && req.method === 'GET') {
       const reqPath = (url.searchParams.get('path') || '').trim();
@@ -1869,6 +1919,7 @@ const server = http.createServer(async (req, res) => {
       };
       let dir;
       try {
+        await ensureAgySwap(auth);
         dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-project-sub-'));
         const exe = effAgent === 'agy' ? agyExe() : effAgent === 'claude' ? 'claude.exe' : codexExe();
         const { tasks, sessionId } = await generateSubtasks(exe, project, task, dir, { ...cleanEnv(), ...auth.env }, {
@@ -1919,6 +1970,7 @@ const server = http.createServer(async (req, res) => {
       };
       let dir;
       try {
+        await ensureAgySwap(auth);
         dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-project-plan-'));
         const exe = b.agent === 'agy' ? agyExe() : b.agent === 'claude' ? 'claude.exe' : codexExe();
         const { tasks, sessionId } = await generatePlan(exe, b, dir, { ...cleanEnv(), ...auth.env }, { onProgress });
@@ -1997,6 +2049,7 @@ const server = http.createServer(async (req, res) => {
       taskChatActive.set(actKey, actState);
       const exe = effAgent === 'agy' ? agyExe() : effAgent === 'claude' ? 'claude.exe' : codexExe();
       try {
+        await ensureAgySwap(auth);
         const resTurn = await runTaskSubChatTurn({
           exe, agent: effAgent, cwd: workCwd, env: { ...cleanEnv(), ...auth.env },
           model: effModel, effort: effEffort, sessionId: chat.sessionId,
@@ -2358,6 +2411,10 @@ const server = http.createServer(async (req, res) => {
         const live = liveSessions().find((s) => s.sessionId === b.resume);
         if (live && !b.fork) return send(res, 409, { error: `이 세션은 이미 실행 중입니다 (pid ${live.pid}). 그 창에서 이어가세요.` });
       }
+      if (launchAccount?.switchAgySwap) {
+        try { await ensureAgySwap(launchAccount); }
+        catch (e) { return send(res, 502, { error: `Antigravity 계정 전환 실패: ${e.message}` }); }
+      }
       const t = createTerm({ cwd, cmd, args, title: b.title || title, ...(codexStart || {}), ...launchAccount, projectTask, projectPrompt });
       if (projectTask) {
         const result = await t.spawnResult;
@@ -2375,6 +2432,25 @@ const server = http.createServer(async (req, res) => {
       const t = createTerm({ cwd: __dirname, cmd: process.execPath, args: ['--use-system-ca', path.join(__dirname, 'ccd.js'), 'codex', 'add'], title: 'Codex 계정 추가' });
       return send(res, 200, termInfo(t));
     }
+    if (p === '/api/agy/add' && req.method === 'POST') {
+      const swapExe = agySwapExe();
+      if (!swapExe) return send(res, 400, { error: 'agy-swap이 설치되어 있지 않습니다.' });
+      const t = createTerm({ cwd: __dirname, cmd: swapExe, args: ['add'], title: 'Antigravity 계정 추가' });
+      return send(res, 200, termInfo(t));
+    }
+    if (p === '/api/agy/swap' && req.method === 'POST') {
+      const b = await body(req);
+      if (!agySwap.available()) return send(res, 400, { error: 'agy-swap이 설치되어 있지 않습니다.' });
+      try {
+        const resSwap = await agySwap.switchTo(b.account);
+        if (resSwap.account?.email) agyQuota.noteAccount(resSwap.account.email);
+        agyQuota.refresh({ force: true }).catch(() => {});
+        overviewStale();
+        return send(res, 200, resSwap);
+      } catch (e) {
+        return send(res, 400, { error: `Antigravity 계정 전환 실패: ${e.message}` });
+      }
+    }
     // Antigravity quota: fast non-disruptive headless `agy --print /usage --output-format json` with single-flight cache.
     // GET /api/agy/quota returns cache immediately (0ms) and refreshes in background if stale; ?force=1 awaits a fresh read.
     if (p === '/api/agy/quota') {
@@ -2388,14 +2464,34 @@ const server = http.createServer(async (req, res) => {
           if (parsed) agyQuota.save(parsed);
         }
       }
+      const withSwap = (base, swapRes) => ({
+        ...base,
+        swapAvailable: agySwap.available(),
+        swapAccounts: swapRes.accounts || [],
+        swapRefreshing: !!swapRes.refreshing,
+        swapError: swapRes.error || swapRes.lastError || null,
+      });
       if (url.searchParams.has('force')) {
-        return send(res, 200, await agyQuota.refresh({ force: true }));
+        const [qRes, sRes] = await Promise.all([
+          agyQuota.refresh({ force: true }),
+          agySwap.available() ? agySwap.refresh({ force: true }) : Promise.resolve({ accounts: [] }),
+        ]);
+        return send(res, 200, withSwap(qRes, sRes));
       }
-      return send(res, 200, agyQuota.getFast());
+      return send(res, 200, withSwap(agyQuota.getFast(), agySwap.getFast()));
     }
     if (p === '/api/agy/usage' && req.method === 'POST') {
-      const r = await agyQuota.refresh({ force: true });
-      return send(res, 200, r);
+      const [qRes, sRes] = await Promise.all([
+        agyQuota.refresh({ force: true }),
+        agySwap.available() ? agySwap.refresh({ force: true }) : Promise.resolve({ accounts: [] }),
+      ]);
+      return send(res, 200, {
+        ...qRes,
+        swapAvailable: agySwap.available(),
+        swapAccounts: sRes.accounts || [],
+        swapRefreshing: !!sRes.refreshing,
+        swapError: sRes.error || sRes.lastError || null,
+      });
     }
     if (p === '/api/term/dedupe' && req.method === 'POST') {
       const removed = dedupeTermsBySession();

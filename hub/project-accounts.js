@@ -12,7 +12,13 @@ module.exports = function projectAccounts({ claude, codex, agy, codexEnv }) {
       let env;
       if (agent === 'codex') env = codexEnv(entry);
       else if (agent === 'claude') env = entry.credentialsPath ? { CLAUDE_CONFIG_DIR: require('path').dirname(entry.credentialsPath) } : { CLAUDE_CODE_OAUTH_TOKEN: entry.token() };
-      else {
+      else if (String(id).startsWith('agyswap:')) {
+        return {
+          env: {},
+          account: { id, label: entry.label, kind: agent, email: entry.email || String(id).slice(8) },
+          switchAgySwap: entry.email || String(id).slice(8),
+        };
+      } else {
         const key = entry.apiKey();
         if (!key) throw new Error('선택한 AGY 계정의 인증 정보를 읽을 수 없습니다.');
         env = { GEMINI_API_KEY: key, GOOGLE_API_KEY: key };
