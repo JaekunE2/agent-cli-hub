@@ -30,8 +30,8 @@ function New-StatusIcon($dotColor) {
   $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
   $g.Clear([System.Drawing.Color]::Transparent)
 
-  # Agent CLI Hub dark rounded background (#1f1f23)
-  $bgBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(31, 31, 35))
+  # Agent CLI Hub dark rounded background (#161922)
+  $bgBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(22, 25, 34))
   $bgPath = New-Object System.Drawing.Drawing2D.GraphicsPath
   $r = 7
   $bgPath.AddArc(0, 0, $r * 2, $r * 2, 180, 90)
@@ -41,24 +41,32 @@ function New-StatusIcon($dotColor) {
   $bgPath.CloseFigure()
   $g.FillPath($bgBrush, $bgPath)
 
-  # 4-tile hub logo matching hub/public/icon.svg
-  $b1 = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(224, 130, 95))  # #e0825f
-  $b2 = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(92, 192, 124))  # #5cc07c
-  $b3 = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(224, 176, 80))  # #e0b050
-  $b4 = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(154, 152, 144)) # #9a9890
-  $g.FillRectangle($b1, 4, 6, 10, 8)
-  $g.FillRectangle($b2, 18, 6, 10, 8)
-  $g.FillRectangle($b3, 4, 18, 10, 8)
-  $g.FillRectangle($b4, 18, 18, 10, 8)
+  # Hub Core geometric mark matching hub/public/icon.svg
+  $spokePen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(248, 250, 252), 2.4)
+  $spokePen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
+  $spokePen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+  $g.DrawLine($spokePen, 16, 15, 9, 9)
+  $g.DrawLine($spokePen, 16, 15, 23, 9)
+  $g.DrawLine($spokePen, 16, 15, 16, 24)
+
+  $nodeBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(248, 250, 252))
+  $g.FillEllipse($nodeBrush, 6.5, 6.5, 5, 5)
+  $g.FillEllipse($nodeBrush, 20.5, 6.5, 5, 5)
+  $g.FillEllipse($nodeBrush, 13.5, 21.5, 5, 5)
+
+  $coreRing = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(22, 25, 34))
+  $coreBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(224, 122, 84)) # #e07a54
+  $g.FillEllipse($coreRing, 11.5, 10.5, 9, 9)
+  $g.FillEllipse($coreBrush, 12.5, 11.5, 7, 7)
 
   # Status indicator dot in bottom-right corner
-  $ring = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(31, 31, 35))
+  $ring = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(22, 25, 34))
   $dot  = New-Object System.Drawing.SolidBrush($dotColor)
   $g.FillEllipse($ring, 19, 19, 12, 12)
   $g.FillEllipse($dot, 21, 21, 8, 8)
 
   $g.Dispose(); $bgPath.Dispose(); $bgBrush.Dispose()
-  $b1.Dispose(); $b2.Dispose(); $b3.Dispose(); $b4.Dispose()
+  $spokePen.Dispose(); $nodeBrush.Dispose(); $coreRing.Dispose(); $coreBrush.Dispose()
   $ring.Dispose(); $dot.Dispose()
   $hIcon = $bmp.GetHicon()
   return [System.Drawing.Icon]::FromHandle($hIcon)
