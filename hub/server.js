@@ -18,7 +18,15 @@ const { readSession: readAgySession, agyStatusFromScreen, stripAnsi } = require(
 const { createAgyQuotaService, parseAgyQuotaTui } = require('./agy-quota');
 const { findAgySwapExe, createAgySwapService } = require('./agy-swap');
 const projects = require('./projects')();
-const { agents: projectAgents } = require('./project-validation');
+const { agents: projectAgents, efforts, MODEL_RE } = require('./project-validation');
+const cleanModelEffort = (model, effort) => {
+  const m = String(model || '').trim();
+  const ef = String(effort || '').trim();
+  return {
+    model: m && MODEL_RE.test(m) ? m : '',
+    effort: ef && efforts.includes(ef) ? ef : '',
+  };
+};
 const { fingerprint, projectSession, sessionId: validSessionId } = require('./project-history');
 const { generatePlan, generateSubtasks, cliModelEffortArgs, inspectWorkspace } = require('./project-plan');
 const { scanFloorplan } = require('./workspace-floorplan');
@@ -624,9 +632,10 @@ function launchSpecWithShared(cmd, args = [], env = {}) {
   }
 }
 
-function createTerm({ cwd, cmd, args = [], title, env = {}, account = null, research = null, operator = false, projectTask, projectPrompt }) {
+function createTerm({ cwd, cmd, args = [], title, env = {}, account = null, model = '', effort = '', research = null, operator = false, projectTask, projectPrompt }) {
   const id = String(++termSeq);
   if (!cwd || !fs.existsSync(cwd)) cwd = os.homedir();
+  const me = cleanModelEffort(model, effort);
   const shared = launchSpecWithShared(cmd, args, env);
   args = shared.args;
   env = shared.env;
@@ -639,7 +648,12 @@ function createTerm({ cwd, cmd, args = [], title, env = {}, account = null, rese
     if (previous !== -1) args = args.filter((_, i) => i !== previous && i !== previous + 1);
     args = [...args, '--log-file', path.join(dir, crypto.randomUUID() + '.log')];
   }
-  const meta = { title: title || [cmd, ...args].join(' '), cwd, cmd, args, account, research, envFlags, spawnedAt: Date.now(), ...(operator ? { operator: true } : {}) };
+  const meta = {
+    title: title || [cmd, ...args].join(' '), cwd, cmd, args, account, research, envFlags, spawnedAt: Date.now(),
+    ...(me.model ? { model: me.model } : {}),
+    ...(me.effort ? { effort: me.effort } : {}),
+    ...(operator ? { operator: true } : {}),
+  };
   if (projectTask) Object.assign(meta, { projectTask, projectPrompt });
   const t = makeMirror({ id, meta });
   t.spawnResult = ptyPost(id, '/spawn', { id, cmd, args, cwd, env: { ...cleanEnv(), ...env }, cols: 120, rows: 32, meta });
@@ -1514,7 +1528,7 @@ function launchExternalWindow({ cwd, title, cmd, args = [], env = {}, openMode =
   return { ok: true, external: true, openMode: 'external' };
 }
 
-async function switchAccount({ sessionId, termId, account = 'auto', cont = false, skip = true, interrupt = false, force = false, openMode = 'dashboard' }) {
+async function switchAccount({ sessionId, termId, account = 'auto', model = '', effort = '', cont = false, skip = true, interrupt = false, force = false, openMode = 'dashboard' }) {
   let t0 = termId != null && termId !== '' ? [...terms.values()].find((x) => String(x.id) === String(termId)) : null;
   let sid = sessionId || (t0 && termSessionId(t0)) || '';
   if (!t0 && sid) {
@@ -1527,7 +1541,13 @@ async function switchAccount({ sessionId, termId, account = 'auto', cont = false
   const loc = sid ? locateSession(sid, cons) : { live: false };
   const allInfo = await allSwitchCandidates({ sessionId: sid, termId: t0?.id });
   const { candidates, sourceAgent } = allInfo;
-  const pick = account === 'auto' ? (candidates.find((c) => c.best) || candidates.find((c) => c.usable && !c.current)) : candidates.find((c) => c.id === account);
+  const reqME = cleanModelEffort(model, effort);
+  const cliDirect = /^__cli__:(claude|codex|agy)$/.exec(String(account || ''));
+  let pick = account === 'auto'
+    ? (candidates.find((c) => c.best) || candidates.find((c) => c.usable && !c.current))
+    : cliDirect
+      ? (candidates.find((c) => c.agent === cliDirect[1] && c.current) || candidates.find((c) => c.agent === cliDirect[1]) || { id: 'default', agent: cliDirect[1], label: `${cliDirect[1]} (기본)` })
+      : candidates.find((c) => c.id === account);
   if (!pick) return { ok: false, error: account === 'auto' ? '여유 있는 다른 계정이 없습니다 (AI 사용량 확인)' : '선택한 계정을 찾을 수 없습니다' };
 
   const targetAgent = pick.agent || 'claude';
@@ -1600,6 +1620,7 @@ async function switchAccount({ sessionId, termId, account = 'auto', cont = false
     env = CA.envFor(acc);
     const extra = [
       ...(skip ? ['--dangerously-bypass-approvals-and-sandbox'] : []),
+      ...cliModelEffortArgs('codex', reqME.model, reqME.effort),
       ...(samePlatform && sid
         ? ['resume', sid, ...(cont ? ['계속 진행해'] : [])]
         : samePlatform && t0
@@ -1624,6 +1645,7 @@ async function switchAccount({ sessionId, termId, account = 'auto', cont = false
     }
     if (samePlatform && sid) args.push('--conversation', sid);
     if (skip) args.push('--dangerously-skip-permissions');
+    args.push(...cliModelEffortArgs('agy', reqME.model, reqME.effort));
     const agyPrompt = !samePlatform ? handoffPrompt : (cont && sid ? '계속 진행해' : null);
     if (agyPrompt) args.push('--prompt-interactive', agyPrompt);
   } else {
@@ -1638,6 +1660,7 @@ async function switchAccount({ sessionId, termId, account = 'auto', cont = false
     }
     if (samePlatform && sid) args.push('--resume', sid);
     if (skip) args.push('--dangerously-skip-permissions');
+    args.push(...cliModelEffortArgs('claude', reqME.model, reqME.effort));
   }
 
   const short = (pick.email || pick.label || targetAgent).replace(/@.*/, '');
@@ -1657,6 +1680,8 @@ async function switchAccount({ sessionId, termId, account = 'auto', cont = false
   const t = createTerm({
     cwd, cmd, args, env, title,
     account: { id: pick.id, label: pick.label, kind: targetAgent, ...(pick.email ? { email: pick.email } : {}) },
+    model: reqME.model,
+    effort: reqME.effort,
     research: project ? project.dir : null,
     projectTask: inheritedProjectTask || undefined,
     projectPrompt: inheritedProjectTask ? (handoffPrompt ? fingerprint(handoffPrompt) : t0?.meta?.projectPrompt) : undefined,
@@ -1778,6 +1803,7 @@ const agyQuota = createAgyQuotaService({ file: AGY_QUOTA_FILE, agyExe, envFn: cl
 const isAgyTerm = (t) => /agy(\.exe)?$/i.test(t?.meta?.cmd || '');
 const agentOf = (t) => (/claude(\.exe)?$/i.test(t.meta?.cmd || '') ? 'claude' : isCodexTerm(t) ? 'codex' : isAgyTerm(t) ? 'agy' : /cursor-agent/i.test((t.meta?.args || []).join(' ')) ? 'cursor' : null);
 const termInfo = (t) => ({ id: t.id, title: t.title, liveTitle: t.liveTitle, account: t.account, agent: agentOf(t), operator: !!t.meta?.operator, claude: /claude(\.exe)?$/i.test(t.meta?.cmd || ''), codex: isCodexTerm(t), agy: isAgyTerm(t),
+  model: t.meta?.model || '', effort: t.meta?.effort || '',
   ...(isCodexTerm(t) ? { status: codexStatus(t) } : isAgyTerm(t) ? { status: agyStatus(t) } : /claude(\.exe)?$/i.test(t.meta?.cmd || '') ? { status: claudeStatus(t) } : {}), ...(isAgyTerm(t) ? { sessionId: agySessionOf(t) } : {}),
   lastOutputAt: t.lastOutputAt || 0,
   projectTask: t.meta?.projectTask, cwd: t.cwd, pid: t.pid, exited: t.exited, cols: t.cols, rows: t.rows });
@@ -2367,22 +2393,30 @@ const server = http.createServer(async (req, res) => {
         }
       }
 
+      const reqME = cleanModelEffort(b.model, b.effort);
       const launchAndDeliver = async ({ agent, resumeId, title, promptToSend }) => {
         let cmd, args = [];
         if (agent === 'codex') {
-          const extra = ['--dangerously-bypass-approvals-and-sandbox', ...(resumeId ? ['resume', resumeId] : []), ...(!resumeId && promptToSend ? [promptToSend] : [])];
+          const extra = [
+            '--dangerously-bypass-approvals-and-sandbox',
+            ...cliModelEffortArgs('codex', reqME.model, reqME.effort),
+            ...(resumeId ? ['resume', resumeId] : []),
+            ...(!resumeId && promptToSend ? [promptToSend] : []),
+          ];
           ({ cmd, args } = codexLaunch(extra));
         } else if (agent === 'agy') {
           cmd = agyExe();
           if (resumeId) args.push('--conversation', resumeId);
           args.push('--dangerously-skip-permissions');
+          args.push(...cliModelEffortArgs('agy', reqME.model, reqME.effort));
           if (!resumeId && promptToSend) args.push('--prompt-interactive', promptToSend);
         } else {
           cmd = 'claude.exe';
           if (resumeId) args.push('--resume', resumeId);
           args.push('--dangerously-skip-permissions');
+          args.push(...cliModelEffortArgs('claude', reqME.model, reqME.effort));
         }
-        const term = createTerm({ cwd, cmd, args, env: launchAccount?.env || {}, title, account: launchAccount?.account || null });
+        const term = createTerm({ cwd, cmd, args, env: launchAccount?.env || {}, title, account: launchAccount?.account || null, model: reqME.model, effort: reqME.effort });
         if (promptToSend && (agent === 'claude' || resumeId)) {
           (async () => {
             if (await waitFor(() => term.exited === null && inputReady(term), 45000, 700)) {
@@ -2604,15 +2638,17 @@ const server = http.createServer(async (req, res) => {
       const yolo = b.skipPermissions !== false;
       let cmd, args = [];
       if (kind === 'codex') {
-        ({ cmd, args } = codexLaunch([...(yolo ? ['--dangerously-bypass-approvals-and-sandbox'] : []), ...(b.resume ? ['resume', b.resume] : [])]));
+        ({ cmd, args } = codexLaunch([...(yolo ? ['--dangerously-bypass-approvals-and-sandbox'] : []), ...cliModelEffortArgs('codex', b.model, b.effort), ...(b.resume ? ['resume', b.resume] : [])]));
       } else if (kind === 'agy') {
         cmd = agyExe();
         if (b.resume) args.push('--conversation', b.resume);
         if (yolo) args.push('--dangerously-skip-permissions');
+        args.push(...cliModelEffortArgs('agy', b.model, b.effort));
       } else {
         cmd = 'claude.exe';
         if (b.resume) args.push('--resume', b.resume);
         if (yolo) args.push('--dangerously-skip-permissions');
+        args.push(...cliModelEffortArgs('claude', b.model, b.effort));
       }
       return send(res, 200, launchExternalWindow({
         cwd,
@@ -2771,6 +2807,13 @@ const server = http.createServer(async (req, res) => {
         const live = liveSessions().find((s) => s.sessionId === b.resume);
         if (live && !b.fork) return send(res, 409, { error: `이 세션은 이미 실행 중입니다 (pid ${live.pid}). 그 창에서 이어가세요.` });
       }
+      if (!launchAccount && b.account && !/^(__cli__:|default$|agy-cli$)/.test(String(b.account))) {
+        try {
+          launchAccount = projectAccounts.resolve(b.kind, String(b.account));
+        } catch (e) {
+          if (String(b.account) !== 'auto-codex') return send(res, 400, { error: e.message });
+        }
+      }
       if (launchAccount?.switchAgySwap) {
         try { await ensureAgySwap(launchAccount); }
         catch (e) { return send(res, 502, { error: `Antigravity 계정 전환 실패: ${e.message}` }); }
@@ -2788,7 +2831,7 @@ const server = http.createServer(async (req, res) => {
           };
         }
       }
-      const t = createTerm({ cwd, cmd, args, title: b.title || title, ...(codexStart || {}), ...launchAccount, projectTask, projectPrompt });
+      const t = createTerm({ cwd, cmd, args, title: b.title || title, ...(codexStart || {}), ...launchAccount, model: b.model || '', effort: b.effort || '', projectTask, projectPrompt });
       if (projectTask) {
         const result = await t.spawnResult;
         if (result?.error) {

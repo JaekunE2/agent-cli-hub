@@ -1861,6 +1861,8 @@ function viewTranscript() {
     setTimeout(refreshOverview, 1200);
   };
   const resumeToDockTerm = async (openWithChat = true) => {
+    const compBar = $('#transcriptCompHost', dock?.getBody('chat') || document);
+    if (compBar?._launchResume) return compBar._launchResume(openWithChat);
     const body = r?.agent === 'codex'
       ? { kind: 'codex', resume: sid, cwd: r.cwd }
       : r?.agent === 'agy'
@@ -2000,26 +2002,14 @@ function viewTranscript() {
   });
 }
 
+const chatLaunchPrefs = new Map();
+
 function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null, consolePid = null, agent = 'claude', cwd = '', liveDesktop = false, onJumpTerm = null, compact = false }) {
   if (!barHost) return;
   let activeTermId = termId ? String(termId) : null;
   let activeConsolePid = consolePid ? Number(consolePid) : null;
-
-  barHost.innerHTML = `<div class="chat-reply-bar${compact ? ' compact' : ''}">
-    <div class="chat-conn-bar">
-      <span class="chat-conn-pill" data-chat-conn></span>
-      <span class="row" style="gap:6px"><button type="button" class="ghost btn-sm" data-chat-jump hidden style="min-height:22px;height:22px;font-size:11.5px;padding:0 7px">터미널 보기 ↗</button></span>
-    </div>
-    <div class="chat-reply-in">
-      <textarea rows="1" placeholder="대화 기록에서 바로 프롬프트 입력 (Enter 전송 · Shift+Enter 줄바꿈)"></textarea>
-      <button type="button" class="primary">보내기 ⏎</button>
-    </div>
-  </div>`;
-
-  const connEl = $('[data-chat-conn]', barHost);
-  const jumpBtn = $('[data-chat-jump]', barHost);
-  const repIn = $('textarea', barHost);
-  const repBtn = $('button.primary', barHost);
+  const baseAgent = (agent === 'codex' || agent === 'agy') ? agent : 'claude';
+  const prefKey = sid || (activeTermId ? `term:${activeTermId}` : '');
 
   const findLiveTerm = () => {
     if (activeTermId) {
@@ -2030,6 +2020,141 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
     return null;
   };
 
+  const ltInit = findLiveTerm();
+  const savedPref = prefKey ? chatLaunchPrefs.get(prefKey) : null;
+  const initAgent = ltInit?.agent || savedPref?.agent || baseAgent;
+  const initAccount = ltInit?.account?.id || savedPref?.account || `__cli__:${initAgent}`;
+  const initModel = ltInit?.model ?? savedPref?.model ?? '';
+  const initEffort = ltInit?.effort ?? savedPref?.effort ?? '';
+
+  barHost.innerHTML = `<div class="chat-reply-bar${compact ? ' compact' : ''}">
+    <div class="chat-conn-bar">
+      <span class="chat-conn-pill" data-chat-conn></span>
+      <span class="row" style="gap:6px"><button type="button" class="ghost btn-sm" data-chat-jump hidden style="min-height:22px;height:22px;font-size:11.5px;padding:0 7px">터미널 보기 ↗</button></span>
+    </div>
+    <div class="chat-me-bar" data-chat-me>
+      <select data-chat-acc title="사용할 계정 · CLI 선택" aria-label="계정 및 CLI">
+        <option value="__cli__:${esc(initAgent)}" data-agent="${esc(initAgent)}">${esc(providerName(initAgent))} (기본)</option>
+      </select>
+      <select data-chat-model-pick title="선택한 계정 CLI에 맞는 모델" aria-label="모델"></select>
+      <input data-chat-model maxlength="120" placeholder="모델 ID 직접 입력" style="display:none" aria-label="모델 ID 직접 입력">
+      <select data-chat-effort title="선택한 계정 CLI에 맞는 추론 성능" aria-label="추론 성능"></select>
+      <button type="button" class="btn-sm primary" data-chat-apply hidden>변경 적용</button>
+    </div>
+    <div class="chat-reply-in">
+      <textarea rows="1" placeholder="대화 기록에서 바로 프롬프트 입력 (Enter 전송 · Shift+Enter 줄바꿈)"></textarea>
+      <button type="button" class="primary">보내기 ⏎</button>
+    </div>
+  </div>`;
+
+  const connEl = $('[data-chat-conn]', barHost);
+  const jumpBtn = $('[data-chat-jump]', barHost);
+  const accSel = $('[data-chat-acc]', barHost);
+  const applyBtn = $('[data-chat-apply]', barHost);
+  const repIn = $('textarea', barHost);
+  const repBtn = $('.chat-reply-in button.primary', barHost);
+
+  let baselineAccId = ltInit?.account?.id || `__cli__:${initAgent}`;
+  let meCtl = null;
+
+  const getSelectedAgent = () => accSel?.selectedOptions?.[0]?.dataset?.agent || initAgent;
+  const getConfig = () => {
+    const me = meCtl ? meCtl.getValues() : { model: '', effort: '' };
+    return {
+      account: accSel?.value || `__cli__:${initAgent}`,
+      agent: getSelectedAgent(),
+      model: me.model || '',
+      effort: me.effort || '',
+    };
+  };
+
+  const syncApplyBtn = () => {
+    if (!applyBtn || !barHost.isConnected) return;
+    const cfg = getConfig();
+    if (prefKey) chatLaunchPrefs.set(prefKey, cfg);
+    const lt = findLiveTerm();
+    if (lt) {
+      const ltAgent = lt.agent || baseAgent;
+      const ltAcc = lt.account?.id || baselineAccId || `__cli__:${ltAgent}`;
+      const accChanged = cfg.account !== ltAcc && !(cfg.account === `__cli__:${ltAgent}` && !lt.account?.id);
+      const dirty = accChanged || cfg.agent !== ltAgent || cfg.model !== (lt.model || '') || cfg.effort !== (lt.effort || '');
+      applyBtn.hidden = !dirty;
+      applyBtn.textContent = '변경 적용';
+      applyBtn.className = 'btn-sm primary';
+      applyBtn.title = '선택한 계정 · CLI · 모델 · 추론 성능으로 대화를 이어서 다시 시작합니다';
+    } else if (!activeConsolePid) {
+      const accDiff = !!cfg.account && !cfg.account.startsWith('__cli__:') && cfg.account !== baselineAccId;
+      const nonDefault = cfg.agent !== baseAgent || accDiff || !!cfg.model || !!cfg.effort;
+      applyBtn.hidden = !nonDefault;
+      applyBtn.textContent = cfg.agent !== baseAgent ? '이 CLI로 이어하기' : '이 설정으로 열기';
+      applyBtn.className = 'btn-sm';
+      applyBtn.title = '선택한 계정 · CLI · 모델 · 추론 성능으로 터미널을 열어 이어갑니다';
+    } else {
+      applyBtn.hidden = true;
+    }
+  };
+
+  if (typeof createCliModelEffortController === 'function') {
+    meCtl = createCliModelEffortController({
+      modelPick: $('[data-chat-model-pick]', barHost),
+      modelIn: $('[data-chat-model]', barHost),
+      effortSel: $('[data-chat-effort]', barHost),
+      initialKind: initAgent,
+      initialModel: initModel,
+      initialEffort: initEffort,
+      onChange: syncApplyBtn,
+    });
+  }
+
+  accSel.onchange = () => {
+    const nextAg = getSelectedAgent();
+    meCtl?.setCli(nextAg);
+    syncApplyBtn();
+  };
+
+  const loadCandidates = async () => {
+    try {
+      const r = await api(`/api/switch/candidates?id=${encodeURIComponent(sid || '')}${activeTermId ? `&term=${encodeURIComponent(activeTermId)}` : ''}`);
+      if (!barHost.isConnected || !Array.isArray(r?.candidates)) return;
+      const lt = findLiveTerm();
+      const curTermAgent = lt?.agent || baseAgent;
+      const curAccFromResp = r.candidates.find((c) => c.current);
+      if (curAccFromResp) baselineAccId = curAccFromResp.id;
+
+      const cliOrder = [curTermAgent, ...['claude', 'codex', 'agy'].filter((k) => k !== curTermAgent)];
+      const frag = document.createDocumentFragment();
+      for (const cliKey of cliOrder) {
+        const list = r.candidates.filter((c) => (c.agent || 'claude') === cliKey);
+        const og = document.createElement('optgroup');
+        og.label = providerName(cliKey);
+        if (list.length) {
+          for (const c of list) {
+            const opt = new Option(`${c.label}${c.current ? ' · 현재' : ''}`, c.id);
+            opt.dataset.agent = c.agent || cliKey;
+            og.appendChild(opt);
+          }
+        } else {
+          const opt = new Option(`${providerName(cliKey)} (기본 로그인)`, `__cli__:${cliKey}`);
+          opt.dataset.agent = cliKey;
+          og.appendChild(opt);
+        }
+        frag.appendChild(og);
+      }
+      accSel.replaceChildren(frag);
+
+      const wantAcc = (savedPref?.account && [...accSel.options].some((o) => o.value === savedPref.account))
+        ? savedPref.account
+        : (curAccFromResp?.id && [...accSel.options].some((o) => o.value === curAccFromResp.id))
+          ? curAccFromResp.id
+          : ([...accSel.options].find((o) => o.dataset.agent === initAgent)?.value || accSel.options[0]?.value || '');
+      baselineAccId = curAccFromResp?.id || [...accSel.options].find((o) => o.dataset.agent === baseAgent)?.value || baselineAccId;
+      if (wantAcc) accSel.value = wantAcc;
+      meCtl?.setCli(getSelectedAgent(), initModel, initEffort);
+      syncApplyBtn();
+    } catch {}
+  };
+  loadCandidates();
+
   const syncConn = () => {
     if (!barHost.isConnected) return;
     const lt = findLiveTerm();
@@ -2038,7 +2163,8 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       const st = termStateOf(lt);
       const dotCls = st === 'busy' ? 'busy' : 'idle';
       const stTxt = st === 'busy' ? '실행 중' : '대기';
-      connEl.innerHTML = `<span class="dot ${dotCls}" style="width:7px;height:7px"></span><span>터미널 t:${esc(lt.id)} 연결됨 · ${esc(stTxt)}</span>`;
+      const meBadge = [lt.model, lt.effort].filter(Boolean).join('/');
+      connEl.innerHTML = `<span class="dot ${dotCls}" style="width:7px;height:7px"></span><span>터미널 t:${esc(lt.id)} 연결됨 · ${esc(stTxt)}${meBadge ? ` · ${esc(meBadge)}` : ''}</span>`;
       if (jumpBtn) jumpBtn.hidden = !onJumpTerm;
     } else if (activeConsolePid) {
       connEl.innerHTML = `<span class="dot idle" style="width:7px;height:7px"></span><span>콘솔 pid:${esc(activeConsolePid)} 연결됨</span>`;
@@ -2047,6 +2173,7 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       connEl.innerHTML = `<span class="ums" style="margin:0">연결된 터미널 없음 · 입력 시 세션을 이어 열어 전송합니다</span>`;
       if (jumpBtn) jumpBtn.hidden = true;
     }
+    syncApplyBtn();
   };
   syncConn();
   const connTimer = setInterval(() => {
@@ -2076,6 +2203,100 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
     chatHost._triggerPoll?.();
   };
 
+  const launchWithConfig = async ({ openTerm = false, pendingText = '' } = {}) => {
+    const cfg = getConfig();
+    const lt = findLiveTerm();
+    const needsSwitch = !!lt || cfg.agent !== baseAgent || (!!cfg.account && !cfg.account.startsWith('__cli__:'));
+    if (needsSwitch) {
+      const payload = {
+        sessionId: sid || undefined,
+        termId: lt?.id || undefined,
+        account: cfg.account || `__cli__:${cfg.agent}`,
+        model: cfg.model,
+        effort: cfg.effort,
+        cont: false,
+        skip: true,
+        openMode: 'dashboard',
+      };
+      const res = await runSwitchRequest(payload);
+      if (!res?.ok) throw new Error(res?.error || '설정 변경 적용에 실패했습니다');
+      if (res.term) {
+        activeTermId = String(res.term.id);
+        baselineAccId = cfg.account;
+        if (prefKey) chatLaunchPrefs.set(prefKey, cfg);
+      }
+      await refreshOverview();
+      if (pendingText && res.term?.id) {
+        setTimeout(() => {
+          api('/api/term/send', { method: 'POST', body: { id: res.term.id, text: pendingText, submit: true } }).catch(() => {});
+        }, 2600);
+        notifySent(res.term.id, pendingText);
+      }
+      if (res.term) {
+        if (openTerm || state.sel.kind === 'term') {
+          window.ACH_DOCK?.saveDockOpen('term', ['term', 'chat']);
+          openResumedTerm(res.term, { kind: cfg.agent, resume: sid });
+        } else {
+          syncConn();
+          loadCandidates();
+        }
+      }
+      const meDesc = [providerName(cfg.agent), cfg.model || '', cfg.effort || ''].filter(Boolean).join(' · ');
+      toast(`${meDesc} 설정으로 세션을 연결했습니다`);
+      return res.term;
+    }
+
+    const body = {
+      kind: cfg.agent,
+      ...(sid ? { resume: sid } : {}),
+      cwd,
+      ...(cfg.model ? { model: cfg.model } : {}),
+      ...(cfg.effort ? { effort: cfg.effort } : {}),
+      ...(cfg.agent === 'claude' ? { skipPermissions: true, fork: !!liveDesktop } : {}),
+    };
+    const t = await api('/api/term/new', { method: 'POST', body });
+    if (t.error) throw new Error(t.error);
+    activeTermId = String(t.id);
+    if (prefKey) chatLaunchPrefs.set(prefKey, cfg);
+    await refreshOverview();
+    if (pendingText) {
+      notifySent(t.id, pendingText);
+      setTimeout(() => {
+        api('/api/term/send', { method: 'POST', body: { id: t.id, text: pendingText, submit: true } }).catch(() => {});
+      }, 2400);
+    }
+    if (openTerm) {
+      window.ACH_DOCK?.saveDockOpen('term', ['term', 'chat']);
+      openResumedTerm(t, body);
+    } else {
+      syncConn();
+    }
+    return t;
+  };
+
+  barHost._getLaunchConfig = getConfig;
+  barHost._launchResume = async (openWithChat = true) => {
+    try { await launchWithConfig({ openTerm: openWithChat }); }
+    catch (er) { toast(er.message, 6000, 'danger'); }
+  };
+
+  applyBtn.onclick = async () => {
+    applyBtn.disabled = true;
+    const prevTxt = applyBtn.textContent;
+    applyBtn.textContent = '적용 중…';
+    try {
+      await launchWithConfig({ openTerm: state.sel.kind === 'term' });
+    } catch (er) {
+      toast(er.message, 6000, 'danger');
+    } finally {
+      if (applyBtn.isConnected) {
+        applyBtn.disabled = false;
+        applyBtn.textContent = prevTxt;
+        syncApplyBtn();
+      }
+    }
+  };
+
   const sendReply = async () => {
     const text = repIn.value.trim();
     if (!text) return;
@@ -2084,6 +2305,14 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
     try {
       const existing = findLiveTerm();
       if (existing) {
+        const cfg = getConfig();
+        const ltAgent = existing.agent || baseAgent;
+        const ltAcc = existing.account?.id || baselineAccId || `__cli__:${ltAgent}`;
+        const changed = cfg.agent !== ltAgent || cfg.model !== (existing.model || '') || cfg.effort !== (existing.effort || '') || (cfg.account !== ltAcc && !(cfg.account === `__cli__:${ltAgent}` && !existing.account?.id));
+        if (changed) {
+          await launchWithConfig({ openTerm: false, pendingText: text });
+          return;
+        }
         const r = await api('/api/term/send', { method: 'POST', body: { id: existing.id, text, submit: true } });
         if (r.error) throw new Error(r.error);
         syncConn();
@@ -2097,20 +2326,8 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
         notifySent(null, text);
         return;
       }
-      const kind = agent === 'codex' ? 'codex' : agent === 'agy' ? 'agy' : 'claude';
-      const body = kind === 'claude'
-        ? { kind, ...(sid ? { resume: sid } : {}), cwd, skipPermissions: true, fork: !!liveDesktop }
-        : { kind, ...(sid ? { resume: sid } : {}), cwd };
-      const t = await api('/api/term/new', { method: 'POST', body });
-      if (t.error) throw new Error(t.error);
-      activeTermId = String(t.id);
-      await refreshOverview();
-      syncConn();
-      notifySent(t.id, text);
-      setTimeout(() => {
-        api('/api/term/send', { method: 'POST', body: { id: t.id, text, submit: true } }).catch(() => {});
-      }, 2400);
-      toast(`터미널 t:${t.id}을(를) 연결해 메시지를 전송했습니다`);
+      const t = await launchWithConfig({ openTerm: false, pendingText: text });
+      if (t) toast(`터미널 t:${t.id}을(를) 연결해 메시지를 전송했습니다`);
     } catch (er) {
       toast(er.message, 6000, 'danger');
     } finally {
@@ -2165,6 +2382,7 @@ async function openBranchDialog({ sid, atIndex = null, message = null, agent = '
     <label>사용할 계정
       <select name="account" id="brAccount"><option value="">기본 / 현재 활성 계정</option></select>
     </label>
+    ${typeof projectModelEffortFields === 'string' ? projectModelEffortFields : ''}
     <label>분기 후 바로 보낼 첫 메시지 (선택)
       <textarea name="prompt" rows="3" placeholder="비워두면 이 분기점까지의 맥락이 준비된 새 터미널만 엽니다."></textarea>
     </label>
@@ -2181,8 +2399,18 @@ async function openBranchDialog({ sid, atIndex = null, message = null, agent = '
   const agSel = $('#brAgent', d);
   const accSel = $('#brAccount', d);
   const hintEl = $('#brModeHint', d);
+  const brMeCtl = typeof createCliModelEffortController === 'function'
+    ? createCliModelEffortController({
+      modelPick: d.querySelector('[name=modelPick]'),
+      modelIn: d.querySelector('[name=model]'),
+      effortSel: d.querySelector('[name=effort]'),
+      hintEl: d.querySelector('[data-cli-opt-hint]'),
+      initialKind: sourceAg,
+    })
+    : null;
   const updateModeHint = () => {
     const tAg = agSel.value;
+    brMeCtl?.setCli(tAg);
     hintEl.textContent = (sourceAg === 'claude' && tAg === 'claude' && capabilities?.canNativeFork !== false)
       ? 'Claude 원본 JSONL을 이 지점까지만 복제해 네이티브 분기 세션으로 엽니다.'
       : '이 지점까지의 대화 맥락을 브리핑 파일로 정리해 새 세션에 전달합니다.';
@@ -2204,6 +2432,7 @@ async function openBranchDialog({ sid, atIndex = null, message = null, agent = '
     btn.disabled = true;
     try {
       const fd = new FormData(e.target);
+      const meVals = brMeCtl ? brMeCtl.getValues() : { model: '', effort: '' };
       const res = await api('/api/transcript/fork', {
         method: 'POST',
         body: {
@@ -2211,6 +2440,8 @@ async function openBranchDialog({ sid, atIndex = null, message = null, agent = '
           atIndex,
           targetAgent: fd.get('targetAgent'),
           account: fd.get('account'),
+          model: meVals.model,
+          effort: meVals.effort,
           prompt: String(fd.get('prompt') || '').trim(),
           cwd,
         },
@@ -2911,7 +3142,7 @@ function viewTerm() {
   let initialPanels = window.ACH_DOCK ? window.ACH_DOCK.getDockOpen('term', isContentTab ? null : state.tab) : ['term', 'chat'];
   if (!initialPanels.length) initialPanels = ['term'];
 
-  setBar(`${state.sel.project || pj ? `<button id="btnBackProject" class="ghost btn-sm" data-proj-id="${esc(state.sel.project || pj.id)}">${ICO.chevLeft} ${esc(pj?.name || 'Project')}</button>` : `<button id="btnBackTerms" class="ghost btn-sm">${ICO.chevLeft} 터미널</button>`}<h2>${ag ? agentIcon(ag) : ''}<span>${esc(t ? termLabel(t) : '터미널')}</span></h2><span id="termLiveBadge" class="term-live-pill ${pillCls}">${pillText}</span>${branchTagHTML(t?.branch)}${t?.account ? `<span class="badge c">${esc(t.account.label.replace(/@.*/, ''))}</span>` : ''}
+  setBar(`${state.sel.project || pj ? `<button id="btnBackProject" class="ghost btn-sm" data-proj-id="${esc(state.sel.project || pj.id)}">${ICO.chevLeft} ${esc(pj?.name || 'Project')}</button>` : `<button id="btnBackTerms" class="ghost btn-sm">${ICO.chevLeft} 터미널</button>`}<h2>${ag ? agentIcon(ag) : ''}<span>${esc(t ? termLabel(t) : '터미널')}</span></h2><span id="termLiveBadge" class="term-live-pill ${pillCls}">${pillText}</span>${branchTagHTML(t?.branch)}${t?.account ? `<span class="badge c">${esc(t.account.label.replace(/@.*/, ''))}</span>` : ''}${(t?.model || t?.effort) ? `<span class="badge" title="선택된 모델 · 추론 성능">${esc([t.model, t.effort].filter(Boolean).join(' · '))}</span>` : ''}
     ${dockTopSegHTML({ openSet: new Set(initialPanels), isContentTab, hasTerm: true, hasChat: true, showFiles: true, curTab: state.tab })}
     ${sid ? switchBtnHTML(sid, t?.id || '') : t?.claude || t?.codex || t?.agy ? switchBtnHTML('', t.id) : ''}
     <button id="btnTermMore" class="ghost icon-btn btn-sm" aria-label="터미널 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
@@ -3937,6 +4168,17 @@ document.addEventListener('click', (e) => {
   const b = e.target.closest('[data-switch]');
   if (b) { e.stopPropagation(); openSwitch(b.dataset.switch, b.dataset.switchTerm); }
 }, true);
+async function runSwitchRequest(payload) {
+  let res = await api('/api/switch', { method: 'POST', body: payload });
+  if (res.busy && confirm('세션이 작업 중입니다. 중단(Esc)하고 전환할까요?')) {
+    res = await api('/api/switch', { method: 'POST', body: { ...payload, interrupt: true } });
+  }
+  if (res.stuck && confirm(res.error)) {
+    res = await api('/api/switch', { method: 'POST', body: { ...payload, interrupt: true, force: true } });
+  }
+  return res;
+}
+
 async function openSwitch(sid, termId = '') {
   const d = openDrawer({
     title: '다른 계정 · 에이전트로 이어하기',
@@ -3962,6 +4204,15 @@ async function openSwitch(sid, termId = '') {
         <span class="swm">5h ${pct(c.fiveH)}</span><span class="swm">주 ${pct(c.weekly)}</span></label>`;
   const samePlat = r.candidates.filter((c) => !c.agent || c.agent === srcAgent);
   const crossPlat = r.candidates.filter((c) => c.agent && c.agent !== srcAgent);
+  const meFieldsHTML = `<div class="pj-me-grid" style="margin:8px 0 2px">
+    <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)">모델
+      <select name="modelPick"></select>
+      <input name="model" maxlength="120" placeholder="모델 ID 직접 입력" style="display:none;margin-top:4px">
+    </label>
+    <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)">추론 성능
+      <select name="effort"></select>
+    </label>
+  </div><small data-cli-opt-hint class="ums" style="margin:0 0 4px"></small>`;
   body.innerHTML = `
     ${s?.limit ? `<div class="err" style="padding:0 0 6px">${esc(s.limit.text)}</div>` : ''}
     <div class="empty" style="padding:0 0 4px">숫자는 남은 한도(%) 기준입니다. 같은 플랫폼은 그대로 재개하고, 다른 플랫폼은 직전 맥락(handoff)을 자동 인계합니다.</div>
@@ -3969,6 +4220,7 @@ async function openSwitch(sid, termId = '') {
       ${samePlat.length ? `<div class="swgrp-hd">같은 플랫폼 · 즉시 재개</div>${samePlat.map(rowHTML).join('')}` : ''}
       ${crossPlat.length ? `<div class="swgrp-hd">다른 플랫폼 · 맥락 교차 인계</div>${crossPlat.map(rowHTML).join('')}` : ''}
     </div>
+    ${meFieldsHTML}
     <div class="row" style="gap:14px;padding:6px 0 2px;flex-wrap:wrap">
       <span class="ums" style="font-weight:600;color:var(--text)">열기 위치:</span>
       <label class="row" style="gap:5px"><input type="radio" name="swMode" value="dashboard" checked> 대시보드 터미널</label>
@@ -3979,9 +4231,20 @@ async function openSwitch(sid, termId = '') {
     <div id="swHint" class="empty" style="padding:4px 0 0"></div>`;
   const goBtn = $('#swGo', d);
   if (goBtn) goBtn.disabled = !r.candidates.some((c) => c.best || (c.usable && !c.current));
+  const initSelAgent = $('input[name=acc]:checked', d)?.dataset.agent || srcAgent;
+  const swMeCtl = typeof createCliModelEffortController === 'function'
+    ? createCliModelEffortController({
+      modelPick: d.querySelector('[name=modelPick]'),
+      modelIn: d.querySelector('[name=model]'),
+      effortSel: d.querySelector('[name=effort]'),
+      hintEl: d.querySelector('[data-cli-opt-hint]'),
+      initialKind: initSelAgent,
+    })
+    : null;
   const updateHint = () => {
     const sel = $('input[name=acc]:checked', d);
     const targetAgent = sel?.dataset.agent || srcAgent;
+    swMeCtl?.setCli(targetAgent);
     const mode = $('input[name=swMode]:checked', d)?.value || 'dashboard';
     const whereTxt = mode === 'external' ? '새 Windows 외부 콘솔 창' : '대시보드 터미널';
     const skipRow = $('#swSkipRow', d);
@@ -4012,11 +4275,19 @@ async function openSwitch(sid, termId = '') {
     const acc = $('input[name=acc]:checked', d)?.value;
     if (!acc) return;
     const openMode = $('input[name=swMode]:checked', d)?.value || 'dashboard';
+    const meVals = swMeCtl ? swMeCtl.getValues() : { model: '', effort: '' };
     const go = $('#swGo', d); go.disabled = true; go.textContent = '전환 중…';
-    const payload = { sessionId: sid || undefined, termId: termId || undefined, account: acc, cont: $('#swCont', d).checked, skip: $('#swSkip', d)?.checked ?? true, openMode };
-    let res = await api('/api/switch', { method: 'POST', body: payload });
-    if (res.busy && confirm('세션이 작업 중입니다. 중단(Esc)하고 전환할까요?')) res = await api('/api/switch', { method: 'POST', body: { ...payload, interrupt: true } });
-    if (res.stuck && confirm(res.error)) res = await api('/api/switch', { method: 'POST', body: { ...payload, interrupt: true, force: true } });
+    const payload = {
+      sessionId: sid || undefined,
+      termId: termId || undefined,
+      account: acc,
+      model: meVals.model,
+      effort: meVals.effort,
+      cont: $('#swCont', d).checked,
+      skip: $('#swSkip', d)?.checked ?? true,
+      openMode,
+    };
+    const res = await runSwitchRequest(payload);
     if (!res.ok) { go.disabled = false; go.textContent = '이어하기'; if (!res.busy) body.insertAdjacentHTML('afterbegin', `<div class="err" style="padding:0 0 8px">${esc(res.error)}</div>`); return; }
     d.close();
     await refreshOverview();

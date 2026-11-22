@@ -73,89 +73,156 @@ async function loadCliOptions() {
   return FALLBACK_CLI_OPTIONS;
 }
 
-function bindProjectAccounts(dialog, selected, project, initModel = '', initEffort = '') {
-  const agent = dialog.querySelector('[name=agent]');
-  const account = dialog.querySelector('[name=account]');
-  const status = dialog.querySelector('[data-account-status]');
-  const modelPick = dialog.querySelector('[name=modelPick]');
-  const modelIn = dialog.querySelector('[name=model]');
-  const effortSel = dialog.querySelector('[name=effort]');
-  const cliHint = dialog.querySelector('[data-cli-opt-hint]');
-
-  let version = 0;
-  const selectedByCli = new Map();
+function createCliModelEffortController({
+  modelPick,
+  modelIn,
+  effortSel,
+  hintEl = null,
+  project = null,
+  initialKind = 'claude',
+  initialModel = '',
+  initialEffort = '',
+  inheritProjectAgent = null,
+  onChange = null,
+} = {}) {
   const modelByCli = new Map();
   const effortByCli = new Map();
-  let activeCli;
-  let cliOpts = state.cliOptions || FALLBACK_CLI_OPTIONS;
+  let curKind = initialKind || 'claude';
+  let cliOpts = (typeof state !== 'undefined' && state?.cliOptions) || FALLBACK_CLI_OPTIONS;
+  modelByCli.set(curKind, initialModel || '');
+  effortByCli.set(curKind, initialEffort || '');
 
-  const paintModelEffort = (kind, wantModel, wantEffort) => {
-    if (!modelPick || !modelIn || !effortSel) return;
-    const cfg = cliOpts[kind] || FALLBACK_CLI_OPTIONS[kind] || { models: [], efforts: [{ id: '', label: 'CLI 기본값' }] };
-    const inheritLabel = project
-      ? `상위/Project 기본값${project.model && (!agent.value || agent.value === project.agent) ? ` (${project.model})` : ''}`
-      : (cfg.defaultModel ? `CLI 기본값 (${cfg.defaultModel})` : 'CLI 기본값');
-    const mOpts = [['', inheritLabel], ...(cfg.models || []).map((m) => [m.id, m.label]), ['__custom__', '직접 입력…']];
-    modelPick.replaceChildren(...mOpts.map(([id, label]) => new Option(label, id)));
-    const known = (cfg.models || []).some((m) => m.id === wantModel);
-    if (!wantModel) {
-      modelPick.value = '';
-      modelIn.value = '';
-      modelIn.style.display = 'none';
-    } else if (known) {
-      modelPick.value = wantModel;
-      modelIn.value = wantModel;
-      modelIn.style.display = 'none';
-    } else {
-      modelPick.value = '__custom__';
-      modelIn.value = wantModel;
-      modelIn.style.display = '';
+  const currentModel = () => (modelIn && modelPick?.value === '__custom__' ? modelIn.value.trim() : (modelPick?.value || modelIn?.value || '').trim());
+  const currentEffort = () => (effortSel?.value || '');
+
+  const paint = (kind, wantModel, wantEffort) => {
+    curKind = kind || 'claude';
+    const cfg = cliOpts[curKind] || FALLBACK_CLI_OPTIONS[curKind] || { models: [], efforts: [{ id: '', label: 'CLI 기본값' }] };
+    const refAgent = typeof inheritProjectAgent === 'function' ? inheritProjectAgent() : '';
+    const sameProj = project && (!refAgent || refAgent === project.agent);
+
+    if (modelPick) {
+      const inheritLabel = project
+        ? `상위/Project 기본값${project.model && sameProj ? ` (${project.model})` : ''}`
+        : (cfg.defaultModel ? `CLI 기본값 (${cfg.defaultModel})` : 'CLI 기본값');
+      const mOpts = [['', inheritLabel], ...(cfg.models || []).map((m) => [m.id, m.label]), ['__custom__', '직접 입력…']];
+      modelPick.replaceChildren(...mOpts.map(([id, label]) => new Option(label, id)));
+      const wm = String(wantModel ?? '');
+      const known = (cfg.models || []).some((m) => m.id === wm);
+      if (!wm) {
+        modelPick.value = '';
+        if (modelIn) { modelIn.value = ''; modelIn.style.display = 'none'; }
+      } else if (known) {
+        modelPick.value = wm;
+        if (modelIn) { modelIn.value = wm; modelIn.style.display = 'none'; }
+      } else {
+        modelPick.value = '__custom__';
+        if (modelIn) { modelIn.value = wm; modelIn.style.display = ''; }
+      }
     }
 
-    const effInheritLabel = project
-      ? `상위/Project 기본값${project.effort && (!agent.value || agent.value === project.agent) ? ` (${project.effort})` : ''}`
-      : (cfg.defaultEffort ? `CLI 기본값 (${cfg.defaultEffort})` : 'CLI 기본값');
-    const eOpts = (cfg.efforts || [{ id: '', label: 'CLI 기본값' }]).map((e, i) => [e.id, i === 0 ? effInheritLabel : e.label]);
-    effortSel.replaceChildren(...eOpts.map(([id, label]) => new Option(label, id)));
-    effortSel.value = eOpts.some(([id]) => id === wantEffort) ? wantEffort : '';
-    effortSel.disabled = eOpts.length <= 1;
+    if (effortSel) {
+      const effInheritLabel = project
+        ? `상위/Project 기본값${project.effort && sameProj ? ` (${project.effort})` : ''}`
+        : (cfg.defaultEffort ? `CLI 기본값 (${cfg.defaultEffort})` : 'CLI 기본값');
+      const eOpts = (cfg.efforts || [{ id: '', label: 'CLI 기본값' }]).map((e, i) => [e.id, i === 0 ? effInheritLabel : e.label]);
+      effortSel.replaceChildren(...eOpts.map(([id, label]) => new Option(label, id)));
+      const we = String(wantEffort ?? '');
+      effortSel.value = eOpts.some(([id]) => id === we) ? we : '';
+      effortSel.disabled = eOpts.length <= 1;
+    }
 
-    if (cliHint) {
-      cliHint.textContent = kind === 'codex'
+    if (hintEl) {
+      hintEl.textContent = curKind === 'codex'
         ? (document.documentElement.lang === 'en'
           ? 'Codex: -m <model> · model_reasoning_effort applies automatically to planning & task terminals.'
           : 'Codex: -m <모델> · model_reasoning_effort 설정이 계획 생성 및 작업 터미널에 자동 적용됩니다.')
-        : kind === 'claude'
+        : curKind === 'claude'
           ? 'Claude Code: --model · --effort 옵션이 계획 생성 및 작업 터미널에 자동 적용됩니다.'
-          : kind === 'agy'
+          : curKind === 'agy'
             ? 'Antigravity CLI: --model · --effort 옵션이 계획 생성 및 작업 터미널에 자동 적용됩니다.'
             : 'Cursor는 CLI 기본 모델 설정을 사용합니다.';
     }
   };
 
-  if (modelPick && modelIn) {
+  const emit = () => {
+    modelByCli.set(curKind, currentModel());
+    effortByCli.set(curKind, currentEffort());
+    onChange?.({ kind: curKind, model: currentModel(), effort: currentEffort() });
+  };
+
+  if (modelPick) {
     modelPick.addEventListener('change', () => {
-      if (modelPick.value === '__custom__') {
-        modelIn.style.display = '';
-        modelIn.focus();
-      } else {
-        modelIn.style.display = 'none';
-        modelIn.value = modelPick.value;
+      if (modelIn) {
+        if (modelPick.value === '__custom__') {
+          modelIn.style.display = '';
+          modelIn.focus();
+        } else {
+          modelIn.style.display = 'none';
+          modelIn.value = modelPick.value;
+        }
       }
+      emit();
     });
   }
+  if (modelIn) modelIn.addEventListener('input', emit);
+  if (effortSel) effortSel.addEventListener('change', emit);
+
+  paint(curKind, initialModel, initialEffort);
+  loadCliOptions().then((opts) => {
+    if (!opts) return;
+    cliOpts = opts;
+    if (modelPick && !modelPick.isConnected) return;
+    paint(curKind, currentModel(), currentEffort());
+  });
+
+  return {
+    setCli(nextKind, nextModel = undefined, nextEffort = undefined) {
+      const k = nextKind || 'claude';
+      modelByCli.set(curKind, currentModel());
+      effortByCli.set(curKind, currentEffort());
+      const wm = nextModel !== undefined ? nextModel : (modelByCli.get(k) || '');
+      const we = nextEffort !== undefined ? nextEffort : (effortByCli.get(k) || '');
+      modelByCli.set(k, wm);
+      effortByCli.set(k, we);
+      paint(k, wm, we);
+    },
+    repaintProject() {
+      paint(curKind, currentModel(), currentEffort());
+    },
+    getValues() {
+      return { kind: curKind, model: currentModel(), effort: currentEffort() };
+    },
+  };
+}
+
+function bindProjectAccounts(dialog, selected, project, initModel = '', initEffort = '') {
+  const agent = dialog.querySelector('[name=agent]');
+  const account = dialog.querySelector('[name=account]');
+  const status = dialog.querySelector('[data-account-status]');
+  const meCtl = createCliModelEffortController({
+    modelPick: dialog.querySelector('[name=modelPick]'),
+    modelIn: dialog.querySelector('[name=model]'),
+    effortSel: dialog.querySelector('[name=effort]'),
+    hintEl: dialog.querySelector('[data-cli-opt-hint]'),
+    project,
+    initialKind: agent.value || project?.agent || 'codex',
+    initialModel: initModel || '',
+    initialEffort: initEffort || '',
+    inheritProjectAgent: () => agent.value,
+  });
+
+  let version = 0;
+  const selectedByCli = new Map();
+  let activeCli;
 
   const refresh = async () => {
     const load = ++version;
     const kind = agent.value || project?.agent || 'codex';
     if (!activeCli) {
       selectedByCli.set(kind, selected);
-      modelByCli.set(kind, initModel || '');
-      effortByCli.set(kind, initEffort || '');
     } else {
       selectedByCli.set(activeCli, account.value);
-      if (modelIn) modelByCli.set(activeCli, modelIn.value.trim());
-      if (effortSel) effortByCli.set(activeCli, effortSel.value);
     }
     activeCli = kind;
     const preferred = selectedByCli.get(kind);
@@ -167,16 +234,12 @@ function bindProjectAccounts(dialog, selected, project, initModel = '', initEffo
     };
     if (preferred && preferred !== 'inherit') options.push([preferred, '저장된 계정']);
     paint();
-    paintModelEffort(kind, modelByCli.get(kind) || '', effortByCli.get(kind) || '');
+    meCtl.setCli(kind);
     status.textContent = '등록 계정 불러오는 중…';
     try {
-      const [r, opts] = await Promise.all([
-        api('/api/projects/accounts?agent=' + encodeURIComponent(kind)),
-        loadCliOptions(),
-      ]);
+      const r = await api('/api/projects/accounts?agent=' + encodeURIComponent(kind));
       if (load !== version || !dialog.isConnected) return;
-      cliOpts = opts || cliOpts;
-      paintModelEffort(kind, modelIn ? modelIn.value.trim() : (modelByCli.get(kind) || ''), effortSel ? effortSel.value : (effortByCli.get(kind) || ''));
+      meCtl.repaintProject();
       if (!Array.isArray(r.accounts)) throw new Error('계정 목록을 불러올 수 없습니다.');
       for (const { id, label } of r.accounts) {
         const i = options.findIndex(([key]) => key === id);
