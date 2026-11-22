@@ -297,7 +297,7 @@ async function refreshOverview() {
       if (activeBuildId && o.buildId !== activeBuildId) {
         const ae = document.activeElement;
         const isTyping = !!(ae && (ae.matches('input, textarea') && ae.value) || ae?.classList?.contains('xterm-helper-textarea'));
-        const isLiveTerm = state.sel.kind === 'term' || state.sel.kind === 'console';
+        const isLiveTerm = (state.sel.kind === 'term' && (state.tab === 'screen' || state.tab === 'split')) || state.sel.kind === 'console';
         if (!isLiveTerm && !isTyping) {
           toast('허브가 업데이트되어 새 화면을 불러옵니다…', 1500);
           setTimeout(() => location.reload(), 350);
@@ -933,8 +933,8 @@ function stopView() {
   $('#view').onclick = null; $('#bar').onclick = null;
   document.body.classList.remove('drawer');
 }
-const TERM_TABS = new Set(['screen', 'split', 'chat', 'files']);
-const RECENT_TABS = new Set(['chat', 'files']);
+const TERM_TABS = new Set(['screen', 'split', 'chat', 'files', 'floorplan']);
+const RECENT_TABS = new Set(['chat', 'files', 'floorplan']);
 function getSavedTermTab(fallback = 'screen') {
   try {
     const v = localStorage.getItem('ach-term-tab');
@@ -1098,11 +1098,11 @@ function homeListsHTML() {
 
   return `
     <section class="sheet">
-      <div class="sheet-hd"><h3>열린 터미널</h3><button class="ghost btn-sm" data-hnav="terms">전체 보기 →</button></div>
+      <div class="sheet-hd"><h2>열린 터미널</h2><button class="ghost btn-sm" data-hnav="terms">전체 보기 →</button></div>
       <div>${termRows}</div>
     </section>
     <section class="sheet">
-      <div class="sheet-hd"><h3>최근 대화</h3><button class="ghost btn-sm" data-hnav="terms-recent">전체 보기 →</button></div>
+      <div class="sheet-hd"><h2>최근 대화</h2><button class="ghost btn-sm" data-hnav="terms-recent">전체 보기 →</button></div>
       <div>${recentRows}</div>
     </section>`;
 }
@@ -1544,7 +1544,7 @@ function viewConsole() {
   const sid = s?.sessionId || state.sel.session;
   setBar(`<button id="btnBackTerms" class="ghost btn-sm">${ICO.chevLeft} 터미널</button><h2><span>${esc(c ? consoleLabel(c) : 'pid ' + state.sel.id)}</span></h2>
     <div class="seg" role="tablist"><button data-tab="screen" class="${state.tab === 'screen' ? 'on' : ''}">화면</button>
-    ${sid ? `<button data-tab="split" class="${state.tab === 'split' ? 'on' : ''}">${ICO.split} 화면 + 대화</button><button data-tab="chat" class="${state.tab === 'chat' ? 'on' : ''}">대화 기록</button><button data-tab="files" class="${state.tab === 'files' ? 'on' : ''}">산출물</button>` : ''}</div>
+    ${sid ? `<button data-tab="split" class="${state.tab === 'split' ? 'on' : ''}">${ICO.split} 화면 + 대화</button><button data-tab="chat" class="${state.tab === 'chat' ? 'on' : ''}">대화 기록</button><button data-tab="files" class="${state.tab === 'files' ? 'on' : ''}">산출물</button>` : ''}<button data-tab="floorplan" class="${state.tab === 'floorplan' ? 'on' : ''}">${ICO.layers} 코드 구조</button></div>
     ${sid ? switchBtnHTML(sid) : ''}
     <button id="btnConMore" class="ghost icon-btn btn-sm desk" aria-label="콘솔 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
   $('#bar').onclick = (e) => {
@@ -1561,6 +1561,19 @@ function viewConsole() {
   };
   if (state.tab === 'chat' && sid) return renderChat(sid, gen);
   if (state.tab === 'files' && sid) return renderArtifacts(sid, gen);
+  if (state.tab === 'floorplan' && typeof renderStandaloneFloorplan === 'function') {
+    return renderStandaloneFloorplan(s?.cwd || '', gen, {
+      onInsertPrompt: async (txt, submit) => {
+        if (submit) {
+          await api('/api/console/send', { method: 'POST', body: { pid: Number(state.sel.id), text: txt, submit: true } });
+          toast('콘솔 창에 수정 지시를 전달했습니다');
+        } else {
+          await copyText(txt);
+        }
+        select(state.sel, 'screen', true);
+      },
+    });
+  }
 
   const isSplit = state.tab === 'split' && sid;
   const keysOpen = getTuiKeysOpen();
@@ -1679,7 +1692,7 @@ function viewTranscript() {
   };
   setBar(`<button id="btnBackRecent" class="ghost btn-sm">${ICO.chevLeft} 최근 대화</button><h2><span>${esc(sessionLabel(r, sid, live?.name))}</span></h2>
     ${agentBadge(r?.agent)}
-    <div class="seg" role="tablist"><button data-tab="chat" class="${state.tab !== 'files' ? 'on' : ''}">대화 기록</button><button data-tab="files" class="${state.tab === 'files' ? 'on' : ''}">산출물</button></div>
+    <div class="seg" role="tablist"><button data-tab="chat" class="${state.tab === 'chat' ? 'on' : ''}">대화 기록</button><button data-tab="files" class="${state.tab === 'files' ? 'on' : ''}">산출물</button><button data-tab="floorplan" class="${state.tab === 'floorplan' ? 'on' : ''}">${ICO.layers} 코드 구조</button></div>
     ${!live ? `<button class="primary btn-sm" id="btnResume">${ICO.play} 대시보드에서 이어하기</button>` : isDesktopSession(live) ? `<button class="primary btn-sm" id="btnResume" data-fork="1" title="데스크톱 앱 대화를 여기까지 복제한 새 세션으로 이어갑니다">${ICO.play} 대시보드에서 이어하기 (복제)</button>` : switchBtnHTML(sid)}
     <button id="btnRecMore" class="ghost icon-btn btn-sm" aria-label="세션 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
   $('#bar').onclick = async (e) => {
@@ -1710,6 +1723,9 @@ function viewTranscript() {
     openResumedTerm(t, body);
   };
   if (state.tab === 'files') return renderArtifacts(sid, gen);
+  if (state.tab === 'floorplan' && typeof renderStandaloneFloorplan === 'function') {
+    return renderStandaloneFloorplan(r?.cwd || live?.cwd || '', gen);
+  }
   // Inline messenger-style reply composer at the bottom of the transcript!
   $('#view').innerHTML = `<div class="chat-shell">
     <div class="chat-scroll" id="chatScrollHost"></div>
@@ -1942,6 +1958,7 @@ function viewTerm() {
       <button data-tab="split" class="${state.tab === 'split' ? 'on' : ''}" title="좌측: 터미널 화면 · 우측: 실시간 대화 기록 분할 보기">${ICO.split} 화면 + 대화</button>
       <button data-tab="chat" class="${state.tab === 'chat' ? 'on' : ''}" title="전체 마크다운 대화 기록 보기">대화 기록</button>
       <button data-tab="files" class="${state.tab === 'files' ? 'on' : ''}" title="이 세션의 산출물 보기 및 지정">산출물</button>
+      <button data-tab="floorplan" class="${state.tab === 'floorplan' ? 'on' : ''}" title="이 터미널 작업 폴더의 코드 구조(Floorplan) 및 보안·품질 점검">${ICO.layers} 코드 구조</button>
     </div>
     ${sid ? switchBtnHTML(sid, t?.id || '') : t?.claude || t?.codex || t?.agy ? switchBtnHTML('', t.id) : ''}
     <button id="btnTermMore" class="ghost icon-btn btn-sm" aria-label="터미널 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
@@ -1974,6 +1991,30 @@ function viewTerm() {
   };
   if (state.tab === 'chat') return renderChat(sid, gen);
   if (state.tab === 'files') return renderArtifacts(artSid, gen);
+  if (state.tab === 'floorplan' && typeof renderStandaloneFloorplan === 'function') {
+    const termCwd = t?.cwd || pj?.cwd || '';
+    const backTab = getSavedTermTab('screen');
+    const restoreTab = backTab === 'floorplan' ? 'split' : backTab;
+    return renderStandaloneFloorplan(termCwd, gen, {
+      onInsertPrompt: async (txt, submit) => {
+        if (submit) {
+          await api('/api/term/send', { method: 'POST', body: { id: t.id, text: txt, submit: true } });
+          toast('터미널에 수정 지시를 전달했습니다');
+          select(state.sel, restoreTab, true);
+        } else {
+          select(state.sel, restoreTab, true);
+          setTimeout(() => {
+            const inp = $('#tin');
+            if (inp) {
+              inp.value = (inp.value ? inp.value + ' ' : '') + txt;
+              inp.dispatchEvent(new Event('input'));
+              inp.focus();
+            }
+          }, 80);
+        }
+      },
+    });
+  }
 
   const isSplit = state.tab === 'split';
   const keysOpen = getTuiKeysOpen();

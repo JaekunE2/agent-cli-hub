@@ -234,7 +234,7 @@ function scanFloorplan(rootDir, opts = {}) {
       const st = fs.statSync(f.abs);
       size = st.size;
       const fd = fs.openSync(f.abs, 'r');
-      const buf = Buffer.alloc(Math.min(size, 65536));
+      const buf = Buffer.alloc(Math.min(size, 524288));
       fs.readSync(fd, buf, 0, buf.length, 0);
       fs.closeSync(fd);
       content = buf.toString('utf8');
@@ -373,7 +373,21 @@ function scanFloorplan(rootDir, opts = {}) {
   const issueFileSet = new Set(issues.map((x) => x.file));
   for (const n of nodes) {
     if (issueFileSet.has(n.relPath)) n.hasIssue = true;
+    const isTestOrCfg = n.layer === 'test' || n.layer === 'config';
+    const isHubEntry = /^(server|index|app|main)\.(js|ts|mjs|cjs|py|go)$/i.test(n.name);
+    const impScore = Math.max(0,
+      (n.importedBy.length * 6) +
+      (n.endpoints.length * 4) +
+      Math.min(10, n.calls.length) +
+      Math.min(10, n.imports.length * 1.5) +
+      (isHubEntry ? 8 : 0) +
+      (n.layer === 'api' ? 5 : n.layer === 'ui' ? 3 : 0) -
+      (isTestOrCfg ? 10 : 0)
+    );
+    n.importanceScore = Math.round(impScore);
+    n.importance = (!isTestOrCfg && impScore >= 16) ? 'core' : impScore >= 7 ? 'major' : 'support';
   }
+  nodes.sort((a, b) => b.importanceScore - a.importanceScore || b.importedBy.length - a.importedBy.length || b.lines - a.lines);
 
   // Group into macro Parts (layers) for high-level Floorplan architecture view
   const LAYER_META = [

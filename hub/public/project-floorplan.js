@@ -1,29 +1,89 @@
-// Interactive Codebase Floorplan & Health Check View (inspired by haydenschmitty/floorplan)
-// - Scans the project workspace deterministically: UI / API / Core Modules / Data / Tests
-// - Renders an interactive layered architecture map with Zoom/Pan + Blast Radius highlighting
-// - Provides an instant "Ask / 영향 범위 검색" bar + Health Check panel with 1-click Task creation
-// - Falls back seamlessly to Blueprint mode (dashed planned cards) when the folder has no source files yet
+// Astryx-Aligned Codebase Architecture Brief, Ranked Hub Explorer & Exportable Artifact View
+// - Prioritizes what actually matters for practitioners: Architectural Layers, Top Hub Modules, Health Risks
+// - Progressive disclosure: crisp summary & ranked rows by default; Master-Detail Drawer on click; Clean macro diagram tab
+// - 1-click Markdown Deliverable export (with Mermaid diagram + API inventory + Health findings)
 
 (function () {
-  const LAYER_COLS = [
-    { id: 'ui', title: '화면 · UI', cls: 'l-ui' },
-    { id: 'api', title: '서버 · API 라우트', cls: 'l-api' },
-    { id: 'service', title: '코어 모듈 · 로직', cls: 'l-svc' },
-    { id: 'data', title: '데이터 · 저장소', cls: 'l-data' },
-    { id: 'test', title: '테스트 · 설정', cls: 'l-test' },
+  const LAYER_META = [
+    { id: 'ui', title: '화면 · UI', tone: 'kind-plan', desc: '사용자 화면, 폼, 스타일, 프론트엔드 상태' },
+    { id: 'api', title: '서버 · API', tone: 'c', desc: 'HTTP 라우트, 웹소켓, 외부 요청 진입점' },
+    { id: 'service', title: '코어 로직', tone: 'kind-dev', desc: '도메인 기능, 스캐너, CLI 제어, 비즈니스 로직' },
+    { id: 'data', title: '데이터 · 저장', tone: 'kind-test', desc: 'JSON/SQLite 영속화, 인덱싱, 스키마' },
+    { id: 'test', title: '테스트 · 설정', tone: 'kind-ops', desc: '단위/통합 테스트, 패키지·환경 설정' },
   ];
 
-  const colIndexOf = (layer) => {
-    if (layer === 'ui') return 0;
-    if (layer === 'api') return 1;
-    if (layer === 'service') return 2;
-    if (layer === 'data') return 3;
-    return 4;
+  const layerOf = (l) => (l === 'docs' || l === 'config' ? 'test' : l);
+  const layerMetaOf = (l) => LAYER_META.find((m) => m.id === layerOf(l)) || LAYER_META[2];
+  const impBadgeHTML = (n) => {
+    if (n.importance === 'core') return '<span class="badge c">핵심 허브</span>';
+    if (n.importance === 'major') return '<span class="badge kind-dev">주요 모듈</span>';
+    return '<span class="badge">보조</span>';
   };
 
-  function buildBlueprintFallback(p) {
+  function buildArchitectureMarkdown(fp, p, cwd) {
+    const name = p?.name || (cwd ? cwd.split(/[\\/]/).filter(Boolean).pop() : '프로젝트');
+    const nodes = fp.nodes || [];
+    const topHubs = nodes.slice(0, 15);
+    const issues = fp.health?.issues || [];
+    const eps = fp.endpoints || [];
+    const mermaidLines = ['flowchart LR'];
+    const presentLayers = LAYER_META.filter((m) => nodes.some((n) => layerOf(n.layer) === m.id));
+    for (const lm of presentLayers) {
+      const cnt = nodes.filter((n) => layerOf(n.layer) === lm.id).length;
+      const top = nodes.filter((n) => layerOf(n.layer) === lm.id).slice(0, 2).map((n) => n.name).join(', ');
+      mermaidLines.push(`  L_${lm.id}["${lm.title} (${cnt}개)<br/>${top}"]`);
+    }
+    if (presentLayers.some((m) => m.id === 'ui') && presentLayers.some((m) => m.id === 'api')) mermaidLines.push('  L_ui -->|API 호출| L_api');
+    if (presentLayers.some((m) => m.id === 'api') && presentLayers.some((m) => m.id === 'service')) mermaidLines.push('  L_api -->|처리 위임| L_service');
+    if (presentLayers.some((m) => m.id === 'service') && presentLayers.some((m) => m.id === 'data')) mermaidLines.push('  L_service -->|저장 · 조회| L_data');
+    if (presentLayers.some((m) => m.id === 'api') && presentLayers.some((m) => m.id === 'data')) mermaidLines.push('  L_api --> L_data');
+
+    return [
+      `# ${name} — 코드 아키텍처 & 품질 점검 보고서`,
+      '',
+      `- **분석 대상 경로**: \`${fp.rootDir || cwd}\``,
+      `- **분석 일시**: ${new Date(fp.scannedAt || Date.now()).toLocaleString('ko-KR')}`,
+      `- **코드 규모**: ${fp.stats.files}개 파일 · ${fp.stats.lines.toLocaleString()}줄 · API 엔드포인트 ${fp.stats.endpoints}개 (프론트 매칭 ${fp.stats.matchedCalls}건)`,
+      `- **코드 건강도**: **${fp.health?.score ?? 100}점** (위험 ${fp.health?.criticalCount || 0} · 주의 ${fp.health?.warnCount || 0} · 정보 ${fp.health?.infoCount || 0})`,
+      fp.externalServices?.length ? `- **감지된 외부/DB 연동**: ${fp.externalServices.join(', ')}` : '',
+      '',
+      '## 1. 시스템 계층 구조도',
+      '```mermaid',
+      ...mermaidLines,
+      '```',
+      '',
+      '## 2. 핵심 허브 모듈 (중요도 순 Top 15)',
+      '| 중요도 | 파일 경로 | 계층 | 역할 요약 | 참조 수 | API | 라인 |',
+      '| --- | --- | --- | --- | ---: | ---: | ---: |',
+      ...topHubs.map((n) => `| ${n.importance === 'core' ? '핵심 허브' : n.importance === 'major' ? '주요' : '보조'} | \`${n.relPath}\` | ${layerMetaOf(n.layer).title} | ${String(n.summary || '').replace(/\|/g, '/')} | ${n.importedBy.length} | ${n.endpoints.length} | ${n.lines} |`),
+      '',
+      eps.length ? '## 3. 주요 API 엔드포인트\n' + eps.slice(0, 30).map((e) => `- \`${e.method} ${e.path}\` — \`${e.file}:${e.line}\``).join('\n') : '',
+      '',
+      '## 4. 보안 · 구조 점검 결과 (Health Check)',
+      issues.length
+        ? issues.map((it, i) => `${i + 1}. **[${it.severity.toUpperCase()}] ${it.title}** (\`${it.file}:${it.line}\`)\n   - 설명: ${it.detail}\n   - 권장 조치: ${it.fixPrompt}`).join('\n')
+        : '- 감지된 주요 보안 또는 구조적 위험이 없습니다.',
+      '',
+    ].filter((x) => x !== undefined).join('\n');
+  }
+
+  function buildBlueprintFallback(p, hostDir) {
     const ico = window.UI_ICO || {};
-    const topTasks = (p.tasks || []).filter((t) => !t.parentId);
+    const topTasks = (p?.tasks || []).filter((t) => !t.parentId);
+    if (!topTasks.length) {
+      return `<div class="fm-wrap">
+        <div class="fm-top-note">
+          <div>
+            <b>${ico.layers || ''} 코드 구조 (Floorplan)</b>
+            <span class="ums" style="margin:0 0 0 8px">폴더(${esc(hostDir || '미지정')})에 스캔할 소스 코드 파일이 아직 없습니다.</span>
+          </div>
+          <div class="row" style="gap:6px">
+            <button type="button" class="primary btn-sm" id="fmPickDir">${ico.folder || ''} 다른 폴더 분석</button>
+            <button type="button" class="btn-sm" id="fmRescan">${ico.refresh || ''} 다시 스캔</button>
+          </div>
+        </div>
+      </div>`;
+    }
     const cols = {
       plan: topTasks.filter((t) => (typeof taskKindOf === 'function' ? taskKindOf(t) : 'dev') === 'plan'),
       dev: topTasks.filter((t) => (typeof taskKindOf === 'function' ? taskKindOf(t) : 'dev') === 'dev'),
@@ -42,11 +102,11 @@
       <div class="fm-top-note">
         <div>
           <b>${ico.layers || ''} 설계 청사진 (Blueprint) 모드</b>
-          <span class="ums" style="margin:0 0 0 8px">작업 폴더(${esc(p.cwd)})에 아직 소스 파일이 없어 프로젝트의 설계 태스크 청사진을 표시합니다. 점선 카드는 아직 시작 전(대기) 설계 항목입니다.</span>
+          <span class="ums" style="margin:0 0 0 8px">작업 폴더(${esc(hostDir || p.cwd)})에 아직 코드가 없어 설계 태스크 청사진을 표시합니다.</span>
         </div>
         <div class="row" style="gap:6px">
-          <button type="button" class="primary btn-sm" id="fmPickDir" title="기존 코드가 있는 PC 폴더를 골라 Floorplan을 바로 테스트합니다">${ico.folder || ''} 다른 폴더 스캔 테스트</button>
-          <button type="button" class="btn-sm" id="fmRescan">${ico.refresh || ''} 폴더 다시 스캔</button>
+          <button type="button" class="primary btn-sm" id="fmPickDir">${ico.folder || ''} 다른 폴더 분석</button>
+          <button type="button" class="btn-sm" id="fmRescan">${ico.refresh || ''} 다시 스캔</button>
         </div>
       </div>
       <div class="fm-bp-grid">
@@ -57,39 +117,98 @@
     </div>`;
   }
 
-  async function projectFloorplan(p, gen, previewCwd = '') {
+  function openNodeDetailDrawer(node, allNodes, edges, p, termCtx, fp, cwd) {
     const ico = window.UI_ICO || {};
-    const host = $('#projectContent');
+    const lm = layerMetaOf(node.layer);
+    const inIds = [...new Set(edges.filter((e) => e.to === node.id).map((e) => e.from))];
+    const outIds = [...new Set(edges.filter((e) => e.from === node.id).map((e) => e.to))];
+    const epList = node.endpoints.map((e) => `<div class="drw-kv"><span class="mono">${esc(e.method)} ${esc(e.path)}</span><b>L${e.line}</b></div>`).join('');
+    const callList = node.calls.map((c) => `<div class="drw-kv"><span class="mono">${esc(c.path)}</span><b>L${c.line}</b></div>`).join('');
+    const fileIssues = (fp.health?.issues || []).filter((it) => it.file === node.relPath);
+
+    const body = `
+      <div class="drw-sec">
+        <div class="row" style="gap:6px;flex-wrap:wrap">${impBadgeHTML(node)}<span class="badge ${lm.tone}">${esc(lm.title)}</span><span class="badge mono">${node.lines.toLocaleString()}줄</span></div>
+        <div class="mono ums" style="margin:4px 0 0;word-break:break-all">${esc(node.relPath)}</div>
+        <p style="margin:6px 0 0;font-size:13.5px;line-height:1.5">${esc(node.summary)}</p>
+      </div>
+      ${fileIssues.length ? `<div class="drw-sec"><div class="drw-lbl">이 파일 점검 사항 (${fileIssues.length})</div>${fileIssues.map((it) => `<div class="rban ${it.severity === 'critical' ? 'bad' : 'warn'}" style="padding:8px 10px"><b>${esc(it.title)}</b><div class="ums" style="margin:2px 0 0">${esc(it.detail)}</div></div>`).join('')}</div>` : ''}
+      <div class="drw-sec">
+        <div class="drw-lbl">영향 범위 (이 파일을 사용하는 곳 · ${inIds.length})</div>
+        <div class="row" style="gap:5px;flex-wrap:wrap">${inIds.length ? inIds.map((id) => `<span class="badge mono">${esc(id)}</span>`).join('') : '<span class="ums" style="margin:0">진입점 또는 직접 호출 없음</span>'}</div>
+      </div>
+      <div class="drw-sec">
+        <div class="drw-lbl">의존하는 모듈 · API (${outIds.length})</div>
+        <div class="row" style="gap:5px;flex-wrap:wrap">${outIds.length ? outIds.map((id) => `<span class="badge mono">${esc(id)}</span>`).join('') : '<span class="ums" style="margin:0">하위 로컬 의존성 없음</span>'}</div>
+      </div>
+      ${epList ? `<div class="drw-sec"><div class="drw-lbl">제공 API 엔드포인트 (${node.endpoints.length})</div><div>${epList}</div></div>` : ''}
+      ${callList ? `<div class="drw-sec"><div class="drw-lbl">호출하는 API 경로 (${node.calls.length})</div><div>${callList}</div></div>` : ''}`;
+
+    const primaryLbl = p ? `${ico.plus || ''} 이 파일 수정 작업 추가` : `${ico.external || ''} 터미널 입력창에 넣기`;
+    const d = openDrawer({
+      title: node.name,
+      bodyHTML: body,
+      footerHTML: `<button type="button" data-drw-close>닫기</button><button type="button" class="primary" id="drwNodeAct">${primaryLbl}</button>`,
+      width: 500,
+    });
+    $('#drwNodeAct', d).onclick = async () => {
+      d.close();
+      if (p) {
+        const newTask = {
+          id: newTaskId(),
+          stage: 'planned',
+          kind: node.layer === 'test' ? 'test' : 'dev',
+          title: `${node.name} 기능 개선 및 점검`,
+          detail: `대상 파일: ${node.relPath} (${node.summary})\n영향 범위: ${[...inIds, ...outIds].slice(0, 8).join(', ')}`,
+          agent: '', account: null, model: '', effort: '', parentId: '', termId: '', after: [],
+        };
+        await saveProject({ ...p, tasks: [...p.tasks, newTask] }, 'design');
+        toast(`“${newTask.title}” 작업을 추가했습니다`);
+        return;
+      }
+      const txt = `${node.relPath} (${node.summary}) 확인해줘. `;
+      if (termCtx?.onInsertPrompt) termCtx.onInsertPrompt(txt, false);
+      else await copyText(txt);
+    };
+  }
+
+  async function renderFloorplanInto({ host, p = null, cwd = '', gen, previewCwd = '', termCtx = null }) {
+    const ico = window.UI_ICO || {};
     if (!host) return;
-    host.innerHTML = '<div class="empty" style="padding:24px 8px">코드 구조와 보안·품질 상태를 분석하는 중…</div>';
+    const activeCwd = previewCwd || cwd || p?.cwd || '';
+    host.innerHTML = '<div class="empty" style="padding:24px 8px">코드 구조와 핵심 모듈을 분석하는 중…</div>';
 
     let fp;
-    try {
-      const url = previewCwd
-        ? `/api/projects/floorplan?cwd=${encodeURIComponent(previewCwd)}`
-        : `/api/projects/floorplan?id=${encodeURIComponent(p.id)}`;
-      const r = await api(url);
-      if (gen !== viewGen) return;
-      if (r.error || !r.floorplan) throw new Error(r.error || '코드 구조를 불러올 수 없습니다.');
-      fp = r.floorplan;
-    } catch (e) {
-      if (gen !== viewGen) return;
-      host.innerHTML = `<div class="pj-empty"><p role="alert">${esc(e.message)}</p><button type="button" id="fmRetry">다시 스캔</button></div>`;
-      $('#fmRetry', host).onclick = () => projectFloorplan(p, gen, previewCwd);
-      return;
+    if (!activeCwd && !p?.id) {
+      fp = { exists: false, nodes: [] };
+    } else {
+      try {
+        const url = (previewCwd || !p?.id)
+          ? `/api/projects/floorplan?cwd=${encodeURIComponent(activeCwd)}`
+          : `/api/projects/floorplan?id=${encodeURIComponent(p.id)}`;
+        const r = await api(url);
+        if (gen !== viewGen) return;
+        if (r.error || !r.floorplan) throw new Error(r.error || '코드 구조를 불러올 수 없습니다.');
+        fp = r.floorplan;
+      } catch (e) {
+        if (gen !== viewGen) return;
+        host.innerHTML = `<div class="pj-empty"><p role="alert">${esc(e.message)}</p><button type="button" id="fmRetry">다시 스캔</button></div>`;
+        $('#fmRetry', host).onclick = () => renderFloorplanInto({ host, p, cwd, gen, previewCwd, termCtx });
+        return;
+      }
     }
 
     if (!fp.exists || !fp.nodes?.length) {
-      host.innerHTML = buildBlueprintFallback(previewCwd ? { ...p, cwd: previewCwd } : p);
-      $('#fmRescan', host)?.addEventListener('click', () => projectFloorplan(p, gen, previewCwd));
+      host.innerHTML = buildBlueprintFallback(p, activeCwd);
+      $('#fmRescan', host)?.addEventListener('click', () => renderFloorplanInto({ host, p, cwd, gen, previewCwd, termCtx }));
       $('#fmPickDir', host)?.addEventListener('click', () => {
         if (typeof openFolderPickerDialog === 'function') {
-          openFolderPickerDialog(previewCwd || p.cwd, (chosen) => projectFloorplan(p, gen, chosen));
+          openFolderPickerDialog(activeCwd, (chosen) => renderFloorplanInto({ host, p, cwd, gen, previewCwd: chosen, termCtx }));
         }
       });
       host.querySelectorAll('[data-bp-task]').forEach((el) => {
         el.onclick = () => {
-          const t = (p.tasks || []).find((x) => x.id === el.dataset.bpTask);
+          const t = (p?.tasks || []).find((x) => x.id === el.dataset.bpTask);
           if (t && typeof openProjectTaskDrawer === 'function') openProjectTaskDrawer(p, t);
         };
       });
@@ -101,324 +220,482 @@
     const issues = fp.health?.issues || [];
     const score = fp.health?.score ?? 100;
     const scoreCls = score >= 85 ? 'ok' : score >= 65 ? 'warn' : 'lim';
+    const topHub = nodes[0];
+    const coreNodes = nodes.filter((n) => n.importance === 'core');
 
-    // Build adjacency maps for instant Blast Radius calculation
-    const outMap = new Map(nodes.map((n) => [n.id, new Set()]));
-    const inMap = new Map(nodes.map((n) => [n.id, new Set()]));
-    for (const e of edges) {
-      outMap.get(e.from)?.add(e.to);
-      inMap.get(e.to)?.add(e.from);
-    }
-    const blastOf = (startIds) => {
-      const hi = new Set(startIds);
-      const qOut = [...startIds];
-      const qIn = [...startIds];
-      while (qOut.length) {
-        const cur = qOut.shift();
-        for (const nxt of outMap.get(cur) || []) {
-          if (!hi.has(nxt)) { hi.add(nxt); qOut.push(nxt); }
-        }
+    let subTab = 'overview'; // 'overview' | 'diagram' | 'health'
+    let filterLayer = 'all';
+    let filterQuery = '';
+    let mapScope = 'core'; // 'core' | 'all'
+    let mapSelectedId = '';
+    let mapQuery = '';
+    let mapZoom = 1;
+
+    const LAYER_COLS = [
+      { id: 'ui', title: '화면 · UI', tone: 'c' },
+      { id: 'api', title: '서버 · API', tone: 'c' },
+      { id: 'service', title: '코어 로직', tone: '' },
+      { id: 'data', title: '데이터 · 저장', tone: 'ok' },
+      { id: 'config', title: '설정 · 문서', tone: '' },
+    ];
+
+    const edgesForNode = (nid) => {
+      const inc = new Set();
+      const out = new Set();
+      for (const e of edges) {
+        if (e.from === nid) out.add(e.to);
+        if (e.to === nid) inc.add(e.from);
       }
-      while (qIn.length) {
-        const cur = qIn.shift();
-        for (const prev of inMap.get(cur) || []) {
-          if (!hi.has(prev)) { hi.add(prev); qIn.push(prev); }
-        }
-      }
-      return hi;
+      return { inc, out };
     };
 
-    // Place nodes into layered grid columns
-    const colBuckets = [[], [], [], [], []];
-    for (const n of nodes) {
-      const ci = colIndexOf(n.layer);
-      colBuckets[ci].push(n);
-    }
-    for (const b of colBuckets) {
-      b.sort((a, b2) => (b2.endpoints.length + b2.importedBy.length) - (a.endpoints.length + a.importedBy.length) || b2.lines - a.lines);
-    }
-    // Cap per-column visual nodes to keep map crisp and readable; show summary pill if clipped
-    const MAX_PER_COL = 12;
-    const visibleNodes = [];
-    const visibleIds = new Set();
-    const coords = new Map();
-    const COL_W = 246, CARD_H = 104, COL_GAP = 72, ROW_GAP = 16, PAD_X = 24, PAD_Y = 48;
-    let activeColIdx = 0;
-
-    for (let ci = 0; ci < colBuckets.length; ci++) {
-      const bucket = colBuckets[ci].slice(0, MAX_PER_COL);
-      if (!bucket.length) continue;
-      const x = PAD_X + activeColIdx * (COL_W + COL_GAP);
-      bucket.forEach((n, ri) => {
-        visibleNodes.push({ ...n, visualCol: activeColIdx, hiddenMore: colBuckets[ci].length > MAX_PER_COL && ri === bucket.length - 1 ? colBuckets[ci].length - MAX_PER_COL : 0 });
-        visibleIds.add(n.id);
-        coords.set(n.id, { x, y: PAD_Y + ri * (CARD_H + ROW_GAP), colX: x, title: LAYER_COLS[ci].title, count: colBuckets[ci].length });
+    const drawMapEdges = (focusId = mapSelectedId) => {
+      const stage = $('.fm-map-stage', host);
+      const svg = $('svg.fm-map-edges', host);
+      if (!stage || !svg) return;
+      const sr = stage.getBoundingClientRect();
+      const z = mapZoom || 1;
+      const boxOf = new Map();
+      stage.querySelectorAll('[data-fm-map-node]').forEach((el) => {
+        const r = el.getBoundingClientRect();
+        boxOf.set(el.dataset.fmMapNode, {
+          el,
+          l: (r.left - sr.left) / z,
+          r: (r.right - sr.left) / z,
+          t: (r.top - sr.top) / z,
+          b: (r.bottom - sr.top) / z,
+          cx: ((r.left + r.right) / 2 - sr.left) / z,
+          cy: ((r.top + r.bottom) / 2 - sr.top) / z,
+        });
       });
-      activeColIdx++;
-    }
 
-    const colHeaders = [];
-    const seenCol = new Set();
-    for (const vn of visibleNodes) {
-      const pt = coords.get(vn.id);
-      if (!seenCol.has(vn.visualCol)) {
-        seenCol.add(vn.visualCol);
-        colHeaders.push(`<div class="fm-col-hdr" style="left:${pt.x}px;top:14px">${esc(pt.title)} <span class="badge">${pt.count}</span></div>`);
+      const rel = focusId ? edgesForNode(focusId) : null;
+      stage.querySelectorAll('[data-fm-map-node]').forEach((el) => {
+        const id = el.dataset.fmMapNode;
+        el.classList.toggle('is-sel', !!focusId && id === focusId);
+        el.classList.toggle('is-rel', !!focusId && id !== focusId && (rel.inc.has(id) || rel.out.has(id)));
+        el.classList.toggle('is-dim', !!focusId && id !== focusId && !rel.inc.has(id) && !rel.out.has(id));
+      });
+
+      const paths = [`<defs>
+        <marker id="fmArrOut" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1 L 10 5 L 0 9 z" fill="var(--accent)"/></marker>
+        <marker id="fmArrIn" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1 L 10 5 L 0 9 z" fill="var(--ok)"/></marker>
+      </defs>`];
+
+      const seenPair = new Set();
+      for (const e of edges) {
+        const a = boxOf.get(e.from);
+        const b = boxOf.get(e.to);
+        if (!a || !b || e.from === e.to) continue;
+        const pk = `${e.from}=>${e.to}`;
+        if (seenPair.has(pk)) continue;
+        seenPair.add(pk);
+
+        const isOut = focusId && e.from === focusId;
+        const isIn = focusId && e.to === focusId;
+        const cls = ['fm-edge'];
+        if (e.kind === 'api') cls.push('api');
+        if (focusId) {
+          if (isOut) cls.push('hi');
+          else if (isIn) cls.push('hi-in');
+          else cls.push('dim');
+        }
+        const marker = isOut ? ' marker-end="url(#fmArrOut)"' : isIn ? ' marker-end="url(#fmArrIn)"' : '';
+
+        let d;
+        if (Math.abs(a.cx - b.cx) < 30) {
+          const arcX = Math.max(a.r, b.r) + 26;
+          d = `M ${a.r.toFixed(1)} ${a.cy.toFixed(1)} C ${arcX.toFixed(1)} ${a.cy.toFixed(1)}, ${arcX.toFixed(1)} ${b.cy.toFixed(1)}, ${b.r.toFixed(1)} ${b.cy.toFixed(1)}`;
+        } else if (a.cx < b.cx) {
+          const dx = Math.max(36, (b.l - a.r) * 0.55);
+          d = `M ${a.r.toFixed(1)} ${a.cy.toFixed(1)} C ${(a.r + dx).toFixed(1)} ${a.cy.toFixed(1)}, ${(b.l - dx).toFixed(1)} ${b.cy.toFixed(1)}, ${b.l.toFixed(1)} ${b.cy.toFixed(1)}`;
+        } else {
+          const dx = Math.max(36, (a.l - b.r) * 0.55);
+          d = `M ${a.l.toFixed(1)} ${a.cy.toFixed(1)} C ${(a.l - dx).toFixed(1)} ${a.cy.toFixed(1)}, ${(b.r + dx).toFixed(1)} ${b.cy.toFixed(1)}, ${b.r.toFixed(1)} ${b.cy.toFixed(1)}`;
+        }
+        paths.push(`<path class="${cls.join(' ')}" d="${d}"${marker}/>`);
       }
-    }
+      svg.setAttribute('width', String(stage.scrollWidth));
+      svg.setAttribute('height', String(stage.scrollHeight));
+      svg.innerHTML = paths.join('');
+    };
 
-    const cardsHTML = visibleNodes.map((n) => {
-      const pt = coords.get(n.id);
-      const epTag = n.endpoints.length ? `<span class="badge c">API ${n.endpoints.length}</span>` : '';
-      const callTag = n.calls.length ? `<span class="badge">호출 ${n.calls.length}</span>` : '';
-      const issTag = n.hasIssue ? `<span class="badge warn" title="보안/구조 점검 항목 있음">점검</span>` : '';
-      return `<article class="fm-node layer-${esc(n.layer)}" data-fm-node="${esc(n.id)}" style="left:${pt.x}px;top:${pt.y}px">
-        <div class="fm-node-hd">
-          <b title="${esc(n.relPath)}">${esc(n.name)}</b>
-          <span class="ums mono" style="margin:0;font-size:10.5px">${n.lines}L</span>
-        </div>
-        <div class="fm-node-path mono" title="${esc(n.relPath)}">${esc(n.relPath)}</div>
-        <div class="fm-node-desc">${esc(n.summary)}</div>
-        <div class="fm-node-tags">${epTag}${callTag}${issTag}</div>
-      </article>`;
-    }).join('');
+    const paint = () => {
+      if (!host.isConnected || gen !== viewGen) return;
+      const segBtn = (id, label, cnt = '') => `<button type="button" data-fm-sub="${id}" class="${subTab === id ? 'on' : ''}">${label}${cnt !== '' ? ` <span class="seg-cnt">${cnt}</span>` : ''}</button>`;
 
-    const issueHTML = issues.map((it, idx) => {
-      const sevBadge = it.severity === 'critical'
-        ? '<span class="badge lim">위험</span>'
-        : it.severity === 'warn'
-          ? '<span class="badge warn">주의</span>'
-          : '<span class="badge">정보</span>';
-      return `<div class="m-row" style="cursor:default">
-        <div class="m-row-main">
-          <div class="m-row-t" style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">${sevBadge}<span>${esc(it.title)}</span><span class="mono ums" style="margin:0">${esc(it.file)}:${it.line}</span></div>
-          <div class="m-row-s" style="white-space:normal">${esc(it.detail)}</div>
+      const toolbar = `<div class="pj-flow-bar">
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          <div class="seg" role="tablist" aria-label="코드 구조 보기 방식">
+            ${segBtn('overview', '핵심 요약 · 모듈 목록')}
+            ${segBtn('diagram', '시스템 계층도')}
+            ${segBtn('health', '보안 · 구조 점검', issues.length)}
+          </div>
+          ${previewCwd ? `<span class="badge c mono" title="${esc(previewCwd)}">${esc(base(previewCwd))}</span><button type="button" class="ghost btn-sm" id="fmBackProjDir">원래 폴더로</button>` : ''}
         </div>
-        <div class="m-row-end">
-          <button type="button" class="btn-sm" data-fm-focus="${esc(it.file)}" title="구조 맵에서 해당 파일 위치·영향 범위 보기">위치 보기</button>
-          <button type="button" class="primary btn-sm" data-fm-fix="${idx}" title="이 점검 항목을 Project 작업 카드로 바로 추가">${ico.plus || ''} 수정 작업 추가</button>
+        <div class="row" style="gap:6px;flex-wrap:wrap">
+          <button type="button" class="btn-sm" id="fmCopyMd" title="실무자 공유용 마크다운 아키텍처 보고서 복사">${ico.copy || ''} 보고서 복사</button>
+          <button type="button" class="btn-sm" id="fmDownloadMd" title="아키텍처 보고서 .md 파일로 다운로드">${ico.external || ''} .md 저장</button>
+          <button type="button" class="btn-sm" id="fmPickDir" title="다른 프로젝트 폴더 스캔">${ico.folder || ''} 폴더 선택</button>
+          <button type="button" class="ghost icon-btn btn-sm" id="fmRescan" title="다시 스캔" aria-label="다시 스캔">${ico.refresh || ''}</button>
         </div>
       </div>`;
-    }).join('') || '<div class="empty" style="padding:18px 16px">감지된 보안·구조 이슈가 없습니다. 깔끔한 코드베이스입니다!</div>';
 
-    host.innerHTML = `<div class="fm-wrap">
-      <div class="pj-flow-bar">
-        <div class="row" style="gap:8px;flex-wrap:wrap;flex:1;min-width:0">
-          <div class="fm-ask-box">
-            ${ico.search || ''}
-            <input id="fmAskIn" type="search" placeholder="질문·라우트·파일명으로 영향 범위(Blast Radius) 추적… (예: api/projects, auth, token)" autocomplete="off">
+      let body = '';
+      if (subTab === 'overview') {
+        const kpiHTML = `<div class="h-stats">
+          <div class="h-stat" style="cursor:default">
+            <div class="h-stat-lbl"><span>프로젝트 규모</span><span class="badge">${fp.parts.length}개 계층</span></div>
+            <div class="h-stat-val">${fp.stats.files}개 파일</div>
+            <div class="h-stat-sub">총 ${fp.stats.lines.toLocaleString()}줄 · 핵심 허브 ${coreNodes.length}개</div>
           </div>
-          <button type="button" class="btn-sm" id="fmAskClear" hidden>선택 해제</button>
-          <span class="badge ${scoreCls}" id="fmHealthBadge" title="코드 건강도 점수 (시크릿·인증·파일 크기 기반)">건강도 ${score}점 · 이슈 ${issues.length}건</span>
-        </div>
-        <div class="row" style="gap:4px">
-          <span class="ums" style="margin:0 6px 0 0">${fp.stats.files}파일 · ${fp.stats.lines.toLocaleString()}줄 · API ${fp.stats.endpoints}개</span>
-          <button type="button" class="ghost btn-sm" id="fmZoomFit" title="전체 구조가 보이도록 화면 맞춤">화면 맞춤</button>
-          <button type="button" class="ghost btn-sm" id="fmZoomOut" title="축소">－</button>
-          <button type="button" class="ghost btn-sm mono" id="fmZoomReset" title="100% 배율">100%</button>
-          <button type="button" class="ghost btn-sm" id="fmZoomIn" title="확대">＋</button>
-          <button type="button" class="btn-sm" id="fmPickDir" title="다른 폴더를 선택해 코드 구조 스캔 테스트">${ico.folder || ''} 폴더 변경</button>
-          <button type="button" class="btn-sm" id="fmRescan" title="작업 폴더를 다시 스캔">${ico.refresh || ''} 재스캔</button>
-        </div>
-      </div>
-      ${previewCwd ? `<div class="fm-top-note" style="padding:7px 12px"><span>미리보기 스캔 경로: <b class="mono">${esc(previewCwd)}</b></span><button type="button" class="btn-sm" id="fmBackProjDir">현재 Project 폴더로 돌아가기</button></div>` : ''}
+          <div class="h-stat" style="cursor:default">
+            <div class="h-stat-lbl"><span>API · 요청 연결</span><span class="badge c">${fp.stats.matchedCalls}건 매칭</span></div>
+            <div class="h-stat-val">${fp.stats.endpoints}개</div>
+            <div class="h-stat-sub">프론트 호출 ${fp.stats.apiCalls}건 → 서버 라우트</div>
+          </div>
+          <div class="h-stat" data-fm-open-node="${esc(topHub?.id || '')}">
+            <div class="h-stat-lbl"><span>최핵심 허브 (1위)</span><span class="badge c">상세 보기</span></div>
+            <div class="h-stat-val" style="font-size:19px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(topHub?.name || '—')}</div>
+            <div class="h-stat-sub">${topHub ? `참조 ${topHub.importedBy.length}곳 · API ${topHub.endpoints.length}개 · ${topHub.lines}줄` : ''}</div>
+          </div>
+          <div class="h-stat" data-fm-go-sub="health">
+            <div class="h-stat-lbl"><span>코드 건강도</span><span class="badge ${scoreCls}">${issues.length ? `이슈 ${issues.length}건` : '양호'}</span></div>
+            <div class="h-stat-val">${score}점</div>
+            <div class="h-stat-sub">${issues[0] ? esc(issues[0].title) : '발견된 보안·구조 위험 없음'}</div>
+          </div>
+        </div>`;
 
-      <div class="fm-ask-res" id="fmAskRes" hidden></div>
+        // Clean 4~5-Column Subsystem Architecture Cards (Astryx layout: zero spaghetti lines!)
+        const archCols = LAYER_META.map((lm) => {
+          const items = nodes.filter((n) => layerOf(n.layer) === lm.id);
+          if (!items.length) return '';
+          const top3 = items.slice(0, 3);
+          return `<div class="fm-arch-card">
+            <div class="fm-arch-hd"><span class="badge ${lm.tone}">${esc(lm.title)}</span><span class="ums" style="margin:0">${items.length}개</span></div>
+            <div class="fm-arch-desc">${esc(lm.desc)}</div>
+            <div class="fm-arch-list">
+              ${top3.map((n) => `<button type="button" class="fm-arch-item" data-fm-open-node="${esc(n.id)}">
+                <span class="mono">${esc(n.name)}</span>
+                <span class="ums" style="margin:0">${n.endpoints.length ? `API ${n.endpoints.length}` : `${n.lines}L`}</span>
+              </button>`).join('')}
+            </div>
+          </div>`;
+        }).filter(Boolean).join('');
 
-      <div class="pj-flow fm-viewport" id="fmViewport">
-        <div class="pj-flow-canvas" id="fmCanvas">
-          <svg class="pj-edges" aria-hidden="true"></svg>
-          ${colHeaders.join('')}
-          ${cardsHTML}
-        </div>
-      </div>
+        // Dense Ranked Module List (Astryx row surface)
+        const qTerms = filterQuery.toLowerCase().split(/\s+/).filter(Boolean);
+        const filtered = nodes.filter((n) => {
+          if (filterLayer === 'core' && n.importance !== 'core') return false;
+          if (filterLayer === 'api' && !n.endpoints.length) return false;
+          if (filterLayer === 'issue' && !n.hasIssue) return false;
+          if (['ui', 'api', 'service', 'data', 'test'].includes(filterLayer) && layerOf(n.layer) !== filterLayer) return false;
+          if (qTerms.length) {
+            const hay = `${n.relPath} ${n.summary} ${n.endpoints.map((e) => e.path).join(' ')}`.toLowerCase();
+            return qTerms.every((t) => hay.includes(t));
+          }
+          return true;
+        });
 
-      <section class="sheet" id="fmHealthSheet">
-        <div class="sheet-hd">
-          <h3>${ico.flask || ''} 코드 보안 · 구조 점검 (Health Check) <span class="badge ${scoreCls}">${score}점</span></h3>
-          <span class="ums" style="margin:0">${fp.externalServices?.length ? `감지된 연동: ${esc(fp.externalServices.join(' · '))}` : '무의존성 정적 분석 결과'}</span>
-        </div>
-        <div>${issueHTML}</div>
-      </section>
-    </div>`;
+        const fBtn = (id, lbl) => `<button type="button" data-fm-filt="${id}" class="${filterLayer === id ? 'on' : ''}">${lbl}</button>`;
+        const rowsHTML = filtered.slice(0, 40).map((n) => {
+          const lm = layerMetaOf(n.layer);
+          const metaParts = [
+            lm.title,
+            n.importedBy.length ? `참조 ${n.importedBy.length}곳` : '',
+            n.endpoints.length ? `API ${n.endpoints.length}개` : '',
+            n.calls.length ? `호출 ${n.calls.length}건` : '',
+            `${n.lines.toLocaleString()}줄`,
+          ].filter(Boolean).join(' · ');
+          return `<div class="m-row" data-fm-open-node="${esc(n.id)}">
+            <div class="m-row-main">
+              <div class="m-row-t" style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
+                ${impBadgeHTML(n)}
+                <b class="mono">${esc(n.relPath)}</b>
+                ${n.hasIssue ? '<span class="badge warn">점검 필요</span>' : ''}
+              </div>
+              <div class="m-row-s">${esc(n.summary)} · ${esc(metaParts)}</div>
+            </div>
+            <div class="m-row-end"><span class="ico">${ico.chevRight || ''}</span></div>
+          </div>`;
+        }).join('') || '<div class="empty" style="padding:20px 16px">조건에 맞는 모듈이 없습니다.</div>';
 
-    const viewport = $('#fmViewport', host);
-    const canvas = $('#fmCanvas', host);
-    const svg = canvas.querySelector('svg');
-    const askIn = $('#fmAskIn', host);
-    const askRes = $('#fmAskRes', host);
-    const clearBtn = $('#fmAskClear', host);
-    const nodeEls = new Map([...canvas.querySelectorAll('[data-fm-node]')].map((el) => [el.dataset.fmNode, el]));
+        body = `${kpiHTML}
+          <section class="list-sec">
+            <div class="list-sec-hd"><h4>계층별 핵심 구성 요약 (클릭 시 파일 상세)</h4><span class="ums" style="margin:0">${fp.externalServices?.length ? `외부 연동: ${esc(fp.externalServices.join(' · '))}` : 'UI → API → 코어 → 데이터 흐름'}</span></div>
+            <div class="fm-arch-grid">${archCols}</div>
+          </section>
+          <section class="sheet">
+            <div class="sheet-hd" style="flex-wrap:wrap">
+              <h3>중요도 순 핵심 파일 목록 <span class="badge">${filtered.length}</span></h3>
+              <div class="row" style="gap:8px;flex-wrap:wrap">
+                <div class="seg" role="tablist">
+                  ${fBtn('all', '전체')}
+                  ${fBtn('core', `핵심 허브 (${coreNodes.length})`)}
+                  ${fBtn('api', 'API 라우트')}
+                  ${fBtn('issue', `점검 (${issues.length})`)}
+                </div>
+                <input id="fmSearchIn" class="btn-sm" type="search" value="${esc(filterQuery)}" placeholder="파일·API·역할 필터…" style="width:180px">
+              </div>
+            </div>
+            <div>${rowsHTML}</div>
+          </section>`;
+      } else if (subTab === 'diagram') {
+        const qMap = mapQuery.trim().toLowerCase();
+        const selNode = mapSelectedId ? nodes.find((n) => n.id === mapSelectedId) : null;
+        const selRel = selNode ? edgesForNode(selNode.id) : null;
+        const colsToShow = mapScope === 'all' ? LAYER_COLS : LAYER_COLS.slice(0, 4);
+        const maxPerCol = mapScope === 'all' ? 12 : 4;
 
-    let zoom = 1;
-    let focusSet = null; // Set<nodeId> | null
+        const colsHTML = colsToShow.map((col) => {
+          const allInLayer = nodes.filter((n) => layerOf(n.layer) === col.id);
+          if (!allInLayer.length) return '';
+          const picked = [];
+          const seen = new Set();
+          const addNode = (n) => { if (n && !seen.has(n.id)) { seen.add(n.id); picked.push(n); } };
+          if (qMap) {
+            allInLayer.filter((n) => `${n.relPath} ${n.summary}`.toLowerCase().includes(qMap)).slice(0, 8).forEach(addNode);
+          } else {
+            allInLayer.slice(0, maxPerCol).forEach(addNode);
+            if (selNode) {
+              if (layerOf(selNode.layer) === col.id) addNode(selNode);
+              allInLayer.filter((n) => selRel.inc.has(n.id) || selRel.out.has(n.id)).slice(0, 4).forEach(addNode);
+            }
+          }
+          if (!picked.length) return '';
+          return `<div class="fm-map-col">
+            <div class="fm-map-col-hd">
+              <span class="badge ${col.tone}">${esc(col.title)}</span>
+              <span class="ums" style="margin:0">${picked.length}/${allInLayer.length}</span>
+            </div>
+            <div class="fm-map-col-list">
+              ${picked.map((n) => {
+                const metric = n.importedBy.length
+                  ? `참조 ${n.importedBy.length}곳`
+                  : n.endpoints.length
+                    ? `API ${n.endpoints.length}개`
+                    : n.calls.length
+                      ? `요청 ${n.calls.length}건`
+                      : `${n.lines}줄`;
+                return `<button type="button" class="fm-map-node${n.importance === 'core' ? ' is-core' : ''}" data-fm-map-node="${esc(n.id)}">
+                  <div class="fm-map-node-top">
+                    <b class="mono" title="${esc(n.relPath)}">${esc(n.name)}</b>
+                    ${n.importance === 'core' ? '<span class="badge c">핵심</span>' : ''}
+                  </div>
+                  <div class="fm-map-node-sum">${esc(n.summary)}</div>
+                  <div class="fm-map-node-meta">
+                    <span>${esc(metric)}</span>
+                    <span>${n.lines.toLocaleString()}L</span>
+                  </div>
+                </button>`;
+              }).join('')}
+            </div>
+          </div>`;
+        }).filter(Boolean).join('');
 
-    const maxX = Math.max(760, activeColIdx * (COL_W + COL_GAP) + 40);
-    const maxColItems = Math.max(1, ...colBuckets.map((b) => Math.min(MAX_PER_COL, b.length)));
-    const maxY = Math.max(420, PAD_Y + maxColItems * (CARD_H + ROW_GAP) + 32);
-    canvas.style.width = `${maxX}px`;
-    canvas.style.height = `${maxY}px`;
-    svg.setAttribute('width', maxX);
-    svg.setAttribute('height', maxY);
+        const totalShown = (colsHTML.match(/data-fm-map-node="/g) || []).length;
+        const mapStatusHTML = selNode
+          ? `<div class="fm-map-status on">
+              <span><b class="mono">${esc(selNode.relPath)}</b> · 들어오는 연결 <b>${selRel.inc.size}</b>개 · 나가는 연결 <b>${selRel.out.size}</b>개 (초록=호출/참조원, 주황=의존 대상)</span>
+              <span class="row" style="gap:6px">
+                <button type="button" class="primary btn-sm" data-fm-open-node="${esc(selNode.id)}">상세 패널 열기 →</button>
+                <button type="button" class="btn-sm" id="fmMapClearSel">선택 해제</button>
+              </span>
+            </div>`
+          : `<div class="fm-map-status">
+              <span>모듈 카드를 클릭하면 <b>연결 흐름(Blast Radius)</b>만 선명하게 집중 표시합니다. 빈 캔버스를 드래그해 이동할 수 있습니다.</span>
+              <span class="ums" style="margin:0">표시 중: ${totalShown} / ${nodes.length}개 파일</span>
+            </div>`;
 
-    const drawEdges = () => {
-      if (gen !== viewGen || !canvas.isConnected) return;
-      for (const [id, el] of nodeEls.entries()) {
-        el.classList.toggle('is-dim', !!(focusSet && !focusSet.has(id)));
-        el.classList.toggle('is-focus', !!(focusSet && focusSet.has(id)));
-      }
-      const visEdges = edges.filter((e) => visibleIds.has(e.from) && visibleIds.has(e.to));
-      const paths = visEdges.map((e) => {
-        const a = coords.get(e.from), b = coords.get(e.to);
-        if (!a || !b) return '';
-        const isHi = focusSet && focusSet.has(e.from) && focusSet.has(e.to);
-        const isDim = focusSet && !isHi;
-        const x1 = a.x + COL_W, y1 = a.y + CARD_H / 2;
-        const x2 = b.x, y2 = b.y + CARD_H / 2;
-        const dx = Math.max(36, Math.abs(x2 - x1) * 0.45);
-        const cls = `pj-edge-path${e.kind === 'api' ? ' fm-edge-api' : ''}${isHi ? ' hi' : ''}${isDim ? ' dim' : ''}`;
-        const marker = isHi ? 'url(#fmArrHi)' : 'url(#fmArr)';
-        if (x2 >= x1 - 10) {
-          return `<path class="${cls}" d="M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}" marker-end="${marker}"/>`;
-        }
-        return `<path class="${cls}" d="M ${a.x} ${y1} C ${a.x - 42} ${y1}, ${b.x + COL_W + 42} ${y2}, ${b.x + COL_W} ${y2}" marker-end="${marker}"/>`;
-      }).filter(Boolean);
-
-      svg.innerHTML = `<defs>
-        <marker id="fmArr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z"/></marker>
-        <marker id="fmArrHi" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="hi" d="M 0 0 L 10 5 L 0 10 z"/></marker>
-      </defs>${paths.join('')}`;
-    };
-
-    const showNodeSummary = (nodeIds, headingText) => {
-      if (!nodeIds.length) {
-        focusSet = null;
-        clearBtn.hidden = true;
-        askRes.hidden = true;
-        drawEdges();
-        return;
-      }
-      const blast = blastOf(nodeIds);
-      focusSet = blast;
-      clearBtn.hidden = false;
-      drawEdges();
-
-      const primary = nodes.find((n) => n.id === nodeIds[0]);
-      if (nodeIds.length === 1 && primary) {
-        const eps = primary.endpoints.slice(0, 6).map((e) => `<span class="badge c mono">${esc(e.method)} ${esc(e.path)}</span>`).join(' ');
-        const callers = [...(inMap.get(primary.id) || [])].slice(0, 6).map((id) => `<button type="button" class="btn-sm" data-fm-focus="${esc(id)}">${esc(id)}</button>`).join(' ');
-        const deps = [...(outMap.get(primary.id) || [])].slice(0, 6).map((id) => `<button type="button" class="btn-sm" data-fm-focus="${esc(id)}">${esc(id)}</button>`).join(' ');
-        askRes.hidden = false;
-        askRes.innerHTML = `<div class="row" style="justify-content:space-between;gap:8px">
-          <div><b class="mono">${esc(primary.relPath)}</b> <span class="badge">${primary.lines}줄</span> <span class="ums" style="margin:0 0 0 6px">${esc(primary.summary)}</span></div>
-          <button type="button" class="primary btn-sm" id="fmCreateTaskFromNode">${ico.plus || ''} 이 파일 수정 태스크 생성</button>
-        </div>
-        ${eps ? `<div class="row" style="gap:5px;flex-wrap:wrap"><span class="ums" style="margin:0">엔드포인트:</span>${eps}</div>` : ''}
-        ${(callers || deps) ? `<div class="row" style="gap:5px;flex-wrap:wrap">${callers ? `<span class="ums" style="margin:0">호출하는 곳:</span>${callers}` : ''}${deps ? `<span class="ums" style="margin:0 0 0 8px">의존 대상:</span>${deps}` : ''}</div>` : ''}`;
-        $('#fmCreateTaskFromNode', askRes).onclick = async () => {
-          const newTask = {
-            id: newTaskId(),
-            stage: 'planned',
-            kind: primary.layer === 'test' ? 'test' : 'dev',
-            title: `${primary.name} 기능 개선 및 점검`,
-            detail: `대상 파일: ${primary.relPath} (${primary.summary})\n관련 영향 범위: ${[...blast].slice(0, 8).join(', ')}`,
-            agent: '',
-            account: null,
-            model: '',
-            effort: '',
-            parentId: '',
-            termId: '',
-            after: [],
-          };
-          await saveProject({ ...p, tasks: [...p.tasks, newTask] }, 'design');
-          toast(`“${newTask.title}” 작업을 추가했습니다`);
-        };
+        body = `<section class="sheet">
+          <div class="sheet-hd" style="flex-wrap:wrap">
+            <h3>시스템 아키텍처 계층 맵</h3>
+            <div class="fm-map-bar">
+              <div class="seg" role="tablist">
+                <button type="button" data-fm-map-scope="core" class="${mapScope === 'core' ? 'on' : ''}">핵심 허브 맵</button>
+                <button type="button" data-fm-map-scope="all" class="${mapScope === 'all' ? 'on' : ''}">확장 모듈 보기</button>
+              </div>
+              <input id="fmMapSearchIn" class="btn-sm" type="search" value="${esc(mapQuery)}" placeholder="맵에서 모듈 찾기…" style="width:165px">
+              <div class="btn-grp" aria-label="맵 확대 축소">
+                <button type="button" class="btn-sm" id="fmMapZoomOut" title="축소">-</button>
+                <button type="button" class="btn-sm" id="fmMapZoomReset" title="100%">${Math.round(mapZoom * 100)}%</button>
+                <button type="button" class="btn-sm" id="fmMapZoomIn" title="확대">+</button>
+                <button type="button" class="btn-sm" id="fmMapFit" title="화면 너비 맞춤">맞춤</button>
+              </div>
+            </div>
+          </div>
+          <div class="fm-macro-wrap">
+            ${mapStatusHTML}
+            <div class="fm-map-vp" id="fmMapVp">
+              <div class="fm-map-stage" style="transform:scale(${mapZoom});width:${Math.round(100 / mapZoom)}%">
+                <svg class="fm-map-edges" aria-hidden="true"></svg>
+                <div class="fm-map-cols">${colsHTML}</div>
+              </div>
+            </div>
+          </div>
+        </section>`;
       } else {
-        askRes.hidden = false;
-        askRes.innerHTML = `<div class="row" style="justify-content:space-between;gap:8px">
-          <span><b>${esc(headingText)}</b> — 일치 모듈 ${nodeIds.length}개 · 연결된 영향 범위(Blast Radius) 총 ${blast.size}개 파일 하이라이트됨</span>
-        </div>
-        <div class="row" style="gap:5px;flex-wrap:wrap">${nodeIds.slice(0, 8).map((id) => `<button type="button" class="btn-sm" data-fm-focus="${esc(id)}">${esc(id)}</button>`).join('')}</div>`;
+        const fixBtnLabel = p ? `${ico.plus || ''} 수정 작업 추가` : `${ico.external || ''} 터미널에 수정 지시`;
+        const issueHTML = issues.map((it, idx) => {
+          const sevBadge = it.severity === 'critical'
+            ? '<span class="badge lim">위험</span>'
+            : it.severity === 'warn'
+              ? '<span class="badge warn">주의</span>'
+              : '<span class="badge">정보</span>';
+          return `<div class="m-row" style="cursor:default">
+            <div class="m-row-main">
+              <div class="m-row-t" style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">${sevBadge}<span>${esc(it.title)}</span><span class="mono ums" style="margin:0">${esc(it.file)}:${it.line}</span></div>
+              <div class="m-row-s" style="white-space:normal">${esc(it.detail)}</div>
+            </div>
+            <div class="m-row-end">
+              <button type="button" class="btn-sm" data-fm-open-node="${esc(it.file)}">상세 보기</button>
+              <button type="button" class="primary btn-sm" data-fm-fix="${idx}">${fixBtnLabel}</button>
+            </div>
+          </div>`;
+        }).join('') || '<div class="empty" style="padding:24px 16px">감지된 보안·구조 이슈가 없습니다.</div>';
+
+        body = `<section class="sheet">
+          <div class="sheet-hd">
+            <h3>${ico.flask || ''} 코드 보안 · 구조 점검 <span class="badge ${scoreCls}">${score}점</span></h3>
+            <span class="ums" style="margin:0">시크릿 노출 · 인증 누락 · 비대 모듈 자동 진단</span>
+          </div>
+          <div>${issueHTML}</div>
+        </section>`;
+      }
+
+      host.innerHTML = `<div class="fm-wrap">${toolbar}${body}</div>`;
+
+      const srch = $('#fmSearchIn', host);
+      if (srch) {
+        srch.oninput = () => {
+          filterQuery = srch.value;
+          const pos = srch.selectionStart;
+          paint();
+          const nextIn = $('#fmSearchIn', host);
+          if (nextIn) { nextIn.focus(); try { nextIn.setSelectionRange(pos, pos); } catch {} }
+        };
+      }
+
+      const mapSrch = $('#fmMapSearchIn', host);
+      if (mapSrch) {
+        mapSrch.oninput = () => {
+          mapQuery = mapSrch.value;
+          const pos = mapSrch.selectionStart;
+          paint();
+          const nextIn = $('#fmMapSearchIn', host);
+          if (nextIn) { nextIn.focus(); try { nextIn.setSelectionRange(pos, pos); } catch {} }
+        };
+      }
+
+      const vp = $('#fmMapVp', host);
+      if (vp) {
+        requestAnimationFrame(() => drawMapEdges(mapSelectedId));
+        vp.onmousedown = (ev) => {
+          if (ev.button !== 0 || ev.target.closest('button, input')) return;
+          vp.classList.add('is-panning');
+          const sx = ev.clientX, sy = ev.clientY, sl = vp.scrollLeft, st = vp.scrollTop;
+          let moved = false;
+          const onMove = (m) => {
+            if (Math.abs(m.clientX - sx) > 3 || Math.abs(m.clientY - sy) > 3) moved = true;
+            vp.scrollLeft = sl - (m.clientX - sx);
+            vp.scrollTop = st - (m.clientY - sy);
+          };
+          const onUp = () => {
+            vp.classList.remove('is-panning');
+            window.removeEventListener('mousemove', onMove);
+            window.removeEventListener('mouseup', onUp);
+            if (!moved && mapSelectedId && !ev.target.closest('[data-fm-map-node]')) {
+              mapSelectedId = '';
+              paint();
+            }
+          };
+          window.addEventListener('mousemove', onMove);
+          window.addEventListener('mouseup', onUp);
+        };
+        vp.querySelectorAll('[data-fm-map-node]').forEach((btn) => {
+          btn.onmouseenter = () => { if (!mapSelectedId) drawMapEdges(btn.dataset.fmMapNode); };
+          btn.onmouseleave = () => { if (!mapSelectedId) drawMapEdges(''); };
+        });
       }
     };
 
-    const runQuery = (q) => {
-      const terms = String(q || '').toLowerCase().split(/\s+/).filter(Boolean);
-      if (!terms.length) return showNodeSummary([], '');
-      const hits = nodes.filter((n) => {
-        const hay = [
-          n.relPath, n.summary, n.layer,
-          ...n.endpoints.map((e) => `${e.method} ${e.path}`),
-          ...n.calls.map((c) => c.path),
-        ].join(' ').toLowerCase();
-        return terms.every((t) => hay.includes(t));
-      }).map((n) => n.id);
-      showNodeSummary(hits, `“${q.trim()}” 검색 결과`);
-    };
-
-    const applyZoom = (nextZoom) => {
-      zoom = Math.max(0.5, Math.min(1.4, Math.round(nextZoom * 20) / 20));
-      canvas.style.transform = zoom === 1 ? '' : `scale(${zoom})`;
-      canvas.style.transformOrigin = '0 0';
-      $('#fmZoomReset', host).textContent = `${Math.round(zoom * 100)}%`;
-    };
-    const fitToViewport = () => {
-      const vw = viewport.clientWidth || 1050;
-      if (maxX > vw - 16) applyZoom(Math.max(0.55, Math.min(1, (vw - 20) / maxX)));
-      else applyZoom(1);
-    };
-
-    drawEdges();
-    fitToViewport();
-
-    // Pan viewport
-    let pan = null;
-    viewport.addEventListener('pointerdown', (e) => {
-      if (e.target.closest('[data-fm-node]')) return;
-      pan = { x: e.clientX, y: e.clientY, sl: viewport.scrollLeft, st: viewport.scrollTop };
-      viewport.classList.add('is-panning');
-    });
-    window.addEventListener('pointermove', (e) => {
-      if (!pan) return;
-      viewport.scrollLeft = pan.sl - (e.clientX - pan.x);
-      viewport.scrollTop = pan.st - (e.clientY - pan.y);
-    });
-    window.addEventListener('pointerup', () => {
-      if (pan) { pan = null; viewport.classList.remove('is-panning'); }
-    });
-
-    askIn.addEventListener('input', () => runQuery(askIn.value));
-    clearBtn.onclick = () => { askIn.value = ''; showNodeSummary([], ''); };
-    $('#fmRescan', host).onclick = () => projectFloorplan(p, gen, previewCwd);
-    $('#fmPickDir', host).onclick = () => {
-      if (typeof openFolderPickerDialog === 'function') {
-        openFolderPickerDialog(previewCwd || p.cwd, (chosen) => projectFloorplan(p, gen, chosen));
-      }
-    };
-    $('#fmBackProjDir', host)?.addEventListener('click', () => projectFloorplan(p, gen, ''));
-    $('#fmHealthBadge', host).onclick = () => $('#fmHealthSheet', host)?.scrollIntoView({ behavior: 'smooth' });
-    $('#fmZoomOut', host).onclick = () => applyZoom(zoom - 0.1);
-    $('#fmZoomIn', host).onclick = () => applyZoom(zoom + 0.1);
-    $('#fmZoomReset', host).onclick = () => applyZoom(1);
-    $('#fmZoomFit', host).onclick = fitToViewport;
-
-    host.addEventListener('click', async (e) => {
-      const cardEl = e.target.closest('[data-fm-node]');
-      if (cardEl) {
-        showNodeSummary([cardEl.dataset.fmNode], '');
+    host.onclick = async (e) => {
+      const subBtn = e.target.closest('[data-fm-sub]');
+      if (subBtn) { subTab = subBtn.dataset.fmSub; paint(); return; }
+      const goSub = e.target.closest('[data-fm-go-sub]');
+      if (goSub) { subTab = goSub.dataset.fmGoSub; paint(); return; }
+      const fBtn = e.target.closest('[data-fm-filt]');
+      if (fBtn) { filterLayer = fBtn.dataset.fmFilt; paint(); return; }
+      const scopeBtn = e.target.closest('[data-fm-map-scope]');
+      if (scopeBtn) { mapScope = scopeBtn.dataset.fmMapScope; paint(); return; }
+      if (e.target.closest('#fmMapClearSel')) { mapSelectedId = ''; paint(); return; }
+      if (e.target.closest('#fmMapZoomIn')) { mapZoom = Math.min(1.4, +(mapZoom + 0.1).toFixed(2)); paint(); return; }
+      if (e.target.closest('#fmMapZoomOut')) { mapZoom = Math.max(0.65, +(mapZoom - 0.1).toFixed(2)); paint(); return; }
+      if (e.target.closest('#fmMapZoomReset')) { mapZoom = 1; paint(); return; }
+      if (e.target.closest('#fmMapFit')) {
+        const vp = $('#fmMapVp', host);
+        const colsEl = $('.fm-map-cols', host);
+        if (vp && colsEl) {
+          const needW = colsEl.scrollWidth + 48;
+          mapZoom = Math.max(0.65, Math.min(1, +(vp.clientWidth / Math.max(1, needW)).toFixed(2)));
+          paint();
+        }
         return;
       }
-      const focusBtn = e.target.closest('[data-fm-focus]');
-      if (focusBtn) {
-        const fid = focusBtn.dataset.fmFocus;
-        showNodeSummary([fid], '');
-        nodeEls.get(fid)?.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
+      const mapNodeBtn = e.target.closest('[data-fm-map-node]');
+      if (mapNodeBtn) {
+        const nid = mapNodeBtn.dataset.fmMapNode;
+        if (mapSelectedId === nid) {
+          const n = nodes.find((x) => x.id === nid);
+          if (n) openNodeDetailDrawer(n, nodes, edges, p, termCtx, fp, activeCwd);
+        } else {
+          mapSelectedId = nid;
+          paint();
+        }
+        return;
+      }
+      if (e.target.closest('#fmRescan')) return renderFloorplanInto({ host, p, cwd, gen, previewCwd, termCtx });
+      if (e.target.closest('#fmBackProjDir')) return renderFloorplanInto({ host, p, cwd, gen, previewCwd: '', termCtx });
+      if (e.target.closest('#fmPickDir')) {
+        if (typeof openFolderPickerDialog === 'function') {
+          openFolderPickerDialog(activeCwd, (chosen) => renderFloorplanInto({ host, p, cwd, gen, previewCwd: chosen, termCtx }));
+        }
+        return;
+      }
+      if (e.target.closest('#fmCopyMd')) {
+        const mdText = buildArchitectureMarkdown(fp, p, activeCwd);
+        await copyText(mdText);
+        toast('실무자 공유용 마크다운 아키텍처 보고서를 클립보드에 복사했습니다');
+        return;
+      }
+      if (e.target.closest('#fmDownloadMd')) {
+        const mdText = buildArchitectureMarkdown(fp, p, activeCwd);
+        const blob = new Blob([mdText], { type: 'text/markdown;charset=utf-8' });
+        const a = document.createElement('a');
+        const slug = (p?.name || base(activeCwd) || 'architecture').replace(/[^a-zA-Z0-9가-힣_-]+/g, '-');
+        a.href = URL.createObjectURL(blob);
+        a.download = `${slug}-floorplan-report.md`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1500);
+        toast(`산출물 저장 완료: ${a.download}`);
+        return;
+      }
+      const openNodeEl = e.target.closest('[data-fm-open-node]');
+      if (openNodeEl) {
+        const nid = openNodeEl.dataset.fmOpenNode;
+        const n = nodes.find((x) => x.id === nid);
+        if (n) openNodeDetailDrawer(n, nodes, edges, p, termCtx, fp, activeCwd);
         return;
       }
       const fixBtn = e.target.closest('[data-fm-fix]');
       if (fixBtn) {
         const it = issues[Number(fixBtn.dataset.fmFix)];
         if (!it) return;
+        if (!p) {
+          if (termCtx?.onInsertPrompt) termCtx.onInsertPrompt(it.fixPrompt, true);
+          else await copyText(it.fixPrompt);
+          return;
+        }
         fixBtn.disabled = true;
         try {
           const newTask = {
@@ -427,13 +704,7 @@
             kind: it.severity === 'critical' || /보안|인증/.test(it.title) ? 'dev' : 'test',
             title: `[점검 수정] ${it.title}`,
             detail: `${it.detail}\n\n[수정 지시]\n${it.fixPrompt}`,
-            agent: '',
-            account: null,
-            model: '',
-            effort: '',
-            parentId: '',
-            termId: '',
-            after: [],
+            agent: '', account: null, model: '', effort: '', parentId: '', termId: '', after: [],
           };
           await saveProject({ ...p, tasks: [...p.tasks, newTask] }, 'design');
           toast(`수정 작업 카드를 추가했습니다: ${newTask.title}`);
@@ -441,8 +712,22 @@
           if (fixBtn.isConnected) fixBtn.disabled = false;
         }
       }
-    });
+    };
+
+    paint();
+  }
+
+  function projectFloorplan(p, gen, previewCwd = '') {
+    return renderFloorplanInto({ host: $('#projectContent'), p, cwd: p?.cwd || '', gen, previewCwd });
+  }
+
+  function renderStandaloneFloorplan(cwd, gen, termCtx = null) {
+    const view = $('#view');
+    if (!view) return;
+    view.innerHTML = '<div class="page-wrap" id="standaloneFloorplanHost"></div>';
+    return renderFloorplanInto({ host: $('#standaloneFloorplanHost', view), p: null, cwd, gen, termCtx });
   }
 
   window.projectFloorplan = projectFloorplan;
+  window.renderStandaloneFloorplan = renderStandaloneFloorplan;
 })();
