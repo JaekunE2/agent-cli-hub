@@ -178,19 +178,22 @@ function openFolderPickerDialog(initialPath, onPick) {
   const winBtn = $('#fpWinBtn', d);
   if (winBtn) {
     winBtn.onclick = async () => {
+      if (winBtn.disabled) return;
       winBtn.disabled = true;
-      const prev = winBtn.textContent;
+      const prevHTML = winBtn.innerHTML;
       winBtn.textContent = '탐색기 열림…';
       try {
         const r = await api('/api/fs/pick-dir', { method: 'POST', body: { path: pathIn.value.trim() || curPath } });
         if (r.ok && r.path) {
           d.close();
           onPick(r.path);
+        } else if (r?.error) {
+          toast(r.error, 4000, 'danger');
         }
       } catch (e) {
         toast(e.message, 4000, 'danger');
       } finally {
-        if (winBtn.isConnected) { winBtn.disabled = false; winBtn.textContent = prev; }
+        if (winBtn.isConnected) { winBtn.disabled = false; winBtn.innerHTML = prevHTML; }
       }
     };
   }
@@ -361,8 +364,9 @@ function projectForm(p) {
   const winBtn = $('#btnWinProjDir', dialog);
   if (winBtn) {
     winBtn.onclick = async () => {
+      if (winBtn.disabled) return;
       winBtn.disabled = true;
-      const prev = winBtn.textContent;
+      const prevHTML = winBtn.innerHTML;
       winBtn.textContent = '열림…';
       try {
         const r = await api('/api/fs/pick-dir', { method: 'POST', body: { path: cwdIn.value.trim() } });
@@ -372,11 +376,13 @@ function projectForm(p) {
           cwdIn.value = r.path;
           if (nameIn && !nameIn.value.trim()) nameIn.value = base(r.path) || '';
           scheduleInspect();
+        } else if (r?.error) {
+          toast(r.error, 4000, 'danger');
         }
       } catch (e) {
         toast(e.message, 4000, 'danger');
       } finally {
-        if (winBtn.isConnected) { winBtn.disabled = false; winBtn.textContent = prev; }
+        if (winBtn.isConnected) { winBtn.disabled = false; winBtn.innerHTML = prevHTML; }
       }
     };
   }

@@ -25,6 +25,7 @@ const { scanFloorplan } = require('./workspace-floorplan');
 const { runTaskSubChatTurn } = require('./task-subchat');
 const { deleteCliRecord, uuid: recordUuid } = require('./delete-cli-record');
 const { ownedRoots, verifiedRoot, probeRoot, stopTerminal } = require('./project-stop');
+const { pickDirectory } = require('./win-folder-picker');
 let projectPlanning = false;
 let projectPlanState = { active: false, agent: '', name: '', startedAt: 0, stage: '', pct: 0, logs: [] };
 const taskChatActive = new Map(); // `${projectId}:${taskId}` -> { chatId, agent, stage, startedAt, logs }
@@ -1850,25 +1851,17 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/fs/pick-dir' && req.method === 'POST') {
       const b = await body(req);
-      const initDir = (b.path && path.isAbsolute(b.path) && fs.existsSync(b.path)) ? path.resolve(b.path) : path.resolve(__dirname, '..', '..');
-      const psScript = [
-        '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);',
-        'Add-Type -AssemblyName System.Windows.Forms;',
-        '$owner = New-Object System.Windows.Forms.Form;',
-        '$owner.TopMost = $true;',
-        '$d = New-Object System.Windows.Forms.FolderBrowserDialog;',
-        '$d.Description = "작업할 프로젝트 폴더를 선택하세요";',
-        `$d.SelectedPath = ${JSON.stringify(initDir)};`,
-        '$d.ShowNewFolderButton = $true;',
-        'if ($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $d.SelectedPath }',
-        '$owner.Dispose();',
-      ].join(' ');
-      const picked = await new Promise((resolve) => {
-        execFile('powershell.exe', ['-NoProfile', '-Sta', '-Command', psScript], { timeout: 120_000, windowsHide: true }, (err, stdout) => {
-          resolve(err ? '' : String(stdout || '').trim());
-        });
+      const result = await pickDirectory({
+        initialPath: b.path,
+        fallbackDir: path.resolve(__dirname, '..', '..'),
+        title: '작업할 프로젝트 폴더를 선택하세요',
       });
-      return send(res, 200, { ok: !!picked, path: picked || null });
+      return send(res, 200, {
+        ok: result.ok,
+        path: result.path || null,
+        cancelled: !!result.cancelled,
+        ...(result.error ? { error: result.error } : {}),
+      });
     }
     if (p === '/api/projects/cli-options' && req.method === 'GET') {
       return send(res, 200, { options: projectCliOptions() });
