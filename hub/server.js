@@ -2417,6 +2417,19 @@ const server = http.createServer(async (req, res) => {
       if (launchAccount?.switchAgySwap) {
         try { await ensureAgySwap(launchAccount); }
         catch (e) { return send(res, 502, { error: `Antigravity 계정 전환 실패: ${e.message}` }); }
+      } else if (b.kind === 'agy' && !launchAccount?.account && agySwap.available()) {
+        const activeSwap = (agySwap.getFast().accounts || []).find((a) => a.active);
+        if (activeSwap) {
+          launchAccount = {
+            ...launchAccount,
+            account: {
+              id: activeSwap.id,
+              label: activeSwap.name ? `${activeSwap.name} (${activeSwap.email})` : activeSwap.email,
+              kind: 'agy',
+              email: activeSwap.email,
+            },
+          };
+        }
       }
       const t = createTerm({ cwd, cmd, args, title: b.title || title, ...(codexStart || {}), ...launchAccount, projectTask, projectPrompt });
       if (projectTask) {
@@ -2446,10 +2459,20 @@ const server = http.createServer(async (req, res) => {
       if (!agySwap.available()) return send(res, 400, { error: 'agy-swap이 설치되어 있지 않습니다.' });
       try {
         const resSwap = await agySwap.switchTo(b.account);
-        if (resSwap.account?.email) agyQuota.noteAccount(resSwap.account.email);
+        const targetEmail = resSwap.account?.email || String(b.account || '').replace(/^agyswap:/i, '').trim();
+        if (targetEmail) agyQuota.noteAccount(targetEmail);
         agyQuota.refresh({ force: true }).catch(() => {});
+        const restartedTerms = [];
+        if (b.restartOpen && targetEmail) {
+          const openAgy = [...terms.values()].filter((tm) => tm.exited === null && isAgyTerm(tm) && tm.account?.email?.toLowerCase() !== targetEmail.toLowerCase());
+          for (const tm of openAgy) {
+            const oldId = tm.id;
+            const sw = await switchAccount({ termId: oldId, account: `agyswap:${targetEmail}`, skip: true, interrupt: true });
+            if (sw?.ok && sw.term) restartedTerms.push({ oldId, newId: sw.term.id, label: sw.term.title });
+          }
+        }
         overviewStale();
-        return send(res, 200, resSwap);
+        return send(res, 200, { ...resSwap, restartedTerms });
       } catch (e) {
         return send(res, 400, { error: `Antigravity 계정 전환 실패: ${e.message}` });
       }

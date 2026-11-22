@@ -2481,15 +2481,29 @@ function agyResetDetail(iso, fallbackText) {
 }
 async function switchAgyAccount(email, btn = null) {
   if (!email) return false;
+  const openAgy = (state.terms || []).filter((t) => t.exited === null && t.agy && t.account?.email?.toLowerCase() !== email.toLowerCase());
+  let restartOpen = false;
+  if (openAgy.length) {
+    const promptMsg = isEnUI()
+      ? `Also restart ${openAgy.length} open Antigravity terminal(s) with ${email}? (Conversations will resume cleanly; Cancel keeps existing terminals on their current session.)`
+      : `열려 있는 Antigravity 터미널 ${openAgy.length}개도 ${email} 계정으로 대화를 이어서 전환할까요?\n(확인: 대화 유지한 채 새 계정으로 재개 · 취소: 이후 새 터미널부터 적용)`;
+    restartOpen = confirm(promptMsg);
+  }
   const prev = btn?.innerHTML;
   if (btn) { btn.disabled = true; btn.textContent = '전환 중…'; }
   try {
-    const r = await api('/api/agy/swap', { method: 'POST', body: { account: email } });
+    const r = await api('/api/agy/swap', { method: 'POST', body: { account: email, restartOpen } });
     if (r.error) throw new Error(r.error);
     if (Array.isArray(r.accounts)) state.agySwapAccounts = r.accounts;
-    toast(`Antigravity 활성 계정을 ${email}로 전환했습니다. 새 터미널부터 적용됩니다.`);
+    const replaced = (r.restartedTerms || []).find((x) => state.sel.kind === 'term' && String(state.sel.id) === String(x.oldId));
+    const swCount = r.restartedTerms?.length || 0;
+    const doneMsg = isEnUI()
+      ? (swCount ? `Switched to ${email} and resumed ${swCount} terminal(s).` : `Switched active Antigravity account to ${email} — new terminals will use it.`)
+      : (swCount ? `${email} 계정으로 전환하고 기존 터미널 ${swCount}개를 이어서 재시작했습니다.` : `Antigravity 활성 계정을 ${email}로 전환했습니다. 새 터미널부터 적용됩니다.`);
+    toast(doneMsg);
     paintBrandStatus();
-    await refreshUsage(true);
+    await Promise.all([refreshOverview(), refreshUsage(true)]);
+    if (replaced) select({ kind: 'term', id: replaced.newId });
     return true;
   } catch (err) {
     toast(err.message, 6000, 'danger');
