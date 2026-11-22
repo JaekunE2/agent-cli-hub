@@ -42,7 +42,7 @@ let booted = false;
 const state = {
   sel: { kind: 'home' }, tab: 'screen', showHidden: false, favs: new Set(), showDesktop: (() => { try { return !!localStorage.getItem('ccd-show-desktop'); } catch { return false; } })(),
   live: [], consoles: [], terms: [], recent: [], projects: [], err: null,
-  usage: null, research: [], gpu: null,
+  usage: null, research: [], gpu: null, services: null, hubDown: false,
   termFilter: '', termsTab: 'active', termsView: 'cards', recentQuery: '', sysTab: 'usage',
   usageFilter: 'all', usageSort: 'headroom-desc', gpuTab: 'queue', rActSub: 'timeline',
   filter: '', sideFilter: '', search: { q: '', role: 'all', cwd: '', auto: false, screens: true },
@@ -51,9 +51,155 @@ const state = {
   notifyEnabled: (() => { try { return localStorage.getItem('ach-notify') === '1'; } catch { return false; } })(),
 };
 const prevTermStates = new Map();
+let lastFaviconKey = '';
+function updateDynamicFavicon(tone) {
+  const dotMap = { ok: '#4ade80', warn: '#fbbf24', down: '#f87171' };
+  const dot = dotMap[tone] || dotMap.ok;
+  const unread = state.unreadTerms.size;
+  const key = `${tone}:${unread > 0 ? 1 : 0}`;
+  if (key === lastFaviconKey) return;
+  lastFaviconKey = key;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">`
+    + `<rect width="64" height="64" rx="14" fill="#1f1f23"/>`
+    + `<rect x="8" y="10" width="21" height="17" rx="3" fill="#e0825f"/>`
+    + `<rect x="35" y="10" width="21" height="17" rx="3" fill="#5cc07c"/>`
+    + `<rect x="8" y="33" width="21" height="17" rx="3" fill="#e0b050"/>`
+    + `<rect x="35" y="33" width="21" height="17" rx="3" fill="#9a9890"/>`
+    + `<circle cx="50" cy="50" r="13" fill="#1f1f23"/>`
+    + `<circle cx="50" cy="50" r="9.5" fill="${dot}"/>`
+    + (unread > 0 ? `<circle cx="14" cy="14" r="9" fill="#3b82f6" stroke="#1f1f23" stroke-width="3"/>` : '')
+    + `</svg>`;
+  const link = document.querySelector('link[rel="icon"]');
+  if (link) link.href = `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}
+function computeHubHealth() {
+  const hubOk = !state.hubDown;
+  const srv = state.services || {};
+  const usageOk = hubOk && (srv.usage ? !!srv.usage.ok : (state.usage ? !!state.usage.available : true));
+  const ptyOk = hubOk && (srv.ptyHost ? !!srv.ptyHost.ok : true);
+  const agyOk = hubOk && !!(state.agyQuota?.groups?.length || srv.agyQuota?.ok);
+  const tone = !hubOk ? 'down' : (!usageOk || !ptyOk) ? 'warn' : 'ok';
+  return { hubOk, usageOk, ptyOk, agyOk, tone };
+}
+function paintBrandStatus() {
+  const { hubOk, usageOk, ptyOk, tone } = computeHubHealth();
+  updateDynamicFavicon(tone);
+  for (const [markId, ledId, subId] of [['brandMark', 'brandLed', 'brandSub'], ['mBrandMark', 'mBrandLed', 'mBrandSub']]) {
+    const mark = document.getElementById(markId);
+    const led = document.getElementById(ledId);
+    const sub = document.getElementById(subId);
+    if (mark) mark.className = `brand-mark st-${tone}`;
+    if (led) led.className = `brand-led${tone === 'ok' ? '' : ' ' + tone}`;
+    if (sub) {
+      sub.innerHTML = !hubOk
+        ? `<span class="srv-pip down"><i></i>허브 연결 끊김</span>`
+        : `<span class="srv-pip ${ptyOk ? 'ok' : 'warn'}"><i></i>허브 ON</span><span>·</span><span class="srv-pip ${usageOk ? 'ok' : 'warn'}"><i></i>사용량 ${usageOk ? 'ON' : 'OFF'}</span>`;
+    }
+  }
+  const btn = document.getElementById('brandHome');
+  if (btn) {
+    btn.title = !hubOk
+      ? '허브 서버(7777)와 연결이 끊어졌습니다 (클릭해 상태 확인)'
+      : `허브 서버(7777): 실행 중 · AI 사용량 서버(4777): ${usageOk ? '실행 중' : '꺼짐 — 클릭하여 켜기'}`;
+  }
+  const pop = document.getElementById('srvStatusPop');
+  if (pop) paintServerStatusPopover(pop);
+}
+function paintServerStatusPopover(pop) {
+  const { hubOk, usageOk, ptyOk, agyOk } = computeHubHealth();
+  const srv = state.services || {};
+  const activeTerms = (state.terms || []).filter((t) => t.exited === null).length;
+  const busyTerms = (state.terms || []).filter((t) => termStateOf(t) === 'busy').length;
+  pop.innerHTML = `
+    <div class="srv-pop-hd">
+      <span>서버 및 연동 상태</span>
+      <span class="badge ${hubOk && usageOk ? 'ok' : !hubOk ? 'lim' : 'warn'}">${!hubOk ? '연결 끊김' : usageOk ? '정상 가동' : '일부 꺼짐'}</span>
+    </div>
+    <div class="srv-row">
+      <div class="srv-row-l"><span class="dot ${hubOk ? 'idle' : 'dead'}" style="${hubOk ? '' : 'border-color:var(--danger);background:var(--danger)'}"></span><div><b>허브 서버 (:7777)</b><div class="srv-row-sub">${hubOk ? `실행 중 · 터미널 ${activeTerms}개 (작업 중 ${busyTerms})` : '오프라인 — start.bat 또는 ccd up 실행'}</div></div></div>
+      <span class="badge ${hubOk ? 'ok' : 'lim'}">${hubOk ? 'ON' : 'OFF'}</span>
+    </div>
+    <div class="srv-row">
+      <div class="srv-row-l"><span class="dot ${ptyOk ? 'idle' : 'busy'}"></span><div><b>터미널 호스트 (PTY)</b><div class="srv-row-sub">${ptyOk ? `정상 연결됨${srv.ptyHost?.pid ? ` (PID ${srv.ptyHost.pid})` : ''}` : '재연결 대기 중'}</div></div></div>
+      <span class="badge ${ptyOk ? 'ok' : 'warn'}">${ptyOk ? 'ON' : 'WAIT'}</span>
+    </div>
+    <div class="srv-row">
+      <div class="srv-row-l"><span class="dot ${usageOk ? 'idle' : 'busy'}"></span><div><b>AI 사용량 서버 (:4777)</b><div class="srv-row-sub">${usageOk ? 'Claude · Codex 한도 실시간 연동 중' : '꺼져 있음 — 아래 버튼으로 즉시 시작'}</div></div></div>
+      ${usageOk
+        ? '<span class="badge ok">ON</span>'
+        : '<button type="button" class="primary btn-sm" id="btnStartUsageSrv">지금 켜기</button>'}
+    </div>
+    <div class="srv-row">
+      <div class="srv-row-l"><span class="dot ${agyOk ? 'idle' : 'dead'}"></span><div><b>Antigravity 쿼터</b><div class="srv-row-sub">${esc(state.agyQuota?.account || srv.agyQuota?.account || (state.agyRefreshing ? '조회 중…' : '대기 중'))}</div></div></div>
+      <span class="badge ${agyOk ? 'ok' : ''}">${agyOk ? 'ON' : 'READY'}</span>
+    </div>
+    <div class="row" style="justify-content:space-between;padding-top:6px;border-top:1px solid var(--line);gap:6px">
+      <button type="button" class="btn-sm" id="btnPopHome">${ICO.home} 홈으로</button>
+      <div class="row" style="gap:4px">
+        <button type="button" class="btn-sm" id="btnPopTray" title="Windows 작업 표시줄 트레이에 허브 상태 아이콘 띄우기">트레이 아이콘</button>
+        <button type="button" class="btn-sm" id="btnPopUsage">${ICO.chart} 사용량 보기</button>
+      </div>
+    </div>`;
+  const startBtn = pop.querySelector('#btnStartUsageSrv');
+  if (startBtn) {
+    startBtn.onclick = async (e) => {
+      e.stopPropagation();
+      startBtn.disabled = true;
+      startBtn.textContent = '시작 중…';
+      try {
+        const r = await api('/api/services/usage/start', { method: 'POST', body: {} });
+        if (!r.ok) throw new Error(r.error || '시작 실패');
+        toast('AI 사용량 서버(:4777)를 시작했습니다');
+        await Promise.all([refreshOverview(), refreshUsage(true)]);
+      } catch (er) {
+        toast(er.message, 5000, 'danger');
+        if (startBtn.isConnected) { startBtn.disabled = false; startBtn.textContent = '지금 켜기'; }
+      }
+    };
+  }
+  const homeBtn = pop.querySelector('#btnPopHome');
+  if (homeBtn) homeBtn.onclick = () => { pop.remove(); select({ kind: 'home' }); };
+  const usageBtn = pop.querySelector('#btnPopUsage');
+  if (usageBtn) usageBtn.onclick = () => { pop.remove(); select({ kind: 'usage' }); };
+  const trayBtn = pop.querySelector('#btnPopTray');
+  if (trayBtn) {
+    trayBtn.onclick = async () => {
+      trayBtn.disabled = true;
+      await api('/api/services/tray', { method: 'POST', body: {} }).catch(() => {});
+      toast('Windows 작업 표시줄 트레이에 허브 상태 아이콘을 실행했습니다');
+      trayBtn.disabled = false;
+    };
+  }
+}
+function toggleServerStatusPopover(anchor) {
+  const existing = document.getElementById('srvStatusPop');
+  if (existing) { existing.remove(); return; }
+  const pop = document.createElement('div');
+  pop.id = 'srvStatusPop';
+  pop.className = 'srv-pop';
+  paintServerStatusPopover(pop);
+  document.body.appendChild(pop);
+  if (anchor) {
+    const r = anchor.getBoundingClientRect();
+    pop.style.top = `${Math.round(r.bottom + 6)}px`;
+    pop.style.left = `${Math.max(8, Math.round(r.left))}px`;
+  }
+  const onDoc = (e) => {
+    if (pop.contains(e.target) || anchor?.contains(e.target)) return;
+    document.removeEventListener('click', onDoc, true);
+    pop.remove();
+  };
+  setTimeout(() => document.addEventListener('click', onDoc, true), 0);
+}
 function updateDocTitle() {
   const n = state.unreadTerms.size;
-  document.title = n ? `(${n}) Agent CLI Hub` : 'Agent CLI Hub';
+  const { hubOk } = computeHubHealth();
+  document.title = !hubOk
+    ? '⚠ [연결 끊김] Agent CLI Hub'
+    : n
+      ? `(${n}) Agent CLI Hub`
+      : 'Agent CLI Hub';
+  paintBrandStatus();
 }
 async function refreshProjects() {
   try {
@@ -145,11 +291,14 @@ function paintActiveTermStatus() {
 async function refreshOverview() {
   try {
     const o = await api('/api/overview');
-    Object.assign(state, { live: o.live || [], consoles: o.consoles || [], terms: o.terms || [], err: o.consoleError || null });
+    Object.assign(state, { live: o.live || [], consoles: o.consoles || [], terms: o.terms || [], err: o.consoleError || null, services: o.services || state.services, hubDown: false });
     if (Array.isArray(o.favs)) state.favs = new Set(o.favs);
     state.disk = o.disk || null;
     state.consolesOff = !!o.consolesOff;
-  } catch (e) { state.err = e.message; }
+  } catch (e) {
+    state.err = e.message;
+    state.hubDown = true;
+  }
 
   // Detect busy → idle / exited transitions for subtle completion indicator & notification
   const aliveIds = new Set();
@@ -2056,6 +2205,7 @@ async function refreshUsage(force) {
       }, 4500);
     }
   }
+  paintBrandStatus();
   renderSide();
   refreshHomeWidgets();
   if (state.sel.kind === 'usage') paintUsage();
@@ -2298,7 +2448,34 @@ function paintUsage() {
     <button class="ghost icon-btn btn-sm" id="uMore" aria-label="AI 사용량 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`;
   const sysTop = systemTopHTML('usage', sysActs);
   if (!u) { $('#view').innerHTML = `<div class="sys-shell">${sysTop}<div class="sys-body"><div class="page-wrap"><div class="empty">불러오는 중…</div></div></div></div>`; return; }
-  if (!u.available) { $('#view').innerHTML = `<div class="sys-shell">${sysTop}<div class="sys-body"><div class="page-wrap"><div class="err" style="padding:0">${esc(u.error)}<br><br>AI 사용량 대시보드(기본 127.0.0.1:4777)가 꺼져 있습니다. 설치 폴더의 start.bat 또는 ai-usage-dashboard를 실행하세요.</div></div></div></div>`; return; }
+  if (!u.available) {
+    $('#view').innerHTML = `<div class="sys-shell">${sysTop}<div class="sys-body"><div class="page-wrap"><div class="h-empty-card" style="align-items:flex-start;text-align:left;gap:10px">
+      <div class="row" style="gap:8px"><span class="dot busy"></span><b style="font-size:15px">AI 사용량 서버(127.0.0.1:4777)가 현재 꺼져 있습니다</b></div>
+      <div class="ums" style="margin:0">${esc(u.error || 'AI 사용량 대시보드에 연결할 수 없습니다.')}</div>
+      <div class="row" style="gap:8px;margin-top:4px">
+        <button class="primary" id="btnUsageStartNow">${ICO.play} 사용량 서버 지금 켜기</button>
+        <button id="btnUsageRetry">${ICO.refresh} 다시 확인</button>
+      </div>
+    </div></div></div></div>`;
+    const sb = $('#btnUsageStartNow');
+    if (sb) {
+      sb.onclick = async () => {
+        sb.disabled = true; sb.textContent = '서버 시작 중…';
+        try {
+          const r = await api('/api/services/usage/start', { method: 'POST', body: {} });
+          if (!r.ok) throw new Error(r.error || '시작 실패');
+          toast('AI 사용량 서버(:4777)를 시작했습니다');
+          await Promise.all([refreshOverview(), refreshUsage(true)]);
+        } catch (er) {
+          toast(er.message, 5000, 'danger');
+          if (sb.isConnected) { sb.disabled = false; sb.innerHTML = `${ICO.play} 사용량 서버 지금 켜기`; }
+        }
+      };
+    }
+    const rb = $('#btnUsageRetry');
+    if (rb) rb.onclick = () => refreshUsage(true);
+    return;
+  }
 
   const allAccs = u.accounts || [];
   const hasAgy = !!(state.agyQuota?.groups?.length);
@@ -3712,8 +3889,14 @@ function cycleTheme() {
 }
 applyTheme((() => { try { return localStorage.getItem('ach-theme') || 'system'; } catch { return 'system'; } })());
 
-$('#brandHome').onclick = () => select({ kind: 'home' });
-$('#mBrandHome').onclick = () => select({ kind: 'home' });
+$('#brandHome').onclick = (e) => {
+  e.stopPropagation();
+  toggleServerStatusPopover(e.currentTarget);
+};
+$('#mBrandHome').onclick = (e) => {
+  e.stopPropagation();
+  toggleServerStatusPopover(e.currentTarget);
+};
 $('#btnSideNew').onclick = () => openNewTermDrawer();
 $('#mBtnNew').onclick = () => openNewTermDrawer();
 $('#btnSideCollapse').onclick = () => setSideCollapsed(true);

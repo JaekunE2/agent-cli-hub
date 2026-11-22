@@ -310,7 +310,15 @@ async function buildOverview() {
     projectId: t.projectTask.projectId, taskId: t.projectTask.taskId, sessionId: t.sessionId,
     agent: t.agent, accountId: t.account?.id, tokens: index.get(t.sessionId)?.tokens,
   })));
-  return { live, consoles, terms: termsOut, consoleError: cons.error, favs: liveFavs(), disk: diskLow, consolesOff: CONFIG.consoles === false };
+  const usageUp = await checkUsageServer();
+  const services = {
+    hub: { ok: true, port: PORT, pid: process.pid },
+    ptyHost: { ok: !!ptyHostPid && pidAlive(ptyHostPid), pid: ptyHostPid || null },
+    usage: { ok: usageUp, url: USAGE_URL, hasLocalServer: fs.existsSync(path.join(USAGE_DIR, 'server.js')) },
+    agyQuota: { ok: !!agyQuota.get(), refreshing: agyQuota.getFast().refreshing, account: agyQuota.get()?.account || null },
+    helper: { ok: !helperMissing, error: helperMissing || null },
+  };
+  return { live, consoles, terms: termsOut, consoleError: cons.error, favs: liveFavs(), disk: diskLow, consolesOff: CONFIG.consoles === false, services };
 }
 
 function projectRecord(t) {
@@ -964,7 +972,69 @@ function saveUpload(req, name) {
 // Relayed read-only and whitelisted: meters/plan/notes only, never tokens or file paths,
 // so it is safe to show on the phone. Cached briefly; 4777 has its own provider caching.
 const USAGE_URL = process.env.CCD_USAGE_URL || CONFIG.usageUrl || 'http://127.0.0.1:4777';
+const USAGE_DIR = (() => {
+  const localDir = path.resolve(__dirname, '..', 'ai-usage');
+  return process.env.CCD_USAGE_DIR || (CONFIG.usageDir && path.resolve(__dirname, CONFIG.usageDir)) || (fs.existsSync(localDir) ? localDir : path.join(os.homedir(), 'ai-usage-dashboard'));
+})();
 let usageCache = { at: 0, data: null };
+let usageServerUp = false, usageCheckAt = 0;
+async function checkUsageServer(force = false) {
+  if (!force && Date.now() - usageCheckAt < 5000) return usageServerUp;
+  usageCheckAt = Date.now();
+  try {
+    const u = new URL(USAGE_URL);
+    const port = Number(u.port) || 4777;
+    const host = u.hostname || '127.0.0.1';
+    usageServerUp = await new Promise((resolve) => {
+      const sock = require('net').createConnection({ host, port });
+      const done = (ok) => { try { sock.destroy(); } catch {} resolve(ok); };
+      sock.setTimeout(350, () => done(false));
+      sock.once('connect', () => done(true));
+      sock.once('error', () => done(false));
+    });
+  } catch { usageServerUp = false; }
+  return usageServerUp;
+}
+async function startUsageServer() {
+  if (await checkUsageServer(true)) return { ok: true, alreadyRunning: true, url: USAGE_URL };
+  const entry = path.join(USAGE_DIR, 'server.js');
+  if (!fs.existsSync(entry)) {
+    return { ok: false, error: `AI 사용량 서버 파일(${entry})을 찾을 수 없습니다.` };
+  }
+  try {
+    spawn(process.execPath, ['--no-warnings', '--use-system-ca', entry], {
+      cwd: USAGE_DIR,
+      detached: true,
+      windowsHide: true,
+      stdio: 'ignore',
+    }).unref();
+  } catch (e) {
+    return { ok: false, error: `AI 사용량 서버 시작 실패: ${e.message}` };
+  }
+  for (let i = 0; i < 16; i++) {
+    await sleep(250);
+    if (await checkUsageServer(true)) {
+      usageCache = { at: 0, data: null };
+      overviewStale();
+      return { ok: true, started: true, url: USAGE_URL };
+    }
+  }
+  return { ok: false, error: `AI 사용량 서버(${USAGE_URL})가 시작되었으나 응답하지 않습니다.` };
+}
+function ensureTrayMonitor() {
+  if (process.platform !== 'win32') return false;
+  const trayScript = path.resolve(__dirname, '..', 'tray.ps1');
+  if (!fs.existsSync(trayScript)) return false;
+  try {
+    spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', trayScript], {
+      cwd: path.dirname(trayScript),
+      detached: true,
+      windowsHide: true,
+      stdio: 'ignore',
+    }).unref();
+    return true;
+  } catch { return false; }
+}
 async function aiUsage(force) {
   if (!force && usageCache.data && Date.now() - usageCache.at < 60_000) return usageCache.data;
   try {
@@ -990,9 +1060,6 @@ async function aiUsage(force) {
 // Candidates = this PC's Claude Code login ("default", no env override) + claude-token
 // accounts registered in ai-usage-dashboard. Tokens stay server-side; the child claude
 // gets CLAUDE_CODE_OAUTH_TOKEN. Transcripts live in ~/.claude either way, so --resume works.
-const USAGE_DIR = process.env.CCD_USAGE_DIR
-  || (CONFIG.usageDir && path.resolve(__dirname, CONFIG.usageDir))
-  || (fs.existsSync(path.resolve(__dirname, '..', 'ai-usage')) ? path.resolve(__dirname, '..', 'ai-usage') : path.join(os.homedir(), 'ai-usage-dashboard'));
 function readUsageAccounts() {
   try { return JSON.parse(fs.readFileSync(path.join(USAGE_DIR, 'accounts.json'), 'utf8')).accounts || []; } catch { return []; }
 }
@@ -1969,6 +2036,14 @@ const server = http.createServer(async (req, res) => {
       return send(res, 405, { error: 'method not allowed' });
     }
     if (p === '/api/overview') return send(res, 200, await overviewSnapshot());
+    if (p === '/api/services/usage/start' && req.method === 'POST') {
+      const r = await startUsageServer();
+      return send(res, r.ok ? 200 : 502, r);
+    }
+    if (p === '/api/services/tray' && req.method === 'POST') {
+      const ok = ensureTrayMonitor();
+      return send(res, 200, { ok });
+    }
     // sidebar favorites, shared by every device that opens the dashboard: "sid:<session id>" or "term:<id>"
     if (p === '/api/favorites' && req.method === 'POST') {
       const b = await body(req);
@@ -2399,6 +2474,7 @@ function makeCalendar() {
 let calendarMod = makeCalendar();
 if (watchdogOn) {
   calendarMod.start();
+  ensureTrayMonitor();
   setTimeout(() => { if (agyQuota.ageMs() >= 180_000) agyQuota.refresh({ force: true }).catch(() => {}); }, 3000).unref();
   setInterval(() => { if (agyQuota.ageMs() >= 4 * 60_000) agyQuota.refresh({ force: true }).catch(() => {}); }, 5 * 60_000).unref();
 }
