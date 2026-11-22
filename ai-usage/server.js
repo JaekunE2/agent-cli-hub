@@ -657,8 +657,8 @@ function loadAgyCard() {
     if (!q?.groups?.length) return null;
     const meters = [];
     for (const g of q.groups) {
-      if (g.fiveH != null) meters.push({ name: `${g.name} 5시간`, usedPercent: g.fiveH, detail: g.fiveHReset || '' });
-      if (g.weekly != null) meters.push({ name: `${g.name} 주간`, usedPercent: g.weekly, detail: g.weeklyReset || '' });
+      if (g.fiveH != null) meters.push({ name: `${g.name} 5시간`, usedPercent: g.fiveH, resetsAt: g.fiveHResetAt || undefined, detail: g.fiveHReset || '' });
+      if (g.weekly != null) meters.push({ name: `${g.name} 주간`, usedPercent: g.weekly, resetsAt: g.weeklyResetAt || undefined, detail: g.weeklyReset || '' });
     }
     if (!meters.length) return null;
     return {

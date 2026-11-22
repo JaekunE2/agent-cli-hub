@@ -4,9 +4,32 @@
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
+const addAgyWorkspaces = require('./agy-workspaces');
 
 const CACHE_FILE = path.join(__dirname, '.search-cache.json.gz');
-const CACHE_VER = 7;
+const CACHE_VER = 9;
+
+const emptyTokens = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 });
+function normalizeTokens(t) {
+  if (!t || typeof t !== 'object') return emptyTokens();
+  const input = Math.max(0, Number(t.input) || 0);
+  const output = Math.max(0, Number(t.output) || 0);
+  const cacheRead = Math.max(0, Number(t.cacheRead) || 0);
+  const cacheWrite = Math.max(0, Number(t.cacheWrite) || 0);
+  const total = Math.max(input + output + cacheRead + cacheWrite, Number(t.total) || 0);
+  return { input, output, cacheRead, cacheWrite, total };
+}
+function recomputeTokensFromMap(byKey) {
+  const sum = emptyTokens();
+  for (const u of Object.values(byKey || {})) {
+    sum.input += u.input || 0;
+    sum.output += u.output || 0;
+    sum.cacheRead += u.cacheRead || 0;
+    sum.cacheWrite += u.cacheWrite || 0;
+  }
+  sum.total = sum.input + sum.output + sum.cacheRead + sum.cacheWrite;
+  return sum;
+}
 
 function textOf(content) {
   if (typeof content === 'string') return content;
@@ -55,6 +78,15 @@ function codexLine(e) {
   const pl = e.payload || {};
   if (e.type === 'session_meta') return { cwd: pl.cwd || null, auto: /exec/i.test(`${pl.originator || ''} ${pl.source || ''}`) };
   if (e.type === 'turn_context' && pl.cwd) return { cwd: pl.cwd };
+  if (e.type === 'event_msg' && pl.type === 'token_count' && pl.info?.total_token_usage) {
+    const u = pl.info.total_token_usage;
+    const cached = Number(u.cached_input_tokens) || 0;
+    const rawIn = Number(u.input_tokens) || 0;
+    const input = Math.max(0, rawIn - cached);
+    const output = (Number(u.output_tokens) || 0) + (Number(u.reasoning_output_tokens) || 0);
+    const total = Number(u.total_tokens) || (rawIn + output);
+    return { tokens: normalizeTokens({ input, output, cacheRead: cached, cacheWrite: 0, total }) };
+  }
   if (e.type === 'event_msg' && pl.type === 'error' && /usage limit|rate limit|429/i.test(pl.message || '')) return { limit: { ts: e.timestamp, text: String(pl.message).slice(0, 200) } };
   if (e.type !== 'response_item') return {};
   if (pl.type === 'message' && (pl.role === 'user' || pl.role === 'assistant')) {
@@ -72,6 +104,8 @@ function codexLine(e) {
 
 // ---- Antigravity transcripts ----
 const AGY_ROOT = path.join(require('os').homedir(), '.gemini', 'antigravity', 'brain');
+const AGY_ROOTS = ['antigravity', 'antigravity-cli', 'antigravity-ide']
+  .map(name => path.join(require('os').homedir(), '.gemini', name, 'brain'));
 const isAgyFile = (f) => /[\\/]\.system_generated[\\/]logs[\\/]transcript\.jsonl$/i.test(f);
 const agyIdOf = (f) => path.basename(path.resolve(path.dirname(f), '..', '..'));
 function agyUserText(raw) {
@@ -89,14 +123,23 @@ function agyLine(e) {
     const text = agyUserText(raw);
     return text ? { cwd, msg: { role: 'user', text, ts: e.created_at } } : { cwd };
   }
-  if (e.type === 'PLANNER_RESPONSE' && typeof e.content === 'string' && e.content.trim()) {
-    return { msg: { role: 'assistant', text: e.content.trim(), ts: e.created_at } };
+  if (e.type === 'PLANNER_RESPONSE') {
+    const hasTok = e.input_tokens != null || e.output_tokens != null || e.cache_read_tokens != null;
+    const tokStep = hasTok ? {
+      key: String(e.step_index ?? e.created_at ?? Math.random()),
+      input: Math.max(0, Number(e.input_tokens) || 0),
+      output: Math.max(0, Number(e.output_tokens) || 0),
+      cacheRead: Math.max(0, Number(e.cache_read_tokens) || 0),
+      cacheWrite: Math.max(0, Number(e.cache_write_tokens) || 0),
+    } : null;
+    const msg = typeof e.content === 'string' && e.content.trim() ? { role: 'assistant', text: e.content.trim(), ts: e.created_at } : null;
+    return { ...(msg ? { msg } : {}), ...(tokStep ? { tokStep } : {}) };
   }
   return {};
 }
 
 class SearchIndex {
-  constructor(root, codexRoot = CODEX_ROOT, agyRoot = AGY_ROOT) {
+  constructor(root, codexRoot = CODEX_ROOT, agyRoot = AGY_ROOTS) {
     this.root = root;
     this.codexRoot = codexRoot;
     this.agyRoot = agyRoot;
@@ -129,7 +172,7 @@ class SearchIndex {
 
   async listFilesAsync() {
     const out = [];
-    let dirs; try { dirs = await fs.promises.readdir(this.root); } catch { return out; }
+    let dirs; try { dirs = await fs.promises.readdir(this.root); } catch { dirs = []; }
     for (const d of dirs) {
       const dir = path.join(this.root, d);
       let ents; try { ents = await fs.promises.readdir(dir); } catch { continue; }
@@ -143,11 +186,11 @@ class SearchIndex {
       }
     };
     if (this.codexRoot) await walk(this.codexRoot, 0);
-    if (this.agyRoot) {
-      let adirs; try { adirs = await fs.promises.readdir(this.agyRoot, { withFileTypes: true }); } catch { adirs = []; }
+    for (const root of Array.isArray(this.agyRoot) ? this.agyRoot : [this.agyRoot].filter(Boolean)) {
+      let adirs; try { adirs = await fs.promises.readdir(root, { withFileTypes: true }); } catch { adirs = []; }
       for (const e of adirs) {
         if (!e.isDirectory() || !/^[0-9a-f-]{16,}$/i.test(e.name)) continue;
-        const tf = path.join(this.agyRoot, e.name, '.system_generated', 'logs', 'transcript.jsonl');
+        const tf = path.join(root, e.name, '.system_generated', 'logs', 'transcript.jsonl');
         try { await fs.promises.access(tf); out.push(tf); } catch {}
       }
     }
@@ -185,9 +228,11 @@ class SearchIndex {
       return;
     }
     if (!doc || doc.file !== file || st.size < doc.offset) {
-      doc = { id, file, offset: 0, mtime: 0, cwd: null, title: null, firstPrompt: null, auto: null, msgs: [], agent: codex ? 'codex' : agy ? 'agy' : 'claude' };
+      doc = { id, file, offset: 0, mtime: 0, cwd: null, title: null, firstPrompt: null, auto: null, msgs: [], tokens: emptyTokens(), _tokMap: {}, agent: codex ? 'codex' : agy ? 'agy' : 'claude' };
       this.docs.set(id, doc);
     }
+    if (!doc.tokens) doc.tokens = emptyTokens();
+    if (!doc._tokMap) doc._tokMap = {};
     const end = st.size;
     if (end <= doc.offset) return; // empty file (e.g. truncated when the disk was full): nothing to read
     await new Promise((resolve) => {
@@ -203,6 +248,7 @@ class SearchIndex {
         if (r.cwd && !doc.cwd) doc.cwd = r.cwd;
         if (r.auto !== undefined && doc.auto === null) doc.auto = r.auto;
         if (r.limit) doc.limit = r.limit;
+        if (r.tokens && r.tokens.total >= (doc.tokens?.total || 0)) doc.tokens = r.tokens;
         if (!r.msg) return;
         if (r.msg.role === 'assistant' && !r.msg.text.startsWith('⚙')) doc.limit = null;
         if (r.msg.role === 'user' && !doc.firstPrompt) {
@@ -212,11 +258,22 @@ class SearchIndex {
         doc.msgs.push({ ...r.msg, text: r.msg.text.slice(0, 6000) });
       };
       const handleAgy = (lineBuf) => {
-        const head = lineBuf.subarray(0, 300).toString('utf8');
-        if (!/"type":"(USER_INPUT|PLANNER_RESPONSE)"/.test(head)) return;
+        // Fast raw-buffer pre-filter: skips large GENERIC / SYSTEM_MESSAGE lines before UTF-8 decode & JSON.parse
+        // while preserving support for spaced or late "type" fields.
+        if (!lineBuf.includes('USER_INPUT') && !lineBuf.includes('PLANNER_RESPONSE')) return;
         let e; try { e = JSON.parse(lineBuf.toString('utf8')); } catch { return; }
         const r = agyLine(e);
         if (r.cwd && !doc.cwd) doc.cwd = r.cwd;
+        if (r.tokStep) {
+          const prev = doc._tokMap[r.tokStep.key] || emptyTokens();
+          doc._tokMap[r.tokStep.key] = {
+            input: Math.max(prev.input, r.tokStep.input),
+            output: Math.max(prev.output, r.tokStep.output),
+            cacheRead: Math.max(prev.cacheRead, r.tokStep.cacheRead),
+            cacheWrite: Math.max(prev.cacheWrite, r.tokStep.cacheWrite),
+          };
+          doc.tokens = recomputeTokensFromMap(doc._tokMap);
+        }
         if (!r.msg) return;
         if (r.msg.role === 'user' && !doc.firstPrompt) doc.firstPrompt = cleanPromptTitle(r.msg.text);
         doc.msgs.push({ ...r.msg, text: r.msg.text.slice(0, 6000) });
@@ -236,6 +293,18 @@ class SearchIndex {
         if (e.type === 'custom-title' && e.customTitle) doc.title = e.customTitle;
         else if (e.type === 'summary' && e.summary && !doc.title) doc.title = e.summary;
         if ((e.type !== 'user' && e.type !== 'assistant') || e.isMeta || e.isSidechain) return;
+        if (e.type === 'assistant' && e.message?.usage) {
+          const u = e.message.usage;
+          const mkey = String(e.message.id || e.uuid || e.timestamp || doc.msgs.length);
+          const prev = doc._tokMap[mkey] || emptyTokens();
+          doc._tokMap[mkey] = {
+            input: Math.max(prev.input, Number(u.input_tokens) || 0),
+            output: Math.max(prev.output, Number(u.output_tokens) || 0),
+            cacheRead: Math.max(prev.cacheRead, Number(u.cache_read_input_tokens) || 0),
+            cacheWrite: Math.max(prev.cacheWrite, Number(u.cache_creation_input_tokens) || 0),
+          };
+          doc.tokens = recomputeTokensFromMap(doc._tokMap);
+        }
         const text = textOf(e.message?.content);
         // usage-limit state: set by a 429 error turn, cleared by the next real reply
         if (e.type === 'assistant') {
@@ -272,6 +341,7 @@ class SearchIndex {
       for (const id of this.docs.keys()) if (!live.has(id)) { this.docs.delete(id); this.dirty = true; }
       this.progress = { done: 0, total: files.length };
       for (const f of files) { await this.updateFile(f); this.progress.done++; }
+      addAgyWorkspaces(Array.isArray(this.agyRoot) ? this.agyRoot : [this.agyRoot].filter(Boolean), this.docs);
       this.ready = true;
       this.save();
     })().finally(() => { this.building = null; });
@@ -280,14 +350,14 @@ class SearchIndex {
 
   get(id) { return this.docs.get(id); }
 
-  recent(limit = 40, includeAuto = false) {
+  recent(limit = 40, includeAuto = false, agent = '', hidden = new Set()) {
     return [...this.docs.values()]
-      .filter((d) => d.msgs.length && (includeAuto || !d.auto))
+      .filter((d) => !hidden.has(d.id) && d.msgs.length && (includeAuto || !d.auto) && (!agent || (d.agent || 'claude') === agent))
       .sort((a, b) => b.mtime - a.mtime).slice(0, limit)
       .map((d) => ({ sessionId: d.id, agent: d.agent || 'claude', cwd: d.cwd, title: d.title, firstPrompt: d.firstPrompt, mtime: d.mtime, auto: !!d.auto }));
   }
 
-  search(q, { role = 'all', limitSessions = 60, perSession = 6, includeAuto = false, cwd = '', agent = '' } = {}) {
+  search(q, { role = 'all', limitSessions = 60, perSession = 6, includeAuto = false, cwd = '', agent = '', hidden = new Set() } = {}) {
     const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
     if (!terms.length) return [];
     const results = [];
@@ -297,14 +367,14 @@ class SearchIndex {
     const idHits = [];
     if (idTerms.length) {
       for (const d of this.docs.values()) {
-        if (idTerms.some((t) => d.id.startsWith(t))) {
+        if (!hidden.has(d.id) && idTerms.some((t) => d.id.startsWith(t))) {
           idHits.push({ sessionId: d.id, agent: d.agent || 'claude', auto: !!d.auto, title: d.title, firstPrompt: d.firstPrompt, cwd: d.cwd, mtime: d.mtime,
             total: d.msgs.length, idMatch: true, hits: d.msgs.slice(-2).map((m, k) => ({ i: Math.max(0, d.msgs.length - 2) + k, role: m.role, ts: m.ts, snippet: snippet(m.text, m.text.toLowerCase(), []) })) });
         }
       }
     }
     for (const d of this.docs.values()) {
-      if (d.auto && !includeAuto) continue;
+      if (hidden.has(d.id) || (d.auto && !includeAuto)) continue;
       if (agent && (d.agent || 'claude') !== agent) continue;
       if (cwdLow && !(d.cwd || '').toLowerCase().includes(cwdLow)) continue;
       const meta = `${d.title || ''} ${d.cwd || ''}`.toLowerCase();

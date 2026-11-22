@@ -63,11 +63,15 @@
     font: inherit; color: inherit;
   }
   .btn {
-    border: 1px solid var(--line); background: var(--surface); padding: 7px 14px; border-radius: 8px;
-    cursor: pointer; box-shadow: var(--shadow);
+    border: 1px solid var(--line); background: var(--surface); padding: 6px 12px; border-radius: 8px;
+    cursor: pointer; box-shadow: var(--shadow); font-size: 13px;
   }
-  .btn:hover { border-color: var(--muted); }
-  .btn.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 500; }
+  .btn.ghost { background: transparent; border-color: transparent; box-shadow: none; color: var(--muted); }
+  .btn.ghost:hover { background: var(--surface-2); color: var(--text); border-color: transparent; }
+  .btn.danger { color: var(--bad); border-color: transparent; background: transparent; box-shadow: none; }
+  .btn.danger:hover { background: color-mix(in srgb, var(--bad) 12%, transparent); }
   .btn:disabled { opacity: .55; cursor: default; }
   .btn.small { padding: 3px 9px; font-size: 12px; }
 
@@ -182,7 +186,7 @@
   </div>
   <div class="actions">
     <label class="toggle"><input type="checkbox" id="auto" checked> 5분마다 자동 새로고침</label>
-    <button class="btn" id="agyRefresh" title="허브(7777)의 agy 터미널을 통해 Antigravity 한도를 조회합니다">Antigravity 한도</button>
+    <button class="btn ghost" id="agyRefresh" title="허브(7777)의 agy 터미널을 통해 Antigravity 한도를 조회합니다">Antigravity 한도</button>
     <button class="btn" id="add">+ 계정 추가</button>
     <button class="btn primary" id="refresh">새로고침</button>
   </div>
@@ -371,8 +375,8 @@ function cardHtml(a) {
     ? (a.meters.length ? a.meters.map(meterHtml).join('') : '<div class="sub">표시할 한도 정보가 없습니다</div>')
       + (a.notes?.length ? `<ul class="notes">${a.notes.map((n) => `<li>${esc(String(n).replace(/(\d+)\.\d{4,}/g, (_, i) => Number(i).toLocaleString('en-US')))}</li>`).join('')}</ul>` : '')
     : `<div class="error">${esc(a.error)}</div>`;
-  const copyBtn = (!readOnly && a.hasSecret) ? `<button class="btn small" data-copy="${esc(a.id)}">토큰 복사</button>` : '';
-  const del = readOnly ? '' : (a.source === 'manual' ? `<button class="btn small" data-del="${esc(a.id)}">삭제</button>` : '<span>자동 감지</span>');
+  const copyBtn = (!readOnly && a.hasSecret) ? `<button class="btn ghost small" data-copy="${esc(a.id)}">토큰 복사</button>` : '';
+  const del = readOnly ? '' : (a.source === 'manual' ? `<button class="btn danger small" data-del="${esc(a.id)}">삭제</button>` : '<span>자동 감지</span>');
   const bill = a.billing && (a.billing.at || a.billing.note)
     ? `<div class="billing"><span class="bk">${esc(a.billing.label || '결제일')}</span><span class="bv">${esc(billingText(a.billing))}</span></div>` : '';
   const hasMemo = a.memo && a.memo.trim();
