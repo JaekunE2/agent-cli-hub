@@ -8,7 +8,7 @@
 
 ![Tour](docs/images/en/tour.gif)
 
-> Note: Existing gallery screenshots below were captured on an earlier demo environment; this branch (`dev_side`) introduces the redesigned Crisp Minimal UI (light/dark themes, unified `Hub Core` icon, hairline stat strips, Project Kanban/DAG workflow, Antigravity CLI support, and interactive Floorplan architecture mapping).
+> Screenshots use a sanitized demo workspace (`demo-web-store`, `demo-user`, and placeholder session titles); `tour.gif` shows the live transitions across the redesigned UI (`dev_side`).
 
 ---
 
@@ -17,6 +17,10 @@
 - **Crisp Minimal UI (Light & Dark Themes):** Built around `Astryx` control consistency, `impeccable` anti-slop/WCAG AA hygiene, and hairline-first elevation — clean sidebar/canvas surface separation, a unified 4-column hairline overview bar, flattened border-first cards without visual clutter, and `≥ 24×24px` touch targets.
 - **Unified `Hub Core` Identity & Live Health LED:** One consistent **Hub Core** symbol across the web brand button, dynamic status favicon, `icon.svg`, and Windows System Tray (`tray.ps1`). Click the top-left brand header to open the **Server & Integration Status Popover** (`:7777` Hub, PTY Host, `:4777` Usage Server, AGY Quota) and start services in one click.
 - **Sticky Workspace Tabs & Smart Cache-Busting:** Terminal and transcript views remember your last selected tab (`Screen`, `Screen + Chat`, `Transcript`, `Outputs`, `Floorplan`). Server restarts automatically refresh non-typing views via `SERVER_BUILD_ID` without interrupting active terminal input.
+
+| Home Dashboard (Light) | Dark Theme & Hub Status Popover |
+|---|---|
+| ![Home Dashboard](docs/images/en/14-home-dashboard.png) | ![Dark Mode & Status Popover](docs/images/en/22-home-dark.png) |
 
 ---
 
@@ -29,12 +33,24 @@ Organize multi-step coding work under **Project** in the Linear-style sidebar:
 - **Subtasks & Embedded Sub-Development Chat:** Split parent tasks into child subtasks and chat directly inside a task's Detail Drawer (`서브 개발`).
 - **Cumulative Multi-CLI Token Ledger:** Tracks input/output/cache tokens per session and CLI in `hub/data/projects.json`, preserving history when switching agents and rolling up every descendant subtask's tokens into top-level parent badges and the Project Token Drawer.
 
+| Project Design & Tasks | Kanban Board |
+|---|---|
+| ![Project Design](docs/images/en/15-project-design.png) | ![Kanban Board](docs/images/en/16-project-board.png) |
+
+![Workflow DAG](docs/images/en/17-project-flow.png)
+
 ### 🗺 Floorplan — Interactive Code Architecture Map & Report (`코드 구조`)
 Available inside every **Project**, **Terminal**, **External Console**, and **Transcript** tab:
 - **Ranked Core Hub Summary (`핵심 요약 · 모듈 목록`):** Zero-dependency static scanner ([`hub/workspace-floorplan.js`](hub/workspace-floorplan.js)) respects `.gitignore`, scans JS/TS/Python/Go files, ranks true architectural hubs by incoming references & API endpoints, and opens a File Detail Drawer on click.
 - **Interactive Core Hub Architecture Map (`시스템 계층도`):** Displays curated core hubs per architectural layer (`UI → API → Core Logic → Data`) with subtle Bezier connections and **hover/click Blast Radius isolation** (highlighting incoming callers in green and outgoing dependencies in accent orange), search filter, pan, and zoom/fit.
 - **Security & Structure Audit (`보안 · 구조 점검`):** Flags exposed secrets, unguarded routes, `.env` gitignore gaps, and oversized modules with 1-click task creation or terminal fix-prompt injection.
 - **Deliverable Export & Artifact Pinning:** Preview formatted Markdown architecture reports (`보고서 보기`, including an auto-generated Mermaid diagram and Top 15 Core Hubs table), copy, download `.md`, or save **`FLOORPLAN.md`** directly into the project folder and pin it to the session's **Outputs** tab. Also supports scanning arbitrary local directories (`폴더 선택`) and shows a **Design Blueprint** view for empty folders.
+
+| Codebase Summary & Modules | Interactive Core Hub Map (Blast Radius) |
+|---|---|
+| ![Floorplan Summary](docs/images/en/18-floorplan-overview.png) | ![Floorplan Map](docs/images/en/19-floorplan-map.png) |
+
+![Architecture Report Drawer](docs/images/en/20-floorplan-report.png)
 
 ### 🤖 Antigravity CLI (AGY), Claude Code, Codex CLI, Cursor & Shells
 - **Full AGY Support:** Discovers transcripts across `~/.gemini/antigravity/brain`, `antigravity-cli/brain`, and `antigravity-ide/brain`, detects live `busy / idle` screen state, monitors per-tier 5h/weekly AGY quotas, and resumes sessions seamlessly.
@@ -96,6 +112,8 @@ The hub binds only `127.0.0.1` and your Tailscale IP (never public LAN). Scan th
 
 ### 📊 AI Usage & Account Switching
 The bundled usage dashboard (port `4777`) tracks Claude 5h/weekly limits, Codex (ChatGPT) quotas, **AGY per-tier quotas**, Cursor, OpenAI API spend, and Gemini keys. Add additional Codex logins via device-code auth and switch accounts intentionally via **⇄ Switch Account**.
+
+![AI Usage Dashboard](docs/images/en/21-system-usage.png)
 
 ### 🧰 Built for Agents Too: the `ccd` CLI
 ```bash
