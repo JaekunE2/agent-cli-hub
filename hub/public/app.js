@@ -1632,7 +1632,12 @@ function viewConsole() {
       ]);
     }
   };
-  if (state.tab === 'chat' && sid) return renderChat(sid, gen);
+  if (state.tab === 'chat' && sid) {
+    $('#view').innerHTML = `<div class="chat-shell"><div class="chat-scroll" id="conChatHost"></div><div id="conChatComp"></div></div>`;
+    renderChat(sid, gen, -1, [], $('#conChatHost'));
+    mountChatComposer({ barHost: $('#conChatComp'), sid, consolePid: Number(state.sel.id), agent: s?.agent || 'claude', cwd: s?.cwd || '', onJumpTerm: () => select(state.sel, 'screen', true) });
+    return;
+  }
   if (state.tab === 'files' && sid) return renderArtifacts(sid, gen);
   if (state.tab === 'floorplan' && typeof renderStandaloneFloorplan === 'function') {
     return renderStandaloneFloorplan(s?.cwd || '', gen, {
@@ -1677,10 +1682,9 @@ function viewConsole() {
   if (isSplit) {
     $('#view').innerHTML = `<div class="term-split"><div class="tsplit-left">${screenHTML}</div>
       <div class="split-resizer" role="separator" aria-orientation="vertical" aria-label="패널 크기 조절"></div>
-      <div class="tsplit-right"><div class="tsplit-hd"><span>실시간 대화 기록</span><button class="ghost icon-btn btn-sm" id="btnSplitClose" aria-label="분할 보기 닫기">${ICO.close}</button></div><div class="tsplit-body" id="splitChatHost"></div></div></div>`;
-    $('#btnSplitClose').onclick = () => select(state.sel, 'screen', true);
+      <div class="tsplit-right" id="conSplitRight"></div></div>`;
     bindSplitResizer($('.term-split'), $('.tsplit-left'));
-    renderChat(sid, gen, -1, [], $('#splitChatHost'));
+    setupSplitRightPane({ rightEl: $('#conSplitRight'), consolePid: Number(state.sel.id), sid, gen, agent: s?.agent || 'claude', cwd: s?.cwd || '', onClose: () => select(state.sel, 'screen', true) });
   } else {
     $('#view').innerHTML = screenHTML;
   }
@@ -1832,50 +1836,312 @@ function viewTranscript() {
   // Inline messenger-style reply composer at the bottom of the transcript!
   $('#view').innerHTML = `<div class="chat-shell">
     <div class="chat-scroll" id="chatScrollHost"></div>
-    <div class="chat-reply-bar">
-      <div class="chat-reply-in">
-        <textarea id="chatReplyIn" rows="1" placeholder="이 대화에서 바로 이어서 입력 (Enter 전송 · Shift+Enter 줄바꿈)"></textarea>
-        <button class="primary" id="chatReplySend">보내기 ⏎</button>
-      </div>
-    </div>
+    <div id="transcriptCompHost"></div>
   </div>`;
   renderChat(sid, gen, state.sel.at ?? -1, termsOf(state.sel.q), $('#chatScrollHost'));
-  const repIn = $('#chatReplyIn'), repBtn = $('#chatReplySend');
+  mountChatComposer({
+    barHost: $('#transcriptCompHost'),
+    sid,
+    consolePid: live && !isDesktopSession(live) ? consoleOf(live.pid)?.id : null,
+    agent: r?.agent || 'claude',
+    cwd: r?.cwd || live?.cwd || '',
+    liveDesktop: !!(live && isDesktopSession(live)),
+    onJumpTerm: (tid, cpid) => {
+      if (tid) select({ kind: 'term', id: tid }, getSavedTermTab(null) || 'split');
+      else if (cpid) select({ kind: 'console', id: String(cpid) }, 'screen');
+    },
+  });
+}
+
+function mountChatComposer({ barHost, sid = null, termId = null, consolePid = null, agent = 'claude', cwd = '', liveDesktop = false, onJumpTerm = null, compact = false }) {
+  if (!barHost) return;
+  let activeTermId = termId ? String(termId) : null;
+  let activeConsolePid = consolePid ? Number(consolePid) : null;
+
+  barHost.innerHTML = `<div class="chat-reply-bar${compact ? ' compact' : ''}">
+    <div class="chat-conn-bar">
+      <span class="chat-conn-pill" data-chat-conn></span>
+      <span class="row" style="gap:6px"><button type="button" class="ghost btn-sm" data-chat-jump hidden style="min-height:22px;height:22px;font-size:11.5px;padding:0 7px">터미널 보기 ↗</button></span>
+    </div>
+    <div class="chat-reply-in">
+      <textarea rows="1" placeholder="대화 기록에서 바로 프롬프트 입력 (Enter 전송 · Shift+Enter 줄바꿈)"></textarea>
+      <button type="button" class="primary">보내기 ⏎</button>
+    </div>
+  </div>`;
+
+  const connEl = $('[data-chat-conn]', barHost);
+  const jumpBtn = $('[data-chat-jump]', barHost);
+  const repIn = $('textarea', barHost);
+  const repBtn = $('button.primary', barHost);
+
+  const findLiveTerm = () => {
+    if (activeTermId) {
+      const byId = state.terms.find((x) => String(x.id) === activeTermId && x.exited === null);
+      if (byId) return byId;
+    }
+    if (sid) return state.terms.find((x) => x.exited === null && x.sessionId === sid) || null;
+    return null;
+  };
+
+  const syncConn = () => {
+    if (!barHost.isConnected) return;
+    const lt = findLiveTerm();
+    if (lt) {
+      activeTermId = String(lt.id);
+      const st = termStateOf(lt);
+      const dotCls = st === 'busy' ? 'busy' : 'idle';
+      const stTxt = st === 'busy' ? '실행 중' : '대기';
+      connEl.innerHTML = `<span class="dot ${dotCls}" style="width:7px;height:7px"></span><span>터미널 t:${esc(lt.id)} 연결됨 · ${esc(stTxt)}</span>`;
+      if (jumpBtn) jumpBtn.hidden = !onJumpTerm;
+    } else if (activeConsolePid) {
+      connEl.innerHTML = `<span class="dot idle" style="width:7px;height:7px"></span><span>콘솔 pid:${esc(activeConsolePid)} 연결됨</span>`;
+      if (jumpBtn) jumpBtn.hidden = !onJumpTerm;
+    } else {
+      connEl.innerHTML = `<span class="ums" style="margin:0">연결된 터미널 없음 · 입력 시 세션을 이어 열어 전송합니다</span>`;
+      if (jumpBtn) jumpBtn.hidden = true;
+    }
+  };
+  syncConn();
+  const connTimer = setInterval(() => {
+    if (!barHost.isConnected) return clearInterval(connTimer);
+    syncConn();
+  }, 1500);
+
+  if (jumpBtn && onJumpTerm) {
+    jumpBtn.onclick = () => {
+      const lt = findLiveTerm();
+      onJumpTerm(lt?.id || null, activeConsolePid);
+    };
+  }
+
   const fitRep = () => { repIn.style.height = 'auto'; repIn.style.height = Math.min(140, Math.max(38, repIn.scrollHeight)) + 'px'; };
   repIn.addEventListener('input', fitRep);
+
   const sendReply = async () => {
     const text = repIn.value.trim();
     if (!text) return;
     repIn.value = ''; fitRep();
     repBtn.disabled = true;
     try {
-      const existing = state.terms.find((x) => x.exited === null && x.sessionId === sid);
+      const existing = findLiveTerm();
       if (existing) {
-        await api('/api/term/send', { method: 'POST', body: { id: existing.id, text, submit: true } });
-        select({ kind: 'term', id: existing.id }, getSavedTermTab(null) || 'split');
+        const r = await api('/api/term/send', { method: 'POST', body: { id: existing.id, text, submit: true } });
+        if (r.error) throw new Error(r.error);
+        syncConn();
         return;
       }
-      const body = r?.agent === 'codex'
-        ? { kind: 'codex', resume: sid, cwd: r.cwd }
-        : r?.agent === 'agy'
-          ? { kind: 'agy', resume: sid, cwd: r.cwd }
-          : { kind: 'claude', resume: sid, cwd: r?.cwd || live?.cwd, skipPermissions: true, fork: !!(live && isDesktopSession(live)) };
+      if (activeConsolePid) {
+        const r = await api('/api/console/send', { method: 'POST', body: { pid: activeConsolePid, text, submit: true } });
+        if (r.error) throw new Error(r.error);
+        syncConn();
+        return;
+      }
+      const kind = agent === 'codex' ? 'codex' : agent === 'agy' ? 'agy' : 'claude';
+      const body = kind === 'claude'
+        ? { kind, ...(sid ? { resume: sid } : {}), cwd, skipPermissions: true, fork: !!liveDesktop }
+        : { kind, ...(sid ? { resume: sid } : {}), cwd };
       const t = await api('/api/term/new', { method: 'POST', body });
       if (t.error) throw new Error(t.error);
+      activeTermId = String(t.id);
       await refreshOverview();
-      select({ kind: 'term', id: t.id, ...(body.kind === 'agy' ? { agyResume: sid } : {}) }, getSavedTermTab(null) || 'split');
+      syncConn();
       setTimeout(() => {
         api('/api/term/send', { method: 'POST', body: { id: t.id, text, submit: true } }).catch(() => {});
       }, 2400);
-      toast('세션을 이어 열고 메시지를 전송했습니다');
+      toast(`터미널 t:${t.id}을(를) 연결해 메시지를 전송했습니다`);
     } catch (er) {
       toast(er.message, 6000, 'danger');
     } finally {
-      repBtn.disabled = false;
+      if (repBtn.isConnected) repBtn.disabled = false;
     }
   };
   repBtn.onclick = sendReply;
   repIn.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendReply(); } };
+}
+
+function setupSplitRightPane({ rightEl, termId = null, consolePid = null, sid = null, gen, agent = 'claude', cwd = '', onClose }) {
+  if (!rightEl) return;
+  let rtab = 'chat';
+  let winList = [];
+  let selectedHwnd = 'all';
+  let winAuto = true;
+  let snapNonce = Date.now();
+  let winPollTimer = null;
+  let snapTimer = null;
+
+  rightEl.innerHTML = `
+    <div class="tsplit-hd">
+      <div class="seg" role="tablist" aria-label="우측 패널 보기">
+        <button type="button" data-split-rtab="chat" class="on">실시간 대화</button>
+        <button type="button" data-split-rtab="windows">${ICO.monitor} 창 <span class="seg-cnt" id="splitWinCnt">0</span></button>
+      </div>
+      <button type="button" class="ghost icon-btn btn-sm" id="btnSplitClose" aria-label="분할 보기 닫기" title="터미널 단독 보기로 돌아가기">${ICO.close}</button>
+    </div>
+    <div class="tsplit-pane" id="splitChatPane">
+      <div class="tsplit-body" id="splitChatHost"></div>
+      <div id="splitChatComp"></div>
+    </div>
+    <div class="tsplit-pane" id="splitWinsPane" hidden>
+      <div class="win-bar">
+        <div class="win-tabs" id="splitWinTabs"></div>
+        <div class="row" style="gap:6px;flex:none">
+          <label class="win-auto-lbl"><input type="checkbox" id="chkWinAuto" checked> 자동 갱신</label>
+          <button type="button" class="btn-sm" id="btnWinRefresh" title="창 목록 · 스냅샷 새로고침">${ICO.refresh}<span>새로고침</span></button>
+        </div>
+      </div>
+      <div class="win-body" id="splitWinBody"><div class="empty">열린 창을 확인하는 중…</div></div>
+    </div>`;
+
+  $('#btnSplitClose', rightEl).onclick = onClose;
+  renderChat(sid, gen, -1, [], $('#splitChatHost', rightEl));
+  mountChatComposer({
+    barHost: $('#splitChatComp', rightEl),
+    sid,
+    termId,
+    consolePid,
+    agent,
+    cwd,
+    compact: true,
+  });
+
+  const openLightbox = (w) => {
+    const dlg = document.createElement('dialog');
+    dlg.className = 'pj-dialog';
+    dlg.style.width = 'min(1040px, 95vw)';
+    dlg.setAttribute('aria-label', w.title || '창 미리보기');
+    const shotUrl = () => `/api/window/shot?hwnd=${encodeURIComponent(w.hwnd)}&w=1280&t=${encodeURIComponent(TOKEN)}&ts=${Date.now()}`;
+    dlg.innerHTML = `<div style="display:flex;flex-direction:column;gap:10px">
+      <div class="dlg-head">
+        <div style="min-width:0"><h3 style="margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(w.title)}</h3><small class="ums" style="margin:0">${esc(w.exe)} · ${w.rect.width}×${w.rect.height}</small></div>
+        <div class="row" style="gap:6px">
+          <button type="button" class="btn-sm" id="lbFocus">${ICO.external} 창 앞으로</button>
+          <button type="button" class="btn-sm" id="lbRefresh">${ICO.refresh} 새로고침</button>
+          <button type="button" class="ghost icon-btn btn-sm" data-lb-close aria-label="닫기">${ICO.close}</button>
+        </div>
+      </div>
+      <div class="win-shot" style="max-height:74vh;aspect-ratio:auto"><img id="lbImg" src="${shotUrl()}" alt="${esc(w.title)}"></div>
+    </div>`;
+    document.body.append(dlg);
+    dlg.onclose = () => dlg.remove();
+    $('[data-lb-close]', dlg).onclick = () => dlg.close();
+    $('#lbRefresh', dlg).onclick = () => { $('#lbImg', dlg).src = shotUrl(); };
+    $('#lbFocus', dlg).onclick = () => api('/api/window/focus', { method: 'POST', body: { hwnd: w.hwnd } });
+    dlg.showModal();
+  };
+
+  const renderWindows = () => {
+    const cntEl = $('#splitWinCnt', rightEl);
+    if (cntEl) cntEl.textContent = String(winList.length);
+    if (rtab !== 'windows') return;
+
+    const tabsEl = $('#splitWinTabs', rightEl);
+    const bodyEl = $('#splitWinBody', rightEl);
+    if (!tabsEl || !bodyEl) return;
+
+    if (selectedHwnd !== 'all' && !winList.some((w) => String(w.hwnd) === String(selectedHwnd))) {
+      selectedHwnd = winList.length === 1 ? String(winList[0].hwnd) : 'all';
+    }
+    if (winList.length > 1) {
+      tabsEl.innerHTML = `<button type="button" class="btn-sm${selectedHwnd === 'all' ? ' on' : ''}" data-win-sel="all">전체 (${winList.length})</button>`
+        + winList.map((w, idx) => `<button type="button" class="btn-sm${String(w.hwnd) === String(selectedHwnd) ? ' on' : ''}" data-win-sel="${esc(w.hwnd)}" title="${esc(w.title)}">${idx + 1}. ${esc(w.title)}</button>`).join('');
+    } else {
+      tabsEl.innerHTML = winList.length
+        ? `<span class="badge">${esc(winList[0].exe)}</span><span style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(winList[0].title)}</span>`
+        : `<span class="ums" style="margin:0">감지된 창 없음</span>`;
+    }
+
+    if (!winList.length) {
+      bodyEl.innerHTML = `<div class="h-empty-card" style="margin:12px auto">
+        <b>연결된 창이나 열린 브라우저가 없습니다</b>
+        <span class="ums">에이전트가 Chrome, Edge 또는 앱 창을 열면 이곳에서 여러 창을 동시에 미리보고 제어할 수 있습니다.</span>
+      </div>`;
+      return;
+    }
+
+    const targets = selectedHwnd === 'all' ? winList : winList.filter((w) => String(w.hwnd) === String(selectedHwnd));
+    const singleMode = targets.length === 1;
+    const widthParam = singleMode ? 1080 : 620;
+    const cardsHTML = targets.map((w) => {
+      const originBadge = w.linked ? '<span class="badge c">연결됨</span>' : '<span class="badge">브라우저</span>';
+      const sz = w.minimized ? '최소화됨' : `${w.rect.width}×${w.rect.height}`;
+      const shotHtml = w.minimized
+        ? `<div class="win-shot-empty"><span>창이 최소화되어 있어 화면을 캡처할 수 없습니다.</span><button type="button" class="btn-sm" data-win-focus="${esc(w.hwnd)}">${ICO.external} 창 복원 · 앞으로</button></div>`
+        : `<img src="/api/window/shot?hwnd=${encodeURIComponent(w.hwnd)}&w=${widthParam}&t=${encodeURIComponent(TOKEN)}&ts=${snapNonce}" alt="${esc(w.title)}" loading="lazy">`;
+      return `<article class="win-card${singleMode ? ' win-single' : ''}">
+        <div class="win-card-hd">${originBadge}<span class="win-card-title" title="${esc(w.title)}">${esc(w.title)}</span><span class="badge">${esc(w.exe)}</span></div>
+        <div class="win-shot" data-win-zoom="${esc(w.hwnd)}">${shotHtml}</div>
+        <div class="win-card-ft">
+          <span>${esc(sz)}</span>
+          <div class="row" style="gap:4px">
+            ${singleMode && winList.length > 1 ? `<button type="button" class="ghost btn-sm" data-win-sel="all">전체 보기</button>` : ''}
+            <button type="button" class="btn-sm" data-win-zoom="${esc(w.hwnd)}">크게 보기</button>
+            <button type="button" class="btn-sm" data-win-focus="${esc(w.hwnd)}" title="이 창을 화면 맨 앞으로 가져오기">${ICO.external} 앞으로</button>
+          </div>
+        </div>
+      </article>`;
+    }).join('');
+    bodyEl.innerHTML = singleMode ? cardsHTML : `<div class="win-grid">${cardsHTML}</div>`;
+  };
+
+  const refreshWindows = async (refreshSnaps = true) => {
+    if (gen !== viewGen || !rightEl.isConnected) return;
+    const qs = termId ? `id=${encodeURIComponent(termId)}` : `pid=${encodeURIComponent(consolePid || 0)}`;
+    const r = await api(`/api/term/windows?${qs}`).catch(() => ({ windows: [] }));
+    if (gen !== viewGen || !rightEl.isConnected) return;
+    winList = r.windows || [];
+    if (refreshSnaps) snapNonce = Date.now();
+    renderWindows();
+  };
+
+  rightEl.addEventListener('click', async (e) => {
+    const rtabBtn = e.target.closest('[data-split-rtab]');
+    if (rtabBtn) {
+      rtab = rtabBtn.dataset.splitRtab;
+      rightEl.querySelectorAll('[data-split-rtab]').forEach((b) => b.classList.toggle('on', b.dataset.splitRtab === rtab));
+      $('#splitChatPane', rightEl).hidden = rtab !== 'chat';
+      $('#splitWinsPane', rightEl).hidden = rtab !== 'windows';
+      if (rtab === 'windows') {
+        await refreshWindows(true);
+      }
+      return;
+    }
+    const selBtn = e.target.closest('[data-win-sel]');
+    if (selBtn) {
+      selectedHwnd = selBtn.dataset.winSel;
+      snapNonce = Date.now();
+      renderWindows();
+      return;
+    }
+    const focusBtn = e.target.closest('[data-win-focus]');
+    if (focusBtn) {
+      await api('/api/window/focus', { method: 'POST', body: { hwnd: Number(focusBtn.dataset.winFocus) } });
+      setTimeout(() => refreshWindows(true), 350);
+      return;
+    }
+    const zoomEl = e.target.closest('[data-win-zoom]');
+    if (zoomEl) {
+      const w = winList.find((x) => String(x.hwnd) === String(zoomEl.dataset.winZoom));
+      if (w && !w.minimized) openLightbox(w);
+    }
+  });
+
+  $('#btnWinRefresh', rightEl).onclick = () => refreshWindows(true);
+  $('#chkWinAuto', rightEl).onchange = (e) => { winAuto = !!e.target.checked; };
+
+  refreshWindows(false);
+  winPollTimer = setInterval(() => {
+    if (gen !== viewGen || !rightEl.isConnected) { clearInterval(winPollTimer); clearInterval(snapTimer); return; }
+    refreshWindows(false);
+  }, 4500);
+  snapTimer = setInterval(() => {
+    if (gen !== viewGen || !rightEl.isConnected) { clearInterval(winPollTimer); clearInterval(snapTimer); return; }
+    if (rtab === 'windows' && winAuto && winList.some((w) => !w.minimized)) {
+      snapNonce = Date.now();
+      rightEl.querySelectorAll('#splitWinBody img[src*="/api/window/shot"]').forEach((img) => {
+        img.src = img.src.replace(/ts=\d+/, `ts=${snapNonce}`);
+      });
+    }
+  }, 2200);
 }
 
 function openResumedTerm(t, request) {
@@ -2319,7 +2585,19 @@ function viewTerm() {
       ]);
     }
   };
-  if (state.tab === 'chat') return renderChat(sid, gen);
+  if (state.tab === 'chat') {
+    $('#view').innerHTML = `<div class="chat-shell"><div class="chat-scroll" id="termChatHost"></div><div id="termChatComp"></div></div>`;
+    renderChat(sid, gen, -1, [], $('#termChatHost'));
+    mountChatComposer({
+      barHost: $('#termChatComp'),
+      sid,
+      termId: t?.id || state.sel.id,
+      agent: ag || 'claude',
+      cwd: t?.cwd || pj?.cwd || '',
+      onJumpTerm: () => select(state.sel, 'screen', true),
+    });
+    return;
+  }
   if (state.tab === 'files') return renderArtifacts(artSid, gen);
   if (state.tab === 'floorplan' && typeof renderStandaloneFloorplan === 'function') {
     const termCwd = t?.cwd || pj?.cwd || '';
@@ -2383,17 +2661,10 @@ function viewTerm() {
     $('#view').innerHTML = `<div class="term-split">
       <div class="tsplit-left">${termFullHTML}</div>
       <div class="split-resizer" role="separator" aria-orientation="vertical" aria-label="패널 크기 조절"></div>
-      <div class="tsplit-right">
-        <div class="tsplit-hd">
-          <span>실시간 대화 기록${sid ? ` <span class="badge mono">${esc(sid.slice(0, 8))}</span>` : ''}</span>
-          <button class="ghost icon-btn btn-sm" id="btnSplitClose" aria-label="분할 보기 닫기" title="터미널 단독 보기로 돌아가기">${ICO.close}</button>
-        </div>
-        <div class="tsplit-body" id="splitChatHost"></div>
-      </div>
+      <div class="tsplit-right" id="termSplitRight"></div>
     </div>`;
-    $('#btnSplitClose').onclick = () => select(state.sel, 'screen', true);
     bindSplitResizer($('.term-split'), $('.tsplit-left'));
-    renderChat(sid, gen, -1, [], $('#splitChatHost'));
+    setupSplitRightPane({ rightEl: $('#termSplitRight'), termId: t?.id || state.sel.id, sid, gen, agent: ag || 'claude', cwd: t?.cwd || pj?.cwd || '', onClose: () => select(state.sel, 'screen', true) });
   } else {
     $('#view').innerHTML = termFullHTML;
   }

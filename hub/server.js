@@ -2472,6 +2472,36 @@ const server = http.createServer(async (req, res) => {
       if (!t) return send(res, 404, { ok: false, error: 'no such terminal' });
       return send(res, 200, { ok: true, ...termInfo(t), lines: readTerm(t, Number(url.searchParams.get('lines') || 60)) });
     }
+    if (p === '/api/term/windows') {
+      const id = url.searchParams.get('id') || '';
+      const pidParam = Number(url.searchParams.get('pid') || 0);
+      const t = id ? terms.get(id) : null;
+      const pids = [];
+      if (t?.pid) pids.push(t.pid);
+      if (pidParam > 0) pids.push(pidParam);
+      const r = await helperCall({ op: 'list_windows', pids });
+      return send(res, 200, { ok: r.ok !== false, windows: r.windows || [], error: r.error || null });
+    }
+    if (p === '/api/window/shot') {
+      const hwnd = Number(url.searchParams.get('hwnd') || 0);
+      const maxWidth = Number(url.searchParams.get('w') || 900);
+      if (!hwnd) return send(res, 400, { ok: false, error: 'hwnd가 필요합니다.' });
+      const r = await helperCall({ op: 'capture_window', hwnd, max_width: maxWidth });
+      if (!r.ok || !r.png) return send(res, r.minimized ? 409 : 404, { ok: false, minimized: !!r.minimized, error: r.error || '창을 캡처하지 못했습니다.' });
+      const buf = Buffer.from(r.png, 'base64');
+      res.writeHead(200, {
+        'content-type': 'image/png',
+        'cache-control': 'no-store, no-cache, must-revalidate, max-age=0',
+        'content-length': buf.length,
+      });
+      return res.end(buf);
+    }
+    if (p === '/api/window/focus' && req.method === 'POST') {
+      const b = await body(req);
+      const hwnd = Number(b.hwnd || 0);
+      if (!hwnd) return send(res, 400, { ok: false, error: 'hwnd가 필요합니다.' });
+      return send(res, 200, await helperCall({ op: 'focus_window', hwnd }));
+    }
     if (p === '/api/term/send' && req.method === 'POST') {
       const b = await body(req);
       const t = terms.get(String(b.id));

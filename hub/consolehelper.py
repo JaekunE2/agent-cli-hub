@@ -3,16 +3,20 @@
 Runs as a long-lived child of server.js. Requests/responses are JSON lines on
 stdin/stdout (pipes, so they survive FreeConsole/AttachConsole).
 """
+import base64
 import ctypes
 import ctypes.wintypes as wt
 import json
+import struct
 import sys
 import time
+import zlib
 
 k32 = ctypes.WinDLL("kernel32", use_last_error=True)
 # the hub waits on this for every window list: keep it ahead of CPU-heavy batch jobs (ABOVE_NORMAL)
 k32.SetPriorityClass(wt.HANDLE(-1), 0x8000)  # -1 = this process
 u32 = ctypes.WinDLL("user32", use_last_error=True)
+g32 = ctypes.WinDLL("gdi32", use_last_error=True)
 
 GENERIC_READ, GENERIC_WRITE = 0x80000000, 0x40000000
 FILE_SHARE_RW = 0x3
@@ -251,7 +255,247 @@ def cmd_procs(_req):
     return {"procs": [[pid, name, ppid] for pid, (name, ppid) in processes().items()]}
 
 
-HANDLERS = {"list": cmd_list, "read": cmd_read, "send": cmd_send, "focus": cmd_focus, "procs": cmd_procs}
+BROWSER_EXES = {"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "chromium.exe", "opera.exe"}
+SKIP_WINDOW_CLASSES = {"ConsoleWindowClass", "Progman", "WorkerW", "Shell_TrayWnd", "Windows.UI.Core.CoreWindow"}
+PW_RENDERFULLCONTENT = 2
+SRCCOPY = 0x00CC0020
+HALFTONE = 4
+DIB_RGB_COLORS = 0
+
+
+class BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [
+        ("biSize", wt.DWORD), ("biWidth", wt.LONG), ("biHeight", wt.LONG),
+        ("biPlanes", wt.WORD), ("biBitCount", wt.WORD), ("biCompression", wt.DWORD),
+        ("biSizeImage", wt.DWORD), ("biXPelsPerMeter", wt.LONG), ("biYPelsPerMeter", wt.LONG),
+        ("biClrUsed", wt.DWORD), ("biClrImportant", wt.DWORD),
+    ]
+
+
+class BITMAPINFO(ctypes.Structure):
+    _fields_ = [("bmiHeader", BITMAPINFOHEADER), ("bmiColors", wt.DWORD * 3)]
+
+
+_WNDENUMPROC = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+u32.EnumWindows.argtypes = [_WNDENUMPROC, wt.LPARAM]
+u32.EnumWindows.restype = wt.BOOL
+u32.GetWindowThreadProcessId.argtypes = [wt.HWND, ctypes.POINTER(wt.DWORD)]
+u32.GetWindowThreadProcessId.restype = wt.DWORD
+u32.GetWindowTextLengthW.argtypes = [wt.HWND]
+u32.GetWindowTextW.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]
+u32.GetClassNameW.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]
+u32.IsWindowVisible.argtypes = [wt.HWND]
+u32.IsWindowVisible.restype = wt.BOOL
+u32.IsIconic.argtypes = [wt.HWND]
+u32.IsIconic.restype = wt.BOOL
+u32.IsWindow.argtypes = [wt.HWND]
+u32.IsWindow.restype = wt.BOOL
+u32.GetWindowRect.argtypes = [wt.HWND, ctypes.POINTER(wt.RECT)]
+u32.GetWindowRect.restype = wt.BOOL
+u32.PrintWindow.argtypes = [wt.HWND, wt.HDC, wt.UINT]
+u32.PrintWindow.restype = wt.BOOL
+u32.GetDC.argtypes = [wt.HWND]
+u32.GetDC.restype = wt.HDC
+u32.ReleaseDC.argtypes = [wt.HWND, wt.HDC]
+g32.CreateCompatibleDC.argtypes = [wt.HDC]
+g32.CreateCompatibleDC.restype = wt.HDC
+g32.CreateCompatibleBitmap.argtypes = [wt.HDC, ctypes.c_int, ctypes.c_int]
+g32.CreateCompatibleBitmap.restype = wt.HBITMAP
+g32.SelectObject.argtypes = [wt.HDC, wt.HGDIOBJ]
+g32.SelectObject.restype = wt.HGDIOBJ
+g32.DeleteObject.argtypes = [wt.HGDIOBJ]
+g32.DeleteDC.argtypes = [wt.HDC]
+g32.SetStretchBltMode.argtypes = [wt.HDC, ctypes.c_int]
+g32.StretchBlt.argtypes = [wt.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                          wt.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wt.DWORD]
+g32.StretchBlt.restype = wt.BOOL
+g32.GetDIBits.argtypes = [wt.HDC, wt.HBITMAP, wt.UINT, wt.UINT, ctypes.c_void_p, ctypes.POINTER(BITMAPINFO), wt.UINT]
+g32.GetDIBits.restype = ctypes.c_int
+
+
+def _descendant_pids(procs, root_pids):
+    children = {}
+    for pid, (_name, ppid) in procs.items():
+        children.setdefault(ppid, []).append(pid)
+    seen = set()
+    queue = [int(p) for p in root_pids if p]
+    while queue:
+        cur = queue.pop(0)
+        if cur in seen:
+            continue
+        seen.add(cur)
+        for ch in children.get(cur, ()):
+            if ch not in seen:
+                queue.append(ch)
+    return seen
+
+
+def _bgra_to_png(bgra_bytes, w, h):
+    stride = w * 4
+    rows = []
+    for y in range(h):
+        row = bgra_bytes[y * stride:(y + 1) * stride]
+        rgb = bytearray(1 + w * 3)
+        rgb[1::3] = row[2::4]
+        rgb[2::3] = row[1::4]
+        rgb[3::3] = row[0::4]
+        rows.append(bytes(rgb))
+    raw = b"".join(rows)
+
+    def chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw, 5)) + chunk(b"IEND", b"")
+
+
+def cmd_list_windows(req):
+    """List GUI windows owned by terminal descendants plus desktop browser windows."""
+    procs = processes()
+    roots = list(req.get("pids") or [])
+    if req.get("pid"):
+        roots.append(req["pid"])
+    desc = _descendant_pids(procs, roots)
+    include_all = bool(req.get("all"))
+    found = []
+
+    def enum_cb(hwnd, _lp):
+        if not u32.IsWindowVisible(hwnd):
+            return True
+        cls_buf = ctypes.create_unicode_buffer(128)
+        u32.GetClassNameW(hwnd, cls_buf, 128)
+        if cls_buf.value in SKIP_WINDOW_CLASSES:
+            return True
+        tlen = u32.GetWindowTextLengthW(hwnd)
+        if tlen <= 0:
+            return True
+        tbuf = ctypes.create_unicode_buffer(min(tlen + 1, 512))
+        u32.GetWindowTextW(hwnd, tbuf, len(tbuf))
+        title = tbuf.value.strip()
+        if not title or title.startswith("Agent CLI Hub"):
+            return True
+        pid = wt.DWORD()
+        u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        pid_val = int(pid.value)
+        exe = procs.get(pid_val, ("", 0))[0]
+        exe_low = exe.lower()
+        linked = pid_val in desc
+        is_browser = exe_low in BROWSER_EXES
+        if not (include_all or linked or is_browser):
+            return True
+        rect = wt.RECT()
+        u32.GetWindowRect(hwnd, ctypes.byref(rect))
+        w = int(rect.right - rect.left)
+        h = int(rect.bottom - rect.top)
+        minimized = bool(u32.IsIconic(hwnd))
+        if not minimized and (w < 120 or h < 80):
+            return True
+        found.append({
+            "hwnd": int(hwnd),
+            "pid": pid_val,
+            "exe": exe or "app",
+            "title": title[:160],
+            "linked": linked,
+            "browser": is_browser,
+            "minimized": minimized,
+            "rect": {"left": int(rect.left), "top": int(rect.top), "width": max(0, w), "height": max(0, h)},
+        })
+        return True
+
+    cb = _WNDENUMPROC(enum_cb)
+    u32.EnumWindows(cb, 0)
+    found.sort(key=lambda x: (not x["linked"], x["minimized"], not x["browser"], x["title"].lower()))
+    return {"windows": found[:24]}
+
+
+def cmd_capture_window(req):
+    """Capture a visible non-minimized window via PrintWindow and return base64 PNG."""
+    hwnd = wt.HWND(int(req["hwnd"]))
+    if not u32.IsWindow(hwnd):
+        return {"ok": False, "error": "창을 찾을 수 없습니다 (닫혔을 수 있음)."}
+    if u32.IsIconic(hwnd):
+        return {"ok": False, "minimized": True, "error": "창이 최소화되어 있어 미리보기를 캡처할 수 없습니다."}
+    rect = wt.RECT()
+    if not u32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return {"ok": False, "error": "창 좌표를 읽을 수 없습니다."}
+    src_w = int(rect.right - rect.left)
+    src_h = int(rect.bottom - rect.top)
+    if src_w <= 0 or src_h <= 0:
+        return {"ok": False, "error": "창 크기가 올바르지 않습니다."}
+
+    max_w = max(240, min(1440, int(req.get("max_width") or 900)))
+    dst_w = min(src_w, max_w)
+    dst_h = max(1, round(src_h * (dst_w / src_w)))
+
+    scr_dc = u32.GetDC(None)
+    src_dc = g32.CreateCompatibleDC(scr_dc)
+    src_bmp = g32.CreateCompatibleBitmap(scr_dc, src_w, src_h)
+    old_src = g32.SelectObject(src_dc, src_bmp)
+    dst_dc = None
+    dst_bmp = None
+    old_dst = None
+    try:
+        ok = u32.PrintWindow(hwnd, src_dc, PW_RENDERFULLCONTENT)
+        if not ok:
+            ok = u32.PrintWindow(hwnd, src_dc, 0)
+        if not ok:
+            return {"ok": False, "error": "창 내용을 캡처하지 못했습니다."}
+        if dst_w != src_w or dst_h != src_h:
+            dst_dc = g32.CreateCompatibleDC(scr_dc)
+            dst_bmp = g32.CreateCompatibleBitmap(scr_dc, dst_w, dst_h)
+            old_dst = g32.SelectObject(dst_dc, dst_bmp)
+            g32.SetStretchBltMode(dst_dc, HALFTONE)
+            g32.StretchBlt(dst_dc, 0, 0, dst_w, dst_h, src_dc, 0, 0, src_w, src_h, SRCCOPY)
+            read_dc, read_bmp = dst_dc, dst_bmp
+        else:
+            read_dc, read_bmp = src_dc, src_bmp
+
+        bmi = BITMAPINFO()
+        bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+        bmi.bmiHeader.biWidth = dst_w
+        bmi.bmiHeader.biHeight = -dst_h
+        bmi.bmiHeader.biPlanes = 1
+        bmi.bmiHeader.biBitCount = 32
+        bmi.bmiHeader.biCompression = 0
+        buf = (ctypes.c_ubyte * (dst_w * dst_h * 4))()
+        got = g32.GetDIBits(read_dc, read_bmp, 0, dst_h, buf, ctypes.byref(bmi), DIB_RGB_COLORS)
+        if not got:
+            return {"ok": False, "error": "창 비트맵을 읽지 못했습니다."}
+        png = _bgra_to_png(bytes(buf), dst_w, dst_h)
+        return {"ok": True, "width": dst_w, "height": dst_h, "png": base64.b64encode(png).decode("ascii")}
+    finally:
+        if old_dst:
+            g32.SelectObject(dst_dc, old_dst)
+        if dst_bmp:
+            g32.DeleteObject(dst_bmp)
+        if dst_dc:
+            g32.DeleteDC(dst_dc)
+        g32.SelectObject(src_dc, old_src)
+        g32.DeleteObject(src_bmp)
+        g32.DeleteDC(src_dc)
+        u32.ReleaseDC(None, scr_dc)
+
+
+def cmd_focus_window(req):
+    """Restore (if minimized) and focus any desktop GUI window by HWND."""
+    hwnd = wt.HWND(int(req["hwnd"]))
+    if not u32.IsWindow(hwnd):
+        return {"ok": False, "error": "창을 찾을 수 없습니다."}
+    u32.ShowWindow(hwnd, 9 if u32.IsIconic(hwnd) else 5)
+    u32.SetForegroundWindow(hwnd)
+    return {"ok": True}
+
+
+HANDLERS = {
+    "list": cmd_list,
+    "read": cmd_read,
+    "send": cmd_send,
+    "focus": cmd_focus,
+    "procs": cmd_procs,
+    "list_windows": cmd_list_windows,
+    "capture_window": cmd_capture_window,
+    "focus_window": cmd_focus_window,
+}
 
 for line in sys.stdin:
     try:
