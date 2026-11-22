@@ -178,7 +178,20 @@ module.exports = function artifacts({ dir, index }) {
     }
     return false;
   }
-  return { list, handle };
+  function pinFile(sid, rawPath, title = null) {
+    if (!sid || !rawPath) return false;
+    const file = path.normalize(String(rawPath).replace(/^"|"$/g, '').replace(/^\/([a-z])\//i, (x, d) => `${d.toUpperCase()}:\\`));
+    try { if (!fs.statSync(file).isFile()) return false; } catch { return false; }
+    const e = entry(sid);
+    e.pinned = e.pinned.filter((x) => x.path.toLowerCase() !== file.toLowerCase());
+    e.pinned.unshift({ path: file, title, addedAt: Date.now() });
+    e.hidden = e.hidden.filter((h) => h.toLowerCase() !== file.toLowerCase());
+    save();
+    cache.delete(sid);
+    return file;
+  }
+
+  return { list, handle, pinFile };
 };
 module.exports.serve = serve;
 module.exports.kindOf = kindOf;

@@ -1828,6 +1828,23 @@ const server = http.createServer(async (req, res) => {
       if (!targetDir) return send(res, 400, { error: '분석할 작업 폴더를 찾을 수 없습니다.' });
       return send(res, 200, { ok: true, floorplan: scanFloorplan(targetDir) });
     }
+    if (p === '/api/projects/floorplan/report' && req.method === 'POST') {
+      const b = await body(req);
+      const proj = b.projectId ? projects.list().find((x) => x.id === b.projectId) : null;
+      const targetDir = path.resolve(String(b.cwd || proj?.cwd || ''));
+      if (!targetDir || !fs.statSync(targetDir, { throwIfNoEntry: false })?.isDirectory()) {
+        return send(res, 400, { error: '보고서를 저장할 작업 폴더를 찾을 수 없습니다.' });
+      }
+      const rawName = path.basename(String(b.filename || 'FLOORPLAN.md')).replace(/[^a-zA-Z0-9._가-힣-]+/g, '-');
+      const fileName = /\.md$/i.test(rawName) ? rawName : `${rawName || 'FLOORPLAN'}.md`;
+      const outPath = path.join(targetDir, fileName);
+      const content = String(b.content || '').trim();
+      if (!content) return send(res, 400, { error: '저장할 보고서 내용이 비어 있습니다.' });
+      fs.writeFileSync(outPath, content + '\n', 'utf8');
+      let pinned = false;
+      if (b.sessionId) pinned = !!artifactsMod.pinFile(String(b.sessionId), outPath, `코드 아키텍처 보고서 (${fileName})`);
+      return send(res, 200, { ok: true, path: outPath, fileName, pinned });
+    }
     if (p === '/api/projects/subtasks' && req.method === 'POST') {
       const b = await body(req);
       if (projectPlanning) return send(res, 409, { error: '작업 흐름을 생성 중입니다. 잠시 기다려 주세요.' });

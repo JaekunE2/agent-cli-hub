@@ -334,8 +334,10 @@
           ${previewCwd ? `<span class="badge c mono" title="${esc(previewCwd)}">${esc(base(previewCwd))}</span><button type="button" class="ghost btn-sm" id="fmBackProjDir">원래 폴더로</button>` : ''}
         </div>
         <div class="row" style="gap:6px;flex-wrap:wrap">
-          <button type="button" class="btn-sm" id="fmCopyMd" title="실무자 공유용 마크다운 아키텍처 보고서 복사">${ico.copy || ''} 보고서 복사</button>
-          <button type="button" class="btn-sm" id="fmDownloadMd" title="아키텍처 보고서 .md 파일로 다운로드">${ico.external || ''} .md 저장</button>
+          <button type="button" class="btn-sm" id="fmPreviewMd" title="아키텍처 & 품질 보고서 전문 미리보기 · 산출물 저장">${ico.file || ''} 보고서 보기</button>
+          <button type="button" class="btn-sm" id="fmSaveArtifact" title="작업 폴더에 FLOORPLAN.md 생성 및 산출물 탭 등록">${ico.plus || ''} 산출물 저장</button>
+          <button type="button" class="btn-sm" id="fmCopyMd" title="실무자 공유용 마크다운 아키텍처 보고서 복사">${ico.copy || ''} 복사</button>
+          <button type="button" class="btn-sm" id="fmDownloadMd" title="아키텍처 보고서 .md 파일로 다운로드">${ico.external || ''} .md</button>
           <button type="button" class="btn-sm" id="fmPickDir" title="다른 프로젝트 폴더 스캔">${ico.folder || ''} 폴더 선택</button>
           <button type="button" class="ghost icon-btn btn-sm" id="fmRescan" title="다시 스캔" aria-label="다시 스캔">${ico.refresh || ''}</button>
         </div>
@@ -660,6 +662,44 @@
         if (typeof openFolderPickerDialog === 'function') {
           openFolderPickerDialog(activeCwd, (chosen) => renderFloorplanInto({ host, p, cwd, gen, previewCwd: chosen, termCtx }));
         }
+        return;
+      }
+      const saveArtifactReport = async () => {
+        const mdText = buildArchitectureMarkdown(fp, p, activeCwd);
+        const r = await api('/api/projects/floorplan/report', {
+          method: 'POST',
+          body: {
+            projectId: p?.id || '',
+            cwd: activeCwd,
+            sessionId: termCtx?.sessionId || '',
+            filename: 'FLOORPLAN.md',
+            content: mdText,
+          },
+        });
+        if (r.error) throw new Error(r.error);
+        toast(r.pinned ? `FLOORPLAN.md 생성 및 산출물 탭 등록 완료` : `작업 폴더에 저장됨: ${r.path}`);
+        return r;
+      };
+      if (e.target.closest('#fmSaveArtifact')) {
+        saveArtifactReport().catch((er) => toast(er.message, 5000, 'danger'));
+        return;
+      }
+      if (e.target.closest('#fmPreviewMd')) {
+        const mdText = buildArchitectureMarkdown(fp, p, activeCwd);
+        const rendered = typeof md === 'function' ? md(mdText) : `<pre class="mdpre">${esc(mdText)}</pre>`;
+        const d = openDrawer({
+          title: '코드 아키텍처 & 품질 점검 보고서 (FLOORPLAN.md)',
+          bodyHTML: `<div class="md">${rendered}</div>`,
+          footerHTML: `<button type="button" data-drw-close>닫기</button><button type="button" id="drwCopyMd">복사</button><button type="button" id="drwDlMd">.md 다운로드</button><button type="button" class="primary" id="drwSaveMd">산출물 저장 (FLOORPLAN.md)</button>`,
+          width: 680,
+        });
+        $('#drwCopyMd', d).onclick = async () => { await copyText(mdText); toast('보고서를 클립보드에 복사했습니다'); };
+        $('#drwDlMd', d).onclick = () => $('#fmDownloadMd', host)?.click();
+        $('#drwSaveMd', d).onclick = async (ev) => {
+          const btn = ev.currentTarget;
+          btn.disabled = true;
+          try { await saveArtifactReport(); } catch (er) { toast(er.message, 5000, 'danger'); } finally { btn.disabled = false; }
+        };
         return;
       }
       if (e.target.closest('#fmCopyMd')) {

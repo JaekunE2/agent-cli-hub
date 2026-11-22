@@ -1568,6 +1568,7 @@ function viewConsole() {
   if (state.tab === 'files' && sid) return renderArtifacts(sid, gen);
   if (state.tab === 'floorplan' && typeof renderStandaloneFloorplan === 'function') {
     return renderStandaloneFloorplan(s?.cwd || '', gen, {
+      sessionId: sid || '',
       onInsertPrompt: async (txt, submit) => {
         if (submit) {
           await api('/api/console/send', { method: 'POST', body: { pid: Number(state.sel.id), text: txt, submit: true } });
@@ -1729,7 +1730,7 @@ function viewTranscript() {
   };
   if (state.tab === 'files') return renderArtifacts(sid, gen);
   if (state.tab === 'floorplan' && typeof renderStandaloneFloorplan === 'function') {
-    return renderStandaloneFloorplan(r?.cwd || live?.cwd || '', gen);
+    return renderStandaloneFloorplan(r?.cwd || live?.cwd || '', gen, { sessionId: sid || '' });
   }
   // Inline messenger-style reply composer at the bottom of the transcript!
   $('#view').innerHTML = `<div class="chat-shell">
@@ -2001,6 +2002,7 @@ function viewTerm() {
     const backTab = getSavedTermTab('screen');
     const restoreTab = backTab === 'floorplan' ? 'split' : backTab;
     return renderStandaloneFloorplan(termCwd, gen, {
+      sessionId: artSid || sid || '',
       onInsertPrompt: async (txt, submit) => {
         if (submit) {
           await api('/api/term/send', { method: 'POST', body: { id: t.id, text: txt, submit: true } });
@@ -2104,7 +2106,7 @@ function viewTerm() {
     if (e.type !== 'keydown') return true;
     const k = e.key.toLowerCase();
     if ((e.ctrlKey || e.metaKey) && k === 'c' && (e.shiftKey || xterm.hasSelection())) { copyText(xterm.getSelection()); xterm.clearSelection(); return false; }
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && k === 'v') return false; // let the browser paste
+    if ((e.ctrlKey || e.metaKey) && k === 'v') return false; // let the browser paste text & files on Ctrl+V / Ctrl+Shift+V
     return true;
   });
   $('#termwrap').addEventListener('contextmenu', (e) => { if (xterm?.hasSelection()) { e.preventDefault(); copyText(xterm.getSelection()); xterm.clearSelection(); } });
