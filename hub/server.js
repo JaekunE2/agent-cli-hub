@@ -19,7 +19,7 @@ const { createAgyQuotaService, parseAgyQuotaTui } = require('./agy-quota');
 const projects = require('./projects')();
 const { agents: projectAgents } = require('./project-validation');
 const { fingerprint, projectSession, sessionId: validSessionId } = require('./project-history');
-const { generatePlan, generateSubtasks, cliModelEffortArgs } = require('./project-plan');
+const { generatePlan, generateSubtasks, cliModelEffortArgs, inspectWorkspace } = require('./project-plan');
 const { runTaskSubChatTurn } = require('./task-subchat');
 const { deleteCliRecord, uuid: recordUuid } = require('./delete-cli-record');
 const { ownedRoots, verifiedRoot, probeRoot, stopTerminal } = require('./project-stop');
@@ -666,13 +666,18 @@ async function saveTermsState() {
     const list = [];
     // pid 0 = not matched yet: the terminal's root process is the pty host's direct child
     await matchTermPids(cons);
-    for (const t of terms.values()) {
+    const seenSids = new Set();
+    for (const t of [...terms.values()].sort((a, b) => Number(b.id) - Number(a.id))) {
       if (t.exited !== null) continue;
       const c = t.pid && cons.find((x) => x.pids.includes(t.pid));
       const s = c && live.find((x) => c.pids.includes(x.pid));
       const resumed = (t.args || []).includes('--resume') ? t.args[t.args.indexOf('--resume') + 1] : null;
-      const sessionId = t.meta.projectTask ? projectRecord(t) : isAgyTerm(t) ? agySessionOf(t) : s?.sessionId || t.meta.sessionId || resumed;
-      list.push({ id: t.id, meta: t.meta, sessionId: sessionId || null, busy: s?.status === 'busy' || s?.status === 'shell' });
+      const sessionId = t.meta.projectTask ? projectRecord(t) : isAgyTerm(t) ? agySessionOf(t) : s?.sessionId || termSessionId(t) || resumed;
+      if (sessionId) {
+        if (seenSids.has(sessionId)) continue;
+        seenSids.add(sessionId);
+      }
+      list.unshift({ id: t.id, meta: t.meta, sessionId: sessionId || null, busy: s?.status === 'busy' || s?.status === 'shell' });
     }
     for (const t of terms.values()) if (t.meta.projectTask) rememberProjectTerm(t);
     fs.writeFileSync(TERMS_STATE + '.tmp', JSON.stringify({ savedAt: new Date().toISOString(), terms: list }, null, 1));
@@ -729,7 +734,19 @@ const crashRec = require('./crash-recovery')({
 async function recoverTerms(note = RESTART_NOTE) {
   let saved; try { saved = JSON.parse(fs.readFileSync(TERMS_STATE, 'utf8')); } catch { return; }
   const projectIds = new Set(projects.list().map(p => p.id));
-  const items = (saved.terms || []).filter(x => x.meta?.cmd && (!x.meta.projectTask || projectIds.has(x.meta.projectTask.projectId)));
+  const rawItems = (saved.terms || []).filter(x => x.meta?.cmd && (!x.meta.projectTask || projectIds.has(x.meta.projectTask.projectId)));
+  const seenRecoverSids = new Set();
+  const items = [];
+  for (let i = rawItems.length - 1; i >= 0; i--) {
+    const x = rawItems[i];
+    const sid = x.sessionId || termSessionId({ meta: x.meta, args: x.meta?.args });
+    if (sid) {
+      if (seenRecoverSids.has(sid)) continue;
+      seenRecoverSids.add(sid);
+      x.sessionId = sid;
+    }
+    items.unshift(x);
+  }
   if (!items.length) return;
   const resumed = new Set(items.map((x) => x.sessionId).filter(Boolean));
   console.log(`[pty] recovering ${items.length} terminal(s) from ${saved.savedAt}`);
@@ -818,7 +835,42 @@ function termSessionId(t) {
   if (t.meta?.projectTask) return projectRecord(t) || null;
   if (isAgyTerm(t)) return agySessionOf(t) || null;
   if (isCodexTerm(t)) return codexSessionOf(t) || null;
+  const args = t.args || t.meta?.args || [];
+  const ri = args.indexOf('--resume');
+  if (ri >= 0 && args[ri + 1]) return args[ri + 1];
+  const ci = args.indexOf('--conversation');
+  if (ci >= 0 && args[ci + 1]) return args[ci + 1];
+  const r2 = args.indexOf('resume');
+  if (r2 >= 0 && args[r2 + 1] && !args[r2 + 1].startsWith('-')) return args[r2 + 1];
   return t.meta?.sessionId || null;
+}
+
+// Close & forget redundant terminals that point to the exact same sessionId, keeping the active/newest one.
+function dedupeTermsBySession() {
+  const bySid = new Map();
+  for (const t of terms.values()) {
+    if (t.exited !== null) continue;
+    const sid = termSessionId(t);
+    if (!sid) continue;
+    (bySid.get(sid) || bySid.set(sid, []).get(sid)).push(t);
+  }
+  const removed = [];
+  for (const [sid, list] of bySid.entries()) {
+    if (list.length <= 1) continue;
+    // Sort so busy terminal comes first, then newest terminal id
+    list.sort((a, b) => {
+      const aBusy = (isAgyTerm(a) ? agyStatus(a) : isCodexTerm(a) ? codexStatus(a) : '') === 'busy' ? 1 : 0;
+      const bBusy = (isAgyTerm(b) ? agyStatus(b) : isCodexTerm(b) ? codexStatus(b) : '') === 'busy' ? 1 : 0;
+      if (aBusy !== bBusy) return bBusy - aBusy;
+      return Number(b.id) - Number(a.id);
+    });
+    const keep = list[0];
+    for (const dup of list.slice(1)) {
+      removed.push({ id: dup.id, sessionId: sid, kept: keep.id });
+      forgetTerm(dup);
+    }
+  }
+  return removed;
 }
 function liveFavs() {
   const hidden = projects.hidden();
@@ -1257,8 +1309,11 @@ function launchExternalWindow({ cwd, title, cmd, args = [], env = {}, openMode =
 }
 
 async function switchAccount({ sessionId, termId, account = 'auto', cont = false, skip = true, interrupt = false, force = false, openMode = 'dashboard' }) {
-  const t0 = termId != null ? [...terms.values()].find((x) => String(x.id) === String(termId)) : null;
-  let sid = sessionId || (t0 && (t0.sessionId || (isCodexTerm(t0) ? codexSessionOf(t0) : isAgyTerm(t0) ? agySessionOf(t0) : null))) || '';
+  let t0 = termId != null && termId !== '' ? [...terms.values()].find((x) => String(x.id) === String(termId)) : null;
+  let sid = sessionId || (t0 && termSessionId(t0)) || '';
+  if (!t0 && sid) {
+    t0 = [...terms.values()].find((x) => x.exited === null && termSessionId(x) === sid) || null;
+  }
   const d = sid ? index.get(sid) : (t0 ? termDocOf(t0) : null);
   if (d) { sid = sid || d.id; if (d.file) await index.updateFile(d.file); }
 
@@ -1295,13 +1350,18 @@ async function switchAccount({ sessionId, termId, account = 'auto', cont = false
     }
   }
 
-  // 1) Stop running instance if live (so two processes never write the same transcript, or replace the dashboard terminal cleanly)
-  if (t0 && t0.exited === null && openMode === 'dashboard') {
-    if (isCodexTerm(t0)) { t0.proc.write('\x03'); await sleep(400); t0.proc.write('\x03'); }
-    else if (isAgyTerm(t0)) { t0.proc.write('\x03'); await sleep(300); t0.proc.write('/exit'); await sleep(SUBMIT_DELAY); t0.proc.write('\r'); }
-    else { t0.proc.write('\x1b'); await sleep(400); t0.proc.write('/exit'); await sleep(SUBMIT_DELAY); t0.proc.write('\r'); }
-    if (!(await waitFor(() => t0.exited !== null, 6000))) try { t0.proc.kill(); } catch {}
-    forgetTerm(t0);
+  // 1) Stop running instance(s) if live (including any duplicate dashboard terminals for the same sessionId)
+  const matchingTerms = [...terms.values()].filter((x) => (t0 && x.id === t0.id) || (sid && termSessionId(x) === sid));
+  if (matchingTerms.length && openMode === 'dashboard') {
+    for (const tm of matchingTerms) {
+      if (tm.exited === null) {
+        if (isCodexTerm(tm)) { tm.proc.write('\x03'); await sleep(350); tm.proc.write('\x03'); }
+        else if (isAgyTerm(tm)) { tm.proc.write('\x03'); await sleep(250); tm.proc.write('/exit'); await sleep(SUBMIT_DELAY); tm.proc.write('\r'); }
+        else { tm.proc.write('\x1b'); await sleep(350); tm.proc.write('/exit'); await sleep(SUBMIT_DELAY); tm.proc.write('\r'); }
+        if (!(await waitFor(() => tm.exited !== null, 4500))) try { tm.proc.kill(); } catch {}
+      }
+      forgetTerm(tm);
+    }
   } else if (loc.live && openMode === 'dashboard') {
     if (loc.s.status === 'busy' && !interrupt) return { ok: false, busy: true, error: '세션이 작업 중입니다. 중단하고 전환할까요?' };
     const gone = () => !pidAlive(loc.s.pid) || (loc.term && loc.term.exited !== null);
@@ -1570,6 +1630,113 @@ const server = http.createServer(async (req, res) => {
   try {
     if (p === '/api/projects/accounts' && req.method === 'GET') {
       return send(res, 200, { accounts: projectAccounts.list(url.searchParams.get('agent')) });
+    }
+    if (p === '/api/fs/dirs' && req.method === 'GET') {
+      const reqPath = (url.searchParams.get('path') || '').trim();
+      const workspaceParent = path.resolve(__dirname, '..', '..');
+      let cur = reqPath && path.isAbsolute(reqPath) ? path.resolve(reqPath) : workspaceParent;
+      if (!fs.statSync(cur, { throwIfNoEntry: false })?.isDirectory()) {
+        const up = reqPath ? path.dirname(path.resolve(reqPath)) : '';
+        cur = (up && fs.statSync(up, { throwIfNoEntry: false })?.isDirectory()) ? up : (fs.existsSync(workspaceParent) ? workspaceParent : os.homedir());
+      }
+      const parsed = path.parse(cur);
+      const parent = cur !== parsed.root ? path.dirname(cur) : null;
+      const drives = [];
+      for (const ch of 'CDEFGHIJKLMNOPQRSTUVWXYZ') {
+        const drv = `${ch}:\\`;
+        try { if (fs.existsSync(drv)) drives.push(drv); } catch {}
+      }
+      const skipNames = new Set(['$recycle.bin', 'system volume information', 'node_modules', '.git', '__pycache__', '.venv']);
+      const dirs = [];
+      const files = [];
+      try {
+        for (const e of fs.readdirSync(cur, { withFileTypes: true })) {
+          if (skipNames.has(e.name.toLowerCase())) continue;
+          if (e.isDirectory()) {
+            if (e.name.startsWith('.')) continue;
+            const full = path.join(cur, e.name);
+            const subMarkers = [];
+            try {
+              if (fs.existsSync(path.join(full, '.git'))) subMarkers.push('Git');
+              if (fs.existsSync(path.join(full, 'package.json'))) subMarkers.push('Node.js');
+              if (fs.existsSync(path.join(full, 'pyproject.toml')) || fs.existsSync(path.join(full, 'requirements.txt'))) subMarkers.push('Python');
+            } catch {}
+            dirs.push({ name: e.name, path: full, markers: subMarkers });
+          } else if (e.isFile() && files.length < 40) {
+            files.push(e.name);
+          }
+        }
+        dirs.sort((a, b) => (b.markers.length - a.markers.length) || a.name.localeCompare(b.name, 'ko'));
+      } catch {}
+
+      const quickSet = new Map();
+      const addQuick = (pStr, label, kind) => {
+        if (!pStr || !path.isAbsolute(pStr)) return;
+        const norm = path.resolve(pStr);
+        const key = norm.toLowerCase();
+        if (quickSet.has(key)) return;
+        const st = fs.statSync(norm, { throwIfNoEntry: false });
+        if (!st?.isDirectory() && norm !== PROJECTS_DIR) return;
+        quickSet.set(key, { path: norm, label: label || path.basename(norm) || norm, kind });
+      };
+      addQuick(workspaceParent, `${path.basename(workspaceParent)} (상위 폴더)`, 'workspace');
+      addQuick(PROJECTS_DIR, 'Agent CLI Hub / projects (내부 폴더)', 'internal');
+      for (const pr of projects.list()) addQuick(pr.cwd, `${pr.name} (${path.basename(pr.cwd)})`, 'project');
+      const rec = index.ready ? index.recent(50, false, '', projects.hidden()) : [];
+      for (const r of rec) {
+        if (r.cwd) addQuick(r.cwd, path.basename(r.cwd) || r.cwd, 'recent');
+        if (quickSet.size >= 14) break;
+      }
+      addQuick(os.homedir(), '홈 폴더', 'home');
+
+      const info = inspectWorkspace(cur);
+      const targetInfo = reqPath && path.isAbsolute(reqPath) ? inspectWorkspace(path.resolve(reqPath)) : info;
+      return send(res, 200, {
+        host: os.hostname(),
+        current: cur,
+        parent,
+        drives,
+        dirs: dirs.slice(0, 150),
+        files,
+        quick: [...quickSet.values()],
+        info: { exists: info.exists, isExistingProject: info.isExistingProject, fileCount: info.fileCount, markers: info.markers },
+        targetInfo: { exists: targetInfo.exists, isExistingProject: targetInfo.isExistingProject, fileCount: targetInfo.fileCount, markers: targetInfo.markers, isInternal: isInsideProjectsDir(reqPath || cur) },
+      });
+    }
+    if (p === '/api/fs/mkdir' && req.method === 'POST') {
+      const b = await body(req);
+      const parent = String(b.parent || '').trim();
+      const name = String(b.name || '').trim().replace(/[<>:"/\\|?*\x00-\x1f]/g, '');
+      if (!parent || !path.isAbsolute(parent) || !name) return send(res, 400, { error: '상위 폴더와 새 폴더 이름을 확인하세요.' });
+      const target = path.join(path.resolve(parent), name);
+      try {
+        fs.mkdirSync(target, { recursive: true });
+        return send(res, 200, { ok: true, path: target });
+      } catch (e) {
+        return send(res, 400, { error: `폴더를 생성하지 못했습니다: ${e.message}` });
+      }
+    }
+    if (p === '/api/fs/pick-dir' && req.method === 'POST') {
+      const b = await body(req);
+      const initDir = (b.path && path.isAbsolute(b.path) && fs.existsSync(b.path)) ? path.resolve(b.path) : path.resolve(__dirname, '..', '..');
+      const psScript = [
+        '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);',
+        'Add-Type -AssemblyName System.Windows.Forms;',
+        '$owner = New-Object System.Windows.Forms.Form;',
+        '$owner.TopMost = $true;',
+        '$d = New-Object System.Windows.Forms.FolderBrowserDialog;',
+        '$d.Description = "작업할 프로젝트 폴더를 선택하세요";',
+        `$d.SelectedPath = ${JSON.stringify(initDir)};`,
+        '$d.ShowNewFolderButton = $true;',
+        'if ($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $d.SelectedPath }',
+        '$owner.Dispose();',
+      ].join(' ');
+      const picked = await new Promise((resolve) => {
+        execFile('powershell.exe', ['-NoProfile', '-Sta', '-Command', psScript], { timeout: 120_000, windowsHide: true }, (err, stdout) => {
+          resolve(err ? '' : String(stdout || '').trim());
+        });
+      });
+      return send(res, 200, { ok: !!picked, path: picked || null });
     }
     if (p === '/api/projects/cli-options' && req.method === 'GET') {
       return send(res, 200, { options: projectCliOptions() });
@@ -2017,6 +2184,13 @@ const server = http.createServer(async (req, res) => {
         try { launchAccount = projectAccounts.resolve(kind, accountId); }
         catch (e) { return send(res, 400, { error: e.message }); }
       }
+      // If a dashboard terminal is already open for this exact sessionId (and not forking), reuse it instead of spawning a duplicate!
+      if (b.resume && !b.fork && !projectTask) {
+        const existingTerm = [...terms.values()].find((x) => x.exited === null && termSessionId(x) === b.resume);
+        if (existingTerm) {
+          return send(res, 200, { ...termInfo(existingTerm), existing: true });
+        }
+      }
       const yolo = b.skipPermissions !== false;
       let cmd, args = [], title, codexStart = null;
       if (b.kind === 'claude') {
@@ -2104,6 +2278,12 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/agy/usage' && req.method === 'POST') {
       const r = await agyQuota.refresh({ force: true });
       return send(res, 200, r);
+    }
+    if (p === '/api/term/dedupe' && req.method === 'POST') {
+      const removed = dedupeTermsBySession();
+      await saveTermsState();
+      overviewStale();
+      return send(res, 200, { ok: true, removed });
     }
     if (p === '/api/term/close' && req.method === 'POST') {
       const b = await body(req);
