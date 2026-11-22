@@ -101,16 +101,17 @@
 
 /* Tab 2: Clean 4-Column Kanban with Scannable Cards */
 .pj-board { display: grid; grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: 12px; overflow-x: auto; padding-bottom: 12px; align-items: start; }
-.pj-board section { background: color-mix(in srgb, var(--panel2) 68%, var(--bg)); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 10px; min-height: 250px; display: flex; flex-direction: column; gap: 9px; }
-.pj-board h4 { display: flex; align-items: center; gap: 7px; margin: 0 2px 2px; font-size: 13px; font-weight: 650; }
-.pj-board h4::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
-.pj-board [data-drop=doing] h4::before { background: var(--accent); }
-.pj-board [data-drop=review] h4::before { background: var(--warn); }
-.pj-board [data-drop=done] h4::before { background: var(--ok); }
-.pj-lane-empty { padding: 28px 8px; text-align: center; color: var(--muted); font-size: 12px; }
+.pj-board section { background: color-mix(in srgb, var(--panel2) 55%, var(--bg)); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 10px; min-height: 120px; display: flex; flex-direction: column; gap: 9px; }
+.pj-board section:not(:has(.pj-task)) { border-style: dashed; background: transparent; }
+.pj-board h2.pj-lane-hd, .pj-board h4 { display: flex; align-items: center; gap: 7px; margin: 0 2px 2px; font-size: 13px; font-weight: 650; }
+.pj-board h2.pj-lane-hd::before, .pj-board h4::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.pj-board [data-drop=doing] h2.pj-lane-hd::before, .pj-board [data-drop=doing] h4::before { background: var(--accent); }
+.pj-board [data-drop=review] h2.pj-lane-hd::before, .pj-board [data-drop=review] h4::before { background: var(--warn); }
+.pj-board [data-drop=done] h2.pj-lane-hd::before, .pj-board [data-drop=done] h4::before { background: var(--ok); }
+.pj-lane-empty { padding: 24px 8px; text-align: center; color: var(--muted); font-size: 12px; }
 
-.pj-task { background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 12px 13px; display: flex; flex-direction: column; gap: 7px; overflow-wrap: anywhere; box-shadow: var(--shadow-low); cursor: pointer; transition: border-color .15s, box-shadow .15s, transform .15s; }
-.pj-task:hover { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); box-shadow: 0 4px 12px rgba(0,0,0,.07); }
+.pj-task { background: var(--panel); border: 1px solid var(--line-strong); border-radius: var(--radius-lg); padding: 12px 13px; display: flex; flex-direction: column; gap: 7px; overflow-wrap: anywhere; cursor: pointer; transition: border-color .15s, background .15s; }
+.pj-task:hover { border-color: var(--accent); background: color-mix(in srgb, var(--panel2) 25%, var(--panel)); }
 .pj-task-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }
 .pj-card-desc { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: keep-all; }
 .pj-title { background: transparent; border: 0; padding: 0; min-height: 0; height: auto; justify-content: flex-start; text-align: left; font-size: 13.5px; font-weight: 600; white-space: normal; word-break: keep-all; color: var(--text); border-radius: 4px; line-height: 1.38; min-width: 0; }
