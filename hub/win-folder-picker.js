@@ -41,11 +41,52 @@ using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 public static class AchFolderPicker {
+  static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+  const uint SWP_NOSIZE = 0x0001;
+  const uint SWP_NOMOVE = 0x0002;
+  const uint SWP_SHOWWINDOW = 0x0040;
+  const int SW_SHOW = 5;
+
+  public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+  [DllImport("user32.dll")]
+  static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+  [DllImport("user32.dll")]
+  static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+  static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+
+  [DllImport("user32.dll")]
+  static extern bool IsWindowVisible(IntPtr hWnd);
+
+  [DllImport("user32.dll")]
+  static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+  [DllImport("user32.dll")]
+  static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+
+  [DllImport("user32.dll")]
+  static extern IntPtr GetForegroundWindow();
+
   [DllImport("user32.dll")]
   static extern bool SetForegroundWindow(IntPtr hWnd);
 
   [DllImport("user32.dll")]
   static extern bool BringWindowToTop(IntPtr hWnd);
+
+  [DllImport("user32.dll")]
+  static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+  [DllImport("user32.dll")]
+  static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+  [DllImport("kernel32.dll")]
+  static extern uint GetCurrentProcessId();
+
+  [DllImport("kernel32.dll")]
+  static extern uint GetCurrentThreadId();
 
   [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
   static extern void SHCreateItemFromParsingName(string pszPath, IntPtr pbc, [MarshalAs(UnmanagedType.LPStruct)] Guid riid, out IShellItem ppv);
@@ -92,19 +133,74 @@ public static class AchFolderPicker {
     void Compare(IShellItem psi, uint hint, out int piOrder);
   }
 
-  private static Form CreateTopMostOwner() {
+  private static Form CreateTopMostOwner(string title) {
+    var wa = Screen.PrimaryScreen != null ? Screen.PrimaryScreen.WorkingArea : new System.Drawing.Rectangle(0, 0, 1280, 800);
     var owner = new Form();
+    owner.Text = string.IsNullOrEmpty(title) ? "Windows Explorer" : title;
     owner.StartPosition = FormStartPosition.Manual;
-    owner.Location = new System.Drawing.Point(-32000, -32000);
+    owner.Location = new System.Drawing.Point(wa.Left + wa.Width / 2, wa.Top + wa.Height / 2);
     owner.Size = new System.Drawing.Size(1, 1);
-    owner.ShowInTaskbar = false;
-    owner.Opacity = 0;
+    owner.FormBorderStyle = FormBorderStyle.FixedToolWindow;
+    owner.ShowInTaskbar = true;
+    owner.Opacity = 0.01;
     owner.TopMost = true;
     owner.Show();
-    owner.Activate();
-    SetForegroundWindow(owner.Handle);
-    BringWindowToTop(owner.Handle);
+    ForceWindowFront(owner.Handle);
     return owner;
+  }
+
+  private static void ForceWindowFront(IntPtr hWnd) {
+    if (hWnd == IntPtr.Zero) return;
+    ShowWindow(hWnd, SW_SHOW);
+    SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    IntPtr fg = GetForegroundWindow();
+    uint fgTid = 0;
+    uint curTid = GetCurrentThreadId();
+    bool attached = false;
+    if (fg != IntPtr.Zero) {
+      uint dummy;
+      fgTid = GetWindowThreadProcessId(fg, out dummy);
+      if (fgTid != 0 && fgTid != curTid) attached = AttachThreadInput(curTid, fgTid, true);
+    }
+    try {
+      SetForegroundWindow(hWnd);
+      BringWindowToTop(hWnd);
+    } finally {
+      if (attached) AttachThreadInput(curTid, fgTid, false);
+    }
+  }
+
+  private static bool PromoteCurrentDialogToFront() {
+    uint selfPid = GetCurrentProcessId();
+    bool promoted = false;
+    EnumWindows((h, l) => {
+      uint pid;
+      GetWindowThreadProcessId(h, out pid);
+      if (pid == selfPid && IsWindowVisible(h)) {
+        var cls = new System.Text.StringBuilder(64);
+        GetClassName(h, cls, 64);
+        if (cls.ToString() == "#32770") {
+          ForceWindowFront(h);
+          promoted = true;
+        }
+      }
+      return true;
+    }, IntPtr.Zero);
+    return promoted;
+  }
+
+  private static void CloseCurrentDialog() {
+    uint selfPid = GetCurrentProcessId();
+    EnumWindows((h, l) => {
+      uint pid;
+      GetWindowThreadProcessId(h, out pid);
+      if (pid == selfPid) {
+        var cls = new System.Text.StringBuilder(64);
+        GetClassName(h, cls, 64);
+        if (cls.ToString() == "#32770") PostMessage(h, 0x0010u, IntPtr.Zero, IntPtr.Zero);
+      }
+      return true;
+    }, IntPtr.Zero);
   }
 
   public static string Pick(string initDir, string title, int autoCloseMs) {
@@ -122,13 +218,22 @@ public static class AchFolderPicker {
           dlg.SetFolder(folderItem);
           Marshal.ReleaseComObject(folderItem);
         }
-        using (var owner = CreateTopMostOwner()) {
-          System.Windows.Forms.Timer timer = null;
+        using (var owner = CreateTopMostOwner(title)) {
+          var frontTimer = new System.Windows.Forms.Timer();
+          int ticks = 0;
+          frontTimer.Interval = 50;
+          frontTimer.Tick += (s, e) => {
+            ticks++;
+            if (PromoteCurrentDialogToFront() || ticks >= 40) frontTimer.Stop();
+          };
+          frontTimer.Start();
+
+          System.Windows.Forms.Timer closeTimer = null;
           if (autoCloseMs > 0) {
-            timer = new System.Windows.Forms.Timer();
-            timer.Interval = autoCloseMs;
-            timer.Tick += (s, e) => { timer.Stop(); dlg.Close(-2147023673); };
-            timer.Start();
+            closeTimer = new System.Windows.Forms.Timer();
+            closeTimer.Interval = autoCloseMs;
+            closeTimer.Tick += (s, e) => { closeTimer.Stop(); CloseCurrentDialog(); };
+            closeTimer.Start();
           }
           try {
             int hr = dlg.Show(owner.Handle);
@@ -142,19 +247,32 @@ public static class AchFolderPicker {
             }
             return "";
           } finally {
-            if (timer != null) timer.Dispose();
+            frontTimer.Dispose();
+            if (closeTimer != null) closeTimer.Dispose();
           }
         }
       } finally {
         Marshal.ReleaseComObject(dlg);
       }
     } catch {
-      using (var owner = CreateTopMostOwner())
+      using (var owner = CreateTopMostOwner(title))
       using (var fb = new FolderBrowserDialog()) {
         if (!string.IsNullOrEmpty(title)) fb.Description = title;
         if (!string.IsNullOrEmpty(initDir) && Directory.Exists(initDir)) fb.SelectedPath = initDir;
         fb.ShowNewFolderButton = true;
-        return fb.ShowDialog(owner) == DialogResult.OK ? (fb.SelectedPath ?? "") : "";
+        var frontTimer = new System.Windows.Forms.Timer();
+        int ticks = 0;
+        frontTimer.Interval = 50;
+        frontTimer.Tick += (s, e) => {
+          ticks++;
+          if (PromoteCurrentDialogToFront() || ticks >= 40) frontTimer.Stop();
+        };
+        frontTimer.Start();
+        try {
+          return fb.ShowDialog(owner) == DialogResult.OK ? (fb.SelectedPath ?? "") : "";
+        } finally {
+          frontTimer.Dispose();
+        }
       }
     }
   }
@@ -186,6 +304,8 @@ function parsePickDirOutput(stdout) {
   return { ok: false, cancelled: false, path: null };
 }
 
+let activePicker = null;
+
 /**
  * Open the native Windows File Explorer folder picker dialog and return { ok, path, cancelled?, error? }.
  */
@@ -194,8 +314,15 @@ function pickDirectory({ initialPath = '', title = '작업할 프로젝트 폴�
   const psScript = buildPickDirPowerShellScript({ testAutoCloseMs });
   const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
 
+  if (activePicker) {
+    activePicker.superseded = true;
+    try { activePicker.child.kill(); } catch {}
+    activePicker = null;
+  }
+
   return new Promise((resolve) => {
-    execFile(
+    const entry = { child: null, superseded: false };
+    const child = execFile(
       'powershell.exe',
       ['-NoProfile', '-Sta', '-EncodedCommand', encoded],
       {
@@ -208,6 +335,10 @@ function pickDirectory({ initialPath = '', title = '작업할 프로젝트 폴�
         },
       },
       (err, stdout, stderr) => {
+        if (activePicker === entry) activePicker = null;
+        if (entry.superseded) {
+          return resolve({ ok: false, cancelled: true, path: null });
+        }
         if (err) {
           const msg = err.killed
             ? '폴더 선택 창 응답 시간이 초과되었습니다.'
@@ -226,6 +357,8 @@ function pickDirectory({ initialPath = '', title = '작업할 프로젝트 폴�
         resolve(parsed);
       }
     );
+    entry.child = child;
+    activePicker = entry;
   });
 }
 

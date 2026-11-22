@@ -53,7 +53,7 @@ test('pickDirectory launches modern IFileOpenDialog cleanly on Windows', { skip:
     initialPath: path.join(root, 'projects', 'non-existent-sub'),
     fallbackDir: root,
     timeoutMs: 15_000,
-    testAutoCloseMs: 250,
+    testAutoCloseMs: 500,
   });
   assert.equal(res.error, undefined);
   assert.equal(res.ok, false);
