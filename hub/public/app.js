@@ -314,7 +314,7 @@ async function refreshOverview() {
       if (activeBuildId && o.buildId !== activeBuildId) {
         const ae = document.activeElement;
         const isTyping = !!(ae && (ae.matches('input, textarea') && ae.value) || ae?.classList?.contains('xterm-helper-textarea'));
-        const isLiveTerm = (state.sel.kind === 'term' && (state.tab === 'screen' || state.tab === 'split')) || state.sel.kind === 'console';
+        const isLiveTerm = (state.sel.kind === 'term' && ['screen', 'split', 'dock'].includes(state.tab)) || state.sel.kind === 'console';
         if (!isLiveTerm && !isTyping) {
           toast('허브가 업데이트되어 새 화면을 불러옵니다…', 1500);
           setTimeout(() => location.reload(), 350);
@@ -2641,7 +2641,10 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
       box.dataset.painted = '1';
       const t = first && jump && $('.msg.target', msgsHost);
       if (t) t.scrollIntoView({ block: 'center' });
-      else if (atBottom) v.scrollTop = v.scrollHeight;
+      else if (atBottom) {
+        v.scrollTop = v.scrollHeight;
+        requestAnimationFrame(() => { if (v.isConnected) v.scrollTop = v.scrollHeight; });
+      }
 
       const hasMore = jump && b + d.messages.length < (d.total || 0);
       const syncChatBottom = () => {
@@ -4192,14 +4195,6 @@ function paintGpu() {
   const cpuUtil = q.cpu?.util ?? 0;
   const active = q.active || [], waiting = q.waiting || [], history = q.history || [];
   const validGpus = (q.gpus || []).filter((g) => g.index >= 0);
-  const g0 = validGpus[0];
-  const g0Mem = g0 && g0.totalMB ? Math.round((g0.usedMB / g0.totalMB) * 100) : 0;
-
-  const pills = `<div class="gpu-pills">
-    ${g0 ? `<span class="gpu-pill">GPU <b>${g0.util || 0}%</b> · VRAM <b>${fmtMB(g0.usedMB)}/${fmtMB(g0.totalMB)}</b> (${g0Mem}%)</span>` : '<span class="gpu-pill">로컬 GPU 없음</span>'}
-    ${q.cpu ? `<span class="gpu-pill">CPU <b>${cpuUtil}%</b></span>` : ''}
-    ${ram ? `<span class="gpu-pill">RAM <b>${ramPct}%</b></span>` : ''}
-  </div>`;
 
   const tabs = `<div class="tablist" role="tablist" aria-label="GPU 대기열 보기">
     <button role="tab" data-gtab="queue" aria-selected="${tab === 'queue'}" class="${tab === 'queue' ? 'on' : ''}">작업 대기열 <span class="badge" style="margin-left:4px">${active.length + waiting.length}</span></button>
@@ -4268,7 +4263,7 @@ function paintGpu() {
     </div>`).join('');
     content = `<h1 class="sr-only">GPU 최근 기록</h1><section class="sheet"><div class="sheet-hd"><h2>최근 작업 기록</h2></div>${histRows || '<div class="empty" style="padding:20px 16px">최근 기록이 없습니다.</div>'}</section>`;
   }
-  $('#view').innerHTML = `<div class="sys-shell">${sysTop}<div class="sys-body"><div class="page-wrap">${pills}${tabs}${content}</div></div></div>`;
+  $('#view').innerHTML = `<div class="sys-shell">${sysTop}<div class="sys-body"><div class="page-wrap">${tabs}${content}</div></div></div>`;
 }
 
 // ---------- autonomous research projects ----------

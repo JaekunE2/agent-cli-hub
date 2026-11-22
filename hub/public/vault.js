@@ -1,16 +1,65 @@
+// Unified Shared Resources (Skills · MCP · Harness) view & CLI inspector UI
 'use strict';
 (function () {
   let vaultTab = 'skills';
   let skillQuery = '';
+  let sourceFilter = 'all'; // 'all' | 'claude' | 'codex' | 'agy' | 'vault'
   let vaultState = null;
 
   const CLI_LABELS = { claude: 'Claude', codex: 'Codex', agy: 'AGY' };
+  const SOURCE_META = [
+    { id: 'claude', label: 'Claude Code', icon: () => agentIcon('claude') },
+    { id: 'codex', label: 'Codex CLI', icon: () => agentIcon('codex') },
+    { id: 'agy', label: 'Antigravity', icon: () => agentIcon('agy') },
+    { id: 'shared', label: '공용 · 직접 등록', icon: () => UI_ICO.layers || '' },
+  ];
 
-  function targetPillsHTML(kind, id, selectedTargets) {
-    const sel = new Set(selectedTargets || ['claude', 'codex', 'agy']);
-    return ['claude', 'codex', 'agy'].map((cli) =>
-      `<label class="v-tgt"><input type="checkbox" data-v-tgt="${esc(kind)}" data-v-id="${esc(id)}" value="${cli}" ${sel.has(cli) ? 'checked' : ''}><span>${CLI_LABELS[cli]}</span></label>`
-    ).join('');
+  function primarySourceOf(item) {
+    const srcs = Array.isArray(item.sources) ? item.sources : (item.source ? [item.source] : []);
+    if (srcs.includes('claude')) return 'claude';
+    if (srcs.includes('codex')) return 'codex';
+    if (srcs.includes('agy')) return 'agy';
+    return 'shared';
+  }
+
+  function matchesSourceFilter(item, f) {
+    if (f === 'all') return true;
+    const srcs = Array.isArray(item.sources) ? item.sources : (item.source ? [item.source] : []);
+    if (f === 'vault') return !srcs.some((s) => ['claude', 'codex', 'agy'].includes(s));
+    return srcs.includes(f) || (Array.isArray(item.targets) && item.targets.includes(f));
+  }
+
+  function switchHTML(kind, id, enabled) {
+    const on = !!enabled;
+    return `<button type="button" class="sw ${on ? 'on' : ''}" data-v-sw="${esc(kind)}" data-v-id="${esc(id)}" data-on="${on ? 1 : 0}" aria-pressed="${on}" title="이 항목 전체 켜기/끄기"><i></i>${on ? 'ON' : 'OFF'}</button>`;
+  }
+
+  function targetPillsHTML(kind, id, selectedTargets, enabled) {
+    const sel = new Set(selectedTargets || []);
+    const disCls = enabled ? '' : ' dis';
+    const scopeTxt = sel.size === 3 ? '전체' : sel.size === 1 ? `${CLI_LABELS[[...sel][0]]} 전용` : sel.size === 0 ? '미적용' : `${sel.size}개 CLI`;
+    return `${['claude', 'codex', 'agy'].map((cli) => {
+      const active = sel.has(cli);
+      return `<button type="button" class="v-cli-pill${active ? ' on' : ''}${disCls}" data-v-tgt="${esc(kind)}" data-v-id="${esc(id)}" data-cli="${cli}" aria-pressed="${active}" title="이 CLI 적용 켜기/끄기">${CLI_LABELS[cli]}</button>`;
+    }).join('')}<button type="button" class="ghost btn-sm" data-v-tgt-cycle="${esc(kind)}" data-v-id="${esc(id)}" title="클릭하여 전체 CLI 적용 / 단독 전환" style="min-height:24px;height:24px;padding:0 6px;font-size:11px">${esc(scopeTxt)}</button>`;
+  }
+
+  function renderGroupedBySource(items, renderRowFn) {
+    if (!items.length) return '';
+    if (sourceFilter !== 'all') {
+      return `<div class="v-list">${items.map(renderRowFn).join('')}</div>`;
+    }
+    const groups = new Map(SOURCE_META.map((g) => [g.id, []]));
+    for (const it of items) {
+      groups.get(primarySourceOf(it)).push(it);
+    }
+    return SOURCE_META.filter((g) => groups.get(g.id).length > 0).map((g) => {
+      const list = groups.get(g.id).slice().sort((a, b) => a.name.localeCompare(b.name));
+      return `<section class="v-grp">
+        <div class="v-grp-hd">${g.icon()}<span>${esc(g.label)}</span><span class="badge">${list.length}</span></div>
+        <div class="v-list">${list.map(renderRowFn).join('')}</div>
+      </section>`;
+    }).join('');
   }
 
   function openSkillModal(existing) {
@@ -57,6 +106,7 @@
             content: String(fd.get('content') || ''),
             enabled: existing ? existing.enabled : true,
             targets: existing ? existing.targets : ['claude', 'codex', 'agy'],
+            sync: vaultState?.autoLoad !== false,
           },
         });
         if (r.error) throw new Error(r.error);
@@ -106,18 +156,17 @@
     document.body.append(d);
     d.onclose = () => d.remove();
     d.querySelectorAll('[data-m-close]').forEach((b) => (b.onclick = () => d.close()));
-    const trSel = $('#vMcpTransport', d);
-    trSel.onchange = () => {
-      const http = trSel.value === 'http';
-      $('#vMcpStdio', d).hidden = http;
-      $('#vMcpHttp', d).hidden = !http;
+    $('#vMcpTransport', d).onchange = (e) => {
+      const h = e.target.value === 'http';
+      $('#vMcpStdio', d).hidden = h;
+      $('#vMcpHttp', d).hidden = !h;
     };
     const parseKv = (txt) => {
       const out = {};
       for (const line of String(txt || '').split(/\r?\n/)) {
-        const idx = line.indexOf('=');
-        if (idx <= 0) continue;
-        out[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+        const i = line.indexOf('=');
+        if (i <= 0) continue;
+        out[line.slice(0, i).trim()] = line.slice(i + 1).trim();
       }
       return out;
     };
@@ -125,17 +174,20 @@
       e.preventDefault();
       try {
         const fd = new FormData(e.target);
-        const http = fd.get('transport') === 'http';
+        const isH = fd.get('transport') === 'http';
         const r = await api('/api/vault/mcp', {
           method: 'POST',
           body: {
             action: 'save',
             name: String(fd.get('name') || '').trim(),
-            ...(http
-              ? { url: String(fd.get('url') || '').trim(), headers: parseKv(fd.get('headers')) }
-              : { command: String(fd.get('command') || '').trim(), args: String(fd.get('args') || '').trim().split(/\s+/).filter(Boolean), env: parseKv(fd.get('env')) }),
+            command: isH ? '' : String(fd.get('command') || '').trim(),
+            args: isH ? [] : String(fd.get('args') || '').trim().split(/\s+/).filter(Boolean),
+            url: isH ? String(fd.get('url') || '').trim() : '',
+            env: isH ? null : parseKv(fd.get('env')),
+            headers: isH ? parseKv(fd.get('headers')) : null,
             enabled: existing ? existing.enabled : true,
             targets: existing ? existing.targets : ['claude', 'codex', 'agy'],
+            sync: vaultState?.autoLoad !== false,
           },
         });
         if (r.error) throw new Error(r.error);
@@ -158,7 +210,7 @@
     d.innerHTML = `<form style="display:flex;flex-direction:column;gap:10px">
       <div class="dlg-head"><h3>${existing ? `하네스 · 규칙 수정 (${esc(existing.name)})` : '새 하네스 규칙 추가'}</h3><button type="button" class="ghost icon-btn btn-sm" data-r-close aria-label="닫기">${UI_ICO.close}</button></div>
       <label>규칙 파일명<input name="name" value="${esc(existing?.name || '')}" ${existing ? 'readonly' : ''} placeholder="예: coding-standards.md" required></label>
-      <label>규칙 내용 (Markdown)<textarea name="content" rows="10" required>${esc(existing?.content || '')}</textarea></label>
+      <label>규칙 내용 (Markdown)<textarea name="content" rows="11" class="mono" style="font-size:12.5px" required>${esc(existing?.content || '# Shared Rule\n')}</textarea></label>
       <p role="alert" class="pj-error"></p>
       <div class="dlg-foot">
         <button type="button" data-r-close>취소</button>
@@ -180,6 +232,7 @@
             content: String(fd.get('content') || ''),
             enabled: existing ? existing.enabled : true,
             targets: existing ? existing.targets : ['claude', 'codex', 'agy'],
+            sync: vaultState?.autoLoad !== false,
           },
         });
         if (r.error) throw new Error(r.error);
@@ -194,18 +247,45 @@
     d.showModal();
   }
 
+  async function saveItemTargets(kind, id, nextEnabled, nextTargets) {
+    const list = kind === 'skill' ? vaultState?.skills : kind === 'mcp' ? vaultState?.mcps : vaultState?.rules;
+    const targetItem = (list || []).find((x) => x.name === id);
+    if (targetItem) {
+      targetItem.enabled = !!nextEnabled;
+      targetItem.targets = [...nextTargets];
+      paintVault();
+    }
+    const sync = vaultState?.autoLoad !== false;
+    let r;
+    if (kind === 'skill') {
+      r = await api('/api/vault/skill', { method: 'POST', body: { action: 'save', name: id, enabled: nextEnabled, targets: nextTargets, sync } });
+    } else if (kind === 'mcp') {
+      const cur = (vaultState?.mcps || []).find((x) => x.name === id);
+      if (!cur) return;
+      r = await api('/api/vault/mcp', { method: 'POST', body: { action: 'save', ...cur, enabled: nextEnabled, targets: nextTargets, sync } });
+    } else if (kind === 'rule') {
+      r = await api('/api/vault/harness', { method: 'POST', body: { action: 'save-rule', name: id, enabled: nextEnabled, targets: nextTargets, sync } });
+    }
+    if (r?.error) return toast(r.error, 4000, 'danger');
+    if (r?.state) {
+      vaultState = r.state;
+      paintVault();
+    }
+  }
+
   async function openCliInspectDrawer(cliKey) {
     if (typeof openDrawer !== 'function') return;
     const d = openDrawer({
       title: `${CLI_LABELS[cliKey] || cliKey} · 상세 및 공통 자원 가져오기`,
       bodyHTML: '<div class="empty">항목을 불러오는 중…</div>',
       footerHTML: '<button type="button" data-drw-close>닫기</button>',
-      width: 620,
+      width: 640,
     });
     let cliData = null;
     let dTab = 'skills';
     let onlyUnvaulted = false;
     let moveSkills = true;
+    let importScope = 'all'; // 'all' | 'only'
 
     const paintDrawer = () => {
       const drwBody = $('.drw-body', d);
@@ -217,9 +297,14 @@
       const unlinkedSkills = (cliData.skills || []).filter((s) => !s.inVault || !s.isLinkedToVault).map((s) => s.name);
       const unvaultedMcps = (cliData.mcps || []).filter((m) => !m.inVault).map((m) => m.name);
 
+      const vaultSkillMap = new Map((vaultState?.skills || []).map((x) => [x.name, x]));
+      const vaultMcpMap = new Map((vaultState?.mcps || []).map((x) => [x.name, x]));
+
       let listHtml = '';
       if (dTab === 'skills') {
         listHtml = skills.length ? skills.map((sk) => {
+          const vs = vaultSkillMap.get(sk.name);
+          const cliActive = !!(vs && vs.enabled && (vs.targets || []).includes(cliKey));
           const stBadge = sk.isLinkedToVault
             ? '<span class="badge c">링크 연결됨</span>'
             : sk.inVault
@@ -237,12 +322,15 @@
               ${sk.preview ? `<details style="margin-top:4px"><summary class="ums" style="cursor:pointer;margin:0">SKILL.md 내용 보기</summary><pre class="mdpre" style="margin-top:4px;max-height:180px;overflow:auto">${esc(sk.preview)}</pre></details>` : ''}
             </div>
             <div class="v-row-right">
+              ${vs ? `<button type="button" class="sw ${cliActive ? 'on' : ''}" data-dc-cli-sw="skill" data-dc-id="${esc(sk.name)}" title="이 CLI에서 켜기/끄기"><i></i>${cliActive ? 'ON' : 'OFF'}</button>` : ''}
               <button type="button" class="btn-sm" data-dc-imp-skill="${esc(sk.name)}">${btnLbl}</button>
             </div>
           </div>`;
         }).join('') : '<div class="empty">표시할 스킬이 없습니다.</div>';
       } else if (dTab === 'mcp') {
         listHtml = mcps.length ? mcps.map((m) => {
+          const vm = vaultMcpMap.get(m.name);
+          const cliActive = !!(vm && vm.enabled && (vm.targets || []).includes(cliKey));
           const stBadge = m.inVault ? '<span class="badge c">공통에 등록됨</span>' : '<span class="badge lim">로컬 전용</span>';
           return `<div class="v-row">
             <div class="v-row-main">
@@ -255,6 +343,7 @@
               <div class="ums mono" style="margin:2px 0 0">${esc(m.url || `${m.command} ${(m.args || []).join(' ')}`)}</div>
             </div>
             <div class="v-row-right">
+              ${vm ? `<button type="button" class="sw ${cliActive ? 'on' : ''}" data-dc-cli-sw="mcp" data-dc-id="${esc(m.name)}" title="이 CLI에서 켜기/끄기"><i></i>${cliActive ? 'ON' : 'OFF'}</button>` : ''}
               <button type="button" class="btn-sm" data-dc-imp-mcp="${esc(m.name)}">${m.inVault ? '대상 추가' : '가져오기'}</button>
             </div>
           </div>`;
@@ -292,6 +381,14 @@
             ${dTab !== 'harness' ? `<button type="button" class="btn-sm" id="dcImpAll">미등록 전체 가져오기 (${unlinkedSkills.length + unvaultedMcps.length})</button><button type="button" class="primary btn-sm" id="dcImpSel">선택 항목 가져오기</button>` : ''}
           </div>
         </div>
+        <div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap;padding:6px 9px;border-radius:8px;background:var(--panel2)">
+          <span class="ums" style="margin:0">가져온 뒤 적용 대상:</span>
+          <div class="seg">
+            <button type="button" data-dc-scope="none" class="${importScope === 'none' ? 'on' : ''}">목록만 (미적용)</button>
+            <button type="button" data-dc-scope="only" class="${importScope === 'only' ? 'on' : ''}">선택한 CLI에만 적용</button>
+            <button type="button" data-dc-scope="all" class="${importScope === 'all' ? 'on' : ''}">모든 CLI 공용</button>
+          </div>
+        </div>
         <div class="row" style="justify-content:space-between;gap:10px;flex-wrap:wrap">
           <label class="v-en" style="font-size:12px"><input type="checkbox" id="dcMoveChk" ${moveSkills ? 'checked' : ''}><span>가져올 때 원본 스킬 폴더를 공통 링크(Junction)로 이동 전환</span></label>
           <label class="v-en" style="font-size:12px"><input type="checkbox" id="dcUnvaultChk" ${onlyUnvaulted ? 'checked' : ''}><span>미등록 항목만 보기</span></label>
@@ -300,7 +397,12 @@
       </div>`;
 
       const runImport = async (payload) => {
-        const res = await api('/api/vault/import', { method: 'POST', body: { cli: cliKey, moveSkills, ...payload } });
+        const targets = importScope === 'only' ? [cliKey] : ['claude', 'codex', 'agy'];
+        const enabled = importScope !== 'none';
+        const res = await api('/api/vault/import', {
+          method: 'POST',
+          body: { cli: cliKey, moveSkills, targets, enabled, sync: vaultState?.autoLoad !== false, ...payload },
+        });
         if (res.error) return toast(res.error, 4000, 'danger');
         if (res.cliData) cliData = res.cliData;
         if (res.state) { vaultState = res.state; paintVault(); }
@@ -330,9 +432,27 @@
       if ($('#dcImpHarness', drwBody)) {
         $('#dcImpHarness', drwBody).onclick = () => runImport({ importHarness: true });
       }
-      drwBody.onclick = (e) => {
+      drwBody.onclick = async (e) => {
         const tb = e.target.closest('[data-dc-tab]');
         if (tb) { dTab = tb.dataset.dcTab; paintDrawer(); return; }
+        const scb = e.target.closest('[data-dc-scope]');
+        if (scb) { importScope = scb.dataset.dcScope; paintDrawer(); return; }
+        const cliSw = e.target.closest('[data-dc-cli-sw]');
+        if (cliSw) {
+          const kind = cliSw.dataset.dcCliSw;
+          const id = cliSw.dataset.dcId;
+          const item = (kind === 'skill' ? vaultSkillMap : vaultMcpMap).get(id);
+          if (!item) return;
+          const curTgt = new Set(item.targets || []);
+          let nextEnabled = item.enabled;
+          if (curTgt.has(cliKey) && item.enabled) curTgt.delete(cliKey);
+          else { curTgt.add(cliKey); nextEnabled = true; }
+          await saveItemTargets(kind, id, nextEnabled, [...curTgt]);
+          const ref = await api('/api/vault/cli?cli=' + encodeURIComponent(cliKey)).catch(() => null);
+          if (ref?.cliData) cliData = ref.cliData;
+          paintDrawer();
+          return;
+        }
         const skb = e.target.closest('[data-dc-imp-skill]');
         if (skb) { runImport({ skills: [skb.dataset.dcImpSkill] }); return; }
         const mcb = e.target.closest('[data-dc-imp-mcp]');
@@ -359,9 +479,29 @@
     const skills = st.skills || [];
     const mcps = st.mcps || [];
     const rules = st.rules || [];
-    const filteredSkills = skillQuery
-      ? skills.filter((s) => (`${s.name} ${s.description}`).toLowerCase().includes(skillQuery.toLowerCase()))
-      : skills;
+
+    const filteredSkills = skills.filter((s) => {
+      if (!matchesSourceFilter(s, sourceFilter)) return false;
+      if (!skillQuery) return true;
+      return (`${s.name} ${s.description}`).toLowerCase().includes(skillQuery.toLowerCase());
+    });
+    const filteredMcps = mcps.filter((m) => matchesSourceFilter(m, sourceFilter));
+
+    const countBySource = (list) => ({
+      all: list.length,
+      claude: list.filter((x) => matchesSourceFilter(x, 'claude')).length,
+      codex: list.filter((x) => matchesSourceFilter(x, 'codex')).length,
+      agy: list.filter((x) => matchesSourceFilter(x, 'agy')).length,
+      vault: list.filter((x) => matchesSourceFilter(x, 'vault')).length,
+    });
+    const srcCounts = countBySource(vaultTab === 'mcp' ? mcps : skills);
+    const sourceStripHTML = `<div class="seg" role="tablist" aria-label="명칭 · 출처별 필터">
+      <button type="button" data-vsrc="all" class="${sourceFilter === 'all' ? 'on' : ''}">전체 (${srcCounts.all})</button>
+      <button type="button" data-vsrc="claude" class="${sourceFilter === 'claude' ? 'on' : ''}">Claude (${srcCounts.claude})</button>
+      <button type="button" data-vsrc="codex" class="${sourceFilter === 'codex' ? 'on' : ''}">Codex (${srcCounts.codex})</button>
+      <button type="button" data-vsrc="agy" class="${sourceFilter === 'agy' ? 'on' : ''}">AGY (${srcCounts.agy})</button>
+      <button type="button" data-vsrc="vault" class="${sourceFilter === 'vault' ? 'on' : ''}">직접 추가 (${srcCounts.vault})</button>
+    </div>`;
 
     const cliCards = ['claude', 'codex', 'agy'].map((k) => {
       const c = clis[k] || {};
@@ -375,33 +515,34 @@
 
     let tabBody = '';
     if (vaultTab === 'skills') {
-      tabBody = `<div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:10px">
-        <input id="vSkillSearch" type="search" value="${esc(skillQuery)}" placeholder="스킬 이름 · 설명 필터…" style="max-width:280px">
-        <button type="button" class="primary btn-sm" id="vNewSkill">${UI_ICO.plus} 새 공통 스킬</button>
-      </div>
-      <div class="v-list">${filteredSkills.length ? filteredSkills.map((sk) => `<div class="v-row">
+      const renderSkillRow = (sk) => `<div class="v-row${sk.enabled ? '' : ' off'}">
         <div class="v-row-main">
           <div class="row" style="gap:6px;flex-wrap:wrap">
-            <label class="v-en"><input type="checkbox" data-v-en="skill" data-v-id="${esc(sk.name)}" ${sk.enabled ? 'checked' : ''}><b>${esc(sk.name)}</b></label>
+            <b>${esc(sk.name)}</b>
             ${(sk.sources || []).map((src) => `<span class="badge">${esc(src)}</span>`).join('')}
           </div>
           ${sk.description ? `<div class="ums" style="margin:2px 0 0">${esc(sk.description)}</div>` : ''}
         </div>
         <div class="v-row-right">
-          <div class="v-tgts">${targetPillsHTML('skill', sk.name, sk.targets)}</div>
+          <div class="v-tgts">${targetPillsHTML('skill', sk.name, sk.targets, sk.enabled)}</div>
+          ${switchHTML('skill', sk.name, sk.enabled)}
           <button type="button" class="btn-sm" data-v-edit-skill="${esc(sk.name)}">${UI_ICO.edit} 수정</button>
           <button type="button" class="ghost icon-btn btn-sm" data-v-del="skill" data-v-id="${esc(sk.name)}" title="공통 자원에서 삭제">${UI_ICO.trash}</button>
         </div>
-      </div>`).join('') : '<div class="empty">수집된 스킬이 없습니다. 상단의 “모든 CLI에서 모으기”를 눌러 기존 스킬을 한곳에 모아보세요.</div>'}</div>`;
-    } else if (vaultTab === 'mcp') {
-      tabBody = `<div class="row" style="justify-content:space-between;gap:8px;margin-bottom:10px">
-        <span class="ums" style="margin:0">한 번 등록하면 Claude · Codex · Antigravity 형식으로 자동 변환 동기화됩니다.</span>
-        <button type="button" class="primary btn-sm" id="vNewMcp">${UI_ICO.plus} MCP 추가</button>
+      </div>`;
+      tabBody = `<div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+        ${sourceStripHTML}
+        <div class="row" style="gap:6px;flex-wrap:wrap">
+          <input id="vSkillSearch" type="search" value="${esc(skillQuery)}" placeholder="스킬 이름 · 설명 필터…" style="max-width:220px">
+          <button type="button" class="primary btn-sm" id="vNewSkill">${UI_ICO.plus} 새 공통 스킬</button>
+        </div>
       </div>
-      <div class="v-list">${mcps.length ? mcps.map((m) => `<div class="v-row">
+      ${filteredSkills.length ? renderGroupedBySource(filteredSkills, renderSkillRow) : '<div class="empty">표시할 스킬이 없습니다. 상단 CLI 카드를 누르거나 “모든 CLI에서 모으기”로 가져오세요.</div>'}`;
+    } else if (vaultTab === 'mcp') {
+      const renderMcpRow = (m) => `<div class="v-row${m.enabled ? '' : ' off'}">
         <div class="v-row-main">
           <div class="row" style="gap:6px;flex-wrap:wrap">
-            <label class="v-en"><input type="checkbox" data-v-en="mcp" data-v-id="${esc(m.name)}" ${m.enabled ? 'checked' : ''}><b>${esc(m.name)}</b></label>
+            <b>${esc(m.name)}</b>
             <span class="badge">${esc(m.transport.toUpperCase())}</span>
             ${m.source ? `<span class="badge">${esc(m.source)}</span>` : ''}
             ${m.cliOnly ? `<span class="badge lim">전용</span>` : ''}
@@ -409,11 +550,18 @@
           <div class="ums mono" style="margin:2px 0 0">${esc(m.url || `${m.command} ${(m.args || []).join(' ')}`)}</div>
         </div>
         <div class="v-row-right">
-          <div class="v-tgts">${targetPillsHTML('mcp', m.name, m.targets)}</div>
+          <div class="v-tgts">${targetPillsHTML('mcp', m.name, m.targets, m.enabled)}</div>
+          ${switchHTML('mcp', m.name, m.enabled)}
           <button type="button" class="btn-sm" data-v-edit-mcp="${esc(m.name)}">${UI_ICO.edit} 수정</button>
           <button type="button" class="ghost icon-btn btn-sm" data-v-del="mcp" data-v-id="${esc(m.name)}" title="삭제">${UI_ICO.trash}</button>
         </div>
-      </div>`).join('') : '<div class="empty">등록된 MCP 서버가 없습니다.</div>'}</div>`;
+      </div>`;
+      tabBody = `<div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+        ${sourceStripHTML}
+        <button type="button" class="primary btn-sm" id="vNewMcp">${UI_ICO.plus} MCP 추가</button>
+      </div>
+      <div class="ums" style="margin:0 0 8px">한 번 등록하면 Claude · Codex · Antigravity 형식으로 자동 변환되며, 스위치와 CLI 버튼으로 개별/전용 적용할 수 있습니다.</div>
+      ${filteredMcps.length ? renderGroupedBySource(filteredMcps, renderMcpRow) : '<div class="empty">표시할 MCP 서버가 없습니다.</div>'}`;
     } else {
       tabBody = `<div class="rcard" style="margin-bottom:12px">
         <div class="row" style="justify-content:space-between;gap:8px">
@@ -426,16 +574,17 @@
         <b>하네스 규칙 파일 (${rules.length}개)</b>
         <button type="button" class="btn-sm" id="vNewRule">${UI_ICO.plus} 규칙 추가</button>
       </div>
-      <div class="v-list">${rules.length ? rules.map((r) => `<div class="v-row">
+      <div class="v-list">${rules.length ? rules.map((r) => `<div class="v-row${r.enabled ? '' : ' off'}">
         <div class="v-row-main">
           <div class="row" style="gap:6px">
-            <label class="v-en"><input type="checkbox" data-v-en="rule" data-v-id="${esc(r.name)}" ${r.enabled ? 'checked' : ''}><b>${esc(r.name)}</b></label>
+            <b>${esc(r.name)}</b>
             <span class="badge">${esc(r.source)}</span>
           </div>
           <div class="ums" style="margin:2px 0 0">${esc(String(r.content || '').replace(/\s+/g, ' ').slice(0, 120))}</div>
         </div>
         <div class="v-row-right">
-          <div class="v-tgts">${targetPillsHTML('rule', r.name, r.targets)}</div>
+          <div class="v-tgts">${targetPillsHTML('rule', r.name, r.targets, r.enabled)}</div>
+          ${switchHTML('rule', r.name, r.enabled)}
           <button type="button" class="btn-sm" data-v-edit-rule="${esc(r.name)}">${UI_ICO.edit} 수정</button>
           <button type="button" class="ghost icon-btn btn-sm" data-v-del="rule" data-v-id="${esc(r.name)}" title="삭제">${UI_ICO.trash}</button>
         </div>
@@ -527,18 +676,63 @@
     if ($('#vSaveShared', body)) {
       $('#vSaveShared', body).onclick = async () => {
         const shared = $('#vSharedHarness', body).value;
-        const r = await api('/api/vault/harness', { method: 'POST', body: { action: 'save-shared', shared } });
+        const r = await api('/api/vault/harness', { method: 'POST', body: { action: 'save-shared', shared, sync: vaultState?.autoLoad !== false } });
         if (r.error) return toast(r.error, 4000, 'danger');
         vaultState = r.state;
         toast('공통 하네스 지침을 저장했습니다');
       };
     }
 
+    const findItem = (kind, id) => {
+      const list = kind === 'skill' ? vaultState?.skills : kind === 'mcp' ? vaultState?.mcps : vaultState?.rules;
+      return (list || []).find((x) => x.name === id) || null;
+    };
+
     body.onclick = async (e) => {
       const cliBtn = e.target.closest('[data-v-cli]');
       if (cliBtn) { openCliInspectDrawer(cliBtn.dataset.vCli); return; }
       const tb = e.target.closest('[data-vtab]');
       if (tb) { vaultTab = tb.dataset.vtab; paintVault(); return; }
+      const sb = e.target.closest('[data-vsrc]');
+      if (sb) { sourceFilter = sb.dataset.vsrc; paintVault(); return; }
+
+      const swBtn = e.target.closest('[data-v-sw]');
+      if (swBtn) {
+        const kind = swBtn.dataset.vSw;
+        const id = swBtn.dataset.vId;
+        const item = findItem(kind, id);
+        if (!item) return;
+        await saveItemTargets(kind, id, !item.enabled, item.targets || ['claude', 'codex', 'agy']);
+        return;
+      }
+
+      const tgtBtn = e.target.closest('[data-v-tgt]');
+      if (tgtBtn) {
+        const kind = tgtBtn.dataset.vTgt;
+        const id = tgtBtn.dataset.vId;
+        const cli = tgtBtn.dataset.cli;
+        const item = findItem(kind, id);
+        if (!item) return;
+        const set = new Set(item.targets || []);
+        if (set.has(cli)) set.delete(cli); else set.add(cli);
+        await saveItemTargets(kind, id, item.enabled, [...set]);
+        return;
+      }
+
+      const cycBtn = e.target.closest('[data-v-tgt-cycle]');
+      if (cycBtn) {
+        const kind = cycBtn.dataset.vTgtCycle;
+        const id = cycBtn.dataset.vId;
+        const item = findItem(kind, id);
+        if (!item) return;
+        const all = ['claude', 'codex', 'agy'];
+        const cur = item.targets || [];
+        const srcCli = ['claude', 'codex', 'agy'].find((c) => (item.sources || [item.source]).includes(c)) || 'claude';
+        const next = cur.length < 3 ? all : [srcCli];
+        await saveItemTargets(kind, id, true, next);
+        return;
+      }
+
       const editSkill = e.target.closest('[data-v-edit-skill]');
       if (editSkill) {
         const sk = (vaultState?.skills || []).find((x) => x.name === editSkill.dataset.vEditSkill);
@@ -564,35 +758,11 @@
         if (!confirm(`"${id}" 항목을 공통 자원에서 삭제할까요?`)) return;
         const endpoint = kind === 'skill' ? '/api/vault/skill' : kind === 'mcp' ? '/api/vault/mcp' : '/api/vault/harness';
         const action = kind === 'rule' ? 'delete-rule' : 'delete';
-        const r = await api(endpoint, { method: 'POST', body: { action, name: id } });
+        const r = await api(endpoint, { method: 'POST', body: { action, name: id, sync: vaultState?.autoLoad !== false } });
         if (r.error) return toast(r.error, 4000, 'danger');
         vaultState = r.state;
         paintVault();
         toast('공통 자원에서 삭제했습니다');
-      }
-    };
-
-    body.onchange = async (e) => {
-      const en = e.target.closest('[data-v-en]');
-      const tgt = e.target.closest('[data-v-tgt]');
-      if (!en && !tgt) return;
-      const kind = (en || tgt).dataset.vEn || (en || tgt).dataset.vTgt;
-      const id = (en || tgt).dataset.vId;
-      const row = (en || tgt).closest('.v-row');
-      const enabled = !!row.querySelector(`[data-v-en="${kind}"]`)?.checked;
-      const targets = [...row.querySelectorAll(`[data-v-tgt="${kind}"]:checked`)].map((c) => c.value);
-
-      if (kind === 'skill') {
-        const r = await api('/api/vault/skill', { method: 'POST', body: { action: 'save', name: id, enabled, targets } });
-        if (r.state) vaultState = r.state;
-      } else if (kind === 'mcp') {
-        const cur = (vaultState?.mcps || []).find((x) => x.name === id);
-        if (!cur) return;
-        const r = await api('/api/vault/mcp', { method: 'POST', body: { action: 'save', ...cur, enabled, targets } });
-        if (r.state) vaultState = r.state;
-      } else if (kind === 'rule') {
-        const r = await api('/api/vault/harness', { method: 'POST', body: { action: 'save-rule', name: id, enabled, targets } });
-        if (r.state) vaultState = r.state;
       }
     };
   }

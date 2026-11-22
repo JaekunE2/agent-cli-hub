@@ -2916,7 +2916,13 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/vault/import' && req.method === 'POST') {
       const b = await body(req);
-      return send(res, 200, unifiedVault.importFromCli(b));
+      const r = unifiedVault.importFromCli(b);
+      if (b.sync) {
+        unifiedVault.syncToClis();
+        r.cliData = unifiedVault.inspectCli(b.cli);
+        r.state = unifiedVault.getState();
+      }
+      return send(res, 200, r);
     }
     if (p === '/api/vault/skill' && req.method === 'GET') {
       const name = String(url.searchParams.get('name') || '');
@@ -2946,12 +2952,14 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/vault/skill' && req.method === 'POST') {
       const b = await body(req);
-      const st = b.action === 'delete' ? unifiedVault.deleteSkill(b.name) : unifiedVault.saveSkill(b);
+      let st = b.action === 'delete' ? unifiedVault.deleteSkill(b.name) : unifiedVault.saveSkill(b);
+      if (b.sync) { unifiedVault.syncToClis(); st = unifiedVault.getState(); }
       return send(res, 200, { ok: true, state: st });
     }
     if (p === '/api/vault/mcp' && req.method === 'POST') {
       const b = await body(req);
-      const st = b.action === 'delete' ? unifiedVault.deleteMcp(b.name) : unifiedVault.saveMcp(b);
+      let st = b.action === 'delete' ? unifiedVault.deleteMcp(b.name) : unifiedVault.saveMcp(b);
+      if (b.sync) { unifiedVault.syncToClis(); st = unifiedVault.getState(); }
       return send(res, 200, { ok: true, state: st });
     }
     if (p === '/api/vault/harness' && req.method === 'POST') {
@@ -2961,6 +2969,7 @@ const server = http.createServer(async (req, res) => {
       else if (b.action === 'save-rule') st = unifiedVault.saveRule(b);
       else if (b.action === 'delete-rule') st = unifiedVault.deleteRule(b.name);
       else return send(res, 400, { error: '알 수 없는 harness action입니다.' });
+      if (b.sync) { unifiedVault.syncToClis(); st = unifiedVault.getState(); }
       return send(res, 200, { ok: true, state: st });
     }
     return send(res, 404, { error: 'unknown api' });

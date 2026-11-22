@@ -246,6 +246,32 @@ args = ["-y", "seq-mcp"]
     const prepResume = vault.prepareLaunch('claude', { resume: true });
     assert.ok(!prepResume.extraArgs.includes('--append-system-prompt-file'));
 
+    // Verify specific CLI-only import applies exclusively to the selected CLI
+    const cxOnlySkill = path.join(env.homeDir, '.codex', 'skills', 'codex-only-skill');
+    fs.mkdirSync(cxOnlySkill, { recursive: true });
+    fs.writeFileSync(path.join(cxOnlySkill, 'SKILL.md'), '---\nname: codex-only-skill\ndescription: Codex only\n---\n', 'utf8');
+    const impOnly = vault.importFromCli({ cli: 'codex', skills: ['codex-only-skill'], targets: ['codex'], moveSkills: true });
+    const recOnly = impOnly.state.skills.find((s) => s.name === 'codex-only-skill');
+    assert.deepEqual(recOnly.targets, ['codex']);
+
+    // Verify un-imported local skills stay strictly isolated from other CLIs, and disabling / untargeting removes applied resources cleanly
+    const unimportedLocal = path.join(env.homeDir, '.claude', 'skills', 'unimported-only');
+    fs.mkdirSync(unimportedLocal, { recursive: true });
+    fs.writeFileSync(path.join(unimportedLocal, 'SKILL.md'), '---\nname: unimported-only\ndescription: Local only\n---\n', 'utf8');
+    vault.saveHarness({ shared: '' });
+    vault.saveRule({ name: 'korean-style', enabled: false });
+    vault.saveSkill({ name: 'late-added-skill', enabled: false });
+    vault.saveMcp({ name: 'github', command: 'npx', args: ['-y', '@mcp/github'], enabled: true, targets: ['agy'] });
+    const prepDisabled = vault.prepareLaunch('claude', { resume: false });
+    assert.equal(fs.existsSync(path.join(altVault, '.runtime', 'claude', '.claude', 'skills', 'unimported-only')), false);
+    assert.equal(fs.existsSync(path.join(altVault, '.runtime', 'claude', '.claude', 'skills', 'late-added-skill')), false);
+    assert.ok(!prepDisabled.extraArgs.includes('--mcp-config'));
+    assert.ok(!prepDisabled.extraArgs.includes('--append-system-prompt-file'));
+    const clAfterOff = JSON.parse(fs.readFileSync(path.join(env.homeDir, '.claude.json'), 'utf8'));
+    assert.equal(clAfterOff.mcpServers.github, undefined);
+    const agAfterTarget = JSON.parse(fs.readFileSync(path.join(env.homeDir, '.gemini', 'config', 'mcp_config.json'), 'utf8'));
+    assert.equal(agAfterTarget.mcpServers.github.command, 'npx');
+
     // Toggling autoLoad off returns empty launch args
     vault.setAutoLoad(false);
     const prepOff = vault.prepareLaunch('claude');

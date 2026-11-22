@@ -743,7 +743,7 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
         const nextServers = { ...(cur.mcpServers || {}) };
         for (const [name, cfg] of Object.entries(mcps)) {
           if (!activeMcps[name]) {
-            if (cfg.source === 'vault' || cfg.managed) delete nextServers[name];
+            if (!cfg.cliOnly || cfg.enabled === false || cfg.source !== cli) delete nextServers[name];
             continue;
           }
           nextServers[name] = cfg.url
@@ -763,7 +763,7 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
         const nextServers = { ...(cur.mcpServers || {}) };
         for (const [name, cfg] of Object.entries(mcps)) {
           if (!activeMcps[name]) {
-            if (cfg.source === 'vault' || cfg.managed) delete nextServers[name];
+            if (!cfg.cliOnly || cfg.enabled === false || cfg.source !== cli) delete nextServers[name];
             continue;
           }
           const headers = { ...(cfg.headers || {}) };
@@ -781,7 +781,11 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
         }
       } else if (cli === 'codex') {
         const curText = fs.existsSync(cliCfg.mcpFile) ? fs.readFileSync(cliCfg.mcpFile, 'utf8') : '';
-        const managedNames = new Set(Object.keys(activeMcps));
+        const managedNames = new Set(
+          Object.entries(mcps)
+            .filter(([, cfg]) => !cfg.cliOnly || cfg.enabled === false || !(Array.isArray(cfg.targets) ? cfg.targets : ALL_CLIS).includes('codex'))
+            .map(([n]) => n)
+        );
         const stripped = stripManagedTomlSections(curText, managedNames);
         const block = serializeCodexMcpBlock(activeMcps);
         const nextText = [stripped, block].filter(Boolean).join('\n\n') + '\n';
@@ -1046,13 +1050,15 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
     };
   };
 
-  const importFromCli = ({ cli, skills = [], mcps = [], rules = [], importHarness = false, moveSkills = true }) => {
+  const importFromCli = ({ cli, skills = [], mcps = [], rules = [], importHarness = false, moveSkills = true, targets = null, enabled = true }) => {
     if (!ALL_CLIS.includes(cli)) throw new Error('알 수 없는 CLI입니다.');
     const l = ensureVaultDirs();
     const p = cliPaths();
     const cfg = p[cli];
     const manifest = readManifest();
     const vaultMcps = readMcps();
+    const customTargets = Array.isArray(targets) ? targets.filter((x) => ALL_CLIS.includes(x)) : null;
+    const isEnabled = enabled !== false;
     let importedSkills = 0;
     let movedSkills = 0;
     let importedMcps = 0;
@@ -1075,15 +1081,18 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
         copyDirRecursive(realFrom, dstDir);
         importedSkills++;
       }
-      const prev = manifest.skills[name] || { enabled: true, targets: [...ALL_CLIS], sources: [] };
-      prev.enabled = true;
-      if (!Array.isArray(prev.targets)) prev.targets = [...ALL_CLIS];
-      if (!prev.targets.includes(cli)) prev.targets.push(cli);
+      const prev = manifest.skills[name] || { enabled: isEnabled, targets: customTargets ? [...customTargets] : [...ALL_CLIS], sources: [] };
+      prev.enabled = isEnabled;
+      if (customTargets) prev.targets = [...customTargets];
+      else {
+        if (!Array.isArray(prev.targets)) prev.targets = [...ALL_CLIS];
+        if (!prev.targets.includes(cli)) prev.targets.push(cli);
+      }
       if (!Array.isArray(prev.sources)) prev.sources = [];
       if (!prev.sources.includes(cli)) prev.sources.push(cli);
       manifest.skills[name] = prev;
 
-      if (moveSkills && fs.existsSync(dstDir)) {
+      if (moveSkills && isEnabled && fs.existsSync(dstDir) && prev.targets.includes(cli)) {
         const st = linkOrCopySkillDir(dstDir, foundDir, path.join(l.backupDir, cli));
         if (st === 'linked') movedSkills++;
       }
@@ -1106,17 +1115,21 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
           ...(rawCfg.headers && Object.keys(rawCfg.headers).length ? { headers: rawCfg.headers } : {}),
           ...(rawCfg.startup_timeout_sec ? { startup_timeout_sec: rawCfg.startup_timeout_sec } : {}),
           ...(rawCfg.tool_timeout_sec ? { tool_timeout_sec: rawCfg.tool_timeout_sec } : {}),
-          enabled: rawCfg.enabled !== false,
-          targets: isCodexInternal ? ['codex'] : [...ALL_CLIS],
+          enabled: isEnabled && rawCfg.enabled !== false,
+          targets: isCodexInternal ? ['codex'] : (customTargets ? [...customTargets] : [...ALL_CLIS]),
           source: cli,
           ...(isCodexInternal ? { cliOnly: true } : {}),
         };
         importedMcps++;
       } else {
-        const curTargets = Array.isArray(vaultMcps[name].targets) ? vaultMcps[name].targets : [...ALL_CLIS];
-        if (!curTargets.includes(cli)) curTargets.push(cli);
-        vaultMcps[name].targets = curTargets;
-        vaultMcps[name].enabled = true;
+        if (customTargets && !isCodexInternal) {
+          vaultMcps[name].targets = [...customTargets];
+        } else {
+          const curTargets = Array.isArray(vaultMcps[name].targets) ? vaultMcps[name].targets : [...ALL_CLIS];
+          if (!curTargets.includes(cli)) curTargets.push(cli);
+          vaultMcps[name].targets = curTargets;
+        }
+        vaultMcps[name].enabled = isEnabled;
       }
     }
 
@@ -1134,8 +1147,8 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
         }
         manifest.rules[dstName] = {
           ...(manifest.rules[dstName] || {}),
-          enabled: true,
-          targets: Array.isArray(manifest.rules[dstName]?.targets) ? manifest.rules[dstName].targets : [...ALL_CLIS],
+          enabled: isEnabled,
+          targets: customTargets ? [...customTargets] : (Array.isArray(manifest.rules[dstName]?.targets) ? manifest.rules[dstName].targets : [...ALL_CLIS]),
           source: cli,
         };
       }
@@ -1219,6 +1232,7 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
     const mcpFile = path.join(runtimeDir, 'mcp-config.json');
     const hasMcps = Object.keys(activeMcps).length > 0;
     if (hasMcps) writeJsonAtomic(mcpFile, { mcpServers: activeMcps });
+    else if (fs.existsSync(mcpFile)) fs.rmSync(mcpFile, { force: true });
 
     const sharedText = fs.readFileSync(l.sharedHarnessFile, 'utf8').trim();
     const enabledRules = listRules().filter((r) => r.enabled && r.targets.includes('claude'));
@@ -1229,13 +1243,14 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
       fs.writeFileSync(harnessFile, nextHarness, 'utf8');
     }
 
-    const extraArgs = ['--add-dir', runtimeDir];
+    const extraArgs = [];
+    if (activeSkillNames.size > 0 || combined) extraArgs.push('--add-dir', runtimeDir);
     if (hasMcps) extraArgs.push('--mcp-config', mcpFile);
     if (!resume && combined) extraArgs.push('--append-system-prompt-file', harnessFile);
 
     return {
       extraArgs,
-      env: { CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1' },
+      env: (activeSkillNames.size > 0 || combined) ? { CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1' } : {},
       synced: true,
     };
   };

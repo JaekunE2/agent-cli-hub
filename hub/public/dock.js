@@ -263,15 +263,31 @@
     let draggingId = null;
 
     const rebuildLayout = () => {
-      // Remove existing resizers without detaching pane DOM state unnecessarily
+      // Snapshot scrollable descendants BEFORE any DOM move/resize so panels never jump back to top
+      const scrollSnapshots = [];
+      for (const pane of paneEls.values()) {
+        for (const sc of pane.querySelectorAll('.chat-scroll, .win-body, .screen, .chat-live-pre')) {
+          if (sc.scrollHeight > sc.clientHeight) {
+            scrollSnapshots.push({
+              el: sc,
+              top: sc.scrollTop,
+              wasBottom: sc.scrollHeight - sc.scrollTop - sc.clientHeight < 48,
+            });
+          }
+        }
+      }
+      // Remove existing resizers without detaching pane DOM nodes unnecessarily
       wsEl.querySelectorAll('.dock-resizer').forEach((r) => r.remove());
       const visibleIds = order.filter((id) => paneEls.has(id) && openSet.has(id));
+      const curDomOrder = [...wsEl.querySelectorAll(':scope > .dock-pane')].map((n) => n.dataset.dockPane);
+      const targetOrder = order.filter((id) => paneEls.has(id));
+      const orderChanged = curDomOrder.length !== targetOrder.length || curDomOrder.some((id, idx) => id !== targetOrder[idx]);
       for (const id of order) {
         const el = paneEls.get(id);
         if (!el) continue;
         el.hidden = !openSet.has(id);
         el.classList.toggle('single', visibleIds.length === 1 && openSet.has(id));
-        wsEl.appendChild(el);
+        if (orderChanged) wsEl.appendChild(el);
       }
       // Insert draggable split resizers between every two visible panes
       for (let i = 0; i < visibleIds.length - 1; i++) {
@@ -320,9 +336,19 @@
           window.addEventListener('pointerup', up);
         });
       }
+      const restoreScroll = () => {
+        for (const s of scrollSnapshots) {
+          if (!s.el.isConnected) continue;
+          s.el.scrollTop = s.wasBottom ? s.el.scrollHeight : s.top;
+        }
+      };
+      restoreScroll();
       saveDockOpen(mode, [...openSet]);
       onOpenChange?.([...openSet], [...order]);
-      requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
+      requestAnimationFrame(() => {
+        restoreScroll();
+        window.dispatchEvent(new Event('resize'));
+      });
     };
 
     const moveOrder = (id, targetId, after) => {

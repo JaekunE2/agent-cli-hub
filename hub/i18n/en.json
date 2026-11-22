@@ -2403,5 +2403,20 @@
   "\" 항목을 공통 자원에서 삭제할까요?": "\" from Shared Resources?",
   "공통 자원에서 삭제했습니다": "Deleted from Shared Resources",
   "공통 자원 · 스킬 · MCP · 하네스": "Shared Resources · Skills · MCP · Harness",
-  "공통 자원 정보를 불러오는 중…": "Loading Shared Resources…"
+  "공통 자원 정보를 불러오는 중…": "Loading Shared Resources…",
+  "공용 · 직접 등록": "Shared · Manual",
+  "이 항목 전체 켜기/끄기": "Toggle this item ON/OFF",
+  "미적용": "None",
+  "개 CLI": " CLIs",
+  "클릭하여 전체 CLI 적용 / 단독 전환": "Click to toggle All CLIs / Single CLI",
+  "이 CLI에서 켜기/끄기": "Toggle ON/OFF for this CLI",
+  "이 CLI 적용 켜기/끄기": "Toggle target CLI ON/OFF",
+  "가져온 뒤 적용 대상:": "Apply target after import:",
+  "목록만 (미적용)": "List Only (Unapplied)",
+  "모든 CLI 공용": "All CLIs Shared",
+  "선택한 CLI에만 적용": "Only This CLI",
+  "명칭 · 출처별 필터": "Filter by Source / Name",
+  "직접 추가 (": "Manual (",
+  "표시할 스킬이 없습니다. 상단 CLI 카드를 누르거나 “모든 CLI에서 모으기”로 가져오세요.": "No skills to display. Click a CLI card above or “Gather from All CLIs” to import.",
+  "한 번 등록하면 Claude · Codex · Antigravity 형식으로 자동 변환되며, 스위치와 CLI 버튼으로 개별/전용 적용할 수 있습니다.": "Register once to convert automatically for Claude, Codex, and Antigravity, and toggle switches or target CLIs per item."
 }
