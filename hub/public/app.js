@@ -62,14 +62,15 @@ function updateDynamicFavicon(tone) {
   if (key === lastFaviconKey) return;
   lastFaviconKey = key;
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">`
-    + `<rect width="64" height="64" rx="14" fill="#1f1f23"/>`
-    + `<rect x="8" y="10" width="21" height="17" rx="3" fill="#e0825f"/>`
-    + `<rect x="35" y="10" width="21" height="17" rx="3" fill="#5cc07c"/>`
-    + `<rect x="8" y="33" width="21" height="17" rx="3" fill="#e0b050"/>`
-    + `<rect x="35" y="33" width="21" height="17" rx="3" fill="#9a9890"/>`
-    + `<circle cx="50" cy="50" r="13" fill="#1f1f23"/>`
-    + `<circle cx="50" cy="50" r="9.5" fill="${dot}"/>`
-    + (unread > 0 ? `<circle cx="14" cy="14" r="9" fill="#3b82f6" stroke="#1f1f23" stroke-width="3"/>` : '')
+    + `<rect width="64" height="64" rx="15" fill="#161922"/>`
+    + `<path d="M32 29 L18 18 M32 29 L46 18 M32 29 L32 47" stroke="#f8fafc" stroke-width="4.5" stroke-linecap="round"/>`
+    + `<circle cx="18" cy="18" r="5" fill="#f8fafc"/>`
+    + `<circle cx="46" cy="18" r="5" fill="#f8fafc"/>`
+    + `<circle cx="32" cy="47" r="5" fill="#f8fafc"/>`
+    + `<circle cx="32" cy="29" r="7.5" fill="#e07a54" stroke="#161922" stroke-width="2.5"/>`
+    + `<circle cx="51" cy="51" r="12" fill="#161922"/>`
+    + `<circle cx="51" cy="51" r="8.5" fill="${dot}"/>`
+    + (unread > 0 ? `<circle cx="13" cy="13" r="8.5" fill="#3b82f6" stroke="#161922" stroke-width="2.5"/>` : '')
     + `</svg>`;
   const link = document.querySelector('link[rel="icon"]');
   if (link) link.href = `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
@@ -746,16 +747,20 @@ function renderSide() {
       const isSel = curKind === 'term' && String(state.sel.id) === idStr;
       const unread = state.unreadTerms.has(idStr);
       const fk = favKeyOf(`term:${idStr}`), isStar = !!fk && favs.has(fk);
+      const subKindTag = t.operator
+        ? '<span class="srow-tag">관제</span>'
+        : (!t.agent ? '<span class="srow-tag">셸</span>' : '');
+      const folderLbl = esc(base(t.cwd) || (t.agent === 'agy' ? 'Antigravity' : t.agent || '대기'));
       const tags = [
         pj && !hidePjTag ? `<span class="srow-tag proj" title="Project: ${esc(pj.name)}">${esc(pj.name)}</span>` : '',
-        `<span class="srow-tag">${esc(t.operator ? '관제' : t.agent ? '터미널' : '셸')}</span>`,
+        subKindTag,
         st === 'busy'
-          ? '<span class="srow-tag busy">실행 중</span>'
+          ? `<span class="srow-tag busy">실행 중</span><span>${folderLbl}</span>`
           : unread
-            ? '<span class="srow-tag done">완료</span>'
+            ? `<span class="srow-tag done">완료</span><span>${folderLbl}</span>`
             : st === 'exited'
               ? '<span class="srow-tag">종료됨</span>'
-              : `<span>${esc(base(t.cwd) || '대기')}</span>`,
+              : `<span>${folderLbl}</span>`,
       ].filter(Boolean).join('');
       return `<div class="srow${isSel ? ' sel' : ''}${unread ? ' just-done' : ''}" data-key="term:${esc(t.id)}" title="${esc(termLabel(t))}${pj ? ` · Project: ${esc(pj.name)}` : ''}">
         ${agentIcon(kind, dot)}
@@ -2041,7 +2046,7 @@ function viewTerm() {
         </div>
       </div>
       <div class="tdock-comp" id="tDockComp" ${dockCollapsed ? 'hidden' : ''}>
-        <textarea id="tin" rows="1" placeholder="프롬프트 입력 (Enter 전송 · Shift+Enter 줄바꿈 · 파일 첨부)" enterkeyhint="send"></textarea>
+        <textarea id="tin" rows="1" placeholder="프롬프트 입력 (Enter 전송 · 파일 첨부)" enterkeyhint="send"></textarea>
         <button class="primary" id="tsend" title="터미널에 프롬프트 전송 (Enter)">보내기 ⏎</button>
       </div>
     </div>
@@ -2422,7 +2427,7 @@ function agyCardHTML() {
     return `<div class="ucard click" data-usage-card="agy">
       <div class="uh">${agentIcon('agy', state.agyRefreshing ? 'busy' : 'idle')}<b>Antigravity</b></div>
       <div>
-        <div class="ucard-hero"><span class="ucard-big">—</span><span class="ums" style="margin:0">${state.agyRefreshing ? '조회 중' : '조회 필요'}</span></div>
+        <div class="ucard-hero"><span class="ucard-big" style="font-size:18px;font-weight:650;color:var(--muted)">조회 대기</span><span class="ums" style="margin:0">${state.agyRefreshing ? '조회 중' : '클릭해 확인'}</span></div>
       </div>
       <div class="ucard-foot"><span>${esc(hint)}</span><span class="ico">${ICO.chevRight}</span></div>
     </div>`;
@@ -2647,7 +2652,7 @@ function paintUsage() {
     return `<div class="ucard click${soon ? ' reset-soon' : ''}" data-usage-card="${esc(a.id || a.label)}">
       <div class="uh">${agentIcon(kind, a.live ? 'idle' : '')}<b>${esc(shortLabel(a))}</b>${soon ? `<span class="badge soon">${ICO.clock} 금일 리셋</span>` : ''}</div>
       <div>
-        <div class="ucard-hero"><span class="ucard-big ${worst != null ? level(worst) : ''}">${rem != null ? `${rem}%` : '—'}</span><span class="ums" style="margin:0">${rem != null ? `남음 (${Math.round(worst)}% 사용)` : '상태 확인'}</span></div>
+        <div class="ucard-hero"><span class="ucard-big ${worst != null ? level(worst) : ''}"${rem == null ? ' style="font-size:18px;font-weight:650;color:var(--muted)"' : ''}>${rem != null ? `${rem}%` : '유효'}</span><span class="ums" style="margin:0">${rem != null ? `남음 (${Math.round(worst)}% 사용)` : '상세 보기'}</span></div>
         <div style="margin-top:8px">${worst != null ? bar(worst) : ''}</div>
       </div>
       <div class="ucard-foot"><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(resetHint)}</span><span class="ico">${ICO.chevRight}</span></div>

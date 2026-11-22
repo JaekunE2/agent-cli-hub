@@ -68,7 +68,7 @@ function projectBoard(p) {
     ? projectFlow(p)
     : `<div class="pj-board">${projectStages.map(([stage, label]) => {
       const items = topTasks.filter((t) => t.stage === stage);
-      return `<section data-drop="${stage}"><h4>${label} <span class="badge">${items.length}</span></h4>${items.map(card).join('') || '<div class="pj-lane-empty">비어 있음</div>'}</section>`;
+      return `<section data-drop="${stage}"><h2 class="pj-lane-hd">${label} <span class="badge">${items.length}</span></h2>${items.map(card).join('') || '<div class="pj-lane-empty">비어 있음</div>'}</section>`;
     }).join('')}</div>`;
   if (projectTab === 'flow') bindProjectFlow(p, viewGen);
   let saving = false;

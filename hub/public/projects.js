@@ -77,6 +77,7 @@ window.taskTokenRollupOf = taskTokenRollupOf;
 function taskTokenBadgeHTML(p, task, compact = false) {
   const roll = taskTokenRollupOf(p, task.id);
   const tot = roll.total?.total || 0;
+  if (compact && tot === 0) return '';
   const own = roll.ownTotal?.total || 0;
   const sub = roll.subTotal?.total || 0;
   const hasSubs = (roll.subtaskCount || 0) > 0;
@@ -537,6 +538,7 @@ async function viewProjects() {
     const ico = window.UI_ICO || {};
     const totalTok = p.tokens?.total?.total || 0;
     $('#view').innerHTML = `<div class="pj">
+      <h1 class="sr-only">${esc(p.name)}</h1>
       <header class="pj-top">
         <div class="pj-top-left">
           <select id="projectPick" class="pj-pick" aria-label="Project 선택">${projectList.map(x => `<option value="${esc(x.id)}" ${x.id === p.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>

@@ -67,18 +67,17 @@
   --kind-test: #2dd4bf;
   --kind-ops: #fbbf24;
 }
-.badge.kind-plan { background: color-mix(in srgb, var(--kind-plan) 14%, transparent); color: var(--kind-plan); border: 1px solid color-mix(in srgb, var(--kind-plan) 32%, transparent); font-weight: 650; }
-.badge.kind-dev { background: color-mix(in srgb, var(--kind-dev) 14%, transparent); color: var(--kind-dev); border: 1px solid color-mix(in srgb, var(--kind-dev) 32%, transparent); font-weight: 650; }
-.badge.kind-test { background: color-mix(in srgb, var(--kind-test) 14%, transparent); color: var(--kind-test); border: 1px solid color-mix(in srgb, var(--kind-test) 32%, transparent); font-weight: 650; }
-.badge.kind-ops { background: color-mix(in srgb, var(--kind-ops) 14%, transparent); color: var(--kind-ops); border: 1px solid color-mix(in srgb, var(--kind-ops) 32%, transparent); font-weight: 650; }
+.badge.kind-plan::before, .badge.kind-dev::before, .badge.kind-test::before, .badge.kind-ops::before { content: ''; width: 6px; height: 6px; border-radius: 50%; flex: none; background: currentColor; }
+.badge.kind-plan { background: color-mix(in srgb, var(--kind-plan) 11%, transparent); color: var(--kind-plan); border: 1px solid color-mix(in srgb, var(--kind-plan) 24%, transparent); font-weight: 600; }
+.badge.kind-dev { background: color-mix(in srgb, var(--kind-dev) 11%, transparent); color: var(--kind-dev); border: 1px solid color-mix(in srgb, var(--kind-dev) 24%, transparent); font-weight: 600; }
+.badge.kind-test { background: color-mix(in srgb, var(--kind-test) 11%, transparent); color: var(--kind-test); border: 1px solid color-mix(in srgb, var(--kind-test) 24%, transparent); font-weight: 600; }
+.badge.kind-ops { background: color-mix(in srgb, var(--kind-ops) 11%, transparent); color: var(--kind-ops); border: 1px solid color-mix(in srgb, var(--kind-ops) 24%, transparent); font-weight: 600; }
 .pj-step-num.planned.kind-plan { border-color: color-mix(in srgb, var(--kind-plan) 55%, var(--line)); color: var(--kind-plan); background: color-mix(in srgb, var(--kind-plan) 10%, var(--panel)); }
 .pj-step-num.planned.kind-dev { border-color: color-mix(in srgb, var(--kind-dev) 55%, var(--line)); color: var(--kind-dev); background: color-mix(in srgb, var(--kind-dev) 10%, var(--panel)); }
 .pj-step-num.planned.kind-test { border-color: color-mix(in srgb, var(--kind-test) 55%, var(--line)); color: var(--kind-test); background: color-mix(in srgb, var(--kind-test) 10%, var(--panel)); }
 .pj-step-num.planned.kind-ops { border-color: color-mix(in srgb, var(--kind-ops) 55%, var(--line)); color: var(--kind-ops); background: color-mix(in srgb, var(--kind-ops) 10%, var(--panel)); }
-.pj-task[data-kind="plan"] { border-top: 2px solid color-mix(in srgb, var(--kind-plan) 65%, transparent); }
-.pj-task[data-kind="dev"] { border-top: 2px solid color-mix(in srgb, var(--kind-dev) 65%, transparent); }
-.pj-task[data-kind="test"] { border-top: 2px solid color-mix(in srgb, var(--kind-test) 65%, transparent); }
-.pj-task[data-kind="ops"] { border-top: 2px solid color-mix(in srgb, var(--kind-ops) 65%, transparent); }
+.pj-task[data-kind] { border-top: 1px solid var(--line-strong); }
+.pj-board h2.pj-lane-hd { margin: 0 2px 4px; font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 6px; color: var(--text); }
 .pj-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .pj-row-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .pj-row-desc { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.4; }
