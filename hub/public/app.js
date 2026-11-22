@@ -2102,11 +2102,12 @@ function viewTerm() {
     if (msg.type === 'exit') xterm?.write(`\r\n\x1b[90m[프로세스 종료: ${msg.code}]\x1b[0m\r\n`);
   };
   xterm.onData(send);
+  let pasteWithShift = false;
   xterm.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
     const k = e.key.toLowerCase();
     if ((e.ctrlKey || e.metaKey) && k === 'c' && (e.shiftKey || xterm.hasSelection())) { copyText(xterm.getSelection()); xterm.clearSelection(); return false; }
-    if ((e.ctrlKey || e.metaKey) && k === 'v') return false; // let the browser paste text & files on Ctrl+V / Ctrl+Shift+V
+    if ((e.ctrlKey || e.metaKey) && k === 'v') { pasteWithShift = !!e.shiftKey; return false; } // let browser paste text, or forward ^V for native TUI image paste
     return true;
   });
   $('#termwrap').addEventListener('contextmenu', (e) => { if (xterm?.hasSelection()) { e.preventDefault(); copyText(xterm.getSelection()); xterm.clearSelection(); } });
@@ -2146,7 +2147,14 @@ function viewTerm() {
     fitTin();
     tin.focus();
   };
-  attachFileInput($('#view .full'), insert, t?.cwd);
+  attachFileInput($('#view .full'), insert, t?.cwd, {
+    shouldPassCtrlV: (e, dt, files) => {
+      const shifted = pasteWithShift;
+      pasteWithShift = false;
+      return !IS_REMOTE && !IS_MOBILE && !shifted && !!t?.agent && (files.length > 0 || !dt?.getData('text/plain'));
+    },
+    sendCtrlV: () => send('\x16'),
+  });
   let histIdx = -1;
   const submit = () => {
     const v = tin.value;
@@ -2233,7 +2241,7 @@ async function fileToPath(f, cwd) {
 }
 // clipboard images sometimes come only as items (kind "file"), with dt.files empty
 const clipFiles = (dt) => { const f = [...(dt?.files || [])]; return f.length ? f : [...(dt?.items || [])].filter((it) => it.kind === 'file').map((it) => it.getAsFile()).filter(Boolean); };
-function attachFileInput(el, insert, cwd) {
+function attachFileInput(el, insert, cwd, opts = {}) {
   el.dataset.fileInput = '1';
   const handle = async (dt) => {
     const files = clipFiles(dt);
@@ -2257,9 +2265,17 @@ function attachFileInput(el, insert, cwd) {
   });
   // capture phase: runs before xterm's own paste handler on its textarea
   el.addEventListener('paste', (e) => {
-    if (!clipFiles(e.clipboardData).length) return;
+    const dt = e.clipboardData;
+    const files = clipFiles(dt);
+    const inTerm = !!e.target?.classList?.contains('xterm-helper-textarea');
+    if (inTerm && typeof opts.shouldPassCtrlV === 'function' && opts.shouldPassCtrlV(e, dt, files)) {
+      e.preventDefault(); e.stopPropagation();
+      if (typeof opts.sendCtrlV === 'function') opts.sendCtrlV();
+      return;
+    }
+    if (!files.length) return;
     e.preventDefault(); e.stopPropagation();
-    handle(e.clipboardData);
+    handle(dt);
   }, true);
 }
 // every other text box in the dashboard (new-session prompt, research message ...): a pasted
