@@ -3583,7 +3583,11 @@ function openNewTermDrawer(projectCwd = '', onCreated = null, initialKind = 'cla
       <label><input type="radio" name="k" value="cmd" ${chk('cmd')}> cmd</label>
       ${state.researchEnabled ? `<label><input type="radio" name="k" value="research" ${chk('research')}> 연구 디렉터 (자율)</label>` : ''}</div>
     <div id="nTerm" style="display:flex;flex-direction:column;gap:10px">
-      <label>작업 폴더<br><input id="nCwd" list="cwdl" style="width:100%" value="${esc(projectCwd || cwds[0] || '')}" placeholder="비우면 홈 폴더">
+      <label>작업 폴더<br>
+        <div class="fp-input-row">
+          <input id="nCwd" list="cwdl" style="width:100%" value="${esc(projectCwd || cwds[0] || '')}" placeholder="비우면 홈 폴더">
+          <button type="button" class="btn-sm" id="nPickDir" title="호스트 컴퓨터 경로 탐색기 열기">📂 폴더 선택</button>
+        </div>
         <datalist id="cwdl">${cwds.map((c) => `<option value="${esc(c)}">`).join('')}</datalist></label>
       <label class="row"><input type="checkbox" id="nSkip" checked> YOLO 모드 자동 승인 (Claude · Codex · Antigravity)</label>
     </div>
@@ -3605,6 +3609,14 @@ function openNewTermDrawer(projectCwd = '', onCreated = null, initialKind = 'cla
   }));
   $('#nRes', d).style.display = initialKind === 'research' ? 'flex' : 'none';
   $('#nTerm', d).style.display = initialKind === 'research' ? 'none' : 'flex';
+  const nPickDir = $('#nPickDir', d);
+  if (nPickDir) {
+    nPickDir.onclick = () => {
+      if (typeof openFolderPickerDialog === 'function') {
+        openFolderPickerDialog($('#nCwd', d).value.trim(), (chosen) => { $('#nCwd', d).value = chosen; });
+      }
+    };
+  }
   $('#nExt', d).onclick = async () => {
     const kind = kindOf();
     if (kind === 'research') return;

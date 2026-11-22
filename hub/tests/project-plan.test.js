@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { readPlan, parseProgressLine, spawnCli, cliModelEffortArgs } = require('../project-plan');
+const { readPlan, parseProgressLine, spawnCli, cliModelEffortArgs, inspectWorkspace } = require('../project-plan');
 const { validate, inferTaskKind } = require('../project-validation');
 const { parseCodexJsonl, parseClaudeJson, parseAgyJson } = require('../task-subchat');
 const projectsStore = require('../projects');
@@ -8,6 +8,23 @@ const accounts = require('../project-accounts');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+
+test('inspectWorkspace detects existing project markers and builds workspace summary', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-ws-inspect-'));
+  try {
+    assert.equal(inspectWorkspace(dir).isExistingProject, false);
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'existing-app', scripts: { dev: 'node index.js' }, dependencies: { ws: '^8.0.0' } }));
+    fs.mkdirSync(path.join(dir, 'src'));
+    fs.writeFileSync(path.join(dir, 'src', 'index.js'), 'console.log(1);');
+    const info = inspectWorkspace(dir);
+    assert.equal(info.isExistingProject, true);
+    assert.ok(info.markers.includes('Node.js'));
+    assert.ok(info.summaryText.includes('existing-app'));
+    assert.ok(info.summaryText.includes('src/index.js'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('inferTaskKind classifies planning, development, test/verification, and ops/docs tasks accurately', () => {
   assert.equal(inferTaskKind('요구사항 분석 및 아키텍처 설계', ''), 'plan');

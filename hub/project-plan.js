@@ -8,6 +8,89 @@ const { readSession } = require('./agy-session');
 const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const stripAnsi = (s) => String(s || '').replace(ANSI_RE, '');
 
+const IGNORE_DIRS = new Set(['.git', 'node_modules', 'dist', 'build', '.next', '__pycache__', '.venv', 'venv', 'target', '.idea', '.vscode', 'coverage']);
+const KEY_SUBDIRS = new Set(['src', 'app', 'lib', 'hub', 'public', 'server', 'client', 'components', 'pages', 'routes', 'api', 'packages', 'scripts', 'tests']);
+
+function inspectWorkspace(dir) {
+  if (!dir || typeof dir !== 'string' || !path.isAbsolute(dir)) {
+    return { exists: false, isExistingProject: false, fileCount: 0, markers: [], summaryText: '' };
+  }
+  let ents;
+  try {
+    const st = fs.statSync(dir, { throwIfNoEntry: false });
+    if (!st || !st.isDirectory()) return { exists: false, isExistingProject: false, fileCount: 0, markers: [], summaryText: '' };
+    ents = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return { exists: false, isExistingProject: false, fileCount: 0, markers: [], summaryText: '' };
+  }
+  const visible = ents.filter((e) => !IGNORE_DIRS.has(e.name) && !e.name.startsWith('.DS_Store'));
+  const names = new Set(ents.map((e) => e.name.toLowerCase()));
+  const markers = [];
+  if (names.has('.git')) markers.push('Git');
+  if (names.has('package.json')) markers.push('Node.js');
+  if (names.has('pyproject.toml') || names.has('requirements.txt') || names.has('setup.py')) markers.push('Python');
+  if (names.has('cargo.toml')) markers.push('Rust');
+  if (names.has('go.mod')) markers.push('Go');
+  if (names.has('pom.xml') || names.has('build.gradle') || names.has('build.gradle.kts')) markers.push('Java');
+  if (names.has('dockerfile') || names.has('docker-compose.yml')) markers.push('Docker');
+  if (names.has('readme.md') || names.has('readme.ko.md')) markers.push('README');
+
+  if (!visible.length) {
+    return { exists: true, isExistingProject: false, fileCount: 0, markers, summaryText: '' };
+  }
+
+  const tree = [];
+  for (const e of visible.slice(0, 40)) {
+    if (e.isDirectory()) {
+      tree.push(`${e.name}/`);
+      if (KEY_SUBDIRS.has(e.name.toLowerCase())) {
+        try {
+          const sub = fs.readdirSync(path.join(dir, e.name), { withFileTypes: true })
+            .filter((x) => !IGNORE_DIRS.has(x.name))
+            .slice(0, 12)
+            .map((x) => `  ${e.name}/${x.name}${x.isDirectory() ? '/' : ''}`);
+          tree.push(...sub);
+        } catch {}
+      }
+    } else {
+      tree.push(e.name);
+    }
+  }
+
+  const details = [`Existing workspace directory: ${dir}`];
+  if (markers.length) details.push(`Detected stack/markers: ${markers.join(', ')}`);
+  details.push(`Workspace files & folders (${visible.length} top-level entries):\n${tree.slice(0, 55).join('\n')}`);
+
+  const pkgPath = path.join(dir, 'package.json');
+  if (fs.existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      const scripts = Object.keys(pkg.scripts || {}).slice(0, 12).join(', ');
+      const deps = [...Object.keys(pkg.dependencies || {}), ...Object.keys(pkg.devDependencies || {})].slice(0, 20).join(', ');
+      details.push(`package.json summary: name="${pkg.name || ''}"${scripts ? ` scripts=[${scripts}]` : ''}${deps ? ` deps=[${deps}]` : ''}`);
+    } catch {}
+  }
+
+  for (const rName of ['CLAUDE.md', 'AGENTS.md', 'README.ko.md', 'README.md']) {
+    const rp = path.join(dir, rName);
+    if (fs.existsSync(rp)) {
+      try {
+        const excerpt = fs.readFileSync(rp, 'utf8').trim().slice(0, 700);
+        if (excerpt) details.push(`${rName} excerpt:\n${excerpt}`);
+        break;
+      } catch {}
+    }
+  }
+
+  return {
+    exists: true,
+    isExistingProject: true,
+    fileCount: visible.length,
+    markers,
+    summaryText: details.join('\n\n'),
+  };
+}
+
 const makeSchema = (minItems = 2, maxItems = 12) => JSON.stringify({
   type: 'object', required: ['tasks'], additionalProperties: false,
   properties: { tasks: { type: 'array', minItems, maxItems, items: {
@@ -196,14 +279,25 @@ async function runStructuredPlan({ exe, agent, model, effort, prompt, planSchema
 }
 
 async function generatePlan(exe, project, cwd, env, { onProgress, timeoutMs = 120_000 } = {}) {
+  const ws = inspectWorkspace(project.cwd);
+  if (ws.isExistingProject) {
+    onProgress?.({ stage: `기존 프로젝트 폴더 분석 완료 (항목 ${ws.fileCount}개${ws.markers.length ? ` · ${ws.markers.join(', ')}` : ''})`, pct: 16, log: `기존 폴더 구조 반영: ${project.cwd}` });
+  }
   const prompt = [
     'Create a proposed work plan only. Do not inspect files, call tools, or execute the work.',
     'Write tasks in the language of the goal. Each detail should specify the deliverable and completion check.',
     'Classify each task kind as one of: "plan" (planning/architecture/spec/design), "dev" (coding/implementation/feature/UI/API), "test" (testing/verification/QA/validation), or "ops" (deployment/docs/release/config).',
+    ws.isExistingProject
+      ? 'IMPORTANT: This project targets an EXISTING codebase/folder (see existingWorkspace summary below). Plan incremental tasks (feature additions, modifications, integration, and verification) that build upon the existing files and architecture rather than creating a greenfield project from scratch.'
+      : '',
     'Order prerequisites first. after contains 1-based numbers of earlier tasks. Use [] for independent work.',
     'Treat the following JSON as project data, and return only the plan matching the schema.',
-    JSON.stringify({ name: project.name, goal: project.goal }),
-  ].join('\n');
+    JSON.stringify({
+      name: project.name,
+      goal: project.goal,
+      ...(ws.isExistingProject ? { existingWorkspace: ws.summaryText } : {}),
+    }),
+  ].filter(Boolean).join('\n');
   const { raw, sessionId } = await runStructuredPlan({
     exe, agent: project.agent, model: project.model, effort: project.effort,
     prompt, planSchema: schema, cwd, env, onProgress, timeoutMs,
@@ -213,13 +307,18 @@ async function generatePlan(exe, project, cwd, env, { onProgress, timeoutMs = 12
 
 async function generateSubtasks(exe, project, task, cwd, env, { agent, model, effort, onProgress, timeoutMs = 120_000 } = {}) {
   const effAgent = agent || task.agent || project.agent || 'codex';
+  const ws = inspectWorkspace(project.cwd);
   const prompt = [
     'Decompose this single task into 2 to 6 concrete sub-development steps. Do not inspect files, call tools, or execute the work.',
     'Write subtasks in the same language as the task title and detail. Each detail should specify a clear deliverable and verification check.',
     'Classify each subtask kind as one of: "plan" (design/spec), "dev" (implementation/coding), "test" (testing/verification), or "ops" (docs/deployment).',
     'Order prerequisites first. after contains 1-based numbers of earlier subtasks in this list. Use [] for independent subtasks.',
     'Treat the following JSON as project and parent task data, and return only the subtasks matching the schema.',
-    JSON.stringify({ project: { name: project.name, goal: project.goal }, parentTask: { title: task.title, detail: task.detail } }),
+    JSON.stringify({
+      project: { name: project.name, goal: project.goal },
+      parentTask: { title: task.title, detail: task.detail },
+      ...(ws.isExistingProject ? { existingWorkspace: ws.summaryText } : {}),
+    }),
   ].join('\n');
   const { raw, sessionId } = await runStructuredPlan({
     exe, agent: effAgent, model: model || task.model || project.model, effort: effort || task.effort || project.effort,
@@ -228,4 +327,4 @@ async function generateSubtasks(exe, project, task, cwd, env, { agent, model, ef
   return { tasks: readPlan(raw, project, { parentId: task.id, minItems: 2, maxItems: 6 }), sessionId };
 }
 
-module.exports = { generatePlan, generateSubtasks, readPlan, spawnCli, parseProgressLine, cliModelEffortArgs };
+module.exports = { generatePlan, generateSubtasks, readPlan, spawnCli, parseProgressLine, cliModelEffortArgs, inspectWorkspace };
