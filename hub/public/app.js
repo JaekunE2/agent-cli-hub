@@ -115,6 +115,11 @@ function paintServerStatusPopover(pop) {
   const srv = state.services || {};
   const activeTerms = (state.terms || []).filter((t) => t.exited === null).length;
   const busyTerms = (state.terms || []).filter((t) => termStateOf(t) === 'busy').length;
+  const swapAccs = state.agySwapAccounts || [];
+  const activeSwap = swapAccs.find((a) => a.active);
+  const agySelectHTML = swapAccs.length > 1
+    ? `<select id="popAgySwap" class="btn-sm" style="max-width:136px" aria-label="Antigravity 활성 계정 전환">${swapAccs.map((a) => `<option value="${esc(a.email)}" ${a.active ? 'selected' : ''}>${a.active ? '● ' : ''}${esc(a.name || a.email.replace(/@.*/, ''))}</option>`).join('')}</select>`
+    : `<span class="badge ${agyOk ? 'ok' : ''}">${agyOk ? 'ON' : 'READY'}</span>`;
   pop.innerHTML = `
     <div class="srv-pop-hd">
       <span>서버 및 연동 상태</span>
@@ -135,8 +140,8 @@ function paintServerStatusPopover(pop) {
         : '<button type="button" class="primary btn-sm" id="btnStartUsageSrv">지금 켜기</button>'}
     </div>
     <div class="srv-row">
-      <div class="srv-row-l"><span class="dot ${agyOk ? 'idle' : 'dead'}"></span><div><b>Antigravity 쿼터</b><div class="srv-row-sub">${esc(state.agyQuota?.account || srv.agyQuota?.account || (state.agyRefreshing ? '조회 중…' : '대기 중'))}</div></div></div>
-      <span class="badge ${agyOk ? 'ok' : ''}">${agyOk ? 'ON' : 'READY'}</span>
+      <div class="srv-row-l"><span class="dot ${agyOk ? 'idle' : 'dead'}"></span><div><b>Antigravity 쿼터</b><div class="srv-row-sub">${esc(activeSwap?.email || state.agyQuota?.account || srv.agyQuota?.account || (state.agyRefreshing ? '조회 중…' : '대기 중'))}</div></div></div>
+      ${agySelectHTML}
     </div>
     <div class="row" style="justify-content:space-between;padding-top:6px;border-top:1px solid var(--line);gap:6px">
       <button type="button" class="btn-sm" id="btnPopHome">${ICO.home} 홈으로</button>
@@ -160,6 +165,15 @@ function paintServerStatusPopover(pop) {
         toast(er.message, 5000, 'danger');
         if (startBtn.isConnected) { startBtn.disabled = false; startBtn.textContent = '지금 켜기'; }
       }
+    };
+  }
+  const popAgySel = pop.querySelector('#popAgySwap');
+  if (popAgySel) {
+    popAgySel.onclick = (e) => e.stopPropagation();
+    popAgySel.onchange = async () => {
+      popAgySel.disabled = true;
+      await switchAgyAccount(popAgySel.value);
+      if (pop.isConnected) paintServerStatusPopover(pop);
     };
   }
   const homeBtn = pop.querySelector('#btnPopHome');
@@ -2465,18 +2479,42 @@ function agyResetDetail(iso, fallbackText) {
   if (!fallbackText || /^quota available$/i.test(fallbackText)) return '사용 가능';
   return fallbackText;
 }
+async function switchAgyAccount(email, btn = null) {
+  if (!email) return false;
+  const prev = btn?.innerHTML;
+  if (btn) { btn.disabled = true; btn.textContent = '전환 중…'; }
+  try {
+    const r = await api('/api/agy/swap', { method: 'POST', body: { account: email } });
+    if (r.error) throw new Error(r.error);
+    if (Array.isArray(r.accounts)) state.agySwapAccounts = r.accounts;
+    toast(`Antigravity 활성 계정을 ${email}로 전환했습니다. 새 터미널부터 적용됩니다.`);
+    paintBrandStatus();
+    await refreshUsage(true);
+    return true;
+  } catch (err) {
+    toast(err.message, 6000, 'danger');
+    if (btn && btn.isConnected) { btn.disabled = false; if (prev != null) btn.innerHTML = prev; }
+    return false;
+  }
+}
 function agyCardHTML(swapAcc) {
   const q = swapAcc
     ? { ...swapAcc, account: swapAcc.email, fetchedAt: state.agyQuota?.fetchedAt || Date.now() }
     : state.agyQuota;
   const titleTxt = swapAcc ? (swapAcc.name || swapAcc.email?.replace(/@.*/, '') || 'Antigravity') : 'Antigravity';
   const cardKey = swapAcc ? swapAcc.id : 'agy';
-  const activeBadge = swapAcc?.active ? '<span class="badge ok">활성</span>' : '';
+  const activeCls = swapAcc ? (swapAcc.active ? ' agy-active' : ' agy-standby') : '';
+  const switchBtn = swapAcc && !swapAcc.active
+    ? `<button type="button" class="btn-sm" data-agy-swap="${esc(swapAcc.email)}" title="이 Antigravity 계정으로 전환">${ICO.swap} 전환</button>`
+    : '';
+  const activeBadge = swapAcc
+    ? (swapAcc.active ? '<span class="badge ok">● 현재 사용 중</span>' : '<span class="badge">대기 계정</span>')
+    : '';
   const refreshing = swapAcc ? state.agySwapRefreshing : state.agyRefreshing;
   if (!q?.groups?.length) {
     const hint = refreshing ? '백그라운드에서 조회 중…' : (state.agyError || '클릭해 한도 조회');
-    return `<div class="ucard click" data-usage-card="${esc(cardKey)}">
-      <div class="uh">${agentIcon('agy', refreshing ? 'busy' : 'idle')}<b>${esc(titleTxt)}</b>${activeBadge}</div>
+    return `<div class="ucard click${activeCls}" data-usage-card="${esc(cardKey)}" title="${esc(swapAcc?.email || '')}">
+      <div class="uh">${agentIcon('agy', refreshing ? 'busy' : (swapAcc?.active ? 'idle' : ''))}<b style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(titleTxt)}</b>${activeBadge}${switchBtn}</div>
       <div>
         <div class="ucard-hero"><span class="ucard-big" style="font-size:18px;font-weight:650;color:var(--muted)">조회 대기</span><span class="ums" style="margin:0">${refreshing ? '조회 중' : '클릭해 확인'}</span></div>
       </div>
@@ -2496,8 +2534,8 @@ function agyCardHTML(swapAcc) {
   const resetHint = refreshing
     ? '갱신 중…'
     : (tight ? `${tight.label} · ${agyResetLabel(tight.iso, tight.text)}` : (q.account || '상세 보기'));
-  return `<div class="ucard click${soon ? ' reset-soon' : ''}" data-usage-card="${esc(cardKey)}">
-    <div class="uh">${agentIcon('agy', refreshing ? 'busy' : 'idle')}<b>${esc(titleTxt)}</b>${activeBadge}${soon ? `<span class="badge soon">${ICO.clock} 금일 리셋</span>` : ''}</div>
+  return `<div class="ucard click${activeCls}${soon ? ' reset-soon' : ''}" data-usage-card="${esc(cardKey)}" title="${esc(swapAcc?.email || '')}">
+    <div class="uh">${agentIcon('agy', refreshing ? 'busy' : (swapAcc?.active ? 'idle' : ''))}<b style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(titleTxt)}</b>${activeBadge}${switchBtn}${soon ? `<span class="badge soon">${ICO.clock} 금일 리셋</span>` : ''}</div>
     <div>
       <div class="ucard-hero"><span class="ucard-big ${level(worst)}">${rem}%</span><span class="ums" style="margin:0">남음 (${Math.round(worst)}% 사용)</span></div>
       <div style="margin-top:8px">${bar(worst)}</div>
@@ -2546,22 +2584,13 @@ function openAgyDetailDrawer(cardId = 'agy') {
     if (swapBtn) {
       swapBtn.onclick = async () => {
         if (!swapAcc) return;
-        swapBtn.disabled = true; swapBtn.textContent = '전환 중…';
-        try {
-          const r = await api('/api/agy/swap', { method: 'POST', body: { account: swapAcc.email } });
-          if (r.error) throw new Error(r.error);
-          if (Array.isArray(r.accounts)) state.agySwapAccounts = r.accounts;
-          toast(`Antigravity 활성 계정을 ${swapAcc.email}로 전환했습니다. 새 터미널부터 적용됩니다.`);
-          await refreshUsage(true);
-          swapAcc = findSwap();
-          const bodyEl = $('.drw-body', d);
-          const footEl = $('.drw-foot', d);
-          if (bodyEl && d.isConnected) bodyEl.innerHTML = agyDrawerBodyHTML(state.agyQuota, swapAcc);
-          if (footEl && d.isConnected) { footEl.innerHTML = buildFooter(); bindActions(); }
-        } catch (err) {
-          toast(err.message, 6000, 'danger');
-          if (swapBtn.isConnected) { swapBtn.disabled = false; swapBtn.innerHTML = `${ICO.swap} 이 계정으로 전환`; }
-        }
+        const ok = await switchAgyAccount(swapAcc.email, swapBtn);
+        if (!ok) return;
+        swapAcc = findSwap();
+        const bodyEl = $('.drw-body', d);
+        const footEl = $('.drw-foot', d);
+        if (bodyEl && d.isConnected) bodyEl.innerHTML = agyDrawerBodyHTML(state.agyQuota, swapAcc);
+        if (footEl && d.isConnected) { footEl.innerHTML = buildFooter(); bindActions(); }
       };
     }
   };
@@ -2619,6 +2648,11 @@ function viewUsage() {
     }
     const f = e.target.closest('[data-ufilt]');
     if (f) { state.usageFilter = f.dataset.ufilt; return paintUsage(); }
+    const agySwapBtn = e.target.closest('[data-agy-swap]');
+    if (agySwapBtn) {
+      e.stopPropagation();
+      return switchAgyAccount(agySwapBtn.dataset.agySwap, agySwapBtn);
+    }
     const card = e.target.closest('[data-usage-card]');
     if (card) {
       const id = card.dataset.usageCard;
@@ -2780,10 +2814,15 @@ async function openAccounts() {
     const body = $('#acBody', d);
     if (r.error) { body.innerHTML = `<div class="err">${esc(r.error)}</div>`; return; }
     const opts = Object.entries(ACCOUNT_TYPES).map(([k, v]) => `<option value="${k}">${esc(v.name)}</option>`).join('');
+    const swapRows = (state.agySwapAccounts || []).map((a) => `<div class="swrow" style="${a.active ? 'background:color-mix(in srgb, var(--ok) 7%, transparent);border-radius:6px;padding:6px 8px' : ''}">
+      <span class="swl" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">${agentIcon('agy', a.active ? 'idle' : '')}<span>${esc(a.name ? `${a.name} (${a.email})` : a.email)}</span>${a.active ? '<span class="badge ok">● 현재 사용 중</span>' : '<span class="badge">대기 계정</span>'}</span>
+      ${a.active ? '' : `<button type="button" class="btn-sm" data-ac-agyswap="${esc(a.email)}">${ICO.swap} 전환</button>`}
+    </div>`).join('');
     body.innerHTML = `
       <div class="empty" style="padding:0">이 PC에서 자동 감지 ${r.detected?.length || 0}개 (Claude Code·Cursor·Codex 로그인) · 직접 추가 ${r.accounts?.length || 0}개${state.agySwapAccounts?.length ? ` · Antigravity ${state.agySwapAccounts.length}개` : ''}</div>
+      ${swapRows ? `<div class="swlist">${swapRows}</div>` : ''}
       <div class="swlist">${(r.accounts || []).map((a) => `<div class="swrow"><span class="swl">${esc(a.label || a.id)} <span class="badge">${esc(ACCOUNT_TYPES[a.type]?.name || a.type)}</span></span>
-        <button class="danger ghost btn-sm" data-del="${esc(a.id)}">삭제</button></div>`).join('') || '<div class="empty">직접 추가한 계정 없음</div>'}</div>
+        <button class="danger ghost btn-sm" data-del="${esc(a.id)}">삭제</button></div>`).join('') || (!swapRows ? '<div class="empty">직접 추가한 계정 없음</div>' : '')}</div>
       <h3 style="margin:8px 0 0;font-size:14px">계정 추가</h3>
       <div class="row" style="gap:6px;flex-wrap:wrap">
         <button id="acCodex" title="터미널이 열리고 코드가 나옵니다. 아무 브라우저(폰도 가능)에서 그 주소를 열어 코드를 넣고, 추가할 ChatGPT 계정으로 로그인하면 끝">＋ Codex 계정 추가 (ChatGPT 로그인)</button>
@@ -2820,6 +2859,9 @@ async function openAccounts() {
         toast('터미널 안내에 따라 Google 계정을 로그인·추가하세요', 8000);
       };
     }
+    body.querySelectorAll('[data-ac-agyswap]').forEach((b) => (b.onclick = async () => {
+      if (await switchAgyAccount(b.dataset.acAgyswap, b)) paint();
+    }));
     body.querySelectorAll('[data-del]').forEach((b) => (b.onclick = async () => {
       if (!confirm('이 계정을 목록에서 삭제할까요?')) return;
       const x = await api('/api/usage/accounts', { method: 'POST', body: { action: 'delete', id: b.dataset.del } });
@@ -3101,7 +3143,7 @@ async function openSwitch(sid, termId = '') {
         <span class="swl" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
           ${agentIcon(c.agent || 'claude')}
           <span>${esc(c.label)}</span>
-          ${c.current ? `<span class="badge">${c.sameAccount ? '현재와 같은 계정' : '현재 실행 중'}</span>` : ''}
+          ${c.current ? `<span class="badge">${c.sameAccount ? '현재와 같은 계정' : '현재 실행 중'}</span>` : (c.active ? '<span class="badge ok">● AGY 활성</span>' : '')}
           ${c.best ? '<span class="badge c">가장 여유</span>' : ''}
         </span>
         <span class="swm">5h ${pct(c.fiveH)}</span><span class="swm">주 ${pct(c.weekly)}</span></label>`;

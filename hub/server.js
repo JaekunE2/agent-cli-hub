@@ -1150,11 +1150,14 @@ const agySwapExe = () => findAgySwapExe(CONFIG.agySwap);
 const agySwap = createAgySwapService({ exeFn: agySwapExe, envFn: cleanEnv });
 function agySwapProjectAccounts() {
   const f = agySwap.getFast();
-  return (f.accounts || []).map((a) => ({
-    id: a.id,
-    label: a.name ? `${a.name} (${a.email})` : a.email,
-    email: a.email,
-  }));
+  return (f.accounts || []).map((a) => {
+    const base = a.name ? `${a.name} (${a.email})` : a.email;
+    return {
+      id: a.id,
+      label: a.active ? `● ${base} (현재 활성)` : base,
+      email: a.email,
+    };
+  });
 }
 async function ensureAgySwap(auth) {
   if (auth?.switchAgySwap && agySwap.available()) {
