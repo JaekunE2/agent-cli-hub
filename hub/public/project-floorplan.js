@@ -42,7 +42,7 @@
       `# ${name} — 코드 아키텍처 & 품질 점검 보고서`,
       '',
       `- **분석 대상 경로**: \`${fp.rootDir || cwd}\``,
-      `- **분석 일시**: ${new Date(fp.scannedAt || Date.now()).toLocaleString('ko-KR')}`,
+      `- **분석 일시**: ${new Date(fp.scannedAt || Date.now()).toLocaleString(document.documentElement.lang === 'en' ? 'en-US' : 'ko-KR')}`,
       `- **코드 규모**: ${fp.stats.files}개 파일 · ${fp.stats.lines.toLocaleString()}줄 · API 엔드포인트 ${fp.stats.endpoints}개 (프론트 매칭 ${fp.stats.matchedCalls}건)`,
       `- **코드 건강도**: **${fp.health?.score ?? 100}점** (위험 ${fp.health?.criticalCount || 0} · 주의 ${fp.health?.warnCount || 0} · 정보 ${fp.health?.infoCount || 0})`,
       fp.externalServices?.length ? `- **감지된 외부/DB 연동**: ${fp.externalServices.join(', ')}` : '',

@@ -7,6 +7,8 @@ if (window.__CCD_LOCAL_TOKEN && TOKEN !== window.__CCD_LOCAL_TOKEN) { TOKEN = wi
 if (qs.get('t')) { qs.delete('t'); history.replaceState(null, '', '/' + (qs.toString() ? '?' + qs : '')); }
 
 const $ = (s, el = document) => el.querySelector(s);
+const uiLocale = () => (document.documentElement.lang === 'en' ? 'en-US' : 'ko-KR');
+const isEnUI = () => document.documentElement.lang === 'en';
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const ago = (ms) => {
   if (!ms) return '';
@@ -528,8 +530,10 @@ function toggleSideFold(sec) {
   try { localStorage.setItem('ach-sec-fold', JSON.stringify([...s])); } catch {}
   renderSide();
 }
-const foldBtnHTML = (sec, isFolded, label) =>
-  `<button class="ghost icon-btn ssec-fold" data-sec-fold="${sec}" aria-expanded="${!isFolded}" aria-label="${label} ${isFolded ? '펼치기' : '접기'}" title="${label} ${isFolded ? '펼치기' : '접기'}">${isFolded ? ICO.chevRight : ICO.chevDown}</button>`;
+const foldBtnHTML = (sec, isFolded, label) => {
+  const foldAria = isEnUI() ? `${isFolded ? 'Expand' : 'Collapse'} ${label}` : `${label} ${isFolded ? '펼치기' : '접기'}`;
+  return `<button class="ghost icon-btn ssec-fold" data-sec-fold="${sec}" aria-expanded="${!isFolded}" aria-label="${esc(foldAria)}" title="${esc(foldAria)}">${isFolded ? ICO.chevRight : ICO.chevDown}</button>`;
+};
 
 function resolvedFavs() {
   const favs = state.favs || new Set();
@@ -796,12 +800,15 @@ function renderSide() {
     }
   }
 
+  const cleanExitedAria = '종료된 터미널 정리';
+  const cleanExitedTitle = `종료된 터미널 정리 (${tCounts.exited})`;
+  const groupProjLbl = 'Project별 터미널 묶어보기';
   h += `<div class="ssec">
     <div class="ssec-hd">
       ${foldBtnHTML('terms', termFolded, '터미널')}
       <span class="ssec-title" data-key="terms">터미널 <span class="srow-meta">${tCounts.all || ''}</span>${termFolded && tCounts.busy ? `<span class="srow-tag busy">실행 ${tCounts.busy}</span>` : ''}</span>
-      ${tCounts.exited ? `<button class="ghost icon-btn ssec-act" data-side-clean-exited="1" title="종료된 터미널 정리 (${tCounts.exited})" aria-label="종료된 터미널 정리">${ICO.trash}</button>` : ''}
-      <button class="ghost icon-btn ssec-act${state.termGroupByProject ? ' on' : ''}" data-tgroup="1" title="Project별 터미널 묶어보기" aria-pressed="${state.termGroupByProject}" aria-label="Project별 터미널 묶어보기">${ICO.layers}</button>
+      ${tCounts.exited ? `<button class="ghost icon-btn ssec-act" data-side-clean-exited="1" title="${cleanExitedTitle}" aria-label="${cleanExitedAria}">${ICO.trash}</button>` : ''}
+      <button class="ghost icon-btn ssec-act${state.termGroupByProject ? ' on' : ''}" data-tgroup="1" title="${groupProjLbl}" aria-pressed="${state.termGroupByProject}" aria-label="${groupProjLbl}">${ICO.layers}</button>
       <button class="ghost icon-btn ssec-act" data-hopen-new="1" title="새 터미널 열기" aria-label="새 터미널 열기">${ICO.plus}</button>
     </div>
     ${termFolded ? '' : `<div class="seg sm" role="tablist" aria-label="터미널 상태 필터">${tfbtn('', '전체', tCounts.all)}${tfbtn('busy', '실행', tCounts.busy)}${tfbtn('idle', '대기', tCounts.idle)}${tfbtn('exited', '종료', tCounts.exited)}</div>${termRows}`}
@@ -817,12 +824,14 @@ function renderSide() {
     const ag = r.agent || 'claude';
     const fk = `sid:${r.sessionId}`, on = favs.has(fk);
     const isSel = curKind === 'recent' && state.sel.id === r.sessionId;
+    const delRecTitle = '기록 삭제';
+    const delRecAria = `기록 삭제: ${sessionLabel(r)}`;
     return `<div class="srow${isSel ? ' sel' : ''}" data-key="recent:${esc(r.sessionId)}" title="${esc(sessionLabel(r))}">
       ${agentIcon(ag)}
       <div class="srow-main"><div class="srow-t">${esc(sessionLabel(r))}</div><div class="srow-s">${esc([base(r.cwd), ago(r.mtime)].filter(Boolean).join(' · '))}</div></div>
       <span class="srow-end">
         <span class="fav${on ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${on ? '즐겨찾기 해제' : '즐겨찾기'}">${on ? ICO.starFill : ICO.star}</span>
-        <button class="record-delete danger ghost icon-btn" data-hide-record="${esc(r.sessionId)}" title="기록 삭제" aria-label="기록 삭제: ${esc(sessionLabel(r))}">${ICO.trash}</button>
+        <button class="record-delete danger ghost icon-btn" data-hide-record="${esc(r.sessionId)}" title="${delRecTitle}" aria-label="${esc(delRecAria)}">${ICO.trash}</button>
       </span>
     </div>`;
   }).join('') || '<div class="srow-empty">최근 기록 없음</div>');
@@ -1239,12 +1248,14 @@ function recentRowHTML(r) {
   const fk = `sid:${r.sessionId}`, on = (state.favs || new Set()).has(fk);
   const acc = ag === 'agy' && state.agyQuota?.account ? state.agyQuota.account.replace(/@.*/, '') : '';
   const sub = [base(r.cwd), acc, ago(r.mtime)].filter(Boolean).join(' · ') || providerName(ag);
+  const delRecTitle = '기록 삭제';
+  const delRecAria = `기록 삭제: ${sessionLabel(r)}`;
   return `<div class="m-row" data-key="recent:${esc(r.sessionId)}">
     ${agentIcon(ag)}
     <div class="m-row-main"><div class="m-row-t">${esc(sessionLabel(r))}</div><div class="m-row-s">${esc(sub)}</div></div>
     <div class="m-row-end">
       <span class="fav${on ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${on ? '즐겨찾기 해제' : '즐겨찾기'}">${on ? ICO.starFill : ICO.star}</span>
-      <button class="record-delete danger ghost icon-btn btn-sm" data-hide-record="${esc(r.sessionId)}" title="기록 삭제" aria-label="기록 삭제: ${esc(sessionLabel(r))}">${ICO.trash}</button>
+      <button class="record-delete danger ghost icon-btn btn-sm" data-hide-record="${esc(r.sessionId)}" title="${delRecTitle}" aria-label="${esc(delRecAria)}">${ICO.trash}</button>
       <button class="btn-sm" data-hresume="${esc(r.sessionId)}">이어하기</button>
     </div>
   </div>`;
@@ -1881,7 +1892,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
             parts.push(`<div class="chat-day">${esc(dayLabel)}</div>`);
           }
         }
-        const when = dt && !Number.isNaN(dt.getTime()) ? dt.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : '';
+        const when = dt && !Number.isNaN(dt.getTime()) ? dt.toLocaleTimeString(uiLocale(), { hour: '2-digit', minute: '2-digit' }) : '';
         const copyBtn = `<button class="ghost icon-btn btn-sm msg-copy" data-copy-mi="${k}" aria-label="이 메시지 복사" title="이 메시지 복사">${ICO.copy}</button>`;
         if (tool) {
           parts.push(`<div class="msg tool${tgt ? ' target' : ''}" data-mi="${k}">${linkPaths(hl(rawTxt, terms))}</div>`);
@@ -2484,7 +2495,7 @@ function agyDrawerBodyHTML(q) {
         ${bar(g.fiveH)}<div class="ums">${esc(agyResetDetail(g.fiveHResetAt, g.fiveHReset))}</div></div>` : ''}
       ${g.weekly != null ? `<div class="um"><div class="umt"><span>주간 한도</span><span class="up ${level(g.weekly)}"><b>${g.weeklyRem}% 남음</b> <span style="font-weight:400;color:var(--muted)">(${pctTxt(g.weekly)}% 사용)</span></span></div>
         ${bar(g.weekly)}<div class="ums">${esc(agyResetDetail(g.weeklyResetAt, g.weeklyReset))}</div></div>` : ''}</div>`).join('')}
-    <div class="ums">마지막 조회: ${esc(new Date(q.fetchedAt).toLocaleTimeString())} (${esc(ago(Date.parse(q.fetchedAt)))})</div>`;
+    <div class="ums">마지막 조회: ${esc(new Date(q.fetchedAt).toLocaleTimeString(uiLocale()))} (${esc(ago(Date.parse(q.fetchedAt)))})</div>`;
 }
 function openAgyDetailDrawer() {
   const d = openDrawer({
@@ -2511,7 +2522,7 @@ function openUsageDetailDrawer(a) {
     ${used != null ? bar(used) : ''}<div class="ums">${[m.resetsAt ? shortResetAt(m.resetsAt) : '', m.detail ? esc(m.detail) : ''].filter(Boolean).join(' · ')}</div></div>`;
   };
   const footNotes = [
-    a.billing?.at ? `${esc(a.billing.label)}: ${esc(new Date(a.billing.at).toLocaleDateString())}` : '',
+    a.billing?.at ? `${esc(a.billing.label)}: ${esc(new Date(a.billing.at).toLocaleDateString(uiLocale()))}` : '',
     ...(a.notes || []).map((n) => esc(cleanNote(n))),
   ].filter(Boolean);
   const body = `
@@ -3044,13 +3055,21 @@ async function openSwitch(sid, termId = '') {
     const hint = $('#swHint', d);
     if (!hint) return;
     if (targetAgent !== srcAgent) {
-      hint.innerHTML = `<b>${esc(agentName(srcAgent))} → ${esc(agentName(targetAgent))} 교차 이동:</b> 최근 대화 맥락을 요약 파일(<code>handoff.md</code>)로 저장한 뒤 ${whereTxt}에서 ${esc(agentName(targetAgent))} 세션을 시작하여 자동으로 전달합니다.`;
+      hint.innerHTML = isEnUI()
+        ? `<b>${esc(agentName(srcAgent))} → ${esc(agentName(targetAgent))} handoff:</b> Saves recent conversation context to <code>handoff.md</code>, then starts a ${esc(agentName(targetAgent))} session in ${whereTxt} with it.`
+        : `<b>${esc(agentName(srcAgent))} → ${esc(agentName(targetAgent))} 교차 이동:</b> 최근 대화 맥락을 요약 파일(<code>handoff.md</code>)로 저장한 뒤 ${whereTxt}에서 ${esc(agentName(targetAgent))} 세션을 시작하여 자동으로 전달합니다.`;
     } else if (r.fresh) {
-      hint.textContent = `아직 대화가 없는 터미널이라, 같은 폴더(${whereTxt})에서 고른 계정으로 새로 시작합니다.`;
+      hint.textContent = isEnUI()
+        ? `This terminal has no conversation yet; starting fresh in the same folder (${whereTxt}) with the selected account.`
+        : `아직 대화가 없는 터미널이라, 같은 폴더(${whereTxt})에서 고른 계정으로 새로 시작합니다.`;
     } else if (r.live) {
-      hint.textContent = `실행 중인 세션(${r.where || '창 없음'})을 종료한 뒤 ${whereTxt}에서 같은 대화를 이어갑니다.`;
+      hint.textContent = isEnUI()
+        ? `Closes the running session (${r.where || 'no window'}) and continues the same conversation in ${whereTxt}.`
+        : `실행 중인 세션(${r.where || '창 없음'})을 종료한 뒤 ${whereTxt}에서 같은 대화를 이어갑니다.`;
     } else {
-      hint.textContent = `선택한 계정으로 ${whereTxt}에서 대화를 이어 실행합니다.${r.stale ? ' · 사용량 값이 오래됐을 수 있음' : ''}`;
+      hint.textContent = isEnUI()
+        ? `Continues this conversation with the selected account in ${whereTxt}.${r.stale ? ' · Usage data may be stale' : ''}`
+        : `선택한 계정으로 ${whereTxt}에서 대화를 이어 실행합니다.${r.stale ? ' · 사용량 값이 오래됐을 수 있음' : ''}`;
     }
   };
   d.querySelectorAll('input[name=acc], input[name=swMode]').forEach((el) => (el.onchange = updateHint));
@@ -3106,8 +3125,8 @@ function openGpuJobDrawer(t, isWaiting) {
       <div class="drw-kv"><span>GPU</span><b>${esc(isWaiting && t.lanes?.length ? t.lanes.join(' · ') : t.gpu || '—')}</b></div>
       <div class="drw-kv"><span>메모리</span><b>${t.exclusive ? '전용 사용' : t.memMB == null ? '미측정' : fmtMB(t.memMB)}</b></div>
       <div class="drw-kv"><span>요청 세션</span><b>${esc(who)}</b></div>
-      ${t.expectedStart ? `<div class="drw-kv"><span>예상 시작</span><b>${esc(new Date(t.expectedStart).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}</b></div>` : ''}
-      ${t.expectedEnd ? `<div class="drw-kv"><span>예상 종료</span><b>${esc(new Date(t.expectedEnd).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}${t.estSource === 'learned' ? ' (학습됨)' : ''}</b></div>` : ''}
+      ${t.expectedStart ? `<div class="drw-kv"><span>예상 시작</span><b>${esc(new Date(t.expectedStart).toLocaleTimeString(uiLocale(), { hour: '2-digit', minute: '2-digit' }))}</b></div>` : ''}
+      ${t.expectedEnd ? `<div class="drw-kv"><span>예상 종료</span><b>${esc(new Date(t.expectedEnd).toLocaleTimeString(uiLocale(), { hour: '2-digit', minute: '2-digit' }))}${t.estSource === 'learned' ? ' (학습됨)' : ''}</b></div>` : ''}
       ${t.adopted ? '<div class="drw-kv"><span>감지 방식</span><b>대기열 밖 프로세스 자동 등록</b></div>' : ''}
       ${t.backfilled ? '<div class="drw-kv"><span>배정</span><b>끼워넣기(Backfill)</b></div>' : ''}
     </div>
@@ -3185,7 +3204,10 @@ function viewGpu() {
     if (tg) {
       e.stopPropagation();
       const on = tg.dataset.on !== '1';
-      if (!on && !confirm(`${tg.dataset.gtoggle}을(를) OFF로 바꿀까요? 새 작업을 배정하지 않습니다. 이미 실행 중인 작업은 그대로 계속됩니다.`)) return;
+      const offMsg = isEnUI()
+        ? `Turn ${tg.dataset.gtoggle} OFF? No new jobs will be assigned; running jobs will continue.`
+        : `${tg.dataset.gtoggle}을(를) OFF로 바꿀까요? 새 작업을 배정하지 않습니다. 이미 실행 중인 작업은 그대로 계속됩니다.`;
+      if (!on && !confirm(offMsg)) return;
       await api('/api/gpu/toggle', { method: 'POST', body: { key: tg.dataset.gtoggle, enabled: on } });
       toast(`${tg.dataset.gtoggle} → ${on ? 'ON (사용 가능)' : 'OFF (배정 중지)'}`);
       return refreshGpu();
@@ -3311,7 +3333,7 @@ function paintGpu() {
     const histRows = history.map((t) => `<div class="m-row" style="cursor:default">
       <span class="dot ${t.status === 'released' ? 'idle' : 'dead'}"></span>
       <div class="m-row-main"><div class="m-row-t">${esc(t.label || t.id)}</div><div class="m-row-s">${t.status === 'released' ? '해제됨' : '취소됨'}${t.endReason ? ` · ${esc(t.endReason)}` : ''}</div></div>
-      <span class="ums" style="margin:0">${esc(new Date(t.endedAt).toLocaleTimeString())}</span>
+      <span class="ums" style="margin:0">${esc(new Date(t.endedAt).toLocaleTimeString(uiLocale()))}</span>
     </div>`).join('');
     content = `<h1 class="sr-only">GPU 최근 기록</h1><section class="sheet"><div class="sheet-hd"><h2>최근 작업 기록</h2></div>${histRows || '<div class="empty" style="padding:20px 16px">최근 기록이 없습니다.</div>'}</section>`;
   }
@@ -3554,8 +3576,11 @@ async function paintResearch(auto) {
 
   if (tab === 'overview') {
     const rv = d.review;
+    const benchHtml = rv?.bench
+      ? (isEnUI() ? `<b>Worst #${rv.bench.worst}</b>/${rv.bench.of} papers (target ≤ #${rv.maxRank})` : `<b>최저 ${rv.bench.worst}위</b>/${rv.bench.of}편 (기준 ${rv.maxRank}위 이내)`)
+      : '아직 없음';
     const reviewCard = rv ? `<div class="rban ${rv.passed ? 'ok' : 'warn'}"><div><b>리뷰 루프 ${rv.rounds}/${rv.max}라운드</b> · 최근 판정 <b>${esc(rv.recommendation || '없음')}</b> (기준 ${esc(rv.min)} 이상)
-        · 채택 논문 비교 ${rv.bench ? `<b>최저 ${rv.bench.worst}위</b>/${rv.bench.of}편 (기준 ${rv.maxRank}위 이내)` : '아직 없음'}</div>
+        · 채택 논문 비교 ${benchHtml}</div>
         ${rv.passed ? '<div>종료 기준 충족</div>' : `<div class="empty" style="padding:0">남은 조건: ${esc(rv.reasons.join(' · '))}</div>`}
         ${rv.stalled ? '<div>최근 라운드에서 판정이 나아지지 않아 실험 보강(P7)으로 돌아가도록 안내 중</div>' : ''}</div>` : '';
     const banner = d.status === 'blocked'
@@ -3567,7 +3592,7 @@ async function paintResearch(auto) {
               <button data-rsyn="1">종합 논문에 포함</button></div>
             ${d.final ? md(d.final) : '<div>산출물 탭에서 결과를 확인하세요.</div>'}</div>`
         : d.status === 'waiting'
-          ? `<div class="rban warn"><b>기다리는 중</b> — ${esc(d.wait_reason || '')}${d.wake_at ? ` · <b>${esc(new Date(d.wake_at).toLocaleString())}</b>에 자동 재개` : ''}<div class="row"><button data-ract="resume">지금 깨우기</button></div></div>`
+          ? `<div class="rban warn"><b>기다리는 중</b> — ${esc(d.wait_reason || '')}${d.wake_at ? (isEnUI() ? ` · Auto-resume at <b>${esc(new Date(d.wake_at).toLocaleString(uiLocale()))}</b>` : ` · <b>${esc(new Date(d.wake_at).toLocaleString(uiLocale()))}</b>에 자동 재개`) : ''}<div class="row"><button data-ract="resume">지금 깨우기</button></div></div>`
           : d.status === 'paused' ? `<div class="rban muted"><b>일시정지됨</b> — 상단 재개를 누르면 이어서 진행합니다.</div>` : '';
     const steps = prog.phases.map((ph, i) => {
       const beyond = i > prog.phases.indexOf(prog.goal);
@@ -3585,7 +3610,7 @@ async function paintResearch(auto) {
         <div class="rnow" style="border-top:1px solid var(--line);padding-top:8px"><span class="empty">다음 작업</span> <b>${esc(d.next_action || '-')}</b></div>
         ${d.lineage ? `<div><span class="empty">${d.lineage.kind === 'derived' ? '기반 연구' : '종합 대상'}</span> ${d.lineage.parents.map((x) => `<button class="linkbtn" data-rgo="${esc(x.slug)}">${esc(x.name || x.slug)}</button>`).join(' · ')}</div>` : ''}
         ${d.children?.length ? `<div><span class="empty">이어진 연구</span> ${d.children.map((c) => `<button class="linkbtn" data-rgo="${esc(c)}">${esc((state.research.find((x) => x.slug === c) || {}).name || c)}</button>`).join(' · ')}</div>` : ''}
-        <div class="empty" style="padding:0">디렉터 ${d.director ? `<span class="dot ${d.director.busy ? 'busy' : 'idle'}" style="display:inline-block;width:7px;height:7px;margin:0 4px 0 0;vertical-align:middle"></span>` + (d.director.busy ? '작업 중' : '대기') + ` · ${d.director.term ? 't:' + d.director.term : 'c:' + d.director.console}` : '<span class="dot dead" style="display:inline-block;width:7px;height:7px;margin:0 4px 0 0;vertical-align:middle"></span>실행 중 아님 (워치독이 자동 재개)'} · 시작 ${esc(d.created_at ? new Date(d.created_at).toLocaleDateString() : '-')} · 갱신 ${d.updated_at ? relTime(Date.parse(d.updated_at)) : '-'}</div>
+        <div class="empty" style="padding:0">디렉터 ${d.director ? `<span class="dot ${d.director.busy ? 'busy' : 'idle'}" style="display:inline-block;width:7px;height:7px;margin:0 4px 0 0;vertical-align:middle"></span>` + (d.director.busy ? '작업 중' : '대기') + ` · ${d.director.term ? 't:' + d.director.term : 'c:' + d.director.console}` : '<span class="dot dead" style="display:inline-block;width:7px;height:7px;margin:0 4px 0 0;vertical-align:middle"></span>실행 중 아님 (워치독이 자동 재개)'} · 시작 ${esc(d.created_at ? new Date(d.created_at).toLocaleDateString(uiLocale()) : '-')} · 갱신 ${d.updated_at ? relTime(Date.parse(d.updated_at)) : '-'}</div>
         ${d.workers?.length ? `<div><span class="empty">워커</span> ${d.workers.map((w) => `<span class="badge">${esc(w.id)} ${esc(w.status || '')}</span>`).join(' ')}</div>` : ''}
         ${myGpu.length ? `<div><span class="empty">GPU</span> ${myGpu.map((t) => `<span class="badge c">${esc(t.label || t.id)}</span>`).join(' ')}</div>` : ''}
       </div>
@@ -3602,7 +3627,7 @@ async function paintResearch(auto) {
     const items = journalItems(d.journal).reverse();
     const sbtn = (k, lbl) => `<button data-ract-sub="${k}" class="${sub === k ? 'on' : ''}">${lbl}</button>`;
     const subContent = sub === 'timeline'
-      ? `<div class="tl">${items.map((x) => `<div class="tli"><span class="tlt" title="${esc(new Date(x.ts).toLocaleString())}">${esc(new Date(x.ts).toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }))}</span><span>${esc(x.text)}</span></div>`).join('') || '<div class="empty">없음</div>'}</div>`
+      ? `<div class="tl">${items.map((x) => `<div class="tli"><span class="tlt" title="${esc(new Date(x.ts).toLocaleString(uiLocale()))}">${esc(new Date(x.ts).toLocaleString(uiLocale(), { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }))}</span><span>${esc(x.text)}</span></div>`).join('') || '<div class="empty">없음</div>'}</div>`
       : sub === 'decisions' ? `<div class="rcard r-doc">${md(d.decisions)}</div>`
         : sub === 'failed' ? `<div class="rcard r-doc">${md(d.failed)}</div>`
           : `<pre class="mdpre">${esc(d.harnessLog || '(로그 없음)')}</pre>`;

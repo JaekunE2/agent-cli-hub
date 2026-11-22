@@ -19,7 +19,8 @@ function taskKindOf(t) {
 function kindBadgeHTML(t) {
   const k = taskKindOf(t);
   const label = projectTaskKinds.find(([id]) => id === k)?.[1] || '개발·구현';
-  return `<span class="badge kind-${esc(k)}" title="작업 종류: ${esc(label)}">${esc(label)}</span>`;
+  const kindTip = `작업 종류: ${label}`;
+  return `<span class="badge kind-${esc(k)}" title="${esc(kindTip)}">${esc(label)}</span>`;
 }
 
 async function saveProject(p, tab) {
@@ -546,7 +547,11 @@ async function viewProjects() {
         </div>
         <div class="pj-top-right">
           <button id="projectTokens" class="pj-tok-pill" title="Project 누적 토큰 상세 (CLI 변경·서브 개발 포함 전체 합산)">토큰 <b>${tokFmt(totalTok)}</b></button>
-          <div class="pj-prog" role="progressbar" aria-label="작업 진행률" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" title="완료 ${cnt.done} · 검토 ${cnt.review} · 진행 ${cnt.doing} · 대기 ${cnt.planned}">
+          ${(() => {
+            const progLabel = '작업 진행률';
+            const progTip = `완료 ${cnt.done} · 검토 ${cnt.review} · 진행 ${cnt.doing} · 대기 ${cnt.planned}`;
+            return `<div class="pj-prog" role="progressbar" aria-label="${progLabel}" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" title="${esc(progTip)}">`;
+          })()}
             <div class="pj-stackbar">
               ${cnt.done ? `<i class="done" style="width:${segW(cnt.done)}%"></i>` : ''}
               ${cnt.review ? `<i class="review" style="width:${segW(cnt.review)}%"></i>` : ''}
@@ -589,7 +594,10 @@ async function viewProjects() {
 }
 
 async function removeProject(p, button) {
-  if (!confirm(`“${p.name}”의 전용 CLI 터미널을 종료하고 Project와 연결된 원본 대화를 영구 삭제할까요? 진행 중인 CLI 작업은 중단됩니다. 작업 파일은 유지됩니다.`)) return;
+  const delMsg = document.documentElement.lang === 'en'
+    ? `Terminate dedicated CLI terminals for “${p.name}” and permanently delete linked CLI conversations? Running CLI jobs will stop; workspace files will be kept.`
+    : `“${p.name}”의 전용 CLI 터미널을 종료하고 Project와 연결된 원본 대화를 영구 삭제할까요? 진행 중인 CLI 작업은 중단됩니다. 작업 파일은 유지됩니다.`;
+  if (!confirm(delMsg)) return;
   if (button) button.disabled = true;
   try {
     const r = await api('/api/projects', { method: 'DELETE', body: { id: p.id, revision: p.revision, stopRunning: true } });

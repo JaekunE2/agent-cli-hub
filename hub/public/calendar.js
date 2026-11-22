@@ -36,6 +36,7 @@ function paintCalendar() {
     ? new Date(y, mo).toLocaleString('en-US', { month: 'long', year: 'numeric' })
     : `${y}년 ${mo + 1}월`;
   setBar('');
+  const calMoreTitle = connN ? `외부 캘린더 동기화 및 연동 (${connN}개 연결됨)` : '외부 캘린더 동기화 및 연동';
   const calActs = `
     <div class="btn-grp" role="group" aria-label="월 이동">
       <button data-cal="prev" aria-label="이전 달" title="이전 달">${ico.chevLeft || '‹'}</button>
@@ -45,7 +46,7 @@ function paintCalendar() {
     <b style="min-width:84px;text-align:center;font-size:13.5px">${esc(monthText)}</b>
     <button class="btn-sm" data-cal="addtask" title="todo.md에 마감 있는 할 일 추가">${ico.plus || ''} 할 일</button>
     <button class="primary btn-sm" data-cal="addev">${ico.plus || ''} 일정</button>
-    <button class="ghost icon-btn btn-sm" data-cal="more" aria-label="캘린더 연동 메뉴" aria-haspopup="menu" aria-expanded="false" title="외부 캘린더 동기화 및 연동${connN ? ` (${connN}개 연결됨)` : ''}">${ico.more || '⋯'}</button>`;
+    <button class="ghost icon-btn btn-sm" data-cal="more" aria-label="캘린더 연동 메뉴" aria-haspopup="menu" aria-expanded="false" title="${esc(calMoreTitle)}">${ico.more || '⋯'}</button>`;
   const sysTop = typeof systemTopHTML === 'function' ? systemTopHTML('calendar', calActs) : '';
 
   const items = d.items || [], byDate = new Map();
@@ -172,17 +173,18 @@ function calDetail(it) {
 function calIntegrationsDrawer() {
   const g = CAL.data?.google || {}, ms = CAL.data?.ms || {};
   const ico = window.UI_ICO || {};
+  const calLoc = document.documentElement.lang === 'en' ? 'en-US' : 'ko-KR';
   const body = `
     <div class="rcard">
       <div class="uh"><b>Microsoft Teams / Outlook (ICS)</b><span class="badge">${ms.connected ? `연결됨 · ${ms.count || 0}건` : '미연결'}</span></div>
-      <div class="empty" style="padding:0">${ms.connected ? `${esc(ms.label || 'Teams')} · 마지막 동기화 ${ms.lastSync ? new Date(ms.lastSync).toLocaleString('ko-KR') : '없음'}` : 'Outlook 웹의 공유 캘린더 ICS 링크를 연결해 Teams 일정을 함께 표시합니다 (읽기 전용).'}</div>
+      <div class="empty" style="padding:0">${ms.connected ? `${esc(ms.label || 'Teams')} · 마지막 동기화 ${ms.lastSync ? new Date(ms.lastSync).toLocaleString(calLoc) : '없음'}` : 'Outlook 웹의 공유 캘린더 ICS 링크를 연결해 Teams 일정을 함께 표시합니다 (읽기 전용).'}</div>
       <div class="row" style="margin-top:4px">
         ${ms.connected ? `<button data-ci="mssync">${ico.refresh || ''} 지금 동기화</button><button data-ci="mssetup">설정 변경 / 해제</button>` : '<button class="primary" data-ci="mssetup">Teams ICS 연결</button>'}
       </div>
     </div>
     <div class="rcard">
       <div class="uh"><b>Google 캘린더</b><span class="badge">${g.connected ? '연결됨' : g.configured ? '인증 대기' : '미설정'}</span></div>
-      <div class="empty" style="padding:0">${g.connected ? `${esc(g.account || '')} · 마지막 동기화 ${g.lastSync ? new Date(g.lastSync).toLocaleString('ko-KR') : '없음'}` : 'OAuth 클라이언트 설정 후 허브 일정과 Google 캘린더를 동기화합니다.'}</div>
+      <div class="empty" style="padding:0">${g.connected ? `${esc(g.account || '')} · 마지막 동기화 ${g.lastSync ? new Date(g.lastSync).toLocaleString(calLoc) : '없음'}` : 'OAuth 클라이언트 설정 후 허브 일정과 Google 캘린더를 동기화합니다.'}</div>
       <div class="row" style="margin-top:4px">
         ${!g.configured ? '<button data-ci="gsetup">연결 안내</button>' : !g.connected ? '<button class="primary" data-ci="gauth">구글 계정 연결</button>' : `<button data-ci="gsync">${ico.refresh || ''} 지금 동기화</button>`}
       </div>

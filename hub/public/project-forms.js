@@ -408,6 +408,8 @@ function projectDesign(p) {
     const k = typeof taskKindOf === 'function' ? taskKindOf(t) : 'dev';
     const chatCnt = (p.subChats?.[t.id] || []).length;
     const tokBadge = typeof taskTokenBadgeHTML === 'function' ? taskTokenBadgeHTML(p, t, false) : '';
+    const subTip = `클릭해 우측 상세 패널에서 하위 서브태스크 ${subs.length}개 확인`;
+    const menuAria = `${t.title} 메뉴`;
     return `<div class="pj-row${t.stage === 'done' ? ' is-done' : ''}" data-task-row="${esc(t.id)}">
       <span class="pj-step-num ${esc(t.stage)} kind-${esc(k)}" title="${esc(projectStages.find((s) => s[0] === t.stage)?.[1] || t.stage)}">${numMark}</span>
       <div class="pj-row-main">
@@ -415,7 +417,7 @@ function projectDesign(p) {
           ${typeof kindBadgeHTML === 'function' ? kindBadgeHTML(t) : ''}
           <button data-plan-task="${esc(t.id)}" class="pj-title">${esc(t.title)}</button>
           ${t.stage !== 'planned' ? stageBadgeHTML(t.stage) : ''}
-          ${subs.length ? `<span class="badge" title="클릭해 우측 상세 패널에서 하위 서브태스크 ${subs.length}개 확인">서브 ${subDone}/${subs.length}</span>` : ''}
+          ${subs.length ? `<span class="badge" title="${esc(subTip)}">서브 ${subDone}/${subs.length}</span>` : ''}
           ${tokBadge}
         </div>
         ${summary ? `<div class="pj-row-desc">${esc(summary)}</div>` : ''}
@@ -424,7 +426,7 @@ function projectDesign(p) {
         <button class="ghost btn-sm" data-subchat-task="${esc(t.id)}" title="이 태스크 안에서 채팅 기반으로 서브 개발 진행">${ico.chat || ''} 서브 개발${chatCnt ? ` <b>${chatCnt}</b>` : ''}</button>
         ${projectCliBadgeHTML(p, t)}
         ${projectStartBtnHTML(p, t)}
-        <button class="ghost icon-btn btn-sm" data-task-more="${esc(t.id)}" aria-label="${esc(t.title)} 메뉴" aria-haspopup="menu" aria-expanded="false">${ico.more || '⋯'}</button>
+        <button class="ghost icon-btn btn-sm" data-task-more="${esc(t.id)}" aria-label="${esc(menuAria)}" aria-haspopup="menu" aria-expanded="false">${ico.more || '⋯'}</button>
       </div>
     </div>`;
   };

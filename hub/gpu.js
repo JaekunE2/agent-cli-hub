@@ -718,7 +718,8 @@ module.exports = function gpuQueue({ dir, file = 'gpu-queue.json', config = {}, 
       const slurmOnly = gpus.filter((g) => g.index >= 0 && targets({ gpu: gpuKey }, g)).every((g) => serverCfg(g.host)?.slurm);
       if (!b.exclusive && total && memMB > total - (slurmOnly ? 0 : cfg.idleMB)) {
         const big = cfg.servers.filter((s) => s.auto).map((s) => s.id);
-        return send(400, { error: `요청 ${memMB}MB는 대상 GPU(최대 ${total}MB)에서 기본 사용량을 뺀 것보다 큽니다${big.length && gpuKey === 'any' ? ` — 대용량 서버를 쓰려면 --gpu ${big[0]} 또는 --gpu auto --sync <폴더>` : ''}` });
+        const syncArg = require('./i18n').language() === 'en' ? '<dir>' : '<폴더>';
+        return send(400, { error: `요청 ${memMB}MB는 대상 GPU(최대 ${total}MB)에서 기본 사용량을 뺀 것보다 큽니다${big.length && gpuKey === 'any' ? ` — 대용량 서버를 쓰려면 --gpu ${big[0]} 또는 --gpu auto --sync ${syncArg}` : ''}` });
       }
       const holderPid = Number(b.holderPid) || null;
       const t = {

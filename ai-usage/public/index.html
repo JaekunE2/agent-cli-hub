@@ -350,9 +350,10 @@ function meterHtml(m) {
   const used = Math.round(m.usedPercent * 10) / 10;
   const left = Math.max(0, 100 - used);
   const lv = level(used);
+  const meterAria = `${m.name} 사용률`;
   return `<div class="meter">
     <div class="meter-top"><span>${esc(m.name)}</span><span class="left ${lv}"><b>${Math.round(left)}%</b> 남음</span></div>
-    <div class="bar" role="progressbar" aria-valuenow="${used}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(m.name)} 사용률"><span class="bg-${lv}" style="width:${used}%"></span></div>
+    <div class="bar" role="progressbar" aria-valuenow="${used}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(meterAria)}"><span class="bg-${lv}" style="width:${used}%"></span></div>
     <div class="meter-foot"><span>${used}% 사용${m.detail ? ' · ' + esc(m.detail) : ''}</span><span>${esc(untilText(m.resetsAt))}</span></div>
   </div>`;
 }
@@ -414,7 +415,7 @@ function cardHtml(a) {
     ${body}
     ${bill}
     ${memo}
-    <div class="card-foot"><span>${new Date(a.fetchedAt).toLocaleTimeString('ko-KR')} 조회</span><span class="foot-actions">${copyBtn}${del}</span></div>
+    <div class="card-foot"><span>${new Date(a.fetchedAt).toLocaleTimeString(document.documentElement.lang === 'en' ? 'en-US' : 'ko-KR')} 조회</span><span class="foot-actions">${copyBtn}${del}</span></div>
   </article>`;
 }
 
@@ -423,7 +424,7 @@ function billingText(b) {
   const t = new Date(b.at);
   const ms = t - Date.now();
   const days = Math.ceil(ms / 86400000);
-  const date = t.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' });
+  const date = t.toLocaleDateString(document.documentElement.lang === 'en' ? 'en-US' : 'ko-KR', { year: 'numeric', month: 'long', day: 'numeric' });
   const rel = days <= 0 ? '오늘' : days === 1 ? '내일' : `${days}일 후`;
   return `${date} (${rel})${b.note ? ' · ' + b.note : ''}`;
 }
@@ -438,7 +439,7 @@ function render(data) {
   tag.hidden = !(shareMode || readOnly);
   tag.textContent = readOnly ? '보기 전용' : '공유용 · 내 PC 계정 제외';
   const list = data.accounts;
-  $('#updated').textContent = `마지막 업데이트 ${new Date(data.generatedAt).toLocaleTimeString('ko-KR')} · 계정 ${list.length}개`;
+  $('#updated').textContent = `마지막 업데이트 ${new Date(data.generatedAt).toLocaleTimeString(document.documentElement.lang === 'en' ? 'en-US' : 'ko-KR')} · 계정 ${list.length}개`;
   if (!list.length) {
     $('#summary').innerHTML = '';
     $('#grid').innerHTML = '<div class="empty" style="grid-column:1/-1">감지된 계정이 없습니다. “계정 추가”로 등록하세요.</div>';

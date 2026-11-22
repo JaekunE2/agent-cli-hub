@@ -122,7 +122,9 @@ function bindProjectAccounts(dialog, selected, project, initModel = '', initEffo
 
     if (cliHint) {
       cliHint.textContent = kind === 'codex'
-        ? 'Codex: -m <모델> · model_reasoning_effort 설정이 계획 생성 및 작업 터미널에 자동 적용됩니다.'
+        ? (document.documentElement.lang === 'en'
+          ? 'Codex: -m <model> · model_reasoning_effort applies automatically to planning & task terminals.'
+          : 'Codex: -m <모델> · model_reasoning_effort 설정이 계획 생성 및 작업 터미널에 자동 적용됩니다.')
         : kind === 'claude'
           ? 'Claude Code: --model · --effort 옵션이 계획 생성 및 작업 터미널에 자동 적용됩니다.'
           : kind === 'agy'
