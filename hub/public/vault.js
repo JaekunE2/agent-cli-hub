@@ -593,6 +593,12 @@
 
     const body = $('#vaultBody');
     if (!body) return;
+    const shell = body.closest('.sys-shell');
+    const sysTopWrap = shell?.querySelector('.sys-top');
+    if (sysTopWrap) {
+      const vaultActsHTML = `<button type="button" class="btn-sm" id="vGatherBtn">${UI_ICO.refresh} 모든 CLI에서 모으기</button><button type="button" class="primary btn-sm" id="vSyncAllBtn">${UI_ICO.swap} 모든 CLI로 동기화</button>`;
+      sysTopWrap.outerHTML = systemTopHTML('vault', vaultActsHTML);
+    }
     body.innerHTML = `<div class="rcard" style="gap:10px">
       <div class="row" style="justify-content:space-between;gap:10px;flex-wrap:wrap">
         <div style="min-width:0;flex:1">
@@ -602,8 +608,6 @@
         <div class="row" style="gap:6px;flex-wrap:wrap">
           <button type="button" class="btn-sm" id="vPickDir">${UI_ICO.folder} 경로 변경</button>
           ${!IS_REMOTE ? `<button type="button" class="btn-sm" id="vOpenDir">${UI_ICO.external} 폴더 열기</button>` : ''}
-          <button type="button" class="btn-sm" id="vGatherBtn">${UI_ICO.refresh} 모든 CLI에서 모으기</button>
-          <button type="button" class="primary btn-sm" id="vSyncAllBtn">${UI_ICO.swap} 모든 CLI로 동기화</button>
         </div>
       </div>
       <label class="v-en" style="font-size:12.5px;padding:6px 10px;border-radius:8px;background:color-mix(in srgb,var(--accent) 8%,var(--panel));border:1px solid color-mix(in srgb,var(--accent) 24%,var(--line))">
@@ -641,7 +645,8 @@
     const openBtn = $('#vOpenDir', body);
     if (openBtn) openBtn.onclick = () => api('/api/vault/open-dir', { method: 'POST' });
 
-    $('#vGatherBtn', body).onclick = async (e) => {
+    const gatherBtn = $('#vGatherBtn', shell || document);
+    if (gatherBtn) gatherBtn.onclick = async (e) => {
       const btn = e.currentTarget;
       btn.disabled = true;
       try {
@@ -654,7 +659,8 @@
       finally { if (btn.isConnected) btn.disabled = false; }
     };
 
-    $('#vSyncAllBtn', body).onclick = async (e) => {
+    const syncAllBtn = $('#vSyncAllBtn', shell || document);
+    if (syncAllBtn) syncAllBtn.onclick = async (e) => {
       const btn = e.currentTarget;
       btn.disabled = true;
       try {
@@ -769,8 +775,8 @@
 
   async function viewVault() {
     const gen = viewGen;
-    setBar(`<h2 style="font-size:15px;font-weight:700;margin:0">공통 자원 · 스킬 · MCP · 하네스</h2>`);
-    $('#view').innerHTML = `<div class="sys-shell">${systemTopHTML('vault')}<div class="page-wrap" id="vaultBody"><div class="empty">공통 자원 정보를 불러오는 중…</div></div></div>`;
+    setBar('');
+    $('#view').innerHTML = `<div class="sys-shell">${systemTopHTML('vault')}<div class="sys-body"><div class="page-wrap" id="vaultBody"><div class="empty">공통 자원 정보를 불러오는 중…</div></div></div></div>`;
     $('#view').onclick = (e) => {
       const st = e.target.closest('[data-systab]');
       if (st) return select({ kind: st.dataset.systab });

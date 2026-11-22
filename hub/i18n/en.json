@@ -2433,6 +2433,10 @@
   "설정으로 세션을 연결했습니다": "settings applied to session",
   "적용 중…": "Applying…",
   "선택된 모델 · 추론 성능": "Selected Model · Reasoning Effort",
+  "이 대화가 현재 실행 중입니다. 먼저 터미널을 종료한 뒤 삭제하세요.": "This conversation is currently running. Stop its terminal before deleting.",
+  "CLI 대화 기록 삭제에 실패했습니다.": "Failed to delete the underlying CLI conversation record.",
+  "이 대화 기록을 삭제할까요? 허브와 기본 CLI(Claude · Codex · Antigravity) 기록에서도 함께 삭제됩니다.": "Delete this conversation? It will also be removed from its CLI (Claude · Codex · Antigravity) history.",
+  "허브 및 기본 CLI 대화 기록을 삭제했습니다": "Deleted conversation from Hub and underlying CLI history",
   "직접 추가 (": "Manual (",
   "표시할 스킬이 없습니다. 상단 CLI 카드를 누르거나 “모든 CLI에서 모으기”로 가져오세요.": "No skills to display. Click a CLI card above or “Gather from All CLIs” to import.",
   "한 번 등록하면 Claude · Codex · Antigravity 형식으로 자동 변환되며, 스위치와 CLI 버튼으로 개별/전용 적용할 수 있습니다.": "Register once to convert automatically for Claude, Codex, and Antigravity, and toggle switches or target CLIs per item."

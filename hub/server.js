@@ -392,6 +392,31 @@ function rememberProjectTerm(t) {
   }
 }
 
+async function eraseSingleRecord(id, { agentHint = null, fileHint = null, accountEnv = {} } = {}) {
+  let doc = index.get(id);
+  if (!doc && !fileHint) {
+    await refreshIndex();
+    doc = index.get(id);
+  }
+  const fallback = !doc && !fileHint ? transcript(id, 1) : null;
+  const agent = doc?.agent || agentHint || fallback?.agent || null;
+  const file = doc?.file || fileHint || fallback?.file || null;
+  let removed = false;
+  if (doc || agent === 'agy' || (agent && file)) {
+    removed = await deleteCliRecord({ id, agent, file }, {
+      claudeRoot: index.root,
+      agyRoots: index.agyRoot,
+      codexExe: codexExe(),
+      env: { ...cleanEnv(), ...accountEnv },
+    });
+    index.docs.delete(id);
+    index.dirty = true;
+  }
+  projects.hide(id);
+  overviewStale();
+  return removed;
+}
+
 async function eraseProject(p, stopRunning) {
   const members = [...terms.values()].filter(t => t.meta.projectTask?.projectId === p.id);
   const running = members.filter(t => t.exited === null);
@@ -409,19 +434,11 @@ async function eraseProject(p, stopRunning) {
   for (const id of ids) {
     const doc = index.get(id);
     const agent = doc?.agent || projects.recordAgent(p.id, id);
-    if (doc || agent === 'agy') {
-      const accountEnv = agent === 'codex' ? projectAccounts.resolve(agent, projects.recordAccount(p.id, id)).env : {};
-      if (await deleteCliRecord({ id, agent, file: doc?.file }, {
-        claudeRoot: index.root, agyRoots: index.agyRoot, codexExe: codexExe(), env: { ...cleanEnv(), ...accountEnv },
-      })) removed++;
-      index.docs.delete(id);
-      index.dirty = true;
-    }
-    projects.hide(id);
+    const accountEnv = agent === 'codex' ? projectAccounts.resolve(agent, projects.recordAccount(p.id, id)).env : {};
+    if (await eraseSingleRecord(id, { agentHint: agent, fileHint: doc?.file, accountEnv })) removed++;
   }
   projects.remove(p.id, p.revision);
   for (const t of members) if (t.exited !== null) forgetTerm(t);
-  overviewStale();
   return removed;
 }
 
@@ -2298,8 +2315,17 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/recent/hide' && req.method === 'POST') {
       const { id } = await body(req);
       if (!validSessionId(id)) return send(res, 400, { error: '대화 ID가 올바르지 않습니다.' });
-      projects.hide(id);
-      return send(res, 200, { ok: true });
+      const activeTerm = [...terms.values()].find((t) => t.exited === null && termSessionId(t) === id);
+      const activeLive = liveSessions().find((s) => s.sessionId === id);
+      if (activeTerm || activeLive) {
+        return send(res, 409, { error: '이 대화가 현재 실행 중입니다. 먼저 터미널을 종료한 뒤 삭제하세요.' });
+      }
+      try {
+        const deletedCli = await eraseSingleRecord(id);
+        return send(res, 200, { ok: true, deletedCli });
+      } catch (e) {
+        return send(res, 500, { error: e.message || 'CLI 대화 기록 삭제에 실패했습니다.' });
+      }
     }
     if (p === '/api/transcript') {
       const id = url.searchParams.get('id'), at = Number(url.searchParams.get('at') ?? -1);

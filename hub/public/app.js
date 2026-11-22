@@ -1736,7 +1736,6 @@ function viewConsole() {
 
   setBar(`<button id="btnBackTerms" class="ghost btn-sm">${ICO.chevLeft} 터미널</button><h2><span>${esc(c ? consoleLabel(c) : 'pid ' + state.sel.id)}</span></h2>
     ${dockTopSegHTML({ openSet: new Set(initialPanels), isContentTab, hasTerm: true, hasChat: !!sid, showFiles: !!sid, curTab: state.tab })}
-    ${sid ? switchBtnHTML(sid) : ''}
     <button id="btnConMore" class="ghost icon-btn btn-sm desk" aria-label="콘솔 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
 
   let dock = null;
@@ -1761,6 +1760,7 @@ function viewConsole() {
       e.stopPropagation();
       openMoreMenu(more, [
         { label: '창 앞으로 가져오기', icon: ICO.external, onClick: () => api('/api/console/focus', { method: 'POST', body: { pid } }) },
+        sid ? { label: '다른 계정 · 에이전트로 이어하기', icon: ICO.swap, onClick: () => openSwitch(sid) } : null,
       ]);
     }
   };
@@ -1829,13 +1829,14 @@ function alertBar(msg) {
 }
 
 async function hideRecentRecord(id, button) {
-  if (!confirm('이 대화를 허브 기록에서 제거할까요? 원본 CLI 기록은 유지됩니다.')) return;
+  if (!confirm('이 대화 기록을 삭제할까요? 허브와 기본 CLI(Claude · Codex · Antigravity) 기록에서도 함께 삭제됩니다.')) return;
   button.disabled = true;
   try {
     const r = await api('/api/recent/hide', { method: 'POST', body: { id } });
     if (r.error || !r.ok) throw new Error(r.error || '기록을 삭제할 수 없습니다.');
     state.favs.delete('sid:' + id);
     await refreshRecent();
+    toast('허브 및 기본 CLI 대화 기록을 삭제했습니다');
     if (state.sel.kind === 'recent' && state.sel.id === id) select({ kind: 'home' });
   } catch (e) { toast(e.message); }
   finally { button.disabled = false; }
@@ -1892,7 +1893,7 @@ function viewTranscript() {
       curTab: state.tab,
       termTitle: hasLivePane ? '연결된 터미널 패널 열기/닫기' : '이 세션을 터미널로 열어 함께 보기',
     })}
-    ${!live ? `<button class="primary btn-sm" id="btnResume">${ICO.play} 대시보드에서 이어하기</button>` : isDesktopSession(live) ? `<button class="primary btn-sm" id="btnResume" data-fork="1" title="데스크톱 앱 대화를 여기까지 복제한 새 세션으로 이어갑니다">${ICO.play} 대시보드에서 이어하기 (복제)</button>` : switchBtnHTML(sid)}
+    ${!live ? `<button class="primary btn-sm" id="btnResume">${ICO.play} 대시보드에서 이어하기</button>` : isDesktopSession(live) ? `<button class="primary btn-sm" id="btnResume" data-fork="1" title="데스크톱 앱 대화를 여기까지 복제한 새 세션으로 이어갑니다">${ICO.play} 대시보드에서 이어하기 (복제)</button>` : ''}
     <button id="btnRecMore" class="ghost icon-btn btn-sm" aria-label="세션 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
 
   let dock = null;
@@ -3144,7 +3145,6 @@ function viewTerm() {
 
   setBar(`${state.sel.project || pj ? `<button id="btnBackProject" class="ghost btn-sm" data-proj-id="${esc(state.sel.project || pj.id)}">${ICO.chevLeft} ${esc(pj?.name || 'Project')}</button>` : `<button id="btnBackTerms" class="ghost btn-sm">${ICO.chevLeft} 터미널</button>`}<h2>${ag ? agentIcon(ag) : ''}<span>${esc(t ? termLabel(t) : '터미널')}</span></h2><span id="termLiveBadge" class="term-live-pill ${pillCls}">${pillText}</span>${branchTagHTML(t?.branch)}${t?.account ? `<span class="badge c">${esc(t.account.label.replace(/@.*/, ''))}</span>` : ''}${(t?.model || t?.effort) ? `<span class="badge" title="선택된 모델 · 추론 성능">${esc([t.model, t.effort].filter(Boolean).join(' · '))}</span>` : ''}
     ${dockTopSegHTML({ openSet: new Set(initialPanels), isContentTab, hasTerm: true, hasChat: true, showFiles: true, curTab: state.tab })}
-    ${sid ? switchBtnHTML(sid, t?.id || '') : t?.claude || t?.codex || t?.agy ? switchBtnHTML('', t.id) : ''}
     <button id="btnTermMore" class="ghost icon-btn btn-sm" aria-label="터미널 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
 
   let dock = null;
@@ -3171,6 +3171,7 @@ function viewTerm() {
       e.stopPropagation();
       return openMoreMenu(more, [
         t?.cwd ? { label: `작업 폴더 복사 (${base(t.cwd) || t.cwd})`, icon: ICO.folder, onClick: () => copyText(t.cwd) } : null,
+        (sid || t?.claude || t?.codex || t?.agy) ? { label: '다른 계정 · 에이전트로 이어하기', icon: ICO.swap, onClick: () => openSwitch(sid || '', t?.id || '') } : null,
         t?.agy ? { label: 'Antigravity /usage 실행', icon: ICO.chart, onClick: () => openAgyUsage(null, true) } : null,
         { divider: true },
         {
@@ -4151,22 +4152,14 @@ async function openArtifact(sid, it, url = artUrl(sid, it.path)) {
   } else body.innerHTML = `<div class="empty">이 형식(${esc(it.ext)})은 브라우저에서 미리 볼 수 없습니다. 다운로드해서 여세요.</div>`;
 }
 
-// ---------- account switch (C: user-triggered, picks the account with most headroom) ----------
-// termId: a dashboard terminal whose claude has no conversation yet (e.g. not logged in) → restarted on the account
-function switchBtnHTML(sid, termId = '') {
-  const s = sid && state.live.find((x) => x.sessionId === sid);
-  return `<button class="btn-sm${s?.limit ? ' primary' : ''}" data-switch="${esc(sid)}" data-switch-term="${esc(termId)}" title="이 세션을 AI 사용량에 여유가 가장 많은 계정으로 이어서 실행">${ICO.swap} ${s?.limit ? '한도 도달 · ' : ''}다른 계정으로</button>`;
-}
+// ---------- account switch drawer (accessible via session/terminal ⋯ menu) ----------
 document.addEventListener('click', (e) => {
   const cb = e.target.closest('[data-copy-code]');
   if (cb) {
     e.stopPropagation();
     const pre = cb.closest('.codeblk')?.querySelector('.mdpre');
     if (pre) copyText(pre.textContent);
-    return;
   }
-  const b = e.target.closest('[data-switch]');
-  if (b) { e.stopPropagation(); openSwitch(b.dataset.switch, b.dataset.switchTerm); }
 }, true);
 async function runSwitchRequest(payload) {
   let res = await api('/api/switch', { method: 'POST', body: payload });
