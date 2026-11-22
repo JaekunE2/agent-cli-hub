@@ -2314,5 +2314,10 @@
   "실행 명령(command) 또는 URL 중 하나를 입력하세요.": "Please enter either a command or URL.",
   "규칙 파일 이름을 입력하세요.": "Please enter a rule filename.",
   "볼트 경로는 절대 경로여야 합니다.": "Vault path must be an absolute path.",
-  "스킬 이름이 필요합니다.": "Skill name is required."
+  "스킬 이름이 필요합니다.": "Skill name is required.",
+  "전송됨 · 응답 대기 중": "Sent · Waiting for reply",
+  "터미널 출력 숨기기": "Hide Terminal Output",
+  "터미널 출력 보기": "Show Terminal Output",
+  "터미널로 이동 ↗": "Open Terminal ↗",
+  "터미널에서 응답을 생성하고 있습니다": "Generating response in terminal"
 }

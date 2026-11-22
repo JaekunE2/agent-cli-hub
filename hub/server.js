@@ -1372,9 +1372,14 @@ function agySessionOf(t) {
   return logged || (resume >= 0 ? args[resume + 1] : null);
 }
 function codexDocOf(t) { return termDocOf(t); }
-// codex draws "esc to interrupt" under its spinner while a turn runs
+// codex & claude draw "esc to interrupt" under their spinner while a turn runs
 const CODEX_BUSY = /esc to interrupt|esc to cancel/i;
 function codexStatus(t) {
+  if (t.exited !== null) return 'exited';
+  let screen = ''; try { screen = readTerm(t, 12).join('\n'); } catch { return null; }
+  return CODEX_BUSY.test(screen) ? 'busy' : 'idle';
+}
+function claudeStatus(t) {
   if (t.exited !== null) return 'exited';
   let screen = ''; try { screen = readTerm(t, 12).join('\n'); } catch { return null; }
   return CODEX_BUSY.test(screen) ? 'busy' : 'idle';
@@ -1745,7 +1750,8 @@ const agyQuota = createAgyQuotaService({ file: AGY_QUOTA_FILE, agyExe, envFn: cl
 const isAgyTerm = (t) => /agy(\.exe)?$/i.test(t?.meta?.cmd || '');
 const agentOf = (t) => (/claude(\.exe)?$/i.test(t.meta?.cmd || '') ? 'claude' : isCodexTerm(t) ? 'codex' : isAgyTerm(t) ? 'agy' : /cursor-agent/i.test((t.meta?.args || []).join(' ')) ? 'cursor' : null);
 const termInfo = (t) => ({ id: t.id, title: t.title, liveTitle: t.liveTitle, account: t.account, agent: agentOf(t), operator: !!t.meta?.operator, claude: /claude(\.exe)?$/i.test(t.meta?.cmd || ''), codex: isCodexTerm(t), agy: isAgyTerm(t),
-  ...(isCodexTerm(t) ? { status: codexStatus(t) } : isAgyTerm(t) ? { status: agyStatus(t) } : {}), ...(isAgyTerm(t) ? { sessionId: agySessionOf(t) } : {}),
+  ...(isCodexTerm(t) ? { status: codexStatus(t) } : isAgyTerm(t) ? { status: agyStatus(t) } : /claude(\.exe)?$/i.test(t.meta?.cmd || '') ? { status: claudeStatus(t) } : {}), ...(isAgyTerm(t) ? { sessionId: agySessionOf(t) } : {}),
+  lastOutputAt: t.lastOutputAt || 0,
   projectTask: t.meta?.projectTask, cwd: t.cwd, pid: t.pid, exited: t.exited, cols: t.cols, rows: t.rows });
 
 // ---------- HTTP ----------

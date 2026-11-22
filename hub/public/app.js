@@ -1635,8 +1635,9 @@ function viewConsole() {
   };
   if (state.tab === 'chat' && sid) {
     $('#view').innerHTML = `<div class="chat-shell"><div class="chat-scroll" id="conChatHost"></div><div id="conChatComp"></div></div>`;
-    renderChat(sid, gen, -1, [], $('#conChatHost'));
-    mountChatComposer({ barHost: $('#conChatComp'), sid, consolePid: Number(state.sel.id), agent: s?.agent || 'claude', cwd: s?.cwd || '', onJumpTerm: () => select(state.sel, 'screen', true) });
+    const ch = $('#conChatHost');
+    renderChat(sid, gen, -1, [], ch);
+    mountChatComposer({ barHost: $('#conChatComp'), chatHost: ch, sid, consolePid: Number(state.sel.id), agent: s?.agent || 'claude', cwd: s?.cwd || '', onJumpTerm: () => select(state.sel, 'screen', true) });
     return;
   }
   if (state.tab === 'files' && sid) return renderArtifacts(sid, gen);
@@ -1839,9 +1840,11 @@ function viewTranscript() {
     <div class="chat-scroll" id="chatScrollHost"></div>
     <div id="transcriptCompHost"></div>
   </div>`;
-  renderChat(sid, gen, state.sel.at ?? -1, termsOf(state.sel.q), $('#chatScrollHost'));
+  const ch = $('#chatScrollHost');
+  renderChat(sid, gen, state.sel.at ?? -1, termsOf(state.sel.q), ch);
   mountChatComposer({
     barHost: $('#transcriptCompHost'),
+    chatHost: ch,
     sid,
     consolePid: live && !isDesktopSession(live) ? consoleOf(live.pid)?.id : null,
     agent: r?.agent || 'claude',
@@ -1854,7 +1857,7 @@ function viewTranscript() {
   });
 }
 
-function mountChatComposer({ barHost, sid = null, termId = null, consolePid = null, agent = 'claude', cwd = '', liveDesktop = false, onJumpTerm = null, compact = false }) {
+function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null, consolePid = null, agent = 'claude', cwd = '', liveDesktop = false, onJumpTerm = null, compact = false }) {
   if (!barHost) return;
   let activeTermId = termId ? String(termId) : null;
   let activeConsolePid = consolePid ? Number(consolePid) : null;
@@ -1918,6 +1921,18 @@ function mountChatComposer({ barHost, sid = null, termId = null, consolePid = nu
   const fitRep = () => { repIn.style.height = 'auto'; repIn.style.height = Math.min(140, Math.max(38, repIn.scrollHeight)) + 'px'; };
   repIn.addEventListener('input', fitRep);
 
+  const notifySent = (targetTermId, text) => {
+    if (!chatHost) return;
+    chatHost._liveChatHint = {
+      termId: targetTermId ? String(targetTermId) : '',
+      consolePid: activeConsolePid || null,
+      pendingText: text,
+      sentAt: Date.now(),
+      until: Date.now() + 30000,
+    };
+    chatHost._triggerPoll?.();
+  };
+
   const sendReply = async () => {
     const text = repIn.value.trim();
     if (!text) return;
@@ -1929,12 +1944,14 @@ function mountChatComposer({ barHost, sid = null, termId = null, consolePid = nu
         const r = await api('/api/term/send', { method: 'POST', body: { id: existing.id, text, submit: true } });
         if (r.error) throw new Error(r.error);
         syncConn();
+        notifySent(existing.id, text);
         return;
       }
       if (activeConsolePid) {
         const r = await api('/api/console/send', { method: 'POST', body: { pid: activeConsolePid, text, submit: true } });
         if (r.error) throw new Error(r.error);
         syncConn();
+        notifySent(null, text);
         return;
       }
       const kind = agent === 'codex' ? 'codex' : agent === 'agy' ? 'agy' : 'claude';
@@ -1946,6 +1963,7 @@ function mountChatComposer({ barHost, sid = null, termId = null, consolePid = nu
       activeTermId = String(t.id);
       await refreshOverview();
       syncConn();
+      notifySent(t.id, text);
       setTimeout(() => {
         api('/api/term/send', { method: 'POST', body: { id: t.id, text, submit: true } }).catch(() => {});
       }, 2400);
@@ -1994,9 +2012,11 @@ function setupSplitRightPane({ rightEl, termId = null, consolePid = null, sid = 
     </div>`;
 
   $('#btnSplitClose', rightEl).onclick = onClose;
-  renderChat(sid, gen, -1, [], $('#splitChatHost', rightEl));
+  const sch = $('#splitChatHost', rightEl);
+  renderChat(sid, gen, -1, [], sch);
   mountChatComposer({
     barHost: $('#splitChatComp', rightEl),
+    chatHost: sch,
     sid,
     termId,
     consolePid,
@@ -2253,6 +2273,21 @@ async function openBranchDialog({ sid, atIndex = null, message = null, agent = '
   d.showModal();
 }
 
+function formatLiveTermPreview(lines, maxLines = 14) {
+  if (!Array.isArray(lines) || !lines.length) return '';
+  const cleaned = lines
+    .map((l) => String(l ?? '').replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\s+$/, ''))
+    .filter((l) => {
+      const t = l.trim();
+      if (!t) return false;
+      if (/^[\s─━═│┌┐└┘├┤┬┴┼╭╮╰╯·•\-_=~]+$/.test(t)) return false;
+      if (/^(?:\?\s+for shortcuts|shift\+tab\s+to\s+cycle|ctrl\+c\s+to|esc\s+to\s+(?:interrupt|cancel)|type\s+your\s+message|bypass\s+permissions|\d+%\s+context\s+left)/i.test(t)) return false;
+      return true;
+    });
+  while (cleaned.length && /^\s*[>›❯$#]\s*$/.test(cleaned[cleaned.length - 1])) cleaned.pop();
+  return cleaned.slice(-maxLines).join('\n');
+}
+
 let chatPollTimer = null;
 async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
   clearTimeout(chatPollTimer);
@@ -2268,7 +2303,157 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
   const who = ag === 'codex' ? 'Codex' : ag === 'agy' ? 'Antigravity' : 'Claude';
   container.innerHTML = '<div class="chat">불러오는 중…</div>';
   let lastSig = '';
+  let lastLiveSig = '';
+  let lastMessages = [];
+  let lastWasWorking = false;
+  let settlingUntil = 0;
+  let showLiveScreen = true;
+  try { showLiveScreen = localStorage.getItem('ach.chatLiveScreen') !== '0'; } catch {}
   const jump = at >= 0;
+
+  const resolveLiveTarget = () => {
+    const hint = container._liveChatHint;
+    let lt = null;
+    if (state.sel.kind === 'term') {
+      lt = state.terms.find((x) => String(x.id) === String(state.sel.id) && x.exited === null) || null;
+    }
+    if (!lt && hint?.termId) {
+      lt = state.terms.find((x) => String(x.id) === String(hint.termId) && x.exited === null) || null;
+    }
+    if (!lt && curSid) {
+      lt = state.terms.find((x) => x.exited === null && x.sessionId === curSid) || null;
+    }
+    const liveProc = (lt?.pid && state.live.find((x) => consoleOf(x.pid)?.pids.includes(lt.pid)))
+      || (curSid && state.live.find((x) => x.sessionId === curSid))
+      || null;
+    const conPid = state.sel.kind === 'console'
+      ? Number(state.sel.id)
+      : (hint?.consolePid || (liveProc && !isDesktopSession(liveProc) ? consoleOf(liveProc.pid)?.id : null) || null);
+    return { lt, liveProc, conPid };
+  };
+
+  const updateLiveBubble = async (messages) => {
+    if (jump || gen !== viewGen || !container.isConnected) return false;
+    const box = $('.chat', container);
+    if (!box) return false;
+    let liveHost = $('#chatLiveHost', box);
+    if (!liveHost) {
+      liveHost = document.createElement('div');
+      liveHost.id = 'chatLiveHost';
+      const floatEl = $('.chat-bottom-float', box);
+      if (floatEl) box.insertBefore(liveHost, floatEl);
+      else box.appendChild(liveHost);
+    }
+
+    const { lt, liveProc, conPid } = resolveLiveTarget();
+    let termRead = null;
+    if (lt) {
+      termRead = await api(`/api/term/read?id=${encodeURIComponent(lt.id)}&lines=20`).catch(() => null);
+      if (gen !== viewGen || !container.isConnected) return false;
+    }
+    const procBusy = liveProc?.status === 'busy';
+    const termBusy = termRead?.status === 'busy' || (lt && termStateOf(lt) === 'busy');
+    let isBusy = !!(termBusy || procBusy);
+    const nonTool = (messages || []).filter((m) => !(m.role === 'assistant' && String(m.text || '').startsWith('⚙')));
+    const tail = nonTool[nonTool.length - 1];
+    if (isBusy) {
+      settlingUntil = 0;
+    } else if (lastWasWorking && !settlingUntil && tail?.role === 'user') {
+      settlingUntil = Date.now() + 3500;
+    }
+    if (tail?.role === 'assistant' && !isBusy) settlingUntil = 0;
+
+    let hint = container._liveChatHint;
+    if (hint) {
+      const tailTs = tail?.ts ? new Date(tail.ts).getTime() : 0;
+      if (tail?.role === 'assistant' && (!isBusy || (tailTs && tailTs >= hint.sentAt - 1000))) {
+        container._liveChatHint = null;
+        hint = null;
+      } else if (hint.until <= Date.now() && !isBusy) {
+        container._liveChatHint = null;
+        hint = null;
+      }
+    }
+
+    let conPreview = '';
+    if (!lt && conPid && (isBusy || hint)) {
+      const cr = await api(`/api/console/read?pid=${encodeURIComponent(conPid)}`).catch(() => null);
+      if (gen !== viewGen || !container.isConnected) return false;
+      if (cr?.ok && Array.isArray(cr.lines)) conPreview = formatLiveTermPreview(cr.lines, 14);
+    }
+
+    const activeWorking = isBusy || !!hint || settlingUntil > Date.now();
+    if (!activeWorking) {
+      settlingUntil = 0;
+      if (liveHost.innerHTML) {
+        liveHost.innerHTML = '';
+        lastLiveSig = '';
+      }
+      lastWasWorking = false;
+      return false;
+    }
+
+    lastWasWorking = isBusy || !!hint;
+    const preview = termRead?.ok ? formatLiveTermPreview(termRead.lines, 14) : conPreview;
+    const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+    const lastUser = [...(messages || [])].reverse().find((m) => m.role === 'user');
+    const showPendingUser = !!(hint?.pendingText && (!lastUser || !norm(lastUser.text).includes(norm(hint.pendingText).slice(0, 60))));
+    const sigNow = `${showPendingUser ? hint.pendingText : ''}|${showLiveScreen ? '1' : '0'}|${preview}|${lt?.id || conPid || ''}`;
+    if (sigNow === lastLiveSig) return true;
+    lastLiveSig = sigNow;
+
+    const wasNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 120;
+    const canJump = (lt || conPid) && state.sel.kind === 'recent';
+    const userHtml = showPendingUser
+      ? `<div class="msg user msg-pending"><div class="msg-bubble"><div class="msg-body">${esc(hint.pendingText)}</div></div><div class="msg-meta"><span>전송됨 · 응답 대기 중</span></div></div>`
+      : '';
+    const toggleBtn = preview
+      ? `<button type="button" class="ghost btn-sm" data-live-toggle style="min-height:22px;height:22px;font-size:11px;padding:0 7px">${showLiveScreen ? '터미널 출력 숨기기' : '터미널 출력 보기'}</button>`
+      : '';
+    const jumpBtn = canJump
+      ? `<button type="button" class="ghost btn-sm" data-live-jump="${esc(lt ? `t:${lt.id}` : `c:${conPid}`)}" style="min-height:22px;height:22px;font-size:11px;padding:0 7px">터미널로 이동 ↗</button>`
+      : '';
+    const bodyHtml = showLiveScreen && preview
+      ? `<pre class="chat-live-pre">${esc(preview)}</pre>`
+      : `<div class="chat-typing-row"><span class="typing-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>터미널에서 응답을 생성하고 있습니다</span></div>`;
+
+    liveHost.innerHTML = `${userHtml}<div class="msg assistant msg-live" aria-live="polite">
+      <div class="msg-av">${agentIcon(ag || 'claude')}</div>
+      <div class="msg-col">
+        <div class="msg-hd">
+          <span class="w-role">${esc(who)}</span>
+          <span class="chat-working-pill">작업 중 <span class="typing-dots" aria-hidden="true"><i></i><i></i><i></i></span></span>
+          <span style="flex:1"></span>
+          ${toggleBtn}${jumpBtn}
+        </div>
+        <div class="msg-bubble">${bodyHtml}</div>
+      </div>
+    </div>`;
+
+    const tgl = $('[data-live-toggle]', liveHost);
+    if (tgl) {
+      tgl.onclick = () => {
+        showLiveScreen = !showLiveScreen;
+        try { localStorage.setItem('ach.chatLiveScreen', showLiveScreen ? '1' : '0'); } catch {}
+        lastLiveSig = '';
+        updateLiveBubble(lastMessages);
+      };
+    }
+    const jBtn = $('[data-live-jump]', liveHost);
+    if (jBtn) {
+      jBtn.onclick = () => {
+        const val = jBtn.dataset.liveJump || '';
+        if (val.startsWith('t:')) select({ kind: 'term', id: val.slice(2) }, getSavedTermTab(null) || 'split');
+        else if (val.startsWith('c:')) select({ kind: 'console', id: val.slice(2) }, 'screen');
+      };
+    }
+    if (wasNearBottom) {
+      container.scrollTop = container.scrollHeight;
+      const pre = $('.chat-live-pre', liveHost);
+      if (pre) pre.scrollTop = pre.scrollHeight;
+    }
+    return true;
+  };
   const tick = async (force = false) => {
     if (gen !== viewGen) return;
     if ((!curSid || tCur?.agy) && state.sel.kind === 'term') {
@@ -2281,17 +2466,19 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
     if (!box) return;
     if (!curSid) {
       if (tCur?.agy) {
-        box.textContent = 'AGY 대화 기록을 기다리는 중입니다. 이 터미널에 기록이 생기면 자동으로 표시됩니다.';
-        chatPollTimer = setTimeout(tick, 3000);
+        box.innerHTML = '<div class="empty">AGY 대화 기록을 기다리는 중입니다. 이 터미널에 기록이 생기면 자동으로 표시됩니다.</div><div id="chatLiveHost"></div>';
+        const working = await updateLiveBubble([]);
+        chatPollTimer = setTimeout(tick, working ? 1100 : 3000);
         return;
       }
       box.innerHTML = `<div class="h-empty-card" style="margin:24px auto;max-width:480px">
         <b>아직 기록된 대화 내역이 없습니다</b>
         <span class="ums">터미널 화면에서 첫 프롬프트를 전송하면 대화 기록이 자동으로 여기에 실시간 표시됩니다.</span>
         ${!hostEl ? `<div class="row" style="gap:8px;margin-top:6px"><button class="primary" data-goto-tab="screen">터미널 화면으로</button><button data-goto-tab="split">${ICO.split} 화면 + 대화 분할 보기</button></div>` : ''}
-      </div>`;
+      </div><div id="chatLiveHost"></div>`;
       box.querySelectorAll('[data-goto-tab]').forEach((b) => (b.onclick = () => select(state.sel, b.dataset.gotoTab, true)));
-      chatPollTimer = setTimeout(tick, 3000);
+      const working = await updateLiveBubble([]);
+      chatPollTimer = setTimeout(tick, working ? 1100 : 3000);
       return;
     }
     const d = await api(`/api/transcript?id=${encodeURIComponent(curSid)}${jump ? '&at=' + at : ''}`).catch((e) => ({ error: e.message }));
@@ -2310,9 +2497,11 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
       box.innerHTML = `${earlyLineage}<div class="h-empty-card" style="margin:24px auto;max-width:480px">
         <b>대화 기록을 준비 중입니다 (${esc(curSid.slice(0, 8))})</b>
         <span class="ums">에이전트가 첫 응답을 기록하면 자동으로 대화 내역이 나타납니다.</span>
-      </div>`;
+      </div><div id="chatLiveHost"></div>`;
     } else if (sig !== lastSig && (force || (!selectionIn(box) && !$('.msg-edit-box', box)))) { // keep active copy selection or inline editor unless forced
       lastSig = sig;
+      lastMessages = d.messages || [];
+      lastLiveSig = '';
       const v = container;
       const atBottom = v.scrollHeight - v.scrollTop - v.clientHeight < 80 || !box.dataset.painted;
       const b = d.base || 0;
@@ -2482,6 +2671,9 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
       floatWrap.className = 'chat-bottom-float';
       floatWrap.hidden = true;
       floatWrap.innerHTML = `<button type="button" class="scroll-bottom-btn" title="대화 최하단으로 이동" aria-label="대화 최하단으로 이동">${ICO.chevDown}<span>최하단</span></button>`;
+      const liveSlot = document.createElement('div');
+      liveSlot.id = 'chatLiveHost';
+      box.appendChild(liveSlot);
       box.appendChild(floatWrap);
       const syncChatBottom = () => {
         if (!v.isConnected || !floatWrap.isConnected) return;
@@ -2498,7 +2690,12 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
       };
       requestAnimationFrame(syncChatBottom);
     }
-    if (!jump) chatPollTimer = setTimeout(tick, 3000);
+    const working = await updateLiveBubble(lastMessages);
+    if (!jump) chatPollTimer = setTimeout(tick, working ? 1100 : 3000);
+  };
+  container._triggerPoll = () => {
+    clearTimeout(chatPollTimer);
+    tick(true);
   };
   tick();
 }
@@ -2588,9 +2785,11 @@ function viewTerm() {
   };
   if (state.tab === 'chat') {
     $('#view').innerHTML = `<div class="chat-shell"><div class="chat-scroll" id="termChatHost"></div><div id="termChatComp"></div></div>`;
-    renderChat(sid, gen, -1, [], $('#termChatHost'));
+    const ch = $('#termChatHost');
+    renderChat(sid, gen, -1, [], ch);
     mountChatComposer({
       barHost: $('#termChatComp'),
+      chatHost: ch,
       sid,
       termId: t?.id || state.sel.id,
       agent: ag || 'claude',
