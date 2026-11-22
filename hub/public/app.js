@@ -137,7 +137,7 @@ function paintActiveTermStatus() {
     : justDone
       ? `${ICO.check} 작업 완료`
       : st === 'exited'
-        ? `■ 종료됨 (${t.exited})`
+        ? `<span class="dot dead" style="width:6px;height:6px"></span>종료됨 (${t.exited})`
         : '대기';
 }
 
@@ -992,7 +992,7 @@ function viewHome() {
         <button class="h-launch-btn" data-quick="claude">${agentIcon('claude')} Claude</button>
         <button class="h-launch-btn" data-quick="codex">${agentIcon('codex')} Codex</button>
         <button class="h-launch-btn" data-quick="agy">${agentIcon('agy')} Antigravity</button>
-        <button class="primary" data-hopen-new="1">＋ 새 터미널</button>
+        <button class="primary" data-hopen-new="1">${ICO.plus} 새 터미널</button>
       </div>
     </header>
     <div class="h-stats" id="homeStats">${homeStatsHTML()}</div>
@@ -1204,7 +1204,7 @@ function viewTerms() {
         </div>
       </div>
       <div class="page-hd-acts">
-        <button data-hopen-new="1" class="primary">＋ 새 터미널</button>
+        <button data-hopen-new="1" class="primary">${ICO.plus} 새 터미널</button>
       </div>
     </header>
     <div id="termsBody" style="display:flex;flex-direction:column;gap:14px"></div>
@@ -1336,11 +1336,11 @@ function viewConsole() {
   const c = state.consoles.find((x) => String(x.id) === state.sel.id);
   const s = c && sessionOfConsole(c);
   const sid = s?.sessionId || state.sel.session;
-  setBar(`<button id="btnBackTerms" class="ghost btn-sm">← 터미널</button><h2>${esc(c ? consoleLabel(c) : 'pid ' + state.sel.id)}</h2>
+  setBar(`<button id="btnBackTerms" class="ghost btn-sm">${ICO.chevLeft} 터미널</button><h2><span>${esc(c ? consoleLabel(c) : 'pid ' + state.sel.id)}</span></h2>
     <div class="seg" role="tablist"><button data-tab="screen" class="${state.tab === 'screen' ? 'on' : ''}">화면</button>
     ${sid ? `<button data-tab="split" class="${state.tab === 'split' ? 'on' : ''}">${ICO.split} 화면 + 대화</button><button data-tab="chat" class="${state.tab === 'chat' ? 'on' : ''}">대화 기록</button><button data-tab="files" class="${state.tab === 'files' ? 'on' : ''}">산출물</button>` : ''}</div>
     ${sid ? switchBtnHTML(sid) : ''}
-    <button id="btnConMore" class="ghost icon-btn desk" aria-label="콘솔 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
+    <button id="btnConMore" class="ghost icon-btn btn-sm desk" aria-label="콘솔 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
   $('#bar').onclick = (e) => {
     if (e.target.closest('#btnBackTerms')) return select({ kind: 'terms' });
     const b = e.target.closest('[data-tab]');
@@ -1471,11 +1471,11 @@ function viewTranscript() {
     toast(isIde ? 'IDE에서 작업 폴더를 열었습니다' : '외부 Windows 콘솔 창에서 세션을 열었습니다');
     setTimeout(refreshOverview, 1200);
   };
-  setBar(`<button id="btnBackRecent" class="ghost btn-sm">← 최근 대화</button><h2>${esc(sessionLabel(r, sid, live?.name))}</h2>
+  setBar(`<button id="btnBackRecent" class="ghost btn-sm">${ICO.chevLeft} 최근 대화</button><h2><span>${esc(sessionLabel(r, sid, live?.name))}</span></h2>
     ${agentBadge(r?.agent)}
     <div class="seg" role="tablist"><button data-tab="chat" class="${state.tab !== 'files' ? 'on' : ''}">대화 기록</button><button data-tab="files" class="${state.tab === 'files' ? 'on' : ''}">산출물</button></div>
-    ${!live ? '<button class="primary" id="btnResume">대시보드에서 이어하기</button>' : isDesktopSession(live) ? '<button class="primary" id="btnResume" data-fork="1" title="데스크톱 앱 대화를 여기까지 복제한 새 세션으로 이어갑니다">대시보드에서 이어하기 (복제)</button>' : switchBtnHTML(sid)}
-    <button id="btnRecMore" class="ghost icon-btn" aria-label="세션 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
+    ${!live ? `<button class="primary btn-sm" id="btnResume">${ICO.play} 대시보드에서 이어하기</button>` : isDesktopSession(live) ? `<button class="primary btn-sm" id="btnResume" data-fork="1" title="데스크톱 앱 대화를 여기까지 복제한 새 세션으로 이어갑니다">${ICO.play} 대시보드에서 이어하기 (복제)</button>` : switchBtnHTML(sid)}
+    <button id="btnRecMore" class="ghost icon-btn btn-sm" aria-label="세션 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
   $('#bar').onclick = async (e) => {
     if (e.target.closest('#btnBackRecent')) { state.termsTab = 'recent'; return select({ kind: 'terms' }); }
     const tb = e.target.closest('[data-tab]');
@@ -1727,9 +1727,9 @@ function viewTerm() {
     : justDoneNow
       ? `${ICO.check} 작업 완료`
       : stNow === 'exited'
-        ? `■ 종료됨 (${t.exited})`
+        ? `<span class="dot dead" style="width:6px;height:6px"></span>종료됨 (${t.exited})`
         : '대기';
-  setBar(`${state.sel.project || pj ? `<button id="btnBackProject" class="ghost btn-sm" data-proj-id="${esc(state.sel.project || pj.id)}">← ${esc(pj?.name || 'Project')}</button>` : '<button id="btnBackTerms" class="ghost btn-sm">← 터미널</button>'}<h2>${ag ? agentIcon(ag) : ''}${esc(t ? termLabel(t) : '터미널')}</h2><span id="termLiveBadge" class="term-live-pill ${pillCls}">${pillText}</span>${t?.account ? `<span class="badge c">${esc(t.account.label.replace(/@.*/, ''))}</span>` : ''}
+  setBar(`${state.sel.project || pj ? `<button id="btnBackProject" class="ghost btn-sm" data-proj-id="${esc(state.sel.project || pj.id)}">${ICO.chevLeft} ${esc(pj?.name || 'Project')}</button>` : `<button id="btnBackTerms" class="ghost btn-sm">${ICO.chevLeft} 터미널</button>`}<h2>${ag ? agentIcon(ag) : ''}<span>${esc(t ? termLabel(t) : '터미널')}</span></h2><span id="termLiveBadge" class="term-live-pill ${pillCls}">${pillText}</span>${t?.account ? `<span class="badge c">${esc(t.account.label.replace(/@.*/, ''))}</span>` : ''}
     <div class="seg" role="tablist">
       <button data-tab="screen" class="${state.tab === 'screen' ? 'on' : ''}" title="터미널 콘솔 화면 전체 보기">화면</button>
       <button data-tab="split" class="${state.tab === 'split' ? 'on' : ''}" title="좌측: 터미널 화면 · 우측: 실시간 대화 기록 분할 보기">${ICO.split} 화면 + 대화</button>
@@ -1737,7 +1737,7 @@ function viewTerm() {
       <button data-tab="files" class="${state.tab === 'files' ? 'on' : ''}" title="이 세션의 산출물 보기 및 지정">산출물</button>
     </div>
     ${sid ? switchBtnHTML(sid, t?.id || '') : t?.claude || t?.codex || t?.agy ? switchBtnHTML('', t.id) : ''}
-    <button id="btnTermMore" class="ghost icon-btn" aria-label="터미널 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
+    <button id="btnTermMore" class="ghost icon-btn btn-sm" aria-label="터미널 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
   $('#bar').onclick = async (e) => {
     const bp = e.target.closest('#btnBackProject');
     if (bp) return openProject(bp.dataset.projId || state.sel.project);
@@ -2602,7 +2602,7 @@ async function renderArtifacts(sid, gen) {
         <div class="athumb">${it.kind === 'image' ? `<img loading="lazy" src="${artUrl(sid, it.path)}" alt="">` : `<span>${ART_ICON[it.kind] || ART_ICON.file}</span>`}</div>
         <div class="ameta"><b title="${esc(it.path)}">${esc(it.title || it.name)}</b>
           <span class="ums">${esc(it.ext.toUpperCase())} · ${fmtSize(it.size)} · ${relTime(it.mtime)}${it.source === 'pinned' ? ' · 지정됨' : ''}</span></div>
-        <button class="ahide" data-ahide="${i}" aria-label="목록에서 숨기기" title="목록에서 숨기기">✕</button><button class="asend" data-asend="${i}" aria-label="세션에 보내기" title="이 파일을 세션에 보내기 (경로 멘션)">↗</button></div>`;
+        <button class="ahide" data-ahide="${i}" aria-label="목록에서 숨기기" title="목록에서 숨기기">${ICO.close}</button><button class="asend" data-asend="${i}" aria-label="세션에 보내기" title="이 파일을 세션에 보내기 (경로 멘션)">${ICO.arrowUpRight}</button></div>`;
     $('#view').innerHTML = `<div class="subtoolbar">
         <div class="seg" role="tablist" aria-label="산출물 범위">
           <button data-art-scope="main" class="${!artShowAll ? 'on' : ''}">주요 산출물 <span class="seg-cnt">${all.filter((x) => x.main).length}</span></button>
@@ -2610,7 +2610,7 @@ async function renderArtifacts(sid, gen) {
         </div>
         <span class="sp"></span>
         ${artOrderSel()}
-        <button id="artAdd" class="btn-sm">＋ 산출물 지정</button>
+        <button id="artAdd" class="btn-sm">${ICO.plus} 산출물 지정</button>
       </div>
       <div class="rwrap">
       ${items.length ? artTimeline(items.map((it, i) => [it, i]), card) : '<div class="empty">아직 인식된 산출물이 없습니다. 대화에 나온 파일 경로가 자동으로 모이고, ＋ 산출물 지정으로 직접 추가할 수도 있습니다.</div>'}</div>`;
@@ -2647,7 +2647,7 @@ async function openArtifact(sid, it, url = artUrl(sid, it.path)) {
   const d = document.createElement('div');
   d.className = 'dlg';
   d.innerHTML = `<div class="box wide aview"><div class="row"><b style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(it.path)}">${ART_ICON[it.kind] || ''} ${esc(it.title || it.name)}</b>
-      <a class="btnlike" href="${url}" target="_blank" rel="noopener">새 탭</a><a class="btnlike" href="${url}&dl=1" download="${esc(it.name)}">다운로드</a><button class="primary" id="avSend" title="이 파일 경로를 세션에 보내기">↗ 세션에</button><button class="ghost icon-btn" id="avClose" aria-label="닫기">${ICO.close}</button></div>
+      <a class="btnlike btn-sm" href="${url}" target="_blank" rel="noopener">${ICO.external} 새 탭</a><a class="btnlike btn-sm" href="${url}&dl=1" download="${esc(it.name)}">다운로드</a><button class="primary btn-sm" id="avSend" title="이 파일 경로를 세션에 보내기">${ICO.arrowUpRight} 세션에</button><button class="ghost icon-btn btn-sm" id="avClose" aria-label="닫기">${ICO.close}</button></div>
     <div class="ums mono" style="word-break:break-all">${esc(it.path)} · ${fmtSize(it.size)}</div>
     <div id="avBody" class="avbody">불러오는 중…</div></div>`;
   document.body.appendChild(d);
@@ -2678,7 +2678,7 @@ async function openArtifact(sid, it, url = artUrl(sid, it.path)) {
 // termId: a dashboard terminal whose claude has no conversation yet (e.g. not logged in) → restarted on the account
 function switchBtnHTML(sid, termId = '') {
   const s = sid && state.live.find((x) => x.sessionId === sid);
-  return `<button class="${s?.limit ? 'primary' : ''}" data-switch="${esc(sid)}" data-switch-term="${esc(termId)}" title="이 세션을 AI 사용량에 여유가 가장 많은 계정으로 이어서 실행">⇄ ${s?.limit ? '한도 도달 · ' : ''}다른 계정으로</button>`;
+  return `<button class="btn-sm${s?.limit ? ' primary' : ''}" data-switch="${esc(sid)}" data-switch-term="${esc(termId)}" title="이 세션을 AI 사용량에 여유가 가장 많은 계정으로 이어서 실행">${ICO.swap} ${s?.limit ? '한도 도달 · ' : ''}다른 계정으로</button>`;
 }
 document.addEventListener('click', (e) => {
   const cb = e.target.closest('[data-copy-code]');
@@ -2870,6 +2870,14 @@ function viewGpu() {
     const sysTab = e.target.closest('[data-systab]');
     if (sysTab) return select({ kind: sysTab.dataset.systab });
     if (e.target.closest('#btnGpuHelp')) return openGpuHelpDrawer();
+    const gr = e.target.closest('#btnGpuRefresh');
+    if (gr) {
+      gr.disabled = true;
+      await refreshGpu();
+      if (gr.isConnected) gr.disabled = false;
+      toast('GPU 대기열 및 장치 상태를 갱신했습니다');
+      return;
+    }
     const tabBtn = e.target.closest('[data-gtab]');
     if (tabBtn) { state.gpuTab = tabBtn.dataset.gtab; return paintGpu(); }
     const tg = e.target.closest('[data-gtoggle]');
@@ -2918,7 +2926,7 @@ function viewGpu() {
 }
 function paintGpu() {
   const q = state.gpu;
-  const sysTop = systemTopHTML('gpu', `<button class="ghost btn-sm" id="btnGpuHelp">${ICO.help} CLI 사용법</button>`);
+  const sysTop = systemTopHTML('gpu', `<button class="ghost btn-sm" id="btnGpuHelp">${ICO.help} CLI 사용법</button><button class="btn-sm" id="btnGpuRefresh" title="GPU 대기열 및 장치 상태 지금 갱신">${ICO.refresh} 새로고침</button>`);
   if (!q) { $('#view').innerHTML = `<div class="sys-shell">${sysTop}<div class="sys-body"><div class="page-wrap"><div class="empty">불러오는 중…</div></div></div></div>`; return; }
   const tab = state.gpuTab || 'queue';
   const mins = (ms) => { const m = Math.round(ms / 60000); return m >= 60 ? `${Math.floor(m / 60)}시간 ${m % 60}분` : `${m}분`; };
@@ -3233,9 +3241,9 @@ async function paintResearch(auto) {
   const [label, tone] = R_STATUS[d.status] || [d.status, 'muted'];
   const running = !['paused', 'blocked', 'done'].includes(d.status);
   setBar(`<h2>${ICO.flask} ${esc(d.name)}</h2><span class="pill ${tone}">${esc(label)}</span>
-    <button data-ract="open">디렉터 화면</button>
-    ${running ? '<button data-ract="pause">일시정지</button>' : `<button data-ract="resume" class="${d.status === 'blocked' ? '' : 'primary'}">${d.status === 'done' ? '다시 진행' : '재개'}</button>`}
-    <button class="ghost icon-btn" data-ract="more" aria-label="연구 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
+    <button class="btn-sm" data-ract="open">디렉터 화면</button>
+    ${running ? '<button class="btn-sm" data-ract="pause">일시정지</button>' : `<button data-ract="resume" class="btn-sm${d.status === 'blocked' ? '' : ' primary'}">${d.status === 'done' ? '다시 진행' : '재개'}</button>`}
+    <button class="ghost icon-btn btn-sm" data-ract="more" aria-label="연구 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
 
   const prog = goalProgress(d);
   const msgVal = $('#rMsg')?.value || '';
@@ -3381,7 +3389,7 @@ function runSearch(q) {
 function viewSearch() {
   const gen = viewGen;
   const S = state.search;
-  setBar(`<h2 style="flex:none">전체 검색</h2><input id="sq" type="search" value="${esc(S.q)}" style="flex:1;min-width:180px;max-width:520px" placeholder="검색어 (공백 = AND)"><button class="primary" id="sGo">검색</button>`);
+  setBar(`<h2 style="flex:none">${ICO.search} 전체 검색</h2><input id="sq" class="btn-sm" type="search" value="${esc(S.q)}" style="flex:1;min-width:180px;max-width:520px" placeholder="검색어 (공백 = AND)"><button class="primary btn-sm" id="sGo">검색</button>`);
   const filterBar = `<div class="subtoolbar">
     <div class="filters">
       <select id="sRole" class="btn-sm" aria-label="화자 필터"><option value="all">전체</option><option value="user">내 입력</option><option value="assistant">에이전트 답변·명령</option></select>

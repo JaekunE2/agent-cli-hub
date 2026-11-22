@@ -41,27 +41,92 @@ function tokFmt(n) {
   return typeof fmtTok === 'function' ? fmtTok(n) : String(n || 0);
 }
 
+// Compute hierarchical rollup token data for any task (own tokens + all descendant subtasks' tokens rolled up to top!)
+function taskTokenRollupOf(p, taskId) {
+  const pre = p?.tokens?.rollupByTask?.[taskId];
+  if (pre) return pre;
+  const byTask = p?.tokens?.byTask || {};
+  const tasks = p?.tasks || [];
+  const desc = typeof taskDescendants === 'function' ? taskDescendants(tasks, taskId) : new Set([taskId]);
+  const empty = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 });
+  const add = (dst, src) => {
+    if (!src) return dst;
+    dst.input += Number(src.input) || 0;
+    dst.output += Number(src.output) || 0;
+    dst.cacheRead += Number(src.cacheRead) || 0;
+    dst.cacheWrite += Number(src.cacheWrite) || 0;
+    dst.total += Number(src.total) || 0;
+    return dst;
+  };
+  const total = empty(), ownTotal = empty(), subTotal = empty();
+  const byAgent = {};
+  let sessions = 0, subSessions = 0;
+  for (const id of desc) {
+    const entry = byTask[id];
+    if (!entry) continue;
+    add(total, entry.total);
+    if (id === taskId) add(ownTotal, entry.total);
+    else { add(subTotal, entry.total); subSessions += entry.sessions || 0; }
+    sessions += entry.sessions || 0;
+    for (const [ag, v] of Object.entries(entry.byAgent || {})) add(byAgent[ag] ||= empty(), v);
+  }
+  return { total, ownTotal, subTotal, byAgent, sessions, subSessions, subtaskCount: Math.max(0, desc.size - 1) };
+}
+window.taskTokenRollupOf = taskTokenRollupOf;
+
+function taskTokenBadgeHTML(p, task, compact = false) {
+  const roll = taskTokenRollupOf(p, task.id);
+  const tot = roll.total?.total || 0;
+  const own = roll.ownTotal?.total || 0;
+  const sub = roll.subTotal?.total || 0;
+  const hasSubs = (roll.subtaskCount || 0) > 0;
+  const tipParts = [
+    `누적 토큰: ${tot.toLocaleString()} (입력 ${(roll.total?.input || 0).toLocaleString()} · 출력 ${(roll.total?.output || 0).toLocaleString()})`,
+    hasSubs ? `최상위 태스크 합산 — 본 작업 ${own.toLocaleString()} + 하위 서브태스크(${roll.subtaskCount}개) ${sub.toLocaleString()}` : '',
+    roll.sessions ? `집계 세션 ${roll.sessions}개` : '아직 실행된 CLI 토큰 기록 없음',
+  ].filter(Boolean);
+  const label = compact
+    ? `${tokFmt(tot)} tok`
+    : `토큰 ${tokFmt(tot)}${hasSubs && sub > 0 ? ` (서브 +${tokFmt(sub)})` : ''}`;
+  return `<span class="badge tok-badge${tot > 0 ? ' active' : ''}" title="${esc(tipParts.join(' · '))}">${esc(label)}</span>`;
+}
+window.taskTokenBadgeHTML = taskTokenBadgeHTML;
+
 function openProjectTokensDrawer(p) {
-  const tk = p.tokens || { total: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, byAgent: {}, byTask: {}, sessions: 0 };
+  const tk = p.tokens || { total: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, byAgent: {}, byTask: {}, rollupByTask: {}, sessions: 0 };
   const t = tk.total || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
   const agEntries = Object.entries(tk.byAgent || {}).filter(([, v]) => (v?.total || 0) > 0).sort((a, b) => (b[1].total || 0) - (a[1].total || 0));
-  const taskEntries = (p.tasks || []).map((task) => ({ task, data: tk.byTask?.[task.id] })).filter((x) => (x.data?.total?.total || 0) > 0);
+  const allIds = new Set((p.tasks || []).map((x) => x.id));
+  const topTasks = (p.tasks || []).filter((x) => !(x.parentId && allIds.has(x.parentId)));
   const agRows = agEntries.map(([ag, v]) => `<div class="drw-kv">
     <span class="row" style="gap:7px">${typeof agentIcon === 'function' ? agentIcon(ag) : ''}${esc(providerName(ag))}</span>
     <b>${tokFmt(v.total)} <span style="font-weight:400;color:var(--muted);font-size:11.5px">(입력 ${tokFmt(v.input)} · 출력 ${tokFmt(v.output)}${v.cacheRead ? ` · 캐시 ${tokFmt(v.cacheRead)}` : ''})</span></b>
   </div>`).join('') || '<div class="empty" style="padding:0">아직 집계된 CLI 토큰 기록이 없습니다.</div>';
-  const taskRows = taskEntries.map(({ task, data }) => {
-    const chips = Object.entries(data.byAgent || {}).filter(([, v]) => (v?.total || 0) > 0)
+
+  const taskRows = topTasks.map((task) => {
+    const roll = taskTokenRollupOf(p, task.id);
+    const subs = (p.tasks || []).filter((x) => x.parentId === task.id);
+    const chips = Object.entries(roll.byAgent || {}).filter(([, v]) => (v?.total || 0) > 0)
       .map(([ag, v]) => `<span class="badge">${esc(providerName(ag))} ${tokFmt(v.total)}</span>`).join('');
-    return `<div style="padding:8px 0;border-top:1px solid var(--line)">
-      <div class="row" style="justify-content:space-between"><span class="row" style="gap:6px">${kindBadgeHTML(task)}<b>${esc(task.title)}</b></span><b class="mono">${tokFmt(data.total.total)}</b></div>
-      <div class="pj-tok-sub">${chips}</div>
+    const subBreakdown = subs.length
+      ? `<div style="margin-top:4px;padding-left:10px;border-left:2px solid var(--line);display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--muted)">
+          <div>본 작업: <b class="mono">${tokFmt(roll.ownTotal.total)}</b> · 하위 서브 합산(${subs.length}개): <b class="mono">${tokFmt(roll.subTotal.total)}</b></div>
+          ${subs.map((st) => {
+            const stRoll = taskTokenRollupOf(p, st.id);
+            return `<div class="row" style="justify-content:space-between"><span>↳ ${esc(st.title)}</span><span class="mono">${tokFmt(stRoll.total.total)}</span></div>`;
+          }).join('')}
+        </div>`
+      : '';
+    return `<div style="padding:9px 0;border-top:1px solid var(--line)">
+      <div class="row" style="justify-content:space-between"><span class="row" style="gap:6px">${kindBadgeHTML(task)}<b>${esc(task.title)}</b>${subs.length ? `<span class="badge">서브 ${subs.length}</span>` : ''}</span><b class="mono">${tokFmt(roll.total.total)}</b></div>
+      ${chips ? `<div class="pj-tok-sub">${chips}</div>` : ''}
+      ${subBreakdown}
     </div>`;
-  }).join('') || '<div class="empty" style="padding:0">작업별 토큰 기록이 아직 없습니다.</div>';
+  }).join('') || '<div class="empty" style="padding:0">등록된 작업이 없습니다.</div>';
 
   const body = `
     <div class="drw-sec">
-      <div class="drw-lbl">누적 토큰 합계 (CLI 변경·서브 개발 포함 전체 합산)</div>
+      <div class="drw-lbl">누적 토큰 합계 (CLI 변경·서브 개발·하위 태스크 전체 합산)</div>
       <div class="drw-kv"><span>총 토큰</span><b class="mono" style="font-size:15px">${tokFmt(t.total)}</b></div>
       <div class="drw-kv"><span>입력 / 출력</span><b class="mono">${tokFmt(t.input)} / ${tokFmt(t.output)}</b></div>
       <div class="drw-kv"><span>캐시 읽기 / 쓰기</span><b class="mono">${tokFmt(t.cacheRead)} / ${tokFmt(t.cacheWrite)}</b></div>
@@ -72,11 +137,11 @@ function openProjectTokensDrawer(p) {
       <div>${agRows}</div>
     </div>
     <div class="drw-sec">
-      <div class="drw-lbl">작업별 누적 사용량</div>
+      <div class="drw-lbl">최상위 태스크별 누적 사용량 (하위 서브태스크 롤업 합산)</div>
       <div>${taskRows}</div>
     </div>
-    <div class="ums">작업 도중 담당 CLI(Claude · Codex · Antigravity)를 변경하거나 서브 개발 채팅을 사용해도 모든 토큰이 유지·합산됩니다.</div>`;
-  openDrawer({ title: `${p.name} · 누적 토큰`, bodyHTML: body, footerHTML: '<button data-drw-close>닫기</button>', width: 480 });
+    <div class="ums">하위 서브태스크 및 서브 개발 채팅에서 사용한 토큰은 모두 상위(최상위) 태스크로 자동 롤업되어 합산됩니다.</div>`;
+  openDrawer({ title: `${p.name} · 누적 토큰`, bodyHTML: body, footerHTML: '<button data-drw-close>닫기</button>', width: 500 });
 }
 
 // Unified Right Detail Drawer for any Project Task (includes embedded Chat-Based Sub-Development Workspace!)
@@ -89,19 +154,20 @@ function openProjectTaskDrawer(p, task, focusSubChat = false) {
   const term = projectTaskTerm(p, task);
   const cfg = effectiveTaskConfig(p, task);
   const ag = term?.agent || cfg.agent;
-  const taskTok = p.tokens?.byTask?.[task.id];
-  const taskTokChips = taskTok ? Object.entries(taskTok.byAgent || {}).filter(([, v]) => (v?.total || 0) > 0)
-    .map(([a, v]) => `<span class="badge">${esc(providerName(a))} ${tokFmt(v.total)}</span>`).join('') : '';
+  const taskRoll = taskTokenRollupOf(p, task.id);
+  const taskTokChips = Object.entries(taskRoll.byAgent || {}).filter(([, v]) => (v?.total || 0) > 0)
+    .map(([a, v]) => `<span class="badge">${esc(providerName(a))} ${tokFmt(v.total)}</span>`).join('');
   const stageSeg = projectStages.map(([st, lbl]) =>
     `<button type="button" data-drw-stage="${st}" class="${task.stage === st ? 'on' : ''}">${lbl}</button>`
   ).join('');
   const subRowsHTML = subs.map((st) => {
     const sTerm = projectTaskTerm(p, st);
     const sCfg = effectiveTaskConfig(p, st);
+    const sRoll = taskTokenRollupOf(p, st.id);
     return `<div class="pj-drw-sub-item">
       <div class="pj-drw-sub-main" data-drw-open-sub="${esc(st.id)}">
         <div class="pj-drw-sub-title">${kindBadgeHTML(st)} ${esc(st.title)}</div>
-        <div class="pj-drw-sub-meta">${stageBadgeHTML(st.stage)}<span>${esc([providerName(sCfg.agent), sCfg.model, sCfg.effort].filter(Boolean).join(' · '))}</span></div>
+        <div class="pj-drw-sub-meta">${stageBadgeHTML(st.stage)}<span>${esc([providerName(sCfg.agent), sCfg.model, sCfg.effort].filter(Boolean).join(' · '))}</span><span class="badge tok-badge${sRoll.total.total > 0 ? ' active' : ''}">토큰 ${tokFmt(sRoll.total.total)}</span></div>
       </div>
       <button type="button" class="btn-sm${sTerm ? ' primary' : ''}" data-drw-start-sub="${esc(st.id)}">${sTerm ? '열기 ↗' : '시작'}</button>
     </div>`;
@@ -147,17 +213,18 @@ function openProjectTaskDrawer(p, task, focusSubChat = false) {
         <div class="drw-lbl" style="margin:0">하위 서브태스크 (${subs.length})</div>
         <div class="row" style="gap:6px">
           <button type="button" class="btn-sm" data-drw-ai-sub title="선택한 CLI로 이 작업을 2~6개 서브 개발 단계로 자동 분해">${ico.spark || ''} AI 서브 분해</button>
-          <button type="button" class="btn-sm" data-drw-add-sub>＋ 서브 추가</button>
+          <button type="button" class="btn-sm" data-drw-add-sub>${ico.plus || ''} 서브 추가</button>
         </div>
       </div>
       <div data-sub-progress></div>
       <div style="display:flex;flex-direction:column;gap:6px">${subRowsHTML || '<div class="empty" style="padding:4px 0">필요하면 큰 작업을 하위 서브태스크로 쪼개서 관리할 수도 있습니다.</div>'}</div>
     </div>` : ''}
-    ${taskTok?.total?.total ? `<div class="drw-sec">
-      <div class="drw-lbl">누적 토큰 (이전 CLI · 서브 개발 포함)</div>
-      <div class="row" style="justify-content:space-between"><b>${tokFmt(taskTok.total.total)} 토큰</b><span class="ums" style="margin:0">세션 ${taskTok.sessions || 1}개</span></div>
+    <div class="drw-sec">
+      <div class="drw-lbl">태스크 누적 토큰 (본 작업 + 하위 서브태스크·서브 개발 최상위 합산)</div>
+      <div class="drw-kv"><span>최상위 합산 총 토큰</span><b class="mono">${tokFmt(taskRoll.total.total)} 토큰 <span style="font-weight:400;color:var(--muted);font-size:11.5px">(입력 ${tokFmt(taskRoll.total.input)} · 출력 ${tokFmt(taskRoll.total.output)} · 세션 ${taskRoll.sessions || 0}개)</span></b></div>
+      ${subs.length ? `<div class="drw-kv"><span>본 작업 / 하위 서브태스크(${subs.length}개)</span><b class="mono">${tokFmt(taskRoll.ownTotal.total)} / ${tokFmt(taskRoll.subTotal.total)}</b></div>` : ''}
       ${taskTokChips ? `<div class="pj-tok-sub">${taskTokChips}</div>` : ''}
-    </div>` : ''}
+    </div>
     ${deps.length ? `<div class="drw-sec">
       <div class="drw-lbl">선행 작업 (${deps.length})</div>
       <div class="row" style="gap:6px">${deps.map((dep) => `<span class="badge st-${esc(dep.stage)}">${esc(dep.title)}</span>`).join('')}</div>
@@ -273,11 +340,11 @@ function mountTaskSubChat(d, p, task, cfg, focusSubChat) {
     ).join('');
     headEl.innerHTML = `<div class="pj-subchat-tabs">
         ${tabsHTML}
-        <button type="button" class="ghost btn-sm" data-sc-new="1" title="이 태스크 안에 새 서브 개발 채팅 시작">＋ 새 채팅</button>
+        <button type="button" class="ghost btn-sm" data-sc-new="1" title="이 태스크 안에 새 서브 개발 채팅 시작">${ico.plus || ''} 새 채팅</button>
       </div>
       <div class="row" style="gap:4px">
-        ${cur?.sessionId ? `<button type="button" class="ghost btn-sm" data-sc-open-term="${esc(cur.sessionId)}" data-sc-open-ag="${esc(cur.agent)}" title="이 대화를 대화형 터미널에서 이어서 열기">터미널로 ↗</button>` : ''}
-        ${cur ? `<button type="button" class="ghost icon-btn btn-sm" data-sc-del="${esc(cur.id)}" title="이 서브 채팅 삭제" aria-label="서브 채팅 삭제">✕</button>` : ''}
+        ${cur?.sessionId ? `<button type="button" class="ghost btn-sm" data-sc-open-term="${esc(cur.sessionId)}" data-sc-open-ag="${esc(cur.agent)}" title="이 대화를 대화형 터미널에서 이어서 열기">${ico.external || ''} 터미널로</button>` : ''}
+        ${cur ? `<button type="button" class="ghost icon-btn btn-sm" data-sc-del="${esc(cur.id)}" title="이 서브 채팅 삭제" aria-label="서브 채팅 삭제">${ico.close || '✕'}</button>` : ''}
       </div>`;
 
     const msgs = cur?.messages || [];
@@ -400,6 +467,11 @@ function mountTaskSubChat(d, p, task, cfg, focusSubChat) {
         if (p.subChats) p.subChats[task.id] = chats;
       }
       if (r.chat?.id) activeChatId = r.chat.id;
+      if (r.tokens) {
+        p.tokens = r.tokens;
+        const topTokBtn = $('#projectTokens');
+        if (topTokBtn) topTokBtn.innerHTML = `토큰 <b>${tokFmt(r.tokens.total?.total || 0)}</b>`;
+      }
       paint();
       if (typeof refreshProjects === 'function') refreshProjects();
     } catch (er) {
@@ -449,8 +521,9 @@ async function viewProjects() {
     if (p) { projectId = p.id; state.sel.id = p.id; }
     if (typeof renderSide === 'function') renderSide();
     if (!p) {
+      const ico = window.UI_ICO || {};
       $('#view').innerHTML = `<div class="pj">
-        <div class="pj-top"><div class="pj-top-left"><h3>Project</h3></div><div class="pj-top-right"><button id="projectNew" class="primary">＋ 새 Project</button></div></div>
+        <div class="pj-top"><div class="pj-top-left"><h3>Project</h3></div><div class="pj-top-right"><button id="projectNew" class="primary">${ico.plus || ''} 새 Project</button></div></div>
         <div class="pj-empty"><h3>첫 Project를 시작하세요</h3><p>목표와 작업을 설계하고, 작업별 CLI를 정해 전용 터미널에서 실행하세요.</p><button id="firstProject" class="primary">작업 설계 시작</button></div>
       </div>`;
       $('#projectNew').onclick = $('#firstProject').onclick = () => projectForm();
@@ -479,7 +552,7 @@ async function viewProjects() {
             </div>
             <span class="pj-prog-lbl"><b>${pct}%</b> (${cnt.done}/${total})</span>
           </div>
-          <button id="projectAdd" class="primary">＋ 작업</button>
+          <button id="projectAdd" class="primary">${ico.plus || ''} 작업</button>
           <button id="projectMore" class="ghost icon-btn" aria-label="Project 메뉴" aria-haspopup="menu" aria-expanded="false" title="새 Project · 설계 수정 · 삭제">${ico.more || '⋯'}</button>
         </div>
       </header>

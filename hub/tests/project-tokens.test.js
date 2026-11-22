@@ -47,14 +47,18 @@ test('project token ledger accumulates tokens across switched CLIs without dropp
     const store = projectsStore(path.join(dir, 'projects.json'));
     const p = store.save({
       name: 'Multi-CLI Project', cwd: 'D:\\demo', goal: 'Test tokens', agent: 'claude', account: '', termIds: [],
-      tasks: [{ id: 'task-1', title: 'Core feature', detail: '', stage: 'doing', agent: 'claude', account: null, termId: '', after: [] }],
+      tasks: [
+        { id: 'task-1', title: 'Core feature', detail: '', stage: 'doing', agent: 'claude', account: null, termId: '', after: [] },
+        { id: 'sub-1a', title: 'Subtask A', detail: '', stage: 'doing', parentId: 'task-1', agent: 'codex', account: null, termId: '', after: [] },
+        { id: 'sub-1b', title: 'Subtask B', detail: '', stage: 'done', parentId: 'task-1', agent: 'agy', account: null, termId: '', after: [] },
+      ],
     });
 
-    // Simulate working on task-1 with Claude, then switching CLI to Codex, then AGY
+    // Simulate working on parent task-1 with Claude, subtask sub-1a with Codex, and subtask sub-1b with AGY
     store.remember([
       { projectId: p.id, taskId: 'task-1', sessionId: claudeSid, agent: 'claude', tokens: idx.get(claudeSid).tokens },
-      { projectId: p.id, taskId: 'task-1', sessionId: codexSid, agent: 'codex', tokens: idx.get(codexSid).tokens },
-      { projectId: p.id, taskId: 'task-1', sessionId: agySid, agent: 'agy', tokens: idx.get(agySid).tokens },
+      { projectId: p.id, taskId: 'sub-1a', sessionId: codexSid, agent: 'codex', tokens: idx.get(codexSid).tokens },
+      { projectId: p.id, taskId: 'sub-1b', sessionId: agySid, agent: 'agy', tokens: idx.get(agySid).tokens },
     ]);
 
     // Even if the Claude transcript is later missing from live index (e.g. switched/archived), ledger preserves it!
@@ -63,8 +67,16 @@ test('project token ledger accumulates tokens across switched CLIs without dropp
     assert.equal(summary.byAgent.claude.total, 1600);
     assert.equal(summary.byAgent.codex.total, 3000);
     assert.equal(summary.byAgent.agy.total, 5500);
-    assert.equal(summary.byTask['task-1'].total.total, 10100);
-    assert.equal(summary.byTask['task-1'].sessions, 3);
+    // Direct task tokens
+    assert.equal(summary.byTask['task-1'].total.total, 1600);
+    assert.equal(summary.byTask['sub-1a'].total.total, 3000);
+    assert.equal(summary.byTask['sub-1b'].total.total, 5500);
+    // Hierarchical rollup to top-level parent task-1 (own 1600 + subtasks 3000 + 5500 = 10100)
+    assert.equal(summary.rollupByTask['task-1'].total.total, 10100);
+    assert.equal(summary.rollupByTask['task-1'].ownTotal.total, 1600);
+    assert.equal(summary.rollupByTask['task-1'].subTotal.total, 8500);
+    assert.equal(summary.rollupByTask['task-1'].sessions, 3);
+    assert.equal(summary.rollupByTask['task-1'].subtaskCount, 2);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

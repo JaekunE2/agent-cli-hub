@@ -72,8 +72,8 @@ function openFolderPickerDialog(initialPath, onPick) {
     </div>
     <div class="row" style="gap:6px;flex-wrap:wrap" id="fpNavBar">
       <div class="row" style="gap:4px" id="fpDrives"></div>
-      <button type="button" class="btn-sm" id="fpUpBtn">⬆ 상위 폴더</button>
-      <button type="button" class="btn-sm" id="fpMkdirBtn">＋ 새 폴더</button>
+      <button type="button" class="btn-sm" id="fpUpBtn">${ico.arrowUp || ''} 상위 폴더</button>
+      <button type="button" class="btn-sm" id="fpMkdirBtn">${ico.plus || ''} 새 폴더</button>
     </div>
     <div class="fp-input-row">
       <input id="fpPathIn" class="mono" style="font-size:12.5px" placeholder="호스트 컴퓨터 절대 경로 입력 (Enter로 이동)">
@@ -405,11 +405,9 @@ function projectDesign(p) {
     const subDone = subs.filter((s) => s.stage === 'done').length;
     const deps = t.after.map((id) => p.tasks.find((x) => x.id === id)?.title).filter(Boolean);
     const summary = [t.detail ? t.detail.replace(/\s+/g, ' ').trim() : '', deps.length ? `← ${deps.join(', ')}` : ''].filter(Boolean).join(' · ');
-    const ownTok = p.tokens?.byTask?.[t.id]?.total?.total || 0;
-    const subTok = subs.reduce((acc, s) => acc + (p.tokens?.byTask?.[s.id]?.total?.total || 0), 0);
-    const taskTok = ownTok + subTok;
     const k = typeof taskKindOf === 'function' ? taskKindOf(t) : 'dev';
     const chatCnt = (p.subChats?.[t.id] || []).length;
+    const tokBadge = typeof taskTokenBadgeHTML === 'function' ? taskTokenBadgeHTML(p, t, false) : '';
     return `<div class="pj-row${t.stage === 'done' ? ' is-done' : ''}" data-task-row="${esc(t.id)}">
       <span class="pj-step-num ${esc(t.stage)} kind-${esc(k)}" title="${esc(projectStages.find((s) => s[0] === t.stage)?.[1] || t.stage)}">${numMark}</span>
       <div class="pj-row-main">
@@ -418,7 +416,7 @@ function projectDesign(p) {
           <button data-plan-task="${esc(t.id)}" class="pj-title">${esc(t.title)}</button>
           ${t.stage !== 'planned' ? stageBadgeHTML(t.stage) : ''}
           ${subs.length ? `<span class="badge" title="클릭해 우측 상세 패널에서 하위 서브태스크 ${subs.length}개 확인">서브 ${subDone}/${subs.length}</span>` : ''}
-          ${taskTok ? `<span class="badge mono" title="이 작업의 누적 토큰 (서브 개발·이전 CLI 포함)">${tokFmt(taskTok)}</span>` : ''}
+          ${tokBadge}
         </div>
         ${summary ? `<div class="pj-row-desc">${esc(summary)}</div>` : ''}
       </div>

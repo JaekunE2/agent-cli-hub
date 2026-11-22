@@ -1915,7 +1915,12 @@ const server = http.createServer(async (req, res) => {
             tokens: resTurn.tokens || index.get(chat.sessionId)?.tokens,
           }]);
         }
-        return send(res, 200, { ok: true, chat: savedChat, chats: projects.listSubChats(project.id, task.id) });
+        return send(res, 200, {
+          ok: true,
+          chat: savedChat,
+          chats: projects.listSubChats(project.id, task.id),
+          tokens: projects.tokenSummary(project.id, (sid) => index.get(sid)?.tokens),
+        });
       } catch (e) {
         chat.messages = [...chat.messages, { role: 'assistant', text: `⚠ ${e.message}`, ts: new Date().toISOString() }];
         const savedChat = projects.saveSubChat(project.id, task.id, chat);
@@ -1926,6 +1931,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/projects') {
       if (req.method === 'GET') {
+        for (const t of terms.values()) if (t.meta?.projectTask) rememberProjectTerm(t);
         const list = projects.list().map((pr) => ({
           ...pr,
           tokens: projects.tokenSummary(pr.id, (sid) => index.get(sid)?.tokens),

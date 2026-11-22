@@ -38,13 +38,13 @@ function paintCalendar() {
   setBar('');
   const calActs = `
     <div class="btn-grp" role="group" aria-label="월 이동">
-      <button data-cal="prev" aria-label="이전 달" title="이전 달"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m15 18-6-6 6-6"/></svg></button>
+      <button data-cal="prev" aria-label="이전 달" title="이전 달">${ico.chevLeft || '‹'}</button>
       <button data-cal="today">오늘</button>
-      <button data-cal="next" aria-label="다음 달" title="다음 달"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 18 6-6-6-6"/></svg></button>
+      <button data-cal="next" aria-label="다음 달" title="다음 달">${ico.chevRight || '›'}</button>
     </div>
     <b style="min-width:84px;text-align:center;font-size:13.5px">${esc(monthText)}</b>
-    <button class="btn-sm" data-cal="addtask" title="todo.md에 마감 있는 할 일 추가">＋ 할 일</button>
-    <button class="primary btn-sm" data-cal="addev">＋ 일정</button>
+    <button class="btn-sm" data-cal="addtask" title="todo.md에 마감 있는 할 일 추가">${ico.plus || ''} 할 일</button>
+    <button class="primary btn-sm" data-cal="addev">${ico.plus || ''} 일정</button>
     <button class="ghost icon-btn btn-sm" data-cal="more" aria-label="캘린더 연동 메뉴" aria-haspopup="menu" aria-expanded="false" title="외부 캘린더 동기화 및 연동${connN ? ` (${connN}개 연결됨)` : ''}">${ico.more || '⋯'}</button>`;
   const sysTop = typeof systemTopHTML === 'function' ? systemTopHTML('calendar', calActs) : '';
 

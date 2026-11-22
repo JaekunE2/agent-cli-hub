@@ -139,13 +139,16 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
       if (changed) write(data);
     },
     // Aggregate cumulative tokens across ALL CLIs (Claude / Codex / AGY / Cursor) ever used for a Project & each Task.
+    // Also computes `rollupByTask`, which rolls every descendant subtask's tokens up to its ancestor/top-level tasks!
     tokenSummary(projectId, liveResolver = null) {
       const data = read();
       const link = data.links[projectId];
+      const project = data.projects.find((p) => p.id === projectId);
       const total = emptyTok();
       const byAgent = {};
       const byTask = {};
-      if (!link) return { total, byAgent, byTask, sessions: 0 };
+      const rollupByTask = {};
+      if (!link) return { total, byAgent, byTask, rollupByTask, sessions: 0 };
       const allSids = new Set([...(link.ids || []), ...Object.keys(link.tokenLedger || {})]);
       let counted = 0;
       for (const sid of allSids) {
@@ -165,7 +168,62 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
           tEntry.sessions++;
         }
       }
-      return { total, byAgent, byTask, sessions: counted };
+
+      // Build hierarchical rollup so any parent/top-level task includes its own tokens + all descendant subtasks' tokens
+      const tasks = project?.tasks || [];
+      const childrenByParent = new Map();
+      const taskIdSet = new Set(tasks.map((t) => t.id));
+      for (const t of tasks) {
+        if (t.parentId && taskIdSet.has(t.parentId) && t.parentId !== t.id) {
+          (childrenByParent.get(t.parentId) || childrenByParent.set(t.parentId, []).get(t.parentId)).push(t.id);
+        }
+      }
+      const allTaskIds = new Set([...taskIdSet, ...Object.keys(byTask)]);
+      for (const rootId of allTaskIds) {
+        const own = byTask[rootId];
+        const rTotal = emptyTok();
+        const oTotal = emptyTok();
+        const sTotal = emptyTok();
+        const rByAgent = {};
+        let rSessions = 0;
+        let subSessions = 0;
+        if (own) {
+          addTok(rTotal, own.total);
+          addTok(oTotal, own.total);
+          rSessions += own.sessions || 0;
+          for (const [ag, v] of Object.entries(own.byAgent || {})) addTok(rByAgent[ag] ||= emptyTok(), v);
+        }
+        // Traverse all descendant subtasks (BFS with cycle guard)
+        const queue = [...(childrenByParent.get(rootId) || [])];
+        const visited = new Set([rootId]);
+        while (queue.length) {
+          const cid = queue.shift();
+          if (visited.has(cid)) continue;
+          visited.add(cid);
+          const cData = byTask[cid];
+          if (cData) {
+            addTok(rTotal, cData.total);
+            addTok(sTotal, cData.total);
+            rSessions += cData.sessions || 0;
+            subSessions += cData.sessions || 0;
+            for (const [ag, v] of Object.entries(cData.byAgent || {})) addTok(rByAgent[ag] ||= emptyTok(), v);
+          }
+          for (const nxt of (childrenByParent.get(cid) || [])) {
+            if (!visited.has(nxt)) queue.push(nxt);
+          }
+        }
+        rollupByTask[rootId] = {
+          total: rTotal,
+          ownTotal: oTotal,
+          subTotal: sTotal,
+          byAgent: rByAgent,
+          sessions: rSessions,
+          subSessions,
+          subtaskCount: visited.size - 1,
+        };
+      }
+
+      return { total, byAgent, byTask, rollupByTask, sessions: counted };
     },
     remove(id, revision) {
       const data = read();
