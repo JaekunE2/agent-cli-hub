@@ -13,7 +13,8 @@ function openProjectTaskMenu(p, task, anchor, onMove) {
   openMoreMenu(anchor, [
     ...moveItems,
     { divider: true },
-    !task.parentId ? { label: '서브 개발 작업 추가', icon: ico.plus || '', onClick: () => taskForm(p, null, false, task.id) } : null,
+    { label: '💬 서브 개발 채팅 열기', onClick: () => openProjectTaskDrawer(p, task, true) },
+    !task.parentId ? { label: '하위 서브태스크 추가', icon: ico.plus || '', onClick: () => taskForm(p, null, false, task.id) } : null,
     { label: '담당 CLI·모델 변경', icon: ico.settings || '', onClick: () => taskForm(p, task, true) },
     { label: '작업 수정', icon: ico.edit || '', onClick: () => taskForm(p, task) },
     { divider: true },
@@ -38,27 +39,34 @@ function openProjectTaskMenu(p, task, anchor, onMove) {
 
 function projectBoard(p) {
   const ico = window.UI_ICO || {};
-  // Scannable Kanban card: Title + parent/sub badge + 2-line summary + CLI chip + Start button (click card → Right Detail Drawer)
+  const taskIds = new Set(p.tasks.map((t) => t.id));
+  // Show ONLY top-level tasks on the Kanban board; subtasks are shown inside the parent task's Detail Drawer when clicked!
+  const topTasks = p.tasks.filter((t) => !(t.parentId && taskIds.has(t.parentId)));
   const card = (t) => {
-    const parent = t.parentId ? p.tasks.find((x) => x.id === t.parentId) : null;
     const subs = p.tasks.filter((x) => x.parentId === t.id);
     const subDone = subs.filter((x) => x.stage === 'done').length;
-    return `<article class="pj-task" draggable="true" data-task="${esc(t.id)}">
-      ${parent ? `<span class="pj-parent-pill" title="상위 작업">↳ ${esc(parent.title)}</span>` : ''}
-      <div class="pj-task-head">
-        <button data-edit="${esc(t.id)}" class="pj-title">${esc(t.title)}</button>
+    const k = typeof taskKindOf === 'function' ? taskKindOf(t) : 'dev';
+    const chatCnt = (p.subChats?.[t.id] || []).length;
+    return `<article class="pj-task" draggable="true" data-task="${esc(t.id)}" data-kind="${esc(k)}">
+      <div class="row" style="justify-content:space-between;gap:6px">
+        <div class="row" style="gap:5px">${typeof kindBadgeHTML === 'function' ? kindBadgeHTML(t) : ''}${subs.length ? `<span class="badge" title="클릭해 하위 서브태스크 확인">서브 ${subDone}/${subs.length}</span>` : ''}</div>
         <button class="ghost icon-btn btn-sm" data-task-more="${esc(t.id)}" aria-label="${esc(t.title)} 메뉴" aria-haspopup="menu" aria-expanded="false">${ico.more || '⋯'}</button>
       </div>
+      <div class="pj-task-head">
+        <button data-edit="${esc(t.id)}" class="pj-title">${esc(t.title)}</button>
+      </div>
       ${t.detail ? `<p class="pj-card-desc">${esc(t.detail)}</p>` : ''}
-      ${subs.length ? `<div><span class="badge">서브 ${subDone}/${subs.length}</span></div>` : ''}
-      <div class="pj-task-foot">${projectCliBadgeHTML(p, t)}${projectStartBtnHTML(p, t)}</div>
+      <div class="pj-task-foot">
+        <div class="row" style="gap:5px;min-width:0">${projectCliBadgeHTML(p, t)}<button class="ghost btn-sm" data-subchat-task="${esc(t.id)}" title="서브 개발 채팅 열기">💬${chatCnt ? ` ${chatCnt}` : ''}</button></div>
+        ${projectStartBtnHTML(p, t)}
+      </div>
     </article>`;
   };
   const host = $('#projectContent');
   host.innerHTML = projectTab === 'flow'
     ? projectFlow(p)
     : `<div class="pj-board">${projectStages.map(([stage, label]) => {
-      const items = p.tasks.filter((t) => t.stage === stage);
+      const items = topTasks.filter((t) => t.stage === stage);
       return `<section data-drop="${stage}"><h4>${label} <span class="badge">${items.length}</span></h4>${items.map(card).join('') || '<div class="pj-lane-empty">비어 있음</div>'}</section>`;
     }).join('')}</div>`;
   if (projectTab === 'flow') bindProjectFlow(p, viewGen);
@@ -72,6 +80,8 @@ function projectBoard(p) {
     finally { saving = false; }
   };
   host.onclick = (e) => {
+    const scBtn = e.target.closest('[data-subchat-task]');
+    if (scBtn) { e.stopPropagation(); return openProjectTaskDrawer(p, p.tasks.find((x) => x.id === scBtn.dataset.subchatTask), true); }
     const more = e.target.closest('[data-task-more]');
     if (more) { e.stopPropagation(); return openProjectTaskMenu(p, p.tasks.find((x) => x.id === more.dataset.taskMore), more, move); }
     const assign = e.target.closest('[data-assign-task]');

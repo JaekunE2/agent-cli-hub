@@ -1,7 +1,26 @@
 let projectId = '', projectTab = 'board';
-const projectStages = [['planned', '계획'], ['doing', '진행'], ['review', '검토'], ['done', '완료']];
+const projectStages = [['planned', '대기'], ['doing', '진행'], ['review', '검토'], ['done', '완료']];
+const projectTaskKinds = [['plan', '설계·기획'], ['dev', '개발·구현'], ['test', '테스트·검증'], ['ops', '배포·문서']];
 const projectViews = [['design', '작업 설계'], ['board', '칸반 보드'], ['flow', '작업 흐름'], ['terms', '터미널 모아보기']];
 const newTaskId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, '0')).join('');
+
+function taskKindOf(t) {
+  if (t?.kind && projectTaskKinds.some(([k]) => k === t.kind)) return t.kind;
+  const title = String(t?.title || '').trim();
+  const detail = String(t?.detail || '').trim();
+  if (/테스트|검증|점검|QA|벤치마크|단위\s*테스트|통합\s*테스트|E2E|회귀|test|verif|validat|assert|audit|qa|benchmark/i.test(title)) return 'test';
+  if (/배포|문서|가이드|매뉴얼|릴리스|패키징|CI\/CD|도커|운영|README|deploy|release|doc|readme|docker|publish|ops/i.test(title)) return 'ops';
+  if (/설계|기획|정의|범위|요구\s*사항|아키텍처|스키마\s*정의|구조|분석|조사|초안|명세|plan|design|spec|architect|requir|scope|analy|research/i.test(title)) return 'plan';
+  if (/개발|구현|작성|추가|연동|적용|생성|빌드|컴포넌트|API|UI|화면|기능|모듈|수정|개선|implement|build|create|add|develop|feature|integrate|code/i.test(title)) return 'dev';
+  if (/테스트\s*실행|검증\s*절차|통과\s*여부\s*확인|unit\s*test|integration\s*test/i.test(detail)) return 'test';
+  return 'dev';
+}
+
+function kindBadgeHTML(t) {
+  const k = taskKindOf(t);
+  const label = projectTaskKinds.find(([id]) => id === k)?.[1] || '개발·구현';
+  return `<span class="badge kind-${esc(k)}" title="작업 종류: ${esc(label)}">${esc(label)}</span>`;
+}
 
 async function saveProject(p, tab) {
   const gen = viewGen;
@@ -35,17 +54,17 @@ function openProjectTokensDrawer(p) {
     const chips = Object.entries(data.byAgent || {}).filter(([, v]) => (v?.total || 0) > 0)
       .map(([ag, v]) => `<span class="badge">${esc(providerName(ag))} ${tokFmt(v.total)}</span>`).join('');
     return `<div style="padding:8px 0;border-top:1px solid var(--line)">
-      <div class="row" style="justify-content:space-between"><b>${esc(task.title)}</b><b class="mono">${tokFmt(data.total.total)}</b></div>
+      <div class="row" style="justify-content:space-between"><span class="row" style="gap:6px">${kindBadgeHTML(task)}<b>${esc(task.title)}</b></span><b class="mono">${tokFmt(data.total.total)}</b></div>
       <div class="pj-tok-sub">${chips}</div>
     </div>`;
   }).join('') || '<div class="empty" style="padding:0">작업별 토큰 기록이 아직 없습니다.</div>';
 
   const body = `
     <div class="drw-sec">
-      <div class="drw-lbl">누적 토큰 합계 (CLI 변경 포함 전체 합산)</div>
-      <div class="drw-kv"><span>총 토큰</span><b class="mono" style="font-size:16px">${tokFmt(t.total)}</b></div>
-      <div class="drw-kv"><span>입력 / 출력</span><b>${tokFmt(t.input)} / ${tokFmt(t.output)}</b></div>
-      <div class="drw-kv"><span>캐시 읽기 / 쓰기</span><b>${tokFmt(t.cacheRead)} / ${tokFmt(t.cacheWrite)}</b></div>
+      <div class="drw-lbl">누적 토큰 합계 (CLI 변경·서브 개발 포함 전체 합산)</div>
+      <div class="drw-kv"><span>총 토큰</span><b class="mono" style="font-size:15px">${tokFmt(t.total)}</b></div>
+      <div class="drw-kv"><span>입력 / 출력</span><b class="mono">${tokFmt(t.input)} / ${tokFmt(t.output)}</b></div>
+      <div class="drw-kv"><span>캐시 읽기 / 쓰기</span><b class="mono">${tokFmt(t.cacheRead)} / ${tokFmt(t.cacheWrite)}</b></div>
       <div class="drw-kv"><span>집계 세션 수</span><b>${tk.sessions || 0}개</b></div>
     </div>
     <div class="drw-sec">
@@ -56,12 +75,12 @@ function openProjectTokensDrawer(p) {
       <div class="drw-lbl">작업별 누적 사용량</div>
       <div>${taskRows}</div>
     </div>
-    <div class="ums">작업 도중 담당 CLI(Claude · Codex · Antigravity)를 변경해도 이전 CLI에서 사용한 토큰이 모두 유지·합산됩니다.</div>`;
+    <div class="ums">작업 도중 담당 CLI(Claude · Codex · Antigravity)를 변경하거나 서브 개발 채팅을 사용해도 모든 토큰이 유지·합산됩니다.</div>`;
   openDrawer({ title: `${p.name} · 누적 토큰`, bodyHTML: body, footerHTML: '<button data-drw-close>닫기</button>', width: 480 });
 }
 
-// Unified Right Detail Drawer for any Project Task (clicked from List, Kanban, or Flow)
-function openProjectTaskDrawer(p, task) {
+// Unified Right Detail Drawer for any Project Task (includes embedded Chat-Based Sub-Development Workspace!)
+function openProjectTaskDrawer(p, task, focusSubChat = false) {
   if (!task) return;
   const ico = window.UI_ICO || {};
   const deps = task.after.map((id) => p.tasks.find((x) => x.id === id)).filter(Boolean);
@@ -81,7 +100,7 @@ function openProjectTaskDrawer(p, task) {
     const sCfg = effectiveTaskConfig(p, st);
     return `<div class="pj-drw-sub-item">
       <div class="pj-drw-sub-main" data-drw-open-sub="${esc(st.id)}">
-        <div class="pj-drw-sub-title">${esc(st.title)}</div>
+        <div class="pj-drw-sub-title">${kindBadgeHTML(st)} ${esc(st.title)}</div>
         <div class="pj-drw-sub-meta">${stageBadgeHTML(st.stage)}<span>${esc([providerName(sCfg.agent), sCfg.model, sCfg.effort].filter(Boolean).join(' · '))}</span></div>
       </div>
       <button type="button" class="btn-sm${sTerm ? ' primary' : ''}" data-drw-start-sub="${esc(st.id)}">${sTerm ? '열기 ↗' : '시작'}</button>
@@ -91,12 +110,30 @@ function openProjectTaskDrawer(p, task) {
   const body = `
     ${parent ? `<div class="drw-sec"><div class="drw-lbl">상위 작업</div><button type="button" class="ghost btn-sm" data-drw-open-sub="${esc(parent.id)}">↳ ${esc(parent.title)}</button></div>` : ''}
     <div class="drw-sec">
-      <div class="drw-lbl">진행 단계</div>
+      <div class="row" style="justify-content:space-between">
+        <div class="row" style="gap:6px"><span class="drw-lbl" style="margin:0">작업 종류 · 진행 단계</span>${kindBadgeHTML(task)}</div>
+      </div>
       <div class="seg" role="tablist" aria-label="작업 단계 선택">${stageSeg}</div>
     </div>
     <div class="drw-sec">
       <div class="drw-lbl">작업 지시 · 완료 기준</div>
       <div style="white-space:pre-wrap;line-height:1.6;font-size:13.5px;color:${task.detail ? 'var(--text)' : 'var(--muted)'}">${esc(task.detail || '아직 작성된 작업 지시가 없습니다. 아래 수정 버튼으로 추가할 수 있습니다.')}</div>
+    </div>
+    <div class="drw-sec">
+      <div class="row" style="justify-content:space-between">
+        <div class="drw-lbl" style="margin:0">💬 서브 개발 채팅 (이 태스크 안에서 바로 대화형 개발)</div>
+        <select id="scAgentPick" class="btn-sm" aria-label="서브 개발 CLI 선택">
+          ${['codex', 'claude', 'agy'].map((id) => `<option value="${id}" ${(cfg.agent === id || (cfg.agent === 'cursor' && id === 'codex')) ? 'selected' : ''}>${esc(providerName(id))}</option>`).join('')}
+        </select>
+      </div>
+      <div class="pj-subchat" id="subChatHost">
+        <div class="pj-subchat-hd" id="subChatHead"></div>
+        <div class="pj-subchat-msgs" id="subChatMsgs"><div class="empty">서브 개발 대화를 불러오는 중…</div></div>
+        <form class="pj-subchat-bar" id="subChatForm">
+          <textarea id="subChatIn" rows="1" placeholder="이 태스크에서 서브 개발 지시·코드 수정·질문 입력 (Enter 전송 · Shift+Enter 줄바꿈)…"></textarea>
+          <button type="submit" class="primary" id="subChatSend">전송 ↵</button>
+        </form>
+      </div>
     </div>
     <div class="drw-sec">
       <div class="drw-lbl">담당 CLI · 모델 · 추론 성능</div>
@@ -107,17 +144,17 @@ function openProjectTaskDrawer(p, task) {
     </div>
     ${!parent ? `<div class="drw-sec">
       <div class="row" style="justify-content:space-between">
-        <div class="drw-lbl" style="margin:0">서브 개발 작업 (${subs.length})</div>
+        <div class="drw-lbl" style="margin:0">하위 서브태스크 (${subs.length})</div>
         <div class="row" style="gap:6px">
           <button type="button" class="btn-sm" data-drw-ai-sub title="선택한 CLI로 이 작업을 2~6개 서브 개발 단계로 자동 분해">✨ AI 서브 분해</button>
           <button type="button" class="btn-sm" data-drw-add-sub>＋ 서브 추가</button>
         </div>
       </div>
       <div data-sub-progress></div>
-      <div style="display:flex;flex-direction:column;gap:6px">${subRowsHTML || '<div class="empty" style="padding:4px 0">아직 서브 개발 작업이 없습니다. 직접 추가하거나 AI 서브 분해를 실행하세요.</div>'}</div>
+      <div style="display:flex;flex-direction:column;gap:6px">${subRowsHTML || '<div class="empty" style="padding:4px 0">필요하면 큰 작업을 하위 서브태스크로 쪼개서 관리할 수도 있습니다.</div>'}</div>
     </div>` : ''}
     ${taskTok?.total?.total ? `<div class="drw-sec">
-      <div class="drw-lbl">누적 토큰 (이전 CLI 포함)</div>
+      <div class="drw-lbl">누적 토큰 (이전 CLI · 서브 개발 포함)</div>
       <div class="row" style="justify-content:space-between"><b>${tokFmt(taskTok.total.total)} 토큰</b><span class="ums" style="margin:0">세션 ${taskTok.sessions || 1}개</span></div>
       ${taskTokChips ? `<div class="pj-tok-sub">${taskTokChips}</div>` : ''}
     </div>` : ''}
@@ -129,8 +166,10 @@ function openProjectTaskDrawer(p, task) {
     <button type="button" class="danger ghost" data-drw-del>${ico.trash || ''} 삭제</button>
     <span class="sp"></span>
     <button type="button" data-drw-edit>${ico.edit || ''} 수정</button>
-    <button type="button" class="primary" data-drw-start>${term ? '터미널 열기 ↗' : '작업 시작'}</button>`;
-  const d = openDrawer({ title: task.title, bodyHTML: body, footerHTML: foot, width: 500 });
+    <button type="button" class="primary" data-drw-start>${term ? '메인 터미널 열기 ↗' : '메인 터미널 시작'}</button>`;
+  const d = openDrawer({ title: task.title, bodyHTML: body, footerHTML: foot, width: 600 });
+  mountTaskSubChat(d, p, task, cfg, focusSubChat);
+
   d.addEventListener('click', async (e) => {
     const stBtn = e.target.closest('[data-drw-stage]');
     if (stBtn) {
@@ -208,6 +247,192 @@ function openProjectTaskDrawer(p, task) {
   });
 }
 
+function mountTaskSubChat(d, p, task, cfg, focusSubChat) {
+  const headEl = $('#subChatHead', d);
+  const msgsEl = $('#subChatMsgs', d);
+  const formEl = $('#subChatForm', d);
+  const inEl = $('#subChatIn', d);
+  const sendBtn = $('#subChatSend', d);
+  const agPick = $('#scAgentPick', d);
+  if (!headEl || !msgsEl || !formEl || !inEl) return;
+
+  let chats = Array.isArray(p.subChats?.[task.id]) ? [...p.subChats[task.id]] : [];
+  let activeChatId = chats[chats.length - 1]?.id || '';
+  let activeTurn = null;
+  let pollTimer = null;
+
+  const curChat = () => chats.find((c) => c.id === activeChatId) || null;
+  const renderMsgHTML = (txt) => (typeof md === 'function' ? md(String(txt || '')) : esc(String(txt || '')));
+
+  const paint = () => {
+    if (!d.isConnected) return;
+    const cur = curChat();
+    if (cur && agPick && !activeTurn) agPick.value = cur.agent || cfg.agent || 'codex';
+    const tabsHTML = chats.map((c, idx) =>
+      `<button type="button" class="pj-subchat-tab${c.id === activeChatId ? ' on' : ''}" data-sc-tab="${esc(c.id)}" title="${esc(c.title)}">#${idx + 1} ${esc(c.title)}</button>`
+    ).join('');
+    headEl.innerHTML = `<div class="pj-subchat-tabs">
+        ${tabsHTML}
+        <button type="button" class="ghost btn-sm" data-sc-new="1" title="이 태스크 안에 새 서브 개발 채팅 시작">＋ 새 채팅</button>
+      </div>
+      <div class="row" style="gap:4px">
+        ${cur?.sessionId ? `<button type="button" class="ghost btn-sm" data-sc-open-term="${esc(cur.sessionId)}" data-sc-open-ag="${esc(cur.agent)}" title="이 대화를 대화형 터미널에서 이어서 열기">터미널로 ↗</button>` : ''}
+        ${cur ? `<button type="button" class="ghost icon-btn btn-sm" data-sc-del="${esc(cur.id)}" title="이 서브 채팅 삭제" aria-label="서브 채팅 삭제">✕</button>` : ''}
+      </div>`;
+
+    const msgs = cur?.messages || [];
+    const rows = msgs.map((m) => {
+      if (m.role === 'user') {
+        return `<div class="pj-sc-msg user">${esc(m.text)}</div>`;
+      }
+      const agName = providerName(cur?.agent || agPick?.value || cfg.agent);
+      return `<div class="pj-sc-msg assistant">
+        <div class="pj-sc-meta">${typeof agentIcon === 'function' ? agentIcon(cur?.agent || cfg.agent) : ''}<b>${esc(agName)}</b></div>
+        <div>${renderMsgHTML(m.text)}</div>
+      </div>`;
+    });
+
+    if (activeTurn) {
+      const sec = Math.max(0, Math.floor((activeTurn.elapsedMs || 0) / 1000));
+      const logs = (activeTurn.logs || []).map((l) => `<div>${esc(l)}</div>`).join('');
+      rows.push(`<div class="pj-sc-msg assistant">
+        <div class="pj-sc-meta"><span class="dot busy"></span><b>${esc(providerName(activeTurn.agent || cfg.agent))}</b> · ${esc(activeTurn.stage || '작업 중…')} (${sec}초)</div>
+        ${logs ? `<div class="pj-plan-log" style="margin-top:4px">${logs}</div>` : ''}
+      </div>`);
+    }
+
+    msgsEl.innerHTML = rows.length
+      ? rows.join('')
+      : `<div class="empty" style="margin:auto;text-align:center;padding:24px 12px"><b>이 태스크 전용 서브 개발 채팅창입니다.</b><br>코드 작성·수정·디버깅·부분 기능 실험을 아래 입력창에 바로 지시해 보세요.<br><small>작업 폴더(${esc(base(p.cwd) || p.cwd)})에서 YOLO 자동 승인 모드로 즉시 실행됩니다.</small></div>`;
+    msgsEl.scrollTop = msgsEl.scrollHeight;
+  };
+
+  const syncFromServer = async () => {
+    if (!d.isConnected) { clearInterval(pollTimer); return; }
+    try {
+      const r = await api(`/api/projects/task-chat?projectId=${encodeURIComponent(p.id)}&taskId=${encodeURIComponent(task.id)}`);
+      if (Array.isArray(r.chats)) {
+        chats = r.chats;
+        if (p.subChats) p.subChats[task.id] = chats;
+        if (!activeChatId && chats.length) activeChatId = chats[chats.length - 1].id;
+      }
+      activeTurn = r.active || null;
+      paint();
+    } catch {}
+  };
+
+  headEl.onclick = async (e) => {
+    const tabBtn = e.target.closest('[data-sc-tab]');
+    if (tabBtn) { activeChatId = tabBtn.dataset.scTab; paint(); return; }
+    if (e.target.closest('[data-sc-new]')) {
+      activeChatId = '';
+      paint();
+      inEl.focus();
+      return;
+    }
+    const delBtn = e.target.closest('[data-sc-del]');
+    if (delBtn) {
+      const cid = delBtn.dataset.scDel;
+      const r = await api('/api/projects/task-chat', { method: 'DELETE', body: { projectId: p.id, taskId: task.id, chatId: cid } });
+      if (Array.isArray(r.chats)) {
+        chats = r.chats;
+        if (p.subChats) p.subChats[task.id] = chats;
+        activeChatId = chats[chats.length - 1]?.id || '';
+        paint();
+      }
+      return;
+    }
+    const termBtn = e.target.closest('[data-sc-open-term]');
+    if (termBtn) {
+      const sid = termBtn.dataset.scOpenTerm;
+      const ag = termBtn.dataset.scOpenAg || cfg.agent || 'codex';
+      termBtn.disabled = true;
+      const t = await api('/api/term/new', { method: 'POST', body: { kind: ag, resume: sid, cwd: p.cwd, skipPermissions: true } });
+      termBtn.disabled = false;
+      if (t.error) return toast(t.error, 5000, 'danger');
+      d.close();
+      await refreshOverview();
+      select({ kind: 'term', id: t.id, project: p.id });
+    }
+  };
+
+  const submitMsg = async () => {
+    const prompt = inEl.value.trim();
+    if (!prompt || sendBtn.disabled) return;
+    const chosenAgent = agPick ? agPick.value : (cfg.agent || 'codex');
+    inEl.value = '';
+    inEl.style.height = '';
+    sendBtn.disabled = true;
+    inEl.disabled = true;
+
+    // Optimistic user bubble + active indicator
+    let cur = curChat();
+    if (!cur) {
+      cur = { id: 'pending', title: prompt.slice(0, 40), agent: chosenAgent, messages: [{ role: 'user', text: prompt }] };
+      chats.push(cur);
+      activeChatId = 'pending';
+    } else {
+      cur.messages = [...(cur.messages || []), { role: 'user', text: prompt }];
+    }
+    activeTurn = { agent: chosenAgent, stage: 'CLI 실행 준비 중…', elapsedMs: 0, logs: [] };
+    paint();
+
+    clearInterval(pollTimer);
+    pollTimer = setInterval(syncFromServer, 900);
+
+    try {
+      const r = await api('/api/projects/task-chat', {
+        method: 'POST',
+        body: {
+          projectId: p.id,
+          taskId: task.id,
+          chatId: activeChatId === 'pending' ? '' : activeChatId,
+          prompt,
+          agent: chosenAgent,
+          account: chosenAgent === cfg.agent ? cfg.account : '',
+          model: chosenAgent === cfg.agent ? cfg.model : '',
+          effort: chosenAgent === cfg.agent ? cfg.effort : '',
+        },
+      });
+      activeTurn = null;
+      if (Array.isArray(r.chats)) {
+        chats = r.chats;
+        if (p.subChats) p.subChats[task.id] = chats;
+      }
+      if (r.chat?.id) activeChatId = r.chat.id;
+      paint();
+      if (typeof refreshProjects === 'function') refreshProjects();
+    } catch (er) {
+      activeTurn = null;
+      await syncFromServer();
+      toast(er.message, 5000, 'danger');
+    } finally {
+      clearInterval(pollTimer);
+      if (d.isConnected) {
+        sendBtn.disabled = false;
+        inEl.disabled = false;
+        inEl.focus();
+      }
+    }
+  };
+
+  formEl.onsubmit = (e) => { e.preventDefault(); submitMsg(); };
+  inEl.addEventListener('input', () => {
+    inEl.style.height = 'auto';
+    inEl.style.height = `${Math.min(110, inEl.scrollHeight)}px`;
+  });
+  inEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      submitMsg();
+    }
+  });
+
+  paint();
+  syncFromServer();
+  if (focusSubChat) setTimeout(() => inEl.focus(), 60);
+}
+
 async function viewProjects() {
   const gen = viewGen;
   projectTab = projectViews.some(([id]) => id === state.tab) ? state.tab : projectTab;
@@ -245,8 +470,8 @@ async function viewProjects() {
           <span class="pj-cwd" title="${esc(p.cwd)}">${ico.folder || ''}${esc(base(p.cwd) || p.cwd)}</span>
         </div>
         <div class="pj-top-right">
-          <button id="projectTokens" class="pj-tok-pill" title="Project 누적 토큰 상세 (CLI 변경 포함 전체 합산)">토큰 <b>${tokFmt(totalTok)}</b></button>
-          <div class="pj-prog" role="progressbar" aria-label="작업 진행률" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" title="완료 ${cnt.done} · 검토 ${cnt.review} · 진행 ${cnt.doing} · 계획 ${cnt.planned}">
+          <button id="projectTokens" class="pj-tok-pill" title="Project 누적 토큰 상세 (CLI 변경·서브 개발 포함 전체 합산)">토큰 <b>${tokFmt(totalTok)}</b></button>
+          <div class="pj-prog" role="progressbar" aria-label="작업 진행률" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" title="완료 ${cnt.done} · 검토 ${cnt.review} · 진행 ${cnt.doing} · 대기 ${cnt.planned}">
             <div class="pj-stackbar">
               ${cnt.done ? `<i class="done" style="width:${segW(cnt.done)}%"></i>` : ''}
               ${cnt.review ? `<i class="review" style="width:${segW(cnt.review)}%"></i>` : ''}

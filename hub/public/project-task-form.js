@@ -22,13 +22,18 @@ function taskForm(p, task, focusAgent = false, defaultParentId = '') {
   const blockedParents = task ? taskDescendants(p.tasks, task.id) : new Set();
   const parentChoices = p.tasks.filter((t) => !t.parentId && !blockedParents.has(t.id));
   const curParentId = task ? (task.parentId || '') : (defaultParentId || '');
-  const parentField = `<label>상위 작업 (서브 개발)<select name="parentId"><option value="">최상위 작업</option>${parentChoices.map((t) => `<option value="${esc(t.id)}" ${curParentId === t.id ? 'selected' : ''}>${esc(t.title)}</option>`).join('')}</select></label>`;
-  const titleLabel = curParentId ? (task ? '서브 개발 작업 수정' : '새 서브 개발 작업') : (task ? '작업 수정' : '새 작업');
+  const curKind = task ? (typeof taskKindOf === 'function' ? taskKindOf(task) : (task.kind || 'dev')) : 'dev';
+  const kindsList = typeof projectTaskKinds !== 'undefined'
+    ? projectTaskKinds
+    : [['plan', '설계·기획'], ['dev', '개발·구현'], ['test', '테스트·검증'], ['ops', '배포·문서']];
+  const kindField = `<label>작업 종류<select name="kind">${kindsList.map(([id, label]) => `<option value="${esc(id)}" ${curKind === id ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></label>`;
+  const parentField = `<label>상위 작업 (하위 서브태스크)<select name="parentId"><option value="">최상위 작업</option>${parentChoices.map((t) => `<option value="${esc(t.id)}" ${curParentId === t.id ? 'selected' : ''}>${esc(t.title)}</option>`).join('')}</select></label>`;
+  const titleLabel = curParentId ? (task ? '하위 서브태스크 수정' : '새 하위 서브태스크') : (task ? '작업 수정' : '새 작업');
 
   const dialog = projectDialog(titleLabel,
     `<label>작업 제목<input name="title" maxlength="240" value="${esc(task?.title || '')}" required></label>
+    <div class="pj-me-grid">${kindField}${parentField}</div>
     <label>작업 지시·완료 기준<textarea name="detail" rows="4" maxlength="6000">${esc(task?.detail || '')}</textarea></label>
-    ${parentField}
     ${projectAgentField('작업 CLI', task?.agent || '', p.agent || 'codex')}${projectAccountField}${projectModelEffortFields}
     <fieldset class="pj-choices"><legend>선행 작업</legend>${p.tasks.filter(t => t.id !== task?.id).map(t => `<label><input type="checkbox" name="after" value="${esc(t.id)}" ${task?.after.includes(t.id) ? 'checked' : ''}><span>${t.parentId ? '↳ ' : ''}${esc(t.title)}</span></label>`).join('') || '<p>선택할 다른 작업이 없습니다.</p>'}</fieldset>`,
     (f, button) => {
@@ -44,6 +49,7 @@ function taskForm(p, task, focusAgent = false, defaultParentId = '') {
       const next = {
         id: task?.id || newTaskId(),
         stage: task?.stage || 'planned',
+        kind: String(f.get('kind') || 'dev'),
         title: f.get('title'),
         detail: f.get('detail'),
         agent: f.get('agent'),

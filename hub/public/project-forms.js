@@ -74,7 +74,7 @@ function projectForm(p) {
         const tasks = key === planKey ? generated : await previewProjectPlan(dialog, draft, false);
         generated = tasks;
         planKey = key;
-        return saveProject({ ...draft, tasks, termIds: [] }, 'design');
+        return saveProject({ ...draft, tasks, termIds: [] }, 'flow');
       }
       if (button?.value === 'generate' || (generated && key !== planKey)) {
         generated = await previewProjectPlan(dialog, draft, true);
@@ -98,7 +98,7 @@ function projectForm(p) {
   bindProjectAccounts(dialog, p?.account || '', null, p?.model || '', p?.effort || '');
 }
 
-// Scannable Task List: Top-level tasks + Nested Sub-Development tasks (click any row → Right Detail Drawer)
+// Scannable Task List: ONLY Top-level tasks shown by default (subtasks live inside the Task Detail Drawer when clicked!)
 function projectDesign(p) {
   const ico = window.UI_ICO || {};
   const host = $('#projectContent');
@@ -113,35 +113,35 @@ function projectDesign(p) {
     }
   }
 
-  const rowHTML = (t, numMark, isSub = false) => {
-    const subs = isSub ? [] : (byParent.get(t.id) || []);
+  const rowHTML = (t, numMark) => {
+    const subs = byParent.get(t.id) || [];
     const subDone = subs.filter((s) => s.stage === 'done').length;
     const deps = t.after.map((id) => p.tasks.find((x) => x.id === id)?.title).filter(Boolean);
     const summary = [t.detail ? t.detail.replace(/\s+/g, ' ').trim() : '', deps.length ? `← ${deps.join(', ')}` : ''].filter(Boolean).join(' · ');
     const ownTok = p.tokens?.byTask?.[t.id]?.total?.total || 0;
     const subTok = subs.reduce((acc, s) => acc + (p.tokens?.byTask?.[s.id]?.total?.total || 0), 0);
     const taskTok = ownTok + subTok;
-    const subBlock = subs.length
-      ? `<div class="pj-sublist">${subs.map((st, si) => rowHTML(st, st.stage === 'done' ? '✓' : `${numMark}.${si + 1}`, true)).join('')}</div>`
-      : '';
-    return `<div class="pj-row${t.stage === 'done' ? ' is-done' : ''}${isSub ? ' is-sub' : ''}" data-task-row="${esc(t.id)}">
-      <span class="pj-step-num ${esc(t.stage)}" title="${esc(projectStages.find((s) => s[0] === t.stage)?.[1] || t.stage)}">${numMark}</span>
+    const k = typeof taskKindOf === 'function' ? taskKindOf(t) : 'dev';
+    const chatCnt = (p.subChats?.[t.id] || []).length;
+    return `<div class="pj-row${t.stage === 'done' ? ' is-done' : ''}" data-task-row="${esc(t.id)}">
+      <span class="pj-step-num ${esc(t.stage)} kind-${esc(k)}" title="${esc(projectStages.find((s) => s[0] === t.stage)?.[1] || t.stage)}">${numMark}</span>
       <div class="pj-row-main">
         <div class="pj-row-head">
+          ${typeof kindBadgeHTML === 'function' ? kindBadgeHTML(t) : ''}
           <button data-plan-task="${esc(t.id)}" class="pj-title">${esc(t.title)}</button>
-          ${stageBadgeHTML(t.stage)}
-          ${subs.length ? `<span class="badge" title="서브 개발 작업 진행률">서브 ${subDone}/${subs.length}</span>` : ''}
-          ${taskTok ? `<span class="badge mono" title="이 작업의 누적 토큰 (서브 작업·이전 CLI 포함)">${tokFmt(taskTok)}</span>` : ''}
+          ${t.stage !== 'planned' ? stageBadgeHTML(t.stage) : ''}
+          ${subs.length ? `<span class="badge" title="클릭해 우측 상세 패널에서 하위 서브태스크 ${subs.length}개 확인">서브 ${subDone}/${subs.length}</span>` : ''}
+          ${taskTok ? `<span class="badge mono" title="이 작업의 누적 토큰 (서브 개발·이전 CLI 포함)">${tokFmt(taskTok)}</span>` : ''}
         </div>
         ${summary ? `<div class="pj-row-desc">${esc(summary)}</div>` : ''}
       </div>
       <div class="pj-row-acts">
-        ${!isSub ? `<button class="ghost btn-sm" data-add-sub="${esc(t.id)}" title="이 작업 아래에 서브 개발 작업 추가">＋ 서브</button>` : ''}
+        <button class="ghost btn-sm" data-subchat-task="${esc(t.id)}" title="이 태스크 안에서 채팅 기반으로 서브 개발 진행">💬 서브 개발${chatCnt ? ` <b>${chatCnt}</b>` : ''}</button>
         ${projectCliBadgeHTML(p, t)}
         ${projectStartBtnHTML(p, t)}
         <button class="ghost icon-btn btn-sm" data-task-more="${esc(t.id)}" aria-label="${esc(t.title)} 메뉴" aria-haspopup="menu" aria-expanded="false">${ico.more || '⋯'}</button>
       </div>
-    </div>${subBlock}`;
+    </div>`;
   };
 
   const defCfg = [providerName(p.agent || 'codex'), p.model || '', p.effort ? `추론 ${p.effort}` : ''].filter(Boolean).join(' · ');
@@ -154,13 +154,16 @@ function projectDesign(p) {
       <button id="projectEdit" class="ghost btn-sm">${ico.edit || ''} 수정</button>
     </section>
     <section class="pj-list">
-      ${topTasks.length ? topTasks.map((t, idx) => rowHTML(t, t.stage === 'done' ? '✓' : String(idx + 1), false)).join('') : '<div class="empty" style="padding:28px 16px;text-align:center">상단 ＋ 작업 버튼으로 첫 작업을 추가하세요.</div>'}
+      ${topTasks.length ? topTasks.map((t, idx) => rowHTML(t, t.stage === 'done' ? '✓' : String(idx + 1))).join('') : '<div class="empty" style="padding:28px 16px;text-align:center">상단 ＋ 작업 버튼으로 첫 작업을 추가하세요.</div>'}
     </section>
   </div>`;
   $('#projectEdit').onclick = () => projectForm(p);
   host.onclick = (e) => {
-    const addSub = e.target.closest('[data-add-sub]');
-    if (addSub) { e.stopPropagation(); return taskForm(p, null, false, addSub.dataset.addSub); }
+    const scBtn = e.target.closest('[data-subchat-task]');
+    if (scBtn) {
+      e.stopPropagation();
+      return openProjectTaskDrawer(p, p.tasks.find((x) => x.id === scBtn.dataset.subchatTask), true);
+    }
     const more = e.target.closest('[data-task-more]');
     if (more) { e.stopPropagation(); return openProjectTaskMenu(p, p.tasks.find((x) => x.id === more.dataset.taskMore), more); }
     const assign = e.target.closest('[data-assign-task]');
