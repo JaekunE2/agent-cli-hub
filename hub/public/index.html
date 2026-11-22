@@ -734,6 +734,14 @@ mark { background: #f4c542; color: #1f1e1c; border-radius: 2px; padding: 0 1px; 
   .hit .r { width: 40px; }
   .swrow { flex-wrap: wrap; } .swl { flex-basis: calc(100% - 30px); }
 }
+.v-list { display: flex; flex-direction: column; gap: 8px; }
+.v-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.v-row-main { flex: 1; min-width: 220px; }
+.v-row-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.v-en { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.v-tgts { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.v-tgt { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg); cursor: pointer; }
+.v-tgt:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 body.remote .desk { display: none; }
 </style>
 <link rel="stylesheet" href="/projects.css">
@@ -783,6 +791,7 @@ body.remote .desk { display: none; }
 <script src="/addon-fit.js"></script>
 <script src="/ui.js"></script>
 <script src="/calendar.js"></script>
+<script src="/vault.js"></script>
 <script src="/project-forms.js"></script>
 <script src="/project-plan-form.js"></script>
 <script src="/project-task-form.js"></script>

@@ -464,7 +464,7 @@ function favKeyOf(key) {
 }
 function selKey() {
   const s = state.sel;
-  return ['home', 'terms', 'projects', 'search', 'usage', 'gpu', 'calendar'].includes(s.kind) ? s.kind : `${s.kind}:${s.id}`;
+  return ['home', 'terms', 'projects', 'search', 'usage', 'gpu', 'calendar', 'vault'].includes(s.kind) ? s.kind : `${s.kind}:${s.id}`;
 }
 const AG_SVG = {
   claude: '<img src="/icon-claude.png" alt="Claude">',
@@ -552,6 +552,7 @@ function systemTopHTML(activeTab, actionsHTML = '') {
       ${tab('usage', ICO.chart, 'AI 사용량')}
       ${tab('gpu', ICO.gpu, 'GPU 대기열', gpuWait ? ` <span class="badge lim" style="margin-left:3px">${gpuWait}</span>` : '')}
       ${tab('calendar', ICO.calendar, '캘린더', overN ? ` <span class="badge lim" style="margin-left:3px">${overN}</span>` : '')}
+      ${tab('vault', ICO.layers, '통합 볼트')}
     </div>
     ${actionsHTML ? `<div class="sys-acts">${actionsHTML}</div>` : ''}
   </div>`;
@@ -652,7 +653,7 @@ function renderSide() {
   const prevTop = side.scrollTop;
   const folded = sideFolded();
   const curKind = state.sel.kind;
-  const isSys = ['usage', 'gpu', 'calendar'].includes(curKind);
+  const isSys = ['usage', 'gpu', 'calendar', 'vault'].includes(curKind);
 
   const calItems = ((typeof CAL !== 'undefined' && CAL?.data?.items) || []).filter((x) => !(x.kind === 'task' && x.done));
   const now = new Date();
@@ -1053,7 +1054,7 @@ function select(sel, tab, persistTab = false) {
     } catch {}
   }
   renderSide();
-  ({ home: viewHome, terms: viewTerms, projects: window.viewProjects || (() => { setBar('<h2>Project</h2>'); $('#view').textContent = 'Project 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }), console: viewConsole, recent: viewTranscript, term: viewTerm, search: viewSearch, usage: viewUsage, research: viewResearch, gpu: viewGpu, calendar: viewCalendar })[sel.kind]?.();
+  ({ home: viewHome, terms: viewTerms, projects: window.viewProjects || (() => { setBar('<h2>Project</h2>'); $('#view').textContent = 'Project 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }), console: viewConsole, recent: viewTranscript, term: viewTerm, search: viewSearch, usage: viewUsage, research: viewResearch, gpu: viewGpu, calendar: viewCalendar, vault: window.viewVault || (() => { setBar('<h2>통합 볼트</h2>'); $('#view').textContent = '통합 볼트 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }) })[sel.kind]?.();
 }
 
 function setBar(html) {
@@ -4565,6 +4566,7 @@ function openCommandPalette() {
       { icon: ICO.chart, title: 'AI 사용량', sub: '시스템 · 데이터', keys: 'usage ai 사용량 한도', run: () => select({ kind: 'usage' }) },
       { icon: ICO.gpu, title: 'GPU 대기열', sub: '시스템 · 데이터', keys: 'gpu vram 대기열', run: () => select({ kind: 'gpu' }) },
       { icon: ICO.calendar, title: '캘린더', sub: '시스템 · 데이터', keys: 'calendar 캘린더 일정', run: () => select({ kind: 'calendar' }) },
+      { icon: ICO.layers, title: '통합 볼트', sub: '시스템 · 데이터 · 스킬/MCP/하네스', keys: 'vault unified skills mcp harness 통합 볼트 스킬 하네스', run: () => select({ kind: 'vault' }) },
       { icon: ICO.sun, title: '테마 전환 (시스템 · 라이트 · 다크)', sub: '화면 밝기 변경', keys: 'theme dark light 테마 다크 라이트', run: () => cycleTheme() },
     ].filter((a) => hit(a.title, a.sub, a.keys));
     pushGrp('빠른 이동 · 작업', actions);
@@ -4826,6 +4828,7 @@ $('#btnSideMore').onclick = (e) => {
   else if (open === 'calendar') select({ kind: 'calendar' });
   else if (open.startsWith('switch:')) { const sid = open.slice(7); select({ kind: 'recent', id: sid }); setTimeout(() => openSwitch(sid), 900); } // from the phone alert
   else if (open === 'gpu') select({ kind: 'gpu' });
+  else if (open === 'vault') select({ kind: 'vault' });
   else if (open.startsWith('research:')) { state.rtab = { [open.slice(9)]: qs.get('tab') || 'overview' }; select({ kind: 'research', id: open.slice(9) }); }
   else if (qs.get('q')) { runSearch(qs.get('q')); }
   else {
@@ -4835,7 +4838,7 @@ $('#btnSideMore').onclick = (e) => {
       const fromHash = hm ? { sel: hm[2] ? { kind: hm[1], id: hm[2] } : { kind: hm[1] }, tab: hm[3] || undefined } : null;
       const saved = fromHash || JSON.parse(localStorage.getItem('ach-last-sel') || 'null');
       const s = saved?.sel;
-      if (s && ['home', 'terms', 'projects', 'usage', 'calendar', 'gpu', 'recent', 'research'].includes(s.kind)) restored = saved;
+      if (s && ['home', 'terms', 'projects', 'usage', 'calendar', 'gpu', 'vault', 'recent', 'research'].includes(s.kind)) restored = saved;
       else if (s?.kind === 'term' && state.terms.some((t) => String(t.id) === String(s.id))) restored = saved;
       else if (s?.kind === 'console' && state.consoles.some((c) => String(c.id) === String(s.id))) restored = saved;
     } catch {}

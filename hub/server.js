@@ -33,6 +33,7 @@ const {
   writeBranchContextFile,
   createBranchStore,
 } = require('./conversation-branches');
+const { createUnifiedVault } = require('./unified-vault');
 let projectPlanning = false;
 let projectPlanState = { active: false, agent: '', name: '', startedAt: 0, stage: '', pct: 0, logs: [] };
 const taskChatActive = new Map(); // `${projectId}:${taskId}` -> { chatId, agent, stage, startedAt, logs }
@@ -51,8 +52,14 @@ const sessionDisplayTitle = (id, doc) => conversationBranches.getTitle(id) || do
 // Per-install settings (config.json next to server.js; all optional):
 //   lang: "en" | "ko", remote: "off" | (default tailscale), python: path, usageUrl, usageDir, locateRoots: [dirs],
 //   consoles: false (don't list this PC's other console windows), codex / cursorAgent: CLI paths, calendar: {...}
-const CONFIG = (() => { try { return JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8')); } catch { return {}; } })();
+const CONFIG_FILE = path.join(__dirname, 'config.json');
+const CONFIG = (() => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { return {}; } })();
 const PY = process.env.CCD_PYTHON || CONFIG.python || 'python';
+const unifiedVault = createUnifiedVault({
+  repoRoot: path.resolve(__dirname, '..'),
+  vaultDir: CONFIG.vaultDir ? path.resolve(__dirname, CONFIG.vaultDir) : '',
+  configPath: CONFIG_FILE,
+});
 
 // Persisted token so a bookmarked URL keeps working across restarts.
 const TOKEN_FILE = path.join(__dirname, '.token');
@@ -1745,6 +1752,7 @@ const termInfo = (t) => ({ id: t.id, title: t.title, liveTitle: t.liveTitle, acc
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const STATIC = {
   '/ui.js': 'public/ui.js',
+  '/vault.js': 'public/vault.js',
   '/projects.js': 'public/projects.js',
   '/project-forms.js': 'public/project-forms.js',
   '/project-plan-form.js': 'public/project-plan-form.js',
@@ -1801,7 +1809,7 @@ const server = http.createServer(async (req, res) => {
     const text = file.startsWith('public/') ? I18N.forFile(path.join(__dirname, file)) : null;
     if (p === '/') {
       let html = text ?? fs.readFileSync(path.join(__dirname, file), 'utf8');
-      html = html.replace(/((?:src|href)="\/(?:ui|calendar|app|projects|project-[a-z-]+)\.js|(?:href)="\/(?:projects\.css|icon\.svg|manifest\.json))"/g, `$1?v=${SERVER_BUILD_ID}"`);
+      html = html.replace(/((?:src|href)="\/(?:ui|calendar|vault|app|projects|project-[a-z-]+)\.js|(?:href)="\/(?:projects\.css|icon\.svg|manifest\.json))"/g, `$1?v=${SERVER_BUILD_ID}"`);
       if (local) return res.end(html.replace('<head>', `<head><script>window.__CCD_LOCAL_TOKEN=${JSON.stringify(TOKEN)};window.__ACH_LANG=${JSON.stringify(I18N.language())};</script>`));
       return res.end(html);
     }
@@ -2860,6 +2868,50 @@ const server = http.createServer(async (req, res) => {
     if (research && p.startsWith('/api/research')) {
       const handled = await research.handle(p, url, req, () => body(req), (code, obj) => send(res, code, obj), res);
       if (handled !== false) return;
+    }
+    if (p === '/api/vault' && req.method === 'GET') {
+      return send(res, 200, unifiedVault.getState());
+    }
+    if (p === '/api/vault/skill' && req.method === 'GET') {
+      const name = String(url.searchParams.get('name') || '');
+      return send(res, 200, { ok: true, name, content: unifiedVault.readSkillContent(name) });
+    }
+    if (p === '/api/vault/dir' && req.method === 'POST') {
+      const b = await body(req);
+      return send(res, 200, { ok: true, state: unifiedVault.setVaultDir(b.vaultDir) });
+    }
+    if (p === '/api/vault/open-dir' && req.method === 'POST') {
+      const dir = unifiedVault.getState().vaultDir;
+      if (!fs.existsSync(dir)) return send(res, 404, { error: '볼트 폴더를 찾을 수 없습니다.' });
+      const cmd = process.platform === 'win32' ? 'explorer.exe' : (process.platform === 'darwin' ? 'open' : 'xdg-open');
+      spawn(cmd, [dir], { detached: true, stdio: 'ignore' }).unref();
+      return send(res, 200, { ok: true, dir });
+    }
+    if (p === '/api/vault/gather' && req.method === 'POST') {
+      return send(res, 200, { ok: true, ...unifiedVault.gatherFromClis() });
+    }
+    if (p === '/api/vault/sync' && req.method === 'POST') {
+      const b = await body(req);
+      return send(res, 200, { ok: true, ...unifiedVault.syncToClis(b) });
+    }
+    if (p === '/api/vault/skill' && req.method === 'POST') {
+      const b = await body(req);
+      const st = b.action === 'delete' ? unifiedVault.deleteSkill(b.name) : unifiedVault.saveSkill(b);
+      return send(res, 200, { ok: true, state: st });
+    }
+    if (p === '/api/vault/mcp' && req.method === 'POST') {
+      const b = await body(req);
+      const st = b.action === 'delete' ? unifiedVault.deleteMcp(b.name) : unifiedVault.saveMcp(b);
+      return send(res, 200, { ok: true, state: st });
+    }
+    if (p === '/api/vault/harness' && req.method === 'POST') {
+      const b = await body(req);
+      let st;
+      if (b.action === 'save-shared') st = unifiedVault.saveHarness(b);
+      else if (b.action === 'save-rule') st = unifiedVault.saveRule(b);
+      else if (b.action === 'delete-rule') st = unifiedVault.deleteRule(b.name);
+      else return send(res, 400, { error: '알 수 없는 harness action입니다.' });
+      return send(res, 200, { ok: true, state: st });
     }
     return send(res, 404, { error: 'unknown api' });
   } catch (e) {
