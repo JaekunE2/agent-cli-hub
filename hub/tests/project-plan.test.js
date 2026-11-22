@@ -1,8 +1,58 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { readPlan, parseProgressLine, spawnCli, cliModelEffortArgs } = require('../project-plan');
-const { validate } = require('../project-validation');
+const { validate, inferTaskKind } = require('../project-validation');
+const { parseCodexJsonl, parseClaudeJson, parseAgyJson } = require('../task-subchat');
+const projectsStore = require('../projects');
 const accounts = require('../project-accounts');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+test('inferTaskKind classifies planning, development, test/verification, and ops/docs tasks accurately', () => {
+  assert.equal(inferTaskKind('요구사항 분석 및 아키텍처 설계', ''), 'plan');
+  assert.equal(inferTaskKind('로그인 API 및 화면 구현', ''), 'dev');
+  assert.equal(inferTaskKind('통합 테스트 및 완료 기준 검증', ''), 'test');
+  assert.equal(inferTaskKind('운영 배포 및 README 문서 정리', ''), 'ops');
+});
+
+test('task-subchat parsers extract sessionId, replies, tool hints, and tokens across Codex, Claude, and AGY', () => {
+  const codexOut = [
+    JSON.stringify({ type: 'thread.started', thread_id: '01a11111-2222-3333-4444-555555555555' }),
+    JSON.stringify({ type: 'item.completed', item: { type: 'command_execution', command: 'npm test' } }),
+    JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: '서브 개발 수정 완료했습니다.' } }),
+    JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1500, cached_input_tokens: 500, output_tokens: 300 } }),
+  ].join('\n');
+  const cx = parseCodexJsonl(codexOut);
+  assert.equal(cx.sessionId, '01a11111-2222-3333-4444-555555555555');
+  assert.ok(cx.reply.includes('⚙ npm test'));
+  assert.ok(cx.reply.includes('서브 개발 수정 완료했습니다.'));
+  assert.equal(cx.tokens.total, 1800);
+
+  const cl = parseClaudeJson(JSON.stringify({ session_id: 'cl-sid-1', result: 'Claude 응답', usage: { input_tokens: 200, output_tokens: 100 } }));
+  assert.equal(cl.sessionId, 'cl-sid-1');
+  assert.equal(cl.reply, 'Claude 응답');
+  assert.equal(cl.tokens.total, 300);
+
+  const ag = parseAgyJson(JSON.stringify({ conversation_id: 'ag-sid-1', response: 'AGY 응답', usage: { input_tokens: 400, output_tokens: 150, total_tokens: 550 } }));
+  assert.equal(ag.sessionId, 'ag-sid-1');
+  assert.equal(ag.reply, 'AGY 응답');
+  assert.equal(ag.tokens.total, 550);
+
+  // Sub-chat persistence per (projectId, taskId)
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-subchat-store-'));
+  try {
+    const s = projectsStore(path.join(dir, 'projects.json'));
+    const p = s.save({ name: 'P', cwd: 'D:\\p', goal: 'G', termIds: [], tasks: [{ id: 't1', title: '구현', detail: '', stage: 'planned', termId: '', after: [] }] });
+    s.saveSubChat(p.id, 't1', { id: 'c1', title: '첫 채팅', agent: 'codex', sessionId: cx.sessionId, messages: [{ role: 'user', text: '안녕' }, { role: 'assistant', text: '반갑습니다' }] });
+    assert.equal(s.listSubChats(p.id, 't1').length, 1);
+    assert.equal(s.listSubChats(p.id, 't1')[0].messages.length, 2);
+    assert.equal(s.deleteSubChat(p.id, 't1', 'c1'), true);
+    assert.equal(s.listSubChats(p.id, 't1').length, 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('cliModelEffortArgs builds exact model and reasoning effort flags per CLI', () => {
   assert.deepEqual(cliModelEffortArgs('codex', 'gpt-6.1-sol', 'high'), ['-m', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="high"']);

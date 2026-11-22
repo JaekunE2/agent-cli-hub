@@ -49,6 +49,46 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
     recordAgent: (id, sid) => read().links[id]?.agents?.[sid],
     recordAccount: (id, sid) => read().links[id]?.accounts?.[sid],
     recordTask: (id, sid) => read().links[id]?.tasks?.[sid],
+    allSubChats: (projectId) => read().links[projectId]?.subChats || {},
+    listSubChats: (projectId, taskId) => read().links[projectId]?.subChats?.[taskId] || [],
+    saveSubChat(projectId, taskId, chat) {
+      if (!projectId || !taskId || !chat?.id) return null;
+      const data = read();
+      const link = data.links[projectId] ||= { ids: [] };
+      const byTask = (link.subChats ||= {});
+      const list = (byTask[taskId] ||= []);
+      const idx = list.findIndex((c) => c.id === chat.id);
+      const next = {
+        id: String(chat.id),
+        title: String(chat.title || '서브 개발 채팅').slice(0, 120),
+        agent: String(chat.agent || 'codex'),
+        account: String(chat.account || ''),
+        model: String(chat.model || ''),
+        effort: String(chat.effort || ''),
+        sessionId: chat.sessionId ? String(chat.sessionId) : '',
+        createdAt: chat.createdAt || Date.now(),
+        updatedAt: Date.now(),
+        messages: Array.isArray(chat.messages) ? chat.messages.slice(-120).map((m) => ({
+          role: m.role === 'user' ? 'user' : 'assistant',
+          text: String(m.text || '').slice(0, 12000),
+          ts: m.ts || new Date().toISOString(),
+        })) : [],
+      };
+      if (idx >= 0) list[idx] = next;
+      else list.push(next);
+      write(data);
+      return next;
+    },
+    deleteSubChat(projectId, taskId, chatId) {
+      const data = read();
+      const list = data.links[projectId]?.subChats?.[taskId];
+      if (!Array.isArray(list)) return false;
+      const next = list.filter((c) => c.id !== chatId);
+      if (next.length === list.length) return false;
+      data.links[projectId].subChats[taskId] = next;
+      write(data);
+      return true;
+    },
     hide(id) {
       const data = read();
       if (add(data.hidden, id)) write(data);

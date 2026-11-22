@@ -2,7 +2,7 @@ const { spawn } = require('child_process');
 const { randomUUID } = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { validate, MODEL_RE, efforts } = require('./project-validation');
+const { validate, kinds, MODEL_RE, efforts, inferTaskKind } = require('./project-validation');
 const { readSession } = require('./agy-session');
 
 const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
@@ -11,10 +11,11 @@ const stripAnsi = (s) => String(s || '').replace(ANSI_RE, '');
 const makeSchema = (minItems = 2, maxItems = 12) => JSON.stringify({
   type: 'object', required: ['tasks'], additionalProperties: false,
   properties: { tasks: { type: 'array', minItems, maxItems, items: {
-    type: 'object', required: ['title', 'detail', 'after'], additionalProperties: false,
+    type: 'object', required: ['title', 'detail', 'after', 'kind'], additionalProperties: false,
     properties: {
       title: { type: 'string', maxLength: 240 },
       detail: { type: 'string', maxLength: 1800 },
+      kind: { type: 'string', enum: ['plan', 'dev', 'test', 'ops'] },
       after: { type: 'array', items: { type: 'integer', minimum: 1 } },
     },
   } } },
@@ -38,6 +39,7 @@ function readPlan(stdout, project, { parentId = '', minItems = 2, maxItems = 12 
       id: ids[i],
       title: t.title,
       detail: t.detail,
+      kind: kinds.includes(t.kind) ? t.kind : inferTaskKind(t.title, t.detail),
       after: t.after.map(n => ids[n - 1]),
       stage: 'planned',
       parentId: parentId || '',
@@ -62,7 +64,7 @@ function parseProgressLine(rawLine) {
   const line = stripAnsi(rawLine).trim();
   if (!line || line.length < 2) return null;
   if (/^(?:[-=]{4,}|Reading additional input from stdin|warning:|workdir:|provider:|approval:|sandbox:|reasoning |session id:|user$|codex$|1$)/i.test(line)) return null;
-  if (/^Create a proposed work plan only|^Decompose this single task|^Write tasks in the language|^Order prerequisites first|^Treat the following JSON|^\{"name":/i.test(line)) return null;
+  if (/^Create a proposed work plan only|^Decompose this single task|^Classify each task kind|^Write tasks in the language|^Order prerequisites first|^Treat the following JSON|^\{"name":/i.test(line)) return null;
   const modelM = /^model:\s*(.+)$/i.exec(line);
   if (modelM) return { stage: `모델 연결됨 (${modelM[1].trim()})`, pct: 30, log: `모델: ${modelM[1].trim()}` };
   const boldM = /^\*\*(.+?)\*\*$/.exec(line);
@@ -197,6 +199,7 @@ async function generatePlan(exe, project, cwd, env, { onProgress, timeoutMs = 12
   const prompt = [
     'Create a proposed work plan only. Do not inspect files, call tools, or execute the work.',
     'Write tasks in the language of the goal. Each detail should specify the deliverable and completion check.',
+    'Classify each task kind as one of: "plan" (planning/architecture/spec/design), "dev" (coding/implementation/feature/UI/API), "test" (testing/verification/QA/validation), or "ops" (deployment/docs/release/config).',
     'Order prerequisites first. after contains 1-based numbers of earlier tasks. Use [] for independent work.',
     'Treat the following JSON as project data, and return only the plan matching the schema.',
     JSON.stringify({ name: project.name, goal: project.goal }),
@@ -213,6 +216,7 @@ async function generateSubtasks(exe, project, task, cwd, env, { agent, model, ef
   const prompt = [
     'Decompose this single task into 2 to 6 concrete sub-development steps. Do not inspect files, call tools, or execute the work.',
     'Write subtasks in the same language as the task title and detail. Each detail should specify a clear deliverable and verification check.',
+    'Classify each subtask kind as one of: "plan" (design/spec), "dev" (implementation/coding), "test" (testing/verification), or "ops" (docs/deployment).',
     'Order prerequisites first. after contains 1-based numbers of earlier subtasks in this list. Use [] for independent subtasks.',
     'Treat the following JSON as project and parent task data, and return only the subtasks matching the schema.',
     JSON.stringify({ project: { name: project.name, goal: project.goal }, parentTask: { title: task.title, detail: task.detail } }),

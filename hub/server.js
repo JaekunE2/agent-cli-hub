@@ -20,10 +20,12 @@ const projects = require('./projects')();
 const { agents: projectAgents } = require('./project-validation');
 const { fingerprint, projectSession, sessionId: validSessionId } = require('./project-history');
 const { generatePlan, generateSubtasks, cliModelEffortArgs } = require('./project-plan');
+const { runTaskSubChatTurn } = require('./task-subchat');
 const { deleteCliRecord, uuid: recordUuid } = require('./delete-cli-record');
 const { ownedRoots, verifiedRoot, probeRoot, stopTerminal } = require('./project-stop');
 let projectPlanning = false;
 let projectPlanState = { active: false, agent: '', name: '', startedAt: 0, stage: '', pct: 0, logs: [] };
+const taskChatActive = new Map(); // `${projectId}:${taskId}` -> { chatId, agent, stage, startedAt, logs }
 const pendingPlanRecords = new Map();
 const deletingProjects = new Set();
 const { Terminal: HeadlessTerminal } = require('@xterm/headless');
@@ -1664,11 +1666,103 @@ const server = http.createServer(async (req, res) => {
         if (dir) try { fs.rmdirSync(dir); } catch {}
       }
     }
+    if (p === '/api/projects/task-chat' && req.method === 'GET') {
+      const projectId = url.searchParams.get('projectId') || '';
+      const taskId = url.searchParams.get('taskId') || '';
+      const act = taskChatActive.get(`${projectId}:${taskId}`) || null;
+      return send(res, 200, {
+        chats: projects.listSubChats(projectId, taskId),
+        active: act ? { ...act, elapsedMs: Date.now() - act.startedAt } : null,
+      });
+    }
+    if (p === '/api/projects/task-chat' && req.method === 'DELETE') {
+      const b = await body(req);
+      const removed = projects.deleteSubChat(b.projectId, b.taskId, b.chatId);
+      return send(res, 200, { ok: removed, chats: projects.listSubChats(b.projectId, b.taskId) });
+    }
+    if (p === '/api/projects/task-chat' && req.method === 'POST') {
+      const b = await body(req);
+      const project = projects.list().find((x) => x.id === b.projectId);
+      const task = project?.tasks.find((x) => x.id === b.taskId);
+      if (!project || !task) return send(res, 404, { error: 'Project 작업을 찾을 수 없습니다.' });
+      const prompt = String(b.prompt || '').trim();
+      if (!prompt) return send(res, 400, { error: '메시지를 입력하세요.' });
+      const actKey = `${project.id}:${task.id}`;
+      if (taskChatActive.has(actKey)) return send(res, 409, { error: '이 태스크의 서브 개발 응답을 생성 중입니다. 잠시 기다려 주세요.' });
+
+      const existingChats = projects.listSubChats(project.id, task.id);
+      let chat = b.chatId ? existingChats.find((c) => c.id === b.chatId) : null;
+      const effAgent = b.agent || chat?.agent || task.agent || project.agent || 'codex';
+      if (!['claude', 'codex', 'agy'].includes(effAgent)) return send(res, 400, { error: '서브 개발 채팅은 Claude Code, Codex, Antigravity를 지원합니다.' });
+      const effAccount = b.account ?? chat?.account ?? task.account ?? (effAgent === (project.agent || 'codex') ? project.account : '');
+      const effModel = b.model ?? chat?.model ?? (task.model || (effAgent === (project.agent || 'codex') ? project.model : ''));
+      const effEffort = b.effort ?? chat?.effort ?? (task.effort || (effAgent === (project.agent || 'codex') ? project.effort : ''));
+      let auth;
+      try { auth = projectAccounts.resolve(effAgent, effAccount); }
+      catch (e) { return send(res, 400, { error: e.message }); }
+
+      ensureProjectDir(project.cwd);
+      const workCwd = (project.cwd && fs.existsSync(project.cwd)) ? project.cwd : os.homedir();
+      const nowIso = new Date().toISOString();
+      if (!chat) {
+        chat = {
+          id: crypto.randomUUID(),
+          title: prompt.split(/\r?\n/)[0].slice(0, 48) || `서브 채팅 #${existingChats.length + 1}`,
+          agent: effAgent,
+          account: effAccount || '',
+          model: effModel || '',
+          effort: effEffort || '',
+          sessionId: '',
+          createdAt: Date.now(),
+          messages: [],
+        };
+      } else {
+        chat = { ...chat, agent: effAgent, account: effAccount || '', model: effModel || '', effort: effEffort || '' };
+      }
+      chat.messages = [...(chat.messages || []), { role: 'user', text: prompt, ts: nowIso }];
+      projects.saveSubChat(project.id, task.id, chat);
+
+      const actState = { chatId: chat.id, agent: effAgent, stage: 'CLI 실행 중…', startedAt: Date.now(), logs: [] };
+      taskChatActive.set(actKey, actState);
+      const exe = effAgent === 'agy' ? agyExe() : effAgent === 'claude' ? 'claude.exe' : codexExe();
+      try {
+        const resTurn = await runTaskSubChatTurn({
+          exe, agent: effAgent, cwd: workCwd, env: { ...cleanEnv(), ...auth.env },
+          model: effModel, effort: effEffort, sessionId: chat.sessionId,
+          prompt, project, task,
+          onProgress: (ev) => {
+            if (ev?.stage) actState.stage = ev.stage;
+            if (ev?.log) actState.logs = [...actState.logs, ev.log].slice(-5);
+            if (ev?.sessionId && !chat.sessionId) chat.sessionId = ev.sessionId;
+          },
+        });
+        if (resTurn.sessionId) chat.sessionId = resTurn.sessionId;
+        chat.messages = [...chat.messages, { role: 'assistant', text: resTurn.reply, ts: new Date().toISOString() }];
+        const savedChat = projects.saveSubChat(project.id, task.id, chat);
+        if (chat.sessionId) {
+          const doc = index.get(chat.sessionId);
+          if (doc?.file) await index.updateFile(doc.file).catch(() => {});
+          projects.remember([{
+            projectId: project.id, taskId: task.id, sessionId: chat.sessionId,
+            agent: effAgent, accountId: effAccount || 'default',
+            tokens: resTurn.tokens || index.get(chat.sessionId)?.tokens,
+          }]);
+        }
+        return send(res, 200, { ok: true, chat: savedChat, chats: projects.listSubChats(project.id, task.id) });
+      } catch (e) {
+        chat.messages = [...chat.messages, { role: 'assistant', text: `⚠ ${e.message}`, ts: new Date().toISOString() }];
+        const savedChat = projects.saveSubChat(project.id, task.id, chat);
+        return send(res, 502, { ok: false, error: e.message, chat: savedChat, chats: projects.listSubChats(project.id, task.id) });
+      } finally {
+        taskChatActive.delete(actKey);
+      }
+    }
     if (p === '/api/projects') {
       if (req.method === 'GET') {
         const list = projects.list().map((pr) => ({
           ...pr,
           tokens: projects.tokenSummary(pr.id, (sid) => index.get(sid)?.tokens),
+          subChats: projects.allSubChats(pr.id),
         }));
         return send(res, 200, { projects: list, defaultCwd: PROJECTS_DIR });
       }

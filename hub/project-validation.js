@@ -1,7 +1,19 @@
 const stages = ['planned', 'doing', 'review', 'done'];
 const agents = ['claude', 'codex', 'agy', 'cursor'];
+const kinds = ['plan', 'dev', 'test', 'ops'];
 const efforts = ['', 'minimal', 'low', 'medium', 'high', 'xhigh', 'ultra', 'max'];
 const MODEL_RE = /^[\w.\-:/\[\]]{0,120}$/;
+
+function inferTaskKind(title = '', detail = '') {
+  const t = String(title || '').trim();
+  const d = String(detail || '').trim();
+  if (/테스트|검증|점검|QA|벤치마크|단위\s*테스트|통합\s*테스트|E2E|회귀|test|verif|validat|assert|audit|qa|benchmark/i.test(t)) return 'test';
+  if (/배포|문서|가이드|매뉴얼|릴리스|패키징|CI\/CD|도커|운영|README|deploy|release|doc|readme|docker|publish|ops/i.test(t)) return 'ops';
+  if (/설계|기획|정의|범위|요구\s*사항|아키텍처|스키마\s*정의|구조|분석|조사|초안|명세|plan|design|spec|architect|requir|scope|analy|research/i.test(t)) return 'plan';
+  if (/개발|구현|작성|추가|연동|적용|생성|빌드|컴포넌트|API|UI|화면|기능|모듈|수정|개선|implement|build|create|add|develop|feature|integrate|code/i.test(t)) return 'dev';
+  if (/테스트\s*실행|검증\s*절차|통과\s*여부\s*확인|unit\s*test|integration\s*test/i.test(d) && !/구현|개발|작성/i.test(t)) return 'test';
+  return 'dev';
+}
 
 function validate(p) {
   const fail = (message) => { throw new Error(message); };
@@ -16,6 +28,7 @@ function validate(p) {
   const seen = new Set();
   for (const t of p.tasks) {
     if (!t || !str(t.id, 80, true) || seen.has(t.id) || !str(t.title, 240, true) || !str(t.detail, 6000) || !stages.includes(t.stage)) fail('작업 정보가 올바르지 않습니다.');
+    if (t.kind !== undefined && t.kind !== '' && !kinds.includes(t.kind)) fail('작업 종류를 확인하세요.');
     if (!Array.isArray(t.after) || t.after.length > p.tasks.length) fail('선행 작업 목록이 올바르지 않습니다.');
     if (!str(t.termId, 80) || (t.termId && !p.termIds.includes(t.termId))) fail('작업 터미널을 프로젝트에 먼저 연결하세요.');
     if (t.agent !== undefined && t.agent !== '' && !agents.includes(t.agent)) fail('작업 CLI를 확인하세요.');
@@ -63,6 +76,7 @@ function validate(p) {
       title: t.title.trim(),
       detail: t.detail,
       stage: t.stage,
+      kind: kinds.includes(t.kind) ? t.kind : inferTaskKind(t.title, t.detail),
       agent: t.agent || '',
       account: t.account ?? null,
       model: String(t.model || '').trim(),
@@ -73,4 +87,4 @@ function validate(p) {
     })),
   };
 }
-module.exports = { validate, stages, agents, efforts, MODEL_RE };
+module.exports = { validate, stages, agents, kinds, efforts, MODEL_RE, inferTaskKind };
