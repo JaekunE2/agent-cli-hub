@@ -74,6 +74,20 @@ function pointsInside(linkPath, targetDir) {
   }
 }
 
+function moveDirSafe(src, dst, renameFn = fs.renameSync) {
+  fs.mkdirSync(path.dirname(dst), { recursive: true });
+  try {
+    renameFn(src, dst);
+  } catch (err) {
+    if (err && (err.code === 'EXDEV' || err.code === 'EPERM')) {
+      fs.cpSync(src, dst, { recursive: true, force: true, dereference: true });
+      fs.rmSync(src, { recursive: true, force: true });
+    } else {
+      throw err;
+    }
+  }
+}
+
 function linkOrCopySkillDir(srcDir, dstDir, backupRoot) {
   const realSrc = fs.existsSync(srcDir) ? fs.realpathSync(srcDir) : srcDir;
   if (fs.existsSync(dstDir)) {
@@ -86,7 +100,7 @@ function linkOrCopySkillDir(srcDir, dstDir, backupRoot) {
       if (backupRoot) {
         fs.mkdirSync(backupRoot, { recursive: true });
         const bak = path.join(backupRoot, `${path.basename(dstDir)}-${Date.now()}`);
-        fs.renameSync(dstDir, bak);
+        moveDirSafe(dstDir, bak);
       } else {
         fs.rmSync(dstDir, { recursive: true, force: true });
       }
@@ -1277,6 +1291,7 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
 
 module.exports = {
   createUnifiedVault,
+  moveDirSafe,
   parseCodexMcpToml,
   serializeCodexMcpBlock,
   stripManagedTomlSections,

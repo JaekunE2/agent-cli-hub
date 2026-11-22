@@ -8,6 +8,7 @@ const path = require('node:path');
 
 const {
   createUnifiedVault,
+  moveDirSafe,
   parseCodexMcpToml,
   serializeCodexMcpBlock,
   stripManagedTomlSections,
@@ -88,6 +89,25 @@ test('parseSkillFrontmatter extracts name and description cleanly', () => {
   const meta = parseSkillFrontmatter(`---\nname: "demo-skill"\ndescription: 'Helps test frontmatter'\n---\n\n# Body`);
   assert.equal(meta.name, 'demo-skill');
   assert.equal(meta.description, 'Helps test frontmatter');
+});
+
+test('moveDirSafe falls back to copy+remove on EXDEV cross-device rename errors', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-vault-exdev-'));
+  try {
+    const src = path.join(dir, 'src-skill');
+    const dst = path.join(dir, 'backup', 'src-skill-bak');
+    fs.mkdirSync(src, { recursive: true });
+    fs.writeFileSync(path.join(src, 'SKILL.md'), 'hello', 'utf8');
+    moveDirSafe(src, dst, () => {
+      const e = new Error('EXDEV: cross-device link not permitted');
+      e.code = 'EXDEV';
+      throw e;
+    });
+    assert.equal(fs.existsSync(src), false);
+    assert.equal(fs.readFileSync(path.join(dst, 'SKILL.md'), 'utf8'), 'hello');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('createUnifiedVault gathers from all CLIs and syncs idempotently across targets', () => {
