@@ -44,7 +44,10 @@
           <b>${ico.layers || ''} 설계 청사진 (Blueprint) 모드</b>
           <span class="ums" style="margin:0 0 0 8px">작업 폴더(${esc(p.cwd)})에 아직 소스 파일이 없어 프로젝트의 설계 태스크 청사진을 표시합니다. 점선 카드는 아직 시작 전(대기) 설계 항목입니다.</span>
         </div>
-        <button type="button" class="btn-sm" id="fmRescan">${ico.refresh || ''} 폴더 다시 스캔</button>
+        <div class="row" style="gap:6px">
+          <button type="button" class="primary btn-sm" id="fmPickDir" title="기존 코드가 있는 PC 폴더를 골라 Floorplan을 바로 테스트합니다">${ico.folder || ''} 다른 폴더 스캔 테스트</button>
+          <button type="button" class="btn-sm" id="fmRescan">${ico.refresh || ''} 폴더 다시 스캔</button>
+        </div>
       </div>
       <div class="fm-bp-grid">
         ${renderCol('기획 · 아키텍처', cols.plan)}
@@ -54,7 +57,7 @@
     </div>`;
   }
 
-  async function projectFloorplan(p, gen) {
+  async function projectFloorplan(p, gen, previewCwd = '') {
     const ico = window.UI_ICO || {};
     const host = $('#projectContent');
     if (!host) return;
@@ -62,20 +65,28 @@
 
     let fp;
     try {
-      const r = await api(`/api/projects/floorplan?id=${encodeURIComponent(p.id)}`);
+      const url = previewCwd
+        ? `/api/projects/floorplan?cwd=${encodeURIComponent(previewCwd)}`
+        : `/api/projects/floorplan?id=${encodeURIComponent(p.id)}`;
+      const r = await api(url);
       if (gen !== viewGen) return;
       if (r.error || !r.floorplan) throw new Error(r.error || '코드 구조를 불러올 수 없습니다.');
       fp = r.floorplan;
     } catch (e) {
       if (gen !== viewGen) return;
       host.innerHTML = `<div class="pj-empty"><p role="alert">${esc(e.message)}</p><button type="button" id="fmRetry">다시 스캔</button></div>`;
-      $('#fmRetry', host).onclick = () => projectFloorplan(p, gen);
+      $('#fmRetry', host).onclick = () => projectFloorplan(p, gen, previewCwd);
       return;
     }
 
     if (!fp.exists || !fp.nodes?.length) {
-      host.innerHTML = buildBlueprintFallback(p);
-      $('#fmRescan', host)?.addEventListener('click', () => projectFloorplan(p, gen));
+      host.innerHTML = buildBlueprintFallback(previewCwd ? { ...p, cwd: previewCwd } : p);
+      $('#fmRescan', host)?.addEventListener('click', () => projectFloorplan(p, gen, previewCwd));
+      $('#fmPickDir', host)?.addEventListener('click', () => {
+        if (typeof openFolderPickerDialog === 'function') {
+          openFolderPickerDialog(previewCwd || p.cwd, (chosen) => projectFloorplan(p, gen, chosen));
+        }
+      });
       host.querySelectorAll('[data-bp-task]').forEach((el) => {
         el.onclick = () => {
           const t = (p.tasks || []).find((x) => x.id === el.dataset.bpTask);
@@ -206,9 +217,11 @@
           <button type="button" class="ghost btn-sm" id="fmZoomOut" title="축소">－</button>
           <button type="button" class="ghost btn-sm mono" id="fmZoomReset" title="100% 배율">100%</button>
           <button type="button" class="ghost btn-sm" id="fmZoomIn" title="확대">＋</button>
+          <button type="button" class="btn-sm" id="fmPickDir" title="다른 폴더를 선택해 코드 구조 스캔 테스트">${ico.folder || ''} 폴더 변경</button>
           <button type="button" class="btn-sm" id="fmRescan" title="작업 폴더를 다시 스캔">${ico.refresh || ''} 재스캔</button>
         </div>
       </div>
+      ${previewCwd ? `<div class="fm-top-note" style="padding:7px 12px"><span>미리보기 스캔 경로: <b class="mono">${esc(previewCwd)}</b></span><button type="button" class="btn-sm" id="fmBackProjDir">현재 Project 폴더로 돌아가기</button></div>` : ''}
 
       <div class="fm-ask-res" id="fmAskRes" hidden></div>
 
@@ -376,7 +389,13 @@
 
     askIn.addEventListener('input', () => runQuery(askIn.value));
     clearBtn.onclick = () => { askIn.value = ''; showNodeSummary([], ''); };
-    $('#fmRescan', host).onclick = () => projectFloorplan(p, gen);
+    $('#fmRescan', host).onclick = () => projectFloorplan(p, gen, previewCwd);
+    $('#fmPickDir', host).onclick = () => {
+      if (typeof openFolderPickerDialog === 'function') {
+        openFolderPickerDialog(previewCwd || p.cwd, (chosen) => projectFloorplan(p, gen, chosen));
+      }
+    };
+    $('#fmBackProjDir', host)?.addEventListener('click', () => projectFloorplan(p, gen, ''));
     $('#fmHealthBadge', host).onclick = () => $('#fmHealthSheet', host)?.scrollIntoView({ behavior: 'smooth' });
     $('#fmZoomOut', host).onclick = () => applyZoom(zoom - 0.1);
     $('#fmZoomIn', host).onclick = () => applyZoom(zoom + 0.1);
