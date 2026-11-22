@@ -13,6 +13,19 @@ const { spawn } = require('child_process');
 const { WebSocketServer } = require('ws');
 const pty = require('@lydell/node-pty');
 const { SearchIndex } = require('./searchindex');
+const codexRecoveryArgs = require('./terminal-recovery');
+const { readSession: readAgySession, agyStatusFromScreen, stripAnsi } = require('./agy-session');
+const { createAgyQuotaService, parseAgyQuotaTui } = require('./agy-quota');
+const projects = require('./projects')();
+const { agents: projectAgents } = require('./project-validation');
+const { fingerprint, projectSession, sessionId: validSessionId } = require('./project-history');
+const { generatePlan, generateSubtasks, cliModelEffortArgs } = require('./project-plan');
+const { deleteCliRecord, uuid: recordUuid } = require('./delete-cli-record');
+const { ownedRoots, verifiedRoot, probeRoot, stopTerminal } = require('./project-stop');
+let projectPlanning = false;
+let projectPlanState = { active: false, agent: '', name: '', startedAt: 0, stage: '', pct: 0, logs: [] };
+const pendingPlanRecords = new Map();
+const deletingProjects = new Set();
 const { Terminal: HeadlessTerminal } = require('@xterm/headless');
 
 const PORT = Number(process.env.CCD_PORT || 7777);
@@ -245,6 +258,13 @@ function checkDisk() {
 checkDisk(); setInterval(checkDisk, 60_000);
 async function buildOverview() {
   const [cons] = await Promise.all([helperCall({ op: 'list' })]);
+  const needAgyPid = [...terms.values()].filter((t) => isAgyTerm(t) && !t.pid && t.exited === null && (!t._pidTryAt || Date.now() - t._pidTryAt > 10_000));
+  if (needAgyPid.length && !matchBusy) {
+    const now = Date.now();
+    for (const t of needAgyPid) t._pidTryAt = now;
+    matchBusy = true;
+    await matchTermPids(cons.consoles || []).catch(() => {}).finally(() => { matchBusy = false; });
+  }
   const live = liveSessions();
   // attach usage-limit state from the transcript (incremental read, cheap)
   for (const s of live) {
@@ -265,13 +285,15 @@ async function buildOverview() {
   const termsOut = [...terms.values()].map((t) => {
     const info = termInfo(t);
     const c = t.pid && consoles.find((x) => x.pids.includes(t.pid));
-    const s = c && live.find((x) => c.pids.includes(x.pid));
-    if (s) {
+    const s = info.claude && c && live.find((x) => c.pids.includes(x.pid));
+    if (t.meta.projectTask) {
+      info.sessionId = projectRecord(t);
+    } else if (s) {
       const d = index.get(s.sessionId);
       info.sessionId = s.sessionId;
       info.sessionName = d?.title || d?.firstPrompt?.split('\n')[0].slice(0, 80) || null;
     } else {
-      const d = termDocOf(t);
+      const d = info.agy ? index.get(info.sessionId) : termDocOf(t);
       if (d) {
         info.sessionId = d.id;
         info.sessionName = d.title || d.firstPrompt?.split('\n')[0].slice(0, 80) || null;
@@ -282,7 +304,146 @@ async function buildOverview() {
     }
     return info;
   });
-  return { live, consoles, terms: termsOut, consoleError: cons.error, favs: loadFavs(), disk: diskLow, consolesOff: CONFIG.consoles === false };
+  projects.remember(termsOut.filter(t => t.projectTask && t.sessionId).map(t => ({
+    projectId: t.projectTask.projectId, taskId: t.projectTask.taskId, sessionId: t.sessionId,
+    agent: t.agent, accountId: t.account?.id, tokens: index.get(t.sessionId)?.tokens,
+  })));
+  return { live, consoles, terms: termsOut, consoleError: cons.error, favs: liveFavs(), disk: diskLow, consolesOff: CONFIG.consoles === false };
+}
+
+function projectRecord(t) {
+  const agent = agentOf(t);
+  if (agent === 'codex' && t.matchedProjectSession) return t.matchedProjectSession;
+  const sid = projectSession(t, agent, index.docs.values(), agent === 'agy' ? agySessionOf(t) : null);
+  if (agent === 'codex') return t.matchedProjectSession ||= sid;
+  return sid;
+}
+function rememberProjectTerm(t) {
+  if (t.meta.projectTask) {
+    const sid = projectRecord(t);
+    projects.remember([{
+      projectId: t.meta.projectTask.projectId, taskId: t.meta.projectTask.taskId, sessionId: sid,
+      agent: agentOf(t), accountId: t.account?.id, tokens: sid ? index.get(sid)?.tokens : null,
+    }]);
+  }
+}
+
+async function eraseProject(p, stopRunning) {
+  const members = [...terms.values()].filter(t => t.meta.projectTask?.projectId === p.id);
+  const running = members.filter(t => t.exited === null);
+  if (running.length && stopRunning !== true) throw new Error('터미널 종료를 포함해 Project 삭제를 다시 확인하세요.');
+  await refreshIndex();
+  members.forEach(rememberProjectTerm);
+  const targets = await projectStopTargets(running);
+  assertNoOtherSession(p.id, new Set(targets.map(({ root }) => root.pid)));
+  await Promise.all(targets.map(closeProjectTerminal));
+  if (targets.length) await refreshIndex();
+  members.forEach(rememberProjectTerm);
+  assertNoOtherSession(p.id, new Set());
+  const ids = projects.records(p.id);
+  let removed = 0;
+  for (const id of ids) {
+    const doc = index.get(id);
+    const agent = doc?.agent || projects.recordAgent(p.id, id);
+    if (doc || agent === 'agy') {
+      const accountEnv = agent === 'codex' ? projectAccounts.resolve(agent, projects.recordAccount(p.id, id)).env : {};
+      if (await deleteCliRecord({ id, agent, file: doc?.file }, {
+        claudeRoot: index.root, agyRoots: index.agyRoot, codexExe: codexExe(), env: { ...cleanEnv(), ...accountEnv },
+      })) removed++;
+      index.docs.delete(id);
+      index.dirty = true;
+    }
+    projects.hide(id);
+  }
+  projects.remove(p.id, p.revision);
+  for (const t of members) if (t.exited !== null) forgetTerm(t);
+  overviewStale();
+  return removed;
+}
+
+function assertNoOtherSession(projectId, ownPids) {
+  const active = new Set(liveSessions().filter(s => !ownPids.has(s.pid)).map(s => s.sessionId));
+  for (const t of terms.values()) {
+    if (t.exited !== null || t.meta.projectTask?.projectId === projectId) continue;
+    if (t.meta.projectTask) active.add(projectRecord(t));
+    else if (isAgyTerm(t)) active.add(agySessionOf(t));
+    else if (isCodexTerm(t)) {
+      const args = t.meta.args || [];
+      const resume = args.indexOf('resume');
+      if (resume >= 0 && recordUuid(args[resume + 1])) active.add(args[resume + 1]);
+    }
+  }
+  if (projects.records(projectId).some(id => active.has(id))) throw new Error('연결된 대화가 다른 터미널에서 실행 중입니다. 다른 터미널은 그대로 유지했습니다.');
+}
+
+async function projectStopTargets(termsToClose) {
+  if (!termsToClose.length) return [];
+  const [host, table] = await Promise.all([ptyCall('/info'), procTable()]);
+  if (!table || host.pid !== ptyHostPid || !Array.isArray(host.terms)) throw new Error('Project 터미널 소유자를 확인할 수 없습니다.');
+  const children = [...table].filter(([, p]) => p.ppid === host.pid).map(([pid]) => pid);
+  const processes = await procInfo(children, true);
+  const seen = new Set();
+  const targets = [];
+  for (const term of termsToClose) {
+    const hostTerm = host.terms.find(t => t.id === term.id);
+    if (hostTerm && hostTerm.exited !== null) { term.exited = hostTerm.exited; continue; }
+    const exe = path.basename(term.meta.cmd || '').toLowerCase();
+    if (!hostTerm?.pid && children.some(pid => !processes.get(pid)
+      && table.get(pid)?.name?.toLowerCase() === exe && pidAlive(pid))) {
+      throw new Error(`터미널 ${term.id}의 실행 정보가 일시적으로 확인되지 않습니다. 잠시 후 다시 삭제해 주세요.`);
+    }
+    let root = verifiedRoot(term, hostTerm, host.pid, processes);
+    if (!root && hostTerm && !hostTerm.pid) {
+      root = await probeRoot(ownedRoots(term, hostTerm, host.pid, processes), hostTerm.cols, {
+        readWidth: async pid => (await helperCall({ op: 'read', pid, lines: 1 })).width,
+        resize: async cols => {
+          if (terms.get(term.id) !== term || ptyHostPid !== host.pid) throw new Error('종료 대상 터미널이 변경되었습니다.');
+          const result = await ptyPost(term.id, '/resize', { id: term.id, cols, rows: hostTerm.rows });
+          if (!result?.ok) throw new Error('종료 대상 터미널의 크기를 확인할 수 없습니다.');
+        },
+        wait: predicate => waitFor(predicate, 1800, 180),
+      });
+    }
+    if (!root || seen.has(root.pid)) throw new Error(`터미널 ${term.id}의 실행 프로세스를 확인할 수 없어 자동 종료하지 않았습니다.`);
+    seen.add(root.pid);
+    targets.push({ term, root });
+  }
+  assertNoProjectGpu(seen, table);
+  return targets;
+}
+
+function assertNoProjectGpu(pids, table) {
+  for (const job of gpuQ.snapshot().active) {
+    const roots = [job.holderPid, job.childPid, job.requester?.pid, ...(job.holderPids || [])].filter(Boolean);
+    if (roots.some(pid => {
+      for (let i = 0; pid && i < 30; i++, pid = table.get(pid)?.ppid) if (pids.has(pid)) return true;
+      return false;
+    })) throw new Error('Project 터미널의 GPU 작업이 실행 중입니다. 작업이 끝나면 삭제할 수 있습니다.');
+  }
+}
+
+async function closeProjectTerminal({ term, root }) {
+  const alive = () => {
+    if (terms.get(term.id) !== term || ptyHostPid !== root.ppid) throw new Error('종료 대상 터미널이 변경되었습니다.');
+    return term.exited === null;
+  };
+  await stopTerminal(term, {
+    alive,
+    write: data => ptyPost(term.id, '/write', { id: term.id, data }),
+    wait: ms => waitFor(() => !alive(), ms, 100),
+    terminate: async () => {
+      const [fresh, table] = await Promise.all([procInfo([root.pid], true), procTable()]);
+      const current = fresh.get(root.pid);
+      if (!alive()) return;
+      if (!table || !current || current.start !== root.start || current.exe !== root.exe
+        || current.cl !== root.cl || current.ppid !== root.ppid || current.ppid !== ptyHostPid
+        || /(?:cmd|electron|ChatGPT)\.exe$/i.test(current.exe)) {
+        throw new Error(`터미널 ${term.id}가 정상 종료되지 않았습니다. 프로세스를 안전하게 확인할 수 없어 강제 종료하지 않았습니다.`);
+      }
+      assertNoProjectGpu(new Set([root.pid]), table);
+      process.kill(root.pid);
+    },
+  });
 }
 
 function transcriptFromIndex(sessionId, at) {
@@ -360,16 +521,25 @@ function makeMirror({ id, meta = {}, cols = 120, rows = 32, exited = null }) {
 function mirrorData(t, d) {
   t.vt.write(d);
   t.buf = (t.buf + d).slice(-400_000);
+  if (stripAnsi(d).trim()) t.lastOutputAt = Date.now();
   for (const ws of t.clients) ws.send(JSON.stringify({ type: 'data', data: d }));
 }
-function createTerm({ cwd, cmd, args = [], title, env = {}, account = null, research = null, operator = false }) {
+function createTerm({ cwd, cmd, args = [], title, env = {}, account = null, research = null, operator = false, projectTask, projectPrompt }) {
   const id = String(++termSeq);
   if (!cwd || !fs.existsSync(cwd)) cwd = os.homedir();
   // meta is what we need to re-create the terminal after a pty-host restart — never secrets
   const envFlags = Object.fromEntries(Object.entries(env).filter(([k]) => !/TOKEN|KEY|SECRET/i.test(k)));
+  if (/\bagy(?:\.exe)?$/i.test(cmd)) {
+    const dir = path.join(__dirname, 'data', 'agy-logs');
+    fs.mkdirSync(dir, { recursive: true });
+    const previous = args.indexOf('--log-file');
+    if (previous !== -1) args = args.filter((_, i) => i !== previous && i !== previous + 1);
+    args = [...args, '--log-file', path.join(dir, crypto.randomUUID() + '.log')];
+  }
   const meta = { title: title || [cmd, ...args].join(' '), cwd, cmd, args, account, research, envFlags, spawnedAt: Date.now(), ...(operator ? { operator: true } : {}) };
+  if (projectTask) Object.assign(meta, { projectTask, projectPrompt });
   const t = makeMirror({ id, meta });
-  ptyPost(id, '/spawn', { id, cmd, args, cwd, env: { ...cleanEnv(), ...env }, cols: 120, rows: 32, meta });
+  t.spawnResult = ptyPost(id, '/spawn', { id, cmd, args, cwd, env: { ...cleanEnv(), ...env }, cols: 120, rows: 32, meta });
   return t;
 }
 function resizeTerm(t, cols, rows) {
@@ -438,15 +608,16 @@ async function connectPtyHost() {
 // Now: "--resume <id>" must appear in the candidate's command line, and the candidate must have been
 // created within a minute of the terminal's spawn. Ambiguous → leave unmatched (pid 0) rather than guess.
 const procInfoCache = new Map(); // pid -> { cl, start }
-async function procInfo(pids) {
-  const need = pids.filter((p) => !procInfoCache.has(p));
+async function procInfo(pids, fresh = false) {
+  const need = pids.filter(p => Number.isInteger(p) && p > 0 && (fresh || !procInfoCache.has(p)));
+  if (fresh) need.forEach(p => procInfoCache.delete(p));
   if (need.length) {
     const filter = need.map((p) => `ProcessId=${p}`).join(' OR ');
     const out = await new Promise((res) => require('child_process').execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-      `Get-CimInstance Win32_Process -Filter "${filter}" | Select-Object ProcessId,CommandLine,@{n='S';e={$_.CreationDate.ToString('o')}} | ConvertTo-Json -Compress`],
+      `[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); Get-CimInstance Win32_Process -Filter "${filter}" | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine,@{n='S';e={$_.CreationDate.ToString('o')}} | ConvertTo-Json -Compress`],
       { timeout: 15000, windowsHide: true }, (e, o) => res(e ? '' : String(o))));
     let arr = []; try { arr = [].concat(JSON.parse(out || '[]')); } catch {}
-    for (const x of arr) if (x) procInfoCache.set(x.ProcessId, { cl: x.CommandLine || '', start: x.S ? Date.parse(x.S) : null });
+    for (const x of arr) if (x) procInfoCache.set(x.ProcessId, { cl: x.CommandLine || '', start: x.S ? Date.parse(x.S) : null, exe: x.ExecutablePath, ppid: x.ParentProcessId });
   }
   return new Map(pids.map((p) => [p, procInfoCache.get(p)]));
 }
@@ -498,8 +669,10 @@ async function saveTermsState() {
       const c = t.pid && cons.find((x) => x.pids.includes(t.pid));
       const s = c && live.find((x) => c.pids.includes(x.pid));
       const resumed = (t.args || []).includes('--resume') ? t.args[t.args.indexOf('--resume') + 1] : null;
-      list.push({ id: t.id, meta: t.meta, sessionId: s?.sessionId || t.meta.sessionId || resumed || null, busy: s?.status === 'busy' || s?.status === 'shell' });
+      const sessionId = t.meta.projectTask ? projectRecord(t) : isAgyTerm(t) ? agySessionOf(t) : s?.sessionId || t.meta.sessionId || resumed;
+      list.push({ id: t.id, meta: t.meta, sessionId: sessionId || null, busy: s?.status === 'busy' || s?.status === 'shell' });
     }
+    for (const t of terms.values()) if (t.meta.projectTask) rememberProjectTerm(t);
     fs.writeFileSync(TERMS_STATE + '.tmp', JSON.stringify({ savedAt: new Date().toISOString(), terms: list }, null, 1));
     fs.renameSync(TERMS_STATE + '.tmp', TERMS_STATE);
   } catch (e) { console.error('[pty] save state', e.message); }
@@ -553,7 +726,8 @@ const crashRec = require('./crash-recovery')({
 });
 async function recoverTerms(note = RESTART_NOTE) {
   let saved; try { saved = JSON.parse(fs.readFileSync(TERMS_STATE, 'utf8')); } catch { return; }
-  const items = (saved.terms || []).filter((x) => x.meta?.cmd);
+  const projectIds = new Set(projects.list().map(p => p.id));
+  const items = (saved.terms || []).filter(x => x.meta?.cmd && (!x.meta.projectTask || projectIds.has(x.meta.projectTask.projectId)));
   if (!items.length) return;
   const resumed = new Set(items.map((x) => x.sessionId).filter(Boolean));
   console.log(`[pty] recovering ${items.length} terminal(s) from ${saved.savedAt}`);
@@ -562,14 +736,21 @@ async function recoverTerms(note = RESTART_NOTE) {
     const isClaude = /claude(\.exe)?$/i.test(m.cmd);
     if (isClaude && !x.sessionId) continue; // a claude that never got a session: nothing to resume
     const env = { ...(m.envFlags || {}) };
-    if (m.account?.id && m.account.id !== 'default') {
+    if (m.projectTask && m.account?.id) {
+      try { Object.assign(env, projectAccounts.resolve(m.account.kind, m.account.id).env); }
+      catch (e) { console.error('[project] restore account:', e.message); continue; }
+    } else if (m.account?.id && m.account.id !== 'default') {
       const acc = tokenAccounts().find((a) => a.id === m.account.id);
       if (acc) try { env.CLAUDE_CODE_OAUTH_TOKEN = acc.token(); } catch {}
     }
-    const args = isClaude
+    let args = isClaude
       ? ['--resume', x.sessionId, ...((m.args || []).includes('--dangerously-skip-permissions') ? ['--dangerously-skip-permissions'] : [])]
-      : (m.args || []);
-    const t = createTerm({ cwd: m.cwd, cmd: m.cmd, args, title: m.title, env, account: m.account, research: m.research });
+      : isCodexTerm({ meta: m }) ? codexRecoveryArgs(m.args || [], x.sessionId) : (m.args || []);
+    if (isAgyTerm({ meta: m }) && x.sessionId && !args.includes('--conversation') && !args.includes('--continue')) {
+      args = [...args, '--conversation', x.sessionId];
+    }
+    const t = createTerm({ cwd: m.cwd, cmd: m.cmd, args, title: m.title, env, account: m.account, research: m.research,
+      projectTask: m.projectTask, projectPrompt: m.projectPrompt });
     if (m.research) t.research = m.research;
     t.meta.sessionId = x.sessionId;
     // explain the interruption (directors get the watchdog's own nudge)
@@ -585,7 +766,8 @@ async function resumeFavorites(already) {
   if (CONFIG.resumeFavorites === false) return;
   for (let i = 0; i < 120 && !index.ready; i++) await sleep(1000); // need each session's folder
   const live = new Set(liveSessions().map((s) => s.sessionId));
-  const ids = loadFavs().filter((k) => k.startsWith('sid:')).map((k) => k.slice(4)).filter((id) => !already.has(id) && !live.has(id));
+  const hidden = projects.hidden();
+  const ids = loadFavs().filter((k) => k.startsWith('sid:')).map((k) => k.slice(4)).filter((id) => !hidden.has(id) && !already.has(id) && !live.has(id));
   if (!ids.length) return;
   let pick = { id: 'default', label: '이 PC 로그인' };
   try {
@@ -629,6 +811,59 @@ const consoleSubmitDelay = (text) => SUBMIT_DELAY + Math.min(6000, String(text |
 // ---------- files: original-path lookup + upload fallback ----------
 const FAV_FILE = path.join(__dirname, 'favorites.json');
 const loadFavs = () => { try { return JSON.parse(fs.readFileSync(FAV_FILE, 'utf8')); } catch { return []; } };
+function termSessionId(t) {
+  if (!t) return null;
+  if (t.meta?.projectTask) return projectRecord(t) || null;
+  if (isAgyTerm(t)) return agySessionOf(t) || null;
+  if (isCodexTerm(t)) return codexSessionOf(t) || null;
+  return t.meta?.sessionId || null;
+}
+function liveFavs() {
+  const hidden = projects.hidden();
+  const termMap = new Map([...terms.values()].map((t) => [String(t.id), t]));
+  const projIds = new Set(projects.list().map((p) => p.id));
+  const raw = loadFavs().filter((k) => {
+    if (typeof k !== 'string') return false;
+    if (k.startsWith('sid:')) return !hidden.has(k.slice(4));
+    if (k.startsWith('term:')) return termMap.has(k.slice(5));
+    if (k.startsWith('proj:')) return projIds.has(k.slice(5));
+    return false;
+  });
+  // Deduplicate entries that resolve to the same sessionId (e.g. duplicate recovered AGY terminals,
+  // or an exited terminal + its sid: favorite), preferring a live non-exited terminal.
+  const bestTermForSid = new Map();
+  for (const k of raw) {
+    if (!k.startsWith('term:')) continue;
+    const t = termMap.get(k.slice(5));
+    const sid = termSessionId(t);
+    if (!sid) continue;
+    const cur = bestTermForSid.get(sid);
+    if (!cur || (cur.exited !== null && t.exited === null)) bestTermForSid.set(sid, t);
+  }
+  const seenSid = new Set();
+  const out = [];
+  for (const k of raw) {
+    if (k.startsWith('term:')) {
+      const t = termMap.get(k.slice(5));
+      const sid = termSessionId(t);
+      if (sid) {
+        const best = bestTermForSid.get(sid);
+        if (best && String(best.id) !== String(t.id)) continue;
+        if (seenSid.has(sid)) continue;
+        seenSid.add(sid);
+      }
+      out.push(k);
+    } else if (k.startsWith('sid:')) {
+      const sid = k.slice(4);
+      if (bestTermForSid.has(sid) || seenSid.has(sid)) continue;
+      seenSid.add(sid);
+      out.push(k);
+    } else {
+      out.push(k);
+    }
+  }
+  return out;
+}
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const safeName = (n) => (String(n || 'file').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(-120) || 'file');
 function locateFile({ name, size, mtime, cwd }) {
@@ -787,6 +1022,9 @@ async function switchTermAccount({ termId, account = 'auto', skip = true }) {
 // "다른 계정" restarts a codex terminal's conversation (codex resume) on another login of your own.
 // It only happens when you press the button (or run `ccd switch`); nothing rotates accounts by itself.
 const CA = require('./codex-accounts');
+const projectAccounts = require('./project-accounts')({
+  claude: tokenAccounts, codex: () => CA.accounts(USAGE_DIR), agy: geminiAccounts, codexEnv: CA.envFor,
+});
 // an npm install of the Codex CLI is a .cmd shim → it runs through cmd.exe /c
 const isCodexTerm = (t) => /codex(\.exe)?$/i.test(t?.meta?.cmd || '') || (/cmd(\.exe)?$/i.test(t?.meta?.cmd || '') && /codex(\.cmd)?$/i.test(t?.meta?.args?.[1] || ''));
 const codexExe = () => CA.codexExe(CONFIG.codex);
@@ -827,16 +1065,18 @@ async function allSwitchCandidates({ sessionId = '', termId = '' }) {
     codexCandidates(curCodexId),
     aiUsage(false),
   ]);
-  const agyG0 = agyQuotaCache?.groups?.[0];
+  const agyQ = agyQuota.get();
+  const agyG0 = agyQ?.groups?.[0];
   const agyFiveH = agyG0?.fiveH ?? null;
   const agyWeekly = agyG0?.weekly ?? null;
-  const agyScore = (agyFiveH != null || agyWeekly != null) ? Math.min(100 - (agyFiveH ?? 0), 100 - (agyWeekly ?? 0)) : 80;
+  const agyStale = !agyQ?.fetchedAt || (Date.now() - Date.parse(agyQ.fetchedAt)) > 6 * 3600e3;
+  const agyScore = (!agyStale && (agyFiveH != null || agyWeekly != null)) ? Math.min(100 - (agyFiveH ?? 0), 100 - (agyWeekly ?? 0)) : 80;
   const agyCands = [
     {
       id: 'agy-cli', agent: 'agy', provider: 'Antigravity (Gemini)',
-      label: agyQuotaCache?.account ? `Antigravity (${agyQuotaCache.account})` : 'Antigravity IDE / CLI',
+      label: agyQ?.account ? `Antigravity (${agyQ.account})` : 'Antigravity IDE / CLI',
       fiveH: agyFiveH, weekly: agyWeekly, score: agyScore,
-      current: curAgyId === 'agy-cli', sameAccount: false, usable: agyScore > 0,
+      current: curAgyId === 'agy-cli', sameAccount: false, usable: agyStale || agyScore > 0,
     },
     ...geminiAccounts().map((g) => {
       const gu = (u.accounts || []).find((a) => a.id === g.id);
@@ -878,6 +1118,10 @@ async function allSwitchCandidates({ sessionId = '', termId = '' }) {
 // the conversation a terminal is in, from the search index: explicit resume/conversation id in args/meta,
 // else the newest session of that agent for its folder written since the terminal started
 function termDocOf(t) {
+  if (isAgyTerm(t)) {
+    const sid = agySessionOf(t);
+    if (sid) return index.get(sid);
+  }
   if (t.meta?.sessionId && index.get(t.meta.sessionId)) return index.get(t.meta.sessionId);
   const argStr = (t.meta?.args || []).join(' ');
   const fromArgs = argStr.match(/(?:--resume|resume|--conversation)\s+([0-9a-f-]{8,64})/i);
@@ -892,6 +1136,14 @@ function termDocOf(t) {
   }
   return best;
 }
+function agySessionOf(t) {
+  const args = t.meta.args || [];
+  const log = args.indexOf('--log-file');
+  const resume = args.indexOf('--conversation');
+  const logged = log >= 0 ? readAgySession(args[log + 1]) : t.pid
+    ? readAgySession(path.join(os.homedir(), '.gemini', 'antigravity-cli', 'cli.log'), t.pid) : null;
+  return logged || (resume >= 0 ? args[resume + 1] : null);
+}
 function codexDocOf(t) { return termDocOf(t); }
 // codex draws "esc to interrupt" under its spinner while a turn runs
 const CODEX_BUSY = /esc to interrupt|esc to cancel/i;
@@ -899,6 +1151,11 @@ function codexStatus(t) {
   if (t.exited !== null) return 'exited';
   let screen = ''; try { screen = readTerm(t, 12).join('\n'); } catch { return null; }
   return CODEX_BUSY.test(screen) ? 'busy' : 'idle';
+}
+function agyStatus(t) {
+  if (t.exited !== null) return 'exited';
+  let screen = ''; try { screen = readTerm(t, 16).join('\n'); } catch { return 'idle'; }
+  return agyStatusFromScreen(screen, { exited: t.exited, lastOutputAt: t.lastOutputAt, spawnedAt: t.meta?.spawnedAt });
 }
 // the conversation a codex terminal is in: newest rollout in the shared sessions folder for its cwd, written since it started
 function codexSessionOf(t) {
@@ -939,7 +1196,7 @@ async function switchCodexTerm({ termId, account = 'auto', prompt }) {
     if (!(await waitFor(() => t0.exited !== null, 6000))) try { t0.proc.kill(); } catch {}
   }
   forgetTerm(t0);
-  const { cmd: ccmd, args } = codexLaunch(['resume', ...(sid ? [sid] : ['--last']), ...(prompt ? [prompt] : [])]);
+  const { cmd: ccmd, args } = codexLaunch(['--dangerously-bypass-approvals-and-sandbox', 'resume', ...(sid ? [sid] : ['--last']), ...(prompt ? [prompt] : [])]);
   const short = pick.label.replace(/@.*/, '');
   const t = createTerm({ cwd: t0.cwd, cmd: ccmd, args, env: CA.envFor(acc), title: `${String(t0.title || 'codex (GPT)').replace(/ [⇄·] .*$/, '')} ⇄ ${short}`, account: { id: pick.id, label: pick.label, kind: 'codex' } });
   const favs = loadFavs();
@@ -997,11 +1254,11 @@ function launchExternalWindow({ cwd, title, cmd, args = [], env = {}, openMode =
   return { ok: true, external: true, openMode: 'external' };
 }
 
-async function switchAccount({ sessionId, termId, account = 'auto', cont = true, skip = true, interrupt = false, force = false, openMode = 'dashboard' }) {
+async function switchAccount({ sessionId, termId, account = 'auto', cont = false, skip = true, interrupt = false, force = false, openMode = 'dashboard' }) {
   const t0 = termId != null ? [...terms.values()].find((x) => String(x.id) === String(termId)) : null;
-  let sid = sessionId || (t0 && (t0.sessionId || (isCodexTerm(t0) ? codexSessionOf(t0) : null))) || '';
-  const d = sid ? index.get(sid) : (t0 && isCodexTerm(t0) ? codexDocOf(t0) : null);
-  if (d) { sid = sid || d.id; await index.updateFile(d.file); }
+  let sid = sessionId || (t0 && (t0.sessionId || (isCodexTerm(t0) ? codexSessionOf(t0) : isAgyTerm(t0) ? agySessionOf(t0) : null))) || '';
+  const d = sid ? index.get(sid) : (t0 ? termDocOf(t0) : null);
+  if (d) { sid = sid || d.id; if (d.file) await index.updateFile(d.file); }
 
   const cons = (await helperCall({ op: 'list' })).consoles || [];
   const loc = sid ? locateSession(sid, cons) : { live: false };
@@ -1014,9 +1271,32 @@ async function switchAccount({ sessionId, termId, account = 'auto', cont = true,
   const samePlatform = sourceAgent === targetAgent;
   const cwd = d?.cwd || t0?.cwd || loc.s?.cwd || os.homedir();
 
+  // Capture cross-platform handoff BEFORE stopping t0 so screen fallback stays pristine
+  let handoffPrompt = null;
+  if (!samePlatform && (d?.msgs?.length || t0)) {
+    const hf = writeHandoffFile({ sessionId: sid, d, t0, sourceAgent, targetAgent, cwd });
+    handoffPrompt = cont
+      ? `이전 ${sourceAgent.toUpperCase()} 세션의 작업을 이어받았습니다. "${hf}" 파일에 정리된 직전 대화 맥락을 먼저 읽고, 마지막으로 논의하던 작업을 바로 이어서 진행해 주세요.`
+      : `이전 ${sourceAgent.toUpperCase()} 세션에서 작업을 넘겨받았습니다. "${hf}" 파일에 정리된 직전 대화 맥락을 먼저 읽고, 현재까지의 진행 상황을 간단히 파악한 뒤 다음 지시를 기다려 주세요.`;
+  }
+
+  // Preserve prior CLI tokens in the Project ledger before stopping t0!
+  const inheritedProjectTask = t0?.meta?.projectTask || null;
+  if (t0 && inheritedProjectTask) {
+    if (d?.file) await index.updateFile(d.file).catch(() => {});
+    rememberProjectTerm(t0);
+    if (sid) {
+      projects.remember([{
+        projectId: inheritedProjectTask.projectId, taskId: inheritedProjectTask.taskId,
+        sessionId: sid, agent: sourceAgent, accountId: t0.account?.id, tokens: index.get(sid)?.tokens,
+      }]);
+    }
+  }
+
   // 1) Stop running instance if live (so two processes never write the same transcript, or replace the dashboard terminal cleanly)
   if (t0 && t0.exited === null && openMode === 'dashboard') {
     if (isCodexTerm(t0)) { t0.proc.write('\x03'); await sleep(400); t0.proc.write('\x03'); }
+    else if (isAgyTerm(t0)) { t0.proc.write('\x03'); await sleep(300); t0.proc.write('/exit'); await sleep(SUBMIT_DELAY); t0.proc.write('\r'); }
     else { t0.proc.write('\x1b'); await sleep(400); t0.proc.write('/exit'); await sleep(SUBMIT_DELAY); t0.proc.write('\r'); }
     if (!(await waitFor(() => t0.exited !== null, 6000))) try { t0.proc.kill(); } catch {}
     forgetTerm(t0);
@@ -1046,20 +1326,18 @@ async function switchAccount({ sessionId, termId, account = 'auto', cont = true,
 
   // 2) Build env, command, and arguments for the target platform & account
   let cmd, args = [], env = {};
-  let handoffPrompt = null;
-  if (!samePlatform && (d?.msgs?.length || t0)) {
-    const hf = writeHandoffFile({ sessionId: sid, d, t0, sourceAgent, targetAgent, cwd });
-    handoffPrompt = `이전 ${sourceAgent.toUpperCase()} 세션의 작업을 이어받았습니다. "${hf}" 파일에 정리된 직전 대화 맥락을 먼저 읽고, 마지막으로 논의하던 작업을 바로 이어서 진행해 주세요.`;
-  }
 
   if (targetAgent === 'codex') {
     const acc = CA.accounts(USAGE_DIR).find((a) => a.id === pick.id);
     env = CA.envFor(acc);
-    const extra = samePlatform && sid
-      ? ['resume', sid, ...(cont ? ['계속 진행해'] : [])]
-      : samePlatform && t0
-        ? ['resume', '--last', ...(cont ? ['계속 진행해'] : [])]
-        : handoffPrompt ? [handoffPrompt] : [];
+    const extra = [
+      ...(skip ? ['--dangerously-bypass-approvals-and-sandbox'] : []),
+      ...(samePlatform && sid
+        ? ['resume', sid, ...(cont ? ['계속 진행해'] : [])]
+        : samePlatform && t0
+          ? ['resume', '--last', ...(cont ? ['계속 진행해'] : [])]
+          : handoffPrompt ? [handoffPrompt] : []),
+    ];
     ({ cmd, args } = codexLaunch(extra));
   } else if (targetAgent === 'agy') {
     cmd = agyExe();
@@ -1068,6 +1346,8 @@ async function switchAccount({ sessionId, termId, account = 'auto', cont = true,
     if (gKey) env = { GEMINI_API_KEY: gKey, GOOGLE_API_KEY: gKey };
     if (samePlatform && sid) args.push('--conversation', sid);
     if (skip) args.push('--dangerously-skip-permissions');
+    const agyPrompt = !samePlatform ? handoffPrompt : (cont && sid ? '계속 진행해' : null);
+    if (agyPrompt) args.push('--prompt-interactive', agyPrompt);
   } else {
     cmd = 'claude.exe';
     if (pick.id !== 'default') {
@@ -1096,7 +1376,13 @@ async function switchAccount({ sessionId, termId, account = 'auto', cont = true,
     try { project = require('../research-harness/lib/project').listProjects().find((p) => p.state.director_session_id === sid) || null; } catch {}
     if (project) Object.assign(env, { RESEARCH_ROLE: 'director', CLAUDE_CODE_STOP_HOOK_BLOCK_CAP: '200' });
   }
-  const t = createTerm({ cwd, cmd, args, env, title, account: { id: pick.id, label: pick.label, kind: targetAgent }, research: project ? project.dir : null });
+  const t = createTerm({
+    cwd, cmd, args, env, title,
+    account: { id: pick.id, label: pick.label, kind: targetAgent },
+    research: project ? project.dir : null,
+    projectTask: inheritedProjectTask || undefined,
+    projectPrompt: inheritedProjectTask ? (handoffPrompt ? fingerprint(handoffPrompt) : t0?.meta?.projectPrompt) : undefined,
+  });
   if (t0) {
     const favs = loadFavs();
     if (favs.includes(`term:${t0.id}`)) fs.writeFileSync(FAV_FILE, JSON.stringify(favs.map((k) => (k === `term:${t0.id}` ? `term:${t.id}` : k))));
@@ -1109,14 +1395,12 @@ async function switchAccount({ sessionId, termId, account = 'auto', cont = true,
     });
   }
 
-  // 3) Nudge the new session once its input prompt is ready
-  const promptToSend = !samePlatform && handoffPrompt && targetAgent !== 'codex'
-    ? handoffPrompt
-    : (cont && targetAgent !== 'codex' && (samePlatform && sid) ? '계속 진행해' : null);
+  // 3) Nudge Claude session once its input prompt is ready (Codex & AGY receive initial prompts via CLI args)
+  const promptToSend = targetAgent === 'claude'
+    ? (!samePlatform && handoffPrompt ? handoffPrompt : (cont && samePlatform && sid ? '계속 진행해' : null))
+    : null;
   if (promptToSend) (async () => {
-    const readyCheck = targetAgent === 'agy'
-      ? () => t.exited === null && /[>❯]|\/help|Shortcuts|Type your message/i.test(readTerm(t, 30).join('\n'))
-      : () => t.exited === null && inputReady(t);
+    const readyCheck = () => t.exited === null && inputReady(t);
     if (await waitFor(readyCheck, 45000, 700)) {
       await sleep(600);
       t.proc.write(promptToSend); await sleep(SUBMIT_DELAY); t.proc.write('\r');
@@ -1132,65 +1416,105 @@ async function switchAccount({ sessionId, termId, account = 'auto', cont = true,
   };
 }
 
-const AGY_QUOTA_FILE = path.join(__dirname, 'agy-quota.json');
-let agyQuotaCache = (() => { try { return JSON.parse(fs.readFileSync(AGY_QUOTA_FILE, 'utf8')); } catch { return null; } })();
-function saveAgyQuota(q) {
-  agyQuotaCache = q;
-  try { fs.writeFileSync(AGY_QUOTA_FILE, JSON.stringify(q, null, 2)); } catch {}
+const EFFORT_LABELS = {
+  '': 'CLI 기본값',
+  minimal: '최소 (minimal)',
+  low: '낮음 (low)',
+  medium: '보통 (medium)',
+  high: '높음 (high)',
+  xhigh: '매우 높음 (xhigh)',
+  ultra: '울트라 (ultra)',
+  max: '최대 (max)',
+};
+let agyModelsCache = { at: 0, list: null };
+function readCodexConfigDefaults() {
+  try {
+    const raw = fs.readFileSync(path.join(os.homedir(), '.codex', 'config.toml'), 'utf8');
+    const model = /^\s*model\s*=\s*"([^"]+)"/m.exec(raw)?.[1] || '';
+    const effort = /^\s*model_reasoning_effort\s*=\s*"([^"]+)"/m.exec(raw)?.[1] || '';
+    const enM = /enabled-reasoning-efforts\s*=\s*\[([^\]]+)\]/m.exec(raw);
+    const enabled = enM ? enM[1].match(/"([^"]+)"/g)?.map((s) => s.slice(1, -1)) : null;
+    return { model, effort, enabled };
+  } catch { return { model: '', effort: '', enabled: null }; }
 }
-function parseAgyQuota(raw) {
-  if (!/Models & Quota/i.test(raw)) return null;
-  const lines = raw.split(/\r?\n/).map((l) => l.trim());
-  const accMatch = raw.match(/Account:\s*([^\s\r\n]+)/i);
-  const byName = new Map();
-  const groups = [];
-  let cur = null;
-  let metric = null;
-  for (let i = 0; i < lines.length; i++) {
-    const l = lines[i];
-    if (!l) continue;
-    if (/^(?:\(\d+[–-]\d+\s+of\s+\d+\s+lines\)|↑\/↓ Scroll|└ Models & Quota|Account:|Within each group)/i.test(l)) continue;
-    if (/^[A-Z0-9][A-Z0-9 ._-]+$/.test(l) && !/^(MODELS|QUOTA)$/.test(l) && (lines[i + 1]?.startsWith('Models within') || lines.slice(i + 1, i + 5).some((x) => /(?:Weekly|Five Hour) Limit/i.test(x)))) {
-      const name = l.replace(/\s+MODELS$/i, '');
-      cur = byName.get(name);
-      if (!cur) {
-        cur = { name, models: '', fiveH: null, weekly: null, fiveHReset: null, weeklyReset: null };
-        byName.set(name, cur);
-        groups.push(cur);
-      }
-      metric = null;
-      continue;
-    }
-    if (!cur) continue;
-    if (/^Models within this group:\s*(.+)/i.test(l)) { cur.models = RegExp.$1.trim(); continue; }
-    if (/Weekly Limit/i.test(l)) { metric = 'weekly'; continue; }
-    if (/Five Hour Limit/i.test(l)) { metric = 'fiveH'; continue; }
-    if (metric) {
-      const pct = l.match(/(\d+(?:\.\d+)?)%/);
-      if (pct) {
-        const rem = Number(pct[1]);
-        cur[metric] = Math.round(Math.max(0, Math.min(100, 100 - rem)) * 10) / 10;
-        cur[`${metric}Rem`] = Math.round(rem * 10) / 10;
-      }
-      const ref = l.match(/Refreshes in\s+(.+)/i);
-      if (ref) cur[`${metric}Reset`] = ref[1].trim();
-      if (/Quota available/i.test(l) && !cur[`${metric}Reset`]) cur[`${metric}Reset`] = 'Quota available';
-    }
+function projectCliOptions() {
+  const cx = readCodexConfigDefaults();
+  const cxModels = [
+    ...(cx.model ? [{ id: cx.model, label: `${cx.model} (현재 기본)` }] : []),
+    { id: 'gpt-6.1-sol', label: 'gpt-6.1-sol' },
+    { id: 'gpt-5.4', label: 'gpt-5.4' },
+    { id: 'gpt-5.4-mini', label: 'gpt-5.4-mini' },
+    { id: 'o3', label: 'o3' },
+    { id: 'o4-mini', label: 'o4-mini' },
+  ].filter((m, i, arr) => arr.findIndex((x) => x.id === m.id) === i);
+  const cxEffortIds = ['', ...(cx.enabled?.length ? cx.enabled : ['low', 'medium', 'high', 'xhigh', 'max'])];
+
+  const claudeModels = [
+    { id: 'opus', label: 'Claude Opus (최신)' },
+    { id: 'sonnet', label: 'Claude Sonnet (최신)' },
+    { id: 'haiku', label: 'Claude Haiku (최신)' },
+    { id: 'claude-opus-4-6', label: 'claude-opus-4-6' },
+    { id: 'claude-sonnet-4-6', label: 'claude-sonnet-4-6' },
+  ];
+  const claudeEffortIds = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
+
+  const agyDefaultModels = [
+    { id: 'gemini-4-neon-high', label: 'Gemini 4 Neon (High)' },
+    { id: 'gemini-4-neon-xhigh', label: 'Gemini 4 Neon (XHigh)' },
+    { id: 'gemini-4-neon-medium', label: 'Gemini 4 Neon (Medium)' },
+    { id: 'gemini-4-argon-high', label: 'Gemini 4 Argon (High)' },
+    { id: 'gemini-4-hydrogen-high', label: 'Gemini 4 Hydrogen (High)' },
+    { id: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' },
+    { id: 'claude-opus-5-5-high', label: 'Claude Opus 5.5 (High)' },
+    { id: 'claude-sonnet-5-5-high', label: 'Claude Sonnet 5.5 (High)' },
+    { id: 'gpt-oss-120b-medium', label: 'GPT-OSS 120B (Medium)' },
+  ];
+  const agyEffortIds = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
+  const mapEff = (ids) => [...new Set(ids)].map((id) => ({ id, label: EFFORT_LABELS[id] || id }));
+
+  return {
+    codex: { models: cxModels, efforts: mapEff(cxEffortIds), defaultModel: cx.model, defaultEffort: cx.effort },
+    claude: { models: claudeModels, efforts: mapEff(claudeEffortIds), defaultModel: '', defaultEffort: '' },
+    agy: { models: agyModelsCache.list || agyDefaultModels, efforts: mapEff(agyEffortIds), defaultModel: '', defaultEffort: '' },
+    cursor: { models: [], efforts: [{ id: '', label: EFFORT_LABELS[''] }], defaultModel: '', defaultEffort: '' },
+  };
+}
+
+const PROJECTS_DIR = path.resolve(CONFIG.projectsDir || path.join(__dirname, '..', 'projects'));
+function isInsideProjectsDir(dir) {
+  if (!dir || !path.isAbsolute(dir)) return false;
+  const resolved = path.resolve(dir).toLowerCase();
+  const baseDir = PROJECTS_DIR.toLowerCase();
+  return resolved === baseDir || resolved.startsWith(baseDir + path.sep);
+}
+function ensureProjectDir(dir) {
+  if (isInsideProjectsDir(dir)) {
+    try { fs.mkdirSync(dir, { recursive: true }); } catch {}
   }
-  const valid = groups.filter((g) => g.fiveH !== null || g.weekly !== null);
-  if (!valid.length) return null;
-  return { account: accMatch ? accMatch[1] : null, groups: valid, fetchedAt: new Date().toISOString() };
 }
 
 const agyExe = () => [CONFIG.agy, path.join(os.homedir(), 'AppData', 'Local', 'agy', 'bin', 'agy.exe')].find((f) => f && fs.existsSync(f)) || 'agy.exe';
+const AGY_QUOTA_FILE = path.join(__dirname, 'agy-quota.json');
+const agyQuota = createAgyQuotaService({ file: AGY_QUOTA_FILE, agyExe, envFn: cleanEnv });
+
 const isAgyTerm = (t) => /agy(\.exe)?$/i.test(t?.meta?.cmd || '');
 const agentOf = (t) => (/claude(\.exe)?$/i.test(t.meta?.cmd || '') ? 'claude' : isCodexTerm(t) ? 'codex' : isAgyTerm(t) ? 'agy' : /cursor-agent/i.test((t.meta?.args || []).join(' ')) ? 'cursor' : null);
 const termInfo = (t) => ({ id: t.id, title: t.title, liveTitle: t.liveTitle, account: t.account, agent: agentOf(t), operator: !!t.meta?.operator, claude: /claude(\.exe)?$/i.test(t.meta?.cmd || ''), codex: isCodexTerm(t), agy: isAgyTerm(t),
-  ...(isCodexTerm(t) ? { status: codexStatus(t) } : {}), cwd: t.cwd, pid: t.pid, exited: t.exited, cols: t.cols, rows: t.rows });
+  ...(isCodexTerm(t) ? { status: codexStatus(t) } : isAgyTerm(t) ? { status: agyStatus(t) } : {}), ...(isAgyTerm(t) ? { sessionId: agySessionOf(t) } : {}),
+  projectTask: t.meta?.projectTask, cwd: t.cwd, pid: t.pid, exited: t.exited, cols: t.cols, rows: t.rows });
 
 // ---------- HTTP ----------
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const STATIC = {
+  '/ui.js': 'public/ui.js',
+  '/projects.js': 'public/projects.js',
+  '/project-forms.js': 'public/project-forms.js',
+  '/project-plan-form.js': 'public/project-plan-form.js',
+  '/project-board.js': 'public/project-board.js',
+  '/project-task-form.js': 'public/project-task-form.js',
+  '/project-flow.js': 'public/project-flow.js',
+  '/project-terminals.js': 'public/project-terminals.js',
+  '/projects.css': 'public/projects.css',
   '/xterm.js': 'node_modules/@xterm/xterm/lib/xterm.js',
   '/xterm.css': 'node_modules/@xterm/xterm/css/xterm.css',
   '/addon-fit.js': 'node_modules/@xterm/addon-fit/lib/addon-fit.js',
@@ -1242,24 +1566,170 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST') overviewStale();
 
   try {
+    if (p === '/api/projects/accounts' && req.method === 'GET') {
+      return send(res, 200, { accounts: projectAccounts.list(url.searchParams.get('agent')) });
+    }
+    if (p === '/api/projects/cli-options' && req.method === 'GET') {
+      return send(res, 200, { options: projectCliOptions() });
+    }
+    if (p === '/api/projects/subtasks' && req.method === 'POST') {
+      const b = await body(req);
+      if (projectPlanning) return send(res, 409, { error: '작업 흐름을 생성 중입니다. 잠시 기다려 주세요.' });
+      const project = projects.list().find((x) => x.id === b.projectId);
+      const task = project?.tasks.find((x) => x.id === b.taskId);
+      if (!project || !task) return send(res, 404, { error: 'Project 작업을 찾을 수 없습니다.' });
+      const effAgent = b.agent || task.agent || project.agent || 'codex';
+      if (!['agy', 'claude', 'codex'].includes(effAgent)) return send(res, 400, { error: '서브 작업 자동 분해는 AGY, Claude Code 또는 Codex에서 지원됩니다.' });
+      const effAccount = b.account ?? task.account ?? (effAgent === (project.agent || 'codex') ? project.account : '');
+      const effModel = b.model ?? (task.model || (effAgent === (project.agent || 'codex') ? project.model : ''));
+      const effEffort = b.effort ?? (task.effort || (effAgent === (project.agent || 'codex') ? project.effort : ''));
+      let auth;
+      try { auth = projectAccounts.resolve(effAgent, effAccount); }
+      catch (e) { return send(res, 400, { error: e.message }); }
+      projectPlanning = true;
+      projectPlanState = { active: true, agent: effAgent, name: task.title, startedAt: Date.now(), stage: '서브 작업 분해 준비 중…', pct: 8, logs: [] };
+      const onProgress = (ev) => {
+        if (!ev) return;
+        if (ev.stage) projectPlanState.stage = ev.stage;
+        if (typeof ev.pct === 'number') projectPlanState.pct = Math.max(projectPlanState.pct, Math.min(98, ev.pct));
+        if (ev.log) projectPlanState.logs = [...projectPlanState.logs, ev.log].slice(-6);
+      };
+      let dir;
+      try {
+        dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-project-sub-'));
+        const exe = effAgent === 'agy' ? agyExe() : effAgent === 'claude' ? 'claude.exe' : codexExe();
+        const { tasks, sessionId } = await generateSubtasks(exe, project, task, dir, { ...cleanEnv(), ...auth.env }, {
+          agent: effAgent, model: effModel, effort: effEffort, onProgress,
+        });
+        if (recordUuid(sessionId)) projects.remember([{ projectId: project.id, taskId: task.id, sessionId, agent: effAgent }]);
+        projectPlanState.stage = `서브 작업 ${tasks.length}개 생성 완료`;
+        projectPlanState.pct = 100;
+        return send(res, 200, { tasks });
+      } catch (e) {
+        console.error('[project-subtasks]', effAgent, e.message);
+        return send(res, 502, { error: e.message || '서브 작업을 생성하지 못했습니다.' });
+      } finally {
+        projectPlanning = false;
+        projectPlanState.active = false;
+        if (dir) try { fs.rmdirSync(dir); } catch {}
+      }
+    }
+    if (p === '/api/projects/plan/status' && req.method === 'GET') {
+      const st = projectPlanState;
+      return send(res, 200, {
+        active: !!st.active,
+        agent: st.agent || '',
+        name: st.name || '',
+        stage: st.stage || '',
+        pct: st.pct || 0,
+        elapsedMs: st.startedAt ? Date.now() - st.startedAt : 0,
+        logs: st.logs || [],
+      });
+    }
+    if (p === '/api/projects/plan' && req.method === 'POST') {
+      const b = await body(req);
+      if (projectPlanning) return send(res, 409, { error: '작업 흐름을 생성 중입니다. 잠시 기다려 주세요.' });
+      if (!['agy', 'claude', 'codex'].includes(b.agent) || typeof b.goal !== 'string' || !b.goal.trim() || b.goal.length > 6000
+        || typeof b.name !== 'string' || !b.name.trim() || b.name.length > 120 || typeof b.cwd !== 'string' || !b.cwd.trim() || b.cwd.length > 1000) {
+        return send(res, 400, { error: 'Project 이름, 작업 폴더, 목표 및 설계에 사용할 CLI를 확인하세요.' });
+      }
+      let auth;
+      try { auth = projectAccounts.resolve(b.agent, b.account); }
+      catch (e) { return send(res, 400, { error: e.message }); }
+      projectPlanning = true;
+      projectPlanState = { active: true, agent: b.agent, name: b.name.trim(), startedAt: Date.now(), stage: 'CLI 준비 중…', pct: 8, logs: [] };
+      const onProgress = (ev) => {
+        if (!ev) return;
+        if (ev.stage) projectPlanState.stage = ev.stage;
+        if (typeof ev.pct === 'number') projectPlanState.pct = Math.max(projectPlanState.pct, Math.min(98, ev.pct));
+        if (ev.log) projectPlanState.logs = [...projectPlanState.logs, ev.log].slice(-6);
+      };
+      let dir;
+      try {
+        dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-project-plan-'));
+        const exe = b.agent === 'agy' ? agyExe() : b.agent === 'claude' ? 'claude.exe' : codexExe();
+        const { tasks, sessionId } = await generatePlan(exe, b, dir, { ...cleanEnv(), ...auth.env }, { onProgress });
+        projectPlanState.stage = `작업 ${tasks.length}개 생성 완료`;
+        projectPlanState.pct = 100;
+        const now = Date.now();
+        for (const [key, record] of pendingPlanRecords) if (record.expires <= now) pendingPlanRecords.delete(key);
+        if (recordUuid(sessionId)) pendingPlanRecords.set(tasks[0].id, { sessionId, agent: b.agent, expires: now + 60 * 60_000 });
+        return send(res, 200, { tasks });
+      } catch (e) {
+        console.error('[project-plan]', b.agent, e.message);
+        return send(res, 502, { error: e.message || '작업 흐름을 생성하지 못했습니다. 선택한 CLI의 로그인 상태를 확인하고 다시 시도하세요.' });
+      } finally {
+        projectPlanning = false;
+        projectPlanState.active = false;
+        if (dir) try { fs.rmdirSync(dir); } catch {}
+      }
+    }
+    if (p === '/api/projects') {
+      if (req.method === 'GET') {
+        const list = projects.list().map((pr) => ({
+          ...pr,
+          tokens: projects.tokenSummary(pr.id, (sid) => index.get(sid)?.tokens),
+        }));
+        return send(res, 200, { projects: list, defaultCwd: PROJECTS_DIR });
+      }
+      if (req.method === 'DELETE') {
+        const b = await body(req);
+        const project = projects.list().find(p => p.id === b.id);
+        if (!project || project.revision !== b.revision) return send(res, 409, { error: 'Project가 변경되었습니다. 새로고침 후 다시 삭제하세요.' });
+        if (deletingProjects.has(project.id)) return send(res, 409, { error: 'Project 기록을 삭제 중입니다.' });
+        deletingProjects.add(project.id);
+        try {
+          return send(res, 200, { removed: await eraseProject(project, b.stopRunning) });
+        } catch (e) { return send(res, 409, { error: e.message }); }
+        finally { deletingProjects.delete(project.id); }
+      }
+      if (req.method === 'POST') {
+        try {
+          const draft = await body(req);
+          if (deletingProjects.has(draft.id)) return send(res, 409, { error: 'Project 기록을 삭제 중입니다.' });
+          const project = projects.save(draft);
+          ensureProjectDir(project.cwd);
+          for (const task of project.tasks) {
+            const record = pendingPlanRecords.get(task.id);
+            if (!record || record.expires <= Date.now()) continue;
+            projects.remember([{ projectId: project.id, sessionId: record.sessionId, agent: record.agent }]);
+            pendingPlanRecords.delete(task.id);
+          }
+          return send(res, 200, { project });
+        }
+        catch (e) { return send(res, 400, { error: e.message }); }
+      }
+      return send(res, 405, { error: 'method not allowed' });
+    }
     if (p === '/api/overview') return send(res, 200, await overviewSnapshot());
     // sidebar favorites, shared by every device that opens the dashboard: "sid:<session id>" or "term:<id>"
     if (p === '/api/favorites' && req.method === 'POST') {
       const b = await body(req);
-      const key = String(b.key || '');
-      if (!/^(sid:[\w-]{8,64}|term:\d{1,6})$/.test(key)) return send(res, 400, { error: 'bad key' });
-      const favs = loadFavs().filter((k) => k !== key);
-      if (b.on) favs.unshift(key);
+      const validKey = (k) => /^(sid:[\w-]{8,64}|term:\d{1,6}|proj:[\w-]{8,64})$/.test(String(k || ''));
+      const keys = Array.isArray(b.keys) && b.keys.length ? b.keys.map(String) : [String(b.key || '')];
+      if (!keys.every(validKey)) return send(res, 400, { error: 'bad key' });
+      const drop = new Set(keys);
+      const favs = loadFavs().filter((k) => !drop.has(k));
+      if (b.on) favs.unshift(keys[0]);
       fs.writeFileSync(FAV_FILE, JSON.stringify(favs.slice(0, 50)));
-      return send(res, 200, { favs: loadFavs() });
+      return send(res, 200, { favs: liveFavs() });
     }
     if (p === '/api/recent') {
       const n = Number(url.searchParams.get('n') || 40), auto = url.searchParams.get('auto') === '1';
       if (url.searchParams.get('fresh') === '1' || Date.now() - lastIndexAt > 5000) await refreshIndex();
-      return send(res, 200, { sessions: index.ready ? index.recent(n, auto) : recentSessions(n) });
+      const agent = url.searchParams.get('agent') || '';
+      const hidden = projects.hidden();
+      return send(res, 200, { sessions: index.ready ? index.recent(n, auto, agent, hidden) : recentSessions(n).filter(s => !hidden.has(s.sessionId) && (!agent || (s.agent || 'claude') === agent)) });
+    }
+    if (p === '/api/recent/hide' && req.method === 'POST') {
+      const { id } = await body(req);
+      if (!validSessionId(id)) return send(res, 400, { error: '대화 ID가 올바르지 않습니다.' });
+      projects.hide(id);
+      return send(res, 200, { ok: true });
     }
     if (p === '/api/transcript') {
       const id = url.searchParams.get('id'), at = Number(url.searchParams.get('at') ?? -1);
+      if (projects.hidden().has(id)) return send(res, 404, { error: '허브에서 제거한 대화 기록입니다.', hidden: true });
       const d = index.get(id);
       if (d) await index.updateFile(d.file);
       return send(res, 200, transcriptFromIndex(id, at) || transcript(id));
@@ -1268,7 +1738,7 @@ const server = http.createServer(async (req, res) => {
       const q = (url.searchParams.get('q') || '').trim();
       if (!q) return send(res, 200, { sessions: [], screens: [] });
       const t0 = Date.now();
-      const opts = { role: url.searchParams.get('role') || 'all', includeAuto: url.searchParams.get('auto') === '1', cwd: url.searchParams.get('cwd') || '', agent: url.searchParams.get('agent') || '' };
+      const opts = { role: url.searchParams.get('role') || 'all', includeAuto: url.searchParams.get('auto') === '1', cwd: url.searchParams.get('cwd') || '', agent: url.searchParams.get('agent') || '', hidden: projects.hidden() };
       const sessions = index.search(q, opts);
       const screens = url.searchParams.get('screens') === '0' ? [] : await searchScreens(q);
       return send(res, 200, { sessions, screens, ms: Date.now() - t0, ready: index.ready, progress: index.progress });
@@ -1339,16 +1809,18 @@ const server = http.createServer(async (req, res) => {
       const d = b.resume ? index.get(b.resume) : null;
       const cwd = b.cwd || d?.cwd || os.homedir();
       const kind = b.kind || d?.agent || 'claude';
+      const yolo = b.skipPermissions !== false;
       let cmd, args = [];
       if (kind === 'codex') {
-        ({ cmd, args } = codexLaunch(b.resume ? ['resume', b.resume] : []));
+        ({ cmd, args } = codexLaunch([...(yolo ? ['--dangerously-bypass-approvals-and-sandbox'] : []), ...(b.resume ? ['resume', b.resume] : [])]));
       } else if (kind === 'agy') {
         cmd = agyExe();
         if (b.resume) args.push('--conversation', b.resume);
+        if (yolo) args.push('--dangerously-skip-permissions');
       } else {
         cmd = 'claude.exe';
         if (b.resume) args.push('--resume', b.resume);
-        if (b.skipPermissions !== false) args.push('--dangerously-skip-permissions');
+        if (yolo) args.push('--dangerously-skip-permissions');
       }
       return send(res, 200, launchExternalWindow({
         cwd,
@@ -1414,22 +1886,61 @@ const server = http.createServer(async (req, res) => {
       const b = await body(req);
       return send(res, 200, await helperCall({ op: 'focus', pid: Number(b.pid) }));
     }
-    if (p === '/api/term/new' && req.method === 'POST') {
-      const b = await body(req);
+    if ((p === '/api/term/new' || p === '/api/projects/start') && req.method === 'POST') {
+      let b = await body(req);
+      let projectTask;
+      let projectPrompt;
+      let launchAccount;
+      if (p === '/api/projects/start') {
+        if (deletingProjects.has(b.projectId)) return send(res, 409, { error: 'Project 기록을 삭제 중입니다.' });
+        const project = projects.list().find(x => x.id === b.projectId);
+        const task = project?.tasks.find(x => x.id === b.taskId);
+        if (!task) return send(res, 404, { error: 'Project 작업을 찾을 수 없습니다.' });
+        if (task.stage === 'done') return send(res, 409, { error: '완료된 작업입니다. 상태를 바꾼 뒤 시작하세요.' });
+        projectTask = { projectId: project.id, taskId: task.id };
+        const parentTask = task.parentId ? project.tasks.find((x) => x.id === task.parentId) : null;
+        const kind = task.agent || parentTask?.agent || project.agent || 'codex';
+        const accountId = task.account ?? (parentTask && (!task.agent || task.agent === (parentTask.agent || project.agent)) ? parentTask.account : null) ?? (kind === (project.agent || 'codex') ? project.account : '');
+        const model = task.model || (parentTask && (!task.agent || task.agent === (parentTask.agent || project.agent)) ? parentTask.model : '') || (kind === (project.agent || 'codex') ? project.model : '') || '';
+        const effort = task.effort || (parentTask && (!task.agent || task.agent === (parentTask.agent || project.agent)) ? parentTask.effort : '') || (kind === (project.agent || 'codex') ? project.effort : '') || '';
+        const existing = [...terms.values()].find(t => t.exited === null && t.meta.projectTask?.projectId === project.id
+          && t.meta.projectTask.taskId === task.id && agentOf(t) === kind && (t.account?.id || '') === (accountId || ''));
+        if (existing) {
+          const result = await existing.spawnResult;
+          if (result?.error) return send(res, 502, { error: 'CLI를 시작하지 못했습니다. 설치 경로를 확인하세요.' });
+          return send(res, 200, { ...termInfo(existing), existing: true });
+        }
+        if (!projectAgents.includes(kind)) return send(res, 400, { error: '작업 설계에서 CLI를 다시 선택하세요.' });
+        ensureProjectDir(project.cwd);
+        if (!path.isAbsolute(project.cwd) || !fs.statSync(project.cwd, { throwIfNoEntry: false })?.isDirectory()) {
+          return send(res, 400, { error: '작업 설계에서 존재하는 작업 폴더의 전체 경로를 입력하세요.' });
+        }
+        b = { kind, cwd: project.cwd, title: parentTask ? `${parentTask.title} › ${task.title}` : task.title, skipPermissions: true, model, effort };
+        const promptParts = parentTask
+          ? [`[상위 작업: ${parentTask.title}]`, parentTask.detail ? parentTask.detail.slice(0, 600) : '', `[서브 개발 작업: ${task.title}]`, task.detail]
+          : [task.title, task.detail];
+        projectPrompt = fingerprint(promptParts.filter(Boolean).join('\n\n'));
+        try { launchAccount = projectAccounts.resolve(kind, accountId); }
+        catch (e) { return send(res, 400, { error: e.message }); }
+      }
+      const yolo = b.skipPermissions !== false;
       let cmd, args = [], title, codexStart = null;
       if (b.kind === 'claude') {
         cmd = 'claude.exe';
+        if (projectTask) args.push('--session-id', crypto.randomUUID());
         if (b.resume) args.push('--resume', b.resume);
         // a session still open elsewhere (e.g. the Claude desktop app) continues as a fork: same history, new session id
         if (b.resume && b.fork) args.push('--fork-session');
-        if (b.skipPermissions) args.push('--dangerously-skip-permissions');
-        if (b.model && /^[\w.\-\[\]]+$/.test(b.model)) args.push('--model', b.model);
+        if (yolo) args.push('--dangerously-skip-permissions');
+        args.push(...cliModelEffortArgs('claude', b.model, b.effort));
         title = b.resume ? `claude --resume ${b.resume.slice(0, 8)}` : 'claude';
       } else if (b.kind === 'codex') {
         // OpenAI Codex CLI (ChatGPT login or API key): config "codex", $CODEX_EXE, the Codex app's binary, else PATH
         const extra = [];
+        if (projectTask) extra.push('-c', `shell_environment_policy.set.HUB_PROJECT_RUN_ID="${crypto.randomUUID()}"`);
+        if (yolo) extra.push('--dangerously-bypass-approvals-and-sandbox');
+        extra.push(...cliModelEffortArgs('codex', b.model, b.effort));
         if (b.resume && /^[\w-]+$/.test(b.resume)) extra.push('resume', b.resume);
-        if (b.model && /^[\w.\-]+$/.test(b.model)) extra.push('-m', b.model);
         ({ cmd, args } = codexLaunch(extra));
         title = b.resume ? `codex resume ${b.resume.slice(0, 8)}` : 'codex';
       } else if (b.kind === 'cursor') {
@@ -1442,13 +1953,18 @@ const server = http.createServer(async (req, res) => {
         cmd = agyExe();
         if (b.resume && /^[\w-]+$/.test(b.resume)) args.push('--conversation', b.resume);
         else if (b.continue) args.push('--continue');
-        if (b.skipPermissions) args.push('--dangerously-skip-permissions');
+        if (yolo) args.push('--dangerously-skip-permissions');
+        args.push(...cliModelEffortArgs('agy', b.model, b.effort));
         title = b.resume ? `agy ${b.resume.slice(0, 8)}` : 'agy';
       } else if (b.kind === 'cmd') { cmd = 'cmd.exe'; title = 'cmd'; }
       else { cmd = 'powershell.exe'; args = ['-NoLogo']; title = 'powershell'; }
       // claude finds a session by its project folder, so a resume must start in the
       // session's own cwd (else "trust this folder?" + "no conversation found").
       let cwd = b.cwd;
+      if (b.kind === 'agy' && b.resume) {
+        const d = index.get(b.resume);
+        if (d?.agent === 'agy' && d.cwd) cwd = d.cwd;
+      }
       if (b.kind === 'codex' && b.resume) { const d = index.get(b.resume); if (d?.cwd) cwd = d.cwd; }
       if (b.kind === 'claude' && b.resume) {
         const d = index.get(b.resume);
@@ -1456,7 +1972,16 @@ const server = http.createServer(async (req, res) => {
         const live = liveSessions().find((s) => s.sessionId === b.resume);
         if (live && !b.fork) return send(res, 409, { error: `이 세션은 이미 실행 중입니다 (pid ${live.pid}). 그 창에서 이어가세요.` });
       }
-      const t = createTerm({ cwd, cmd, args, title: b.title || title, ...(codexStart || {}) });
+      const t = createTerm({ cwd, cmd, args, title: b.title || title, ...(codexStart || {}), ...launchAccount, projectTask, projectPrompt });
+      if (projectTask) {
+        const result = await t.spawnResult;
+        if (result?.error) {
+          terms.delete(t.id);
+          return send(res, 502, { error: 'CLI를 시작하지 못했습니다. 설치 경로를 확인하세요.' });
+        }
+        if (!result) return send(res, 503, { error: '터미널 호스트의 응답이 없습니다. 상태를 확인하세요.' });
+        overviewStale();
+      }
       return send(res, 200, termInfo(t));
     }
     // add a ChatGPT login for Codex: `ccd codex add` (device-code login) in a dashboard terminal
@@ -1464,64 +1989,35 @@ const server = http.createServer(async (req, res) => {
       const t = createTerm({ cwd: __dirname, cmd: process.execPath, args: ['--use-system-ca', path.join(__dirname, 'ccd.js'), 'codex', 'add'], title: 'Codex 계정 추가' });
       return send(res, 200, termInfo(t));
     }
-    // 1-click Antigravity CLI (/usage) viewer: reuse a running agy terminal or launch one, submit /usage, and parse quota
+    // Antigravity quota: fast non-disruptive headless `agy --print /usage --output-format json` with single-flight cache.
+    // GET /api/agy/quota returns cache immediately (0ms) and refreshes in background if stale; ?force=1 awaits a fresh read.
     if (p === '/api/agy/quota') {
       for (const t of terms.values()) {
-        if (isAgyTerm(t)) {
-          const raw = readTerm(t, 120).join('\n');
-          const m = raw.match(/\((\d+)[–-](\d+)\s+of\s+(\d+)\s+lines\)/i);
-          if (!m || (Number(m[1]) === 1 && Number(m[2]) >= Number(m[3]))) {
-            const parsed = parseAgyQuota(raw);
-            if (parsed) saveAgyQuota(parsed);
-          }
+        if (!isAgyTerm(t)) continue;
+        const raw = readTerm(t, 80).join('\n');
+        const accM = raw.match(/Account:\s*([^\s\r\n]+)/i);
+        if (accM) agyQuota.noteAccount(accM[1]);
+        if (!agyQuota.get()) {
+          const parsed = parseAgyQuotaTui(raw);
+          if (parsed) agyQuota.save(parsed);
         }
       }
-      return send(res, 200, { ok: true, quota: agyQuotaCache });
+      if (url.searchParams.has('force')) {
+        return send(res, 200, await agyQuota.refresh({ force: true }));
+      }
+      return send(res, 200, agyQuota.getFast());
     }
     if (p === '/api/agy/usage' && req.method === 'POST') {
-      const b = await body(req);
-      let t = [...terms.values()].find((x) => isAgyTerm(x) && x.exited === null);
-      const created = !t;
-      if (!t) t = createTerm({ cwd: b.cwd || os.homedir(), cmd: agyExe(), args: [], title: 'agy' });
-      if (created) {
-        await waitFor(() => t.exited === null && /[>❯]|\/help|Shortcuts|Type your message/i.test(readTerm(t, 30).join('\n')), 15000, 300);
-        await sleep(800);
-      } else if (/Models & Quota/i.test(readTerm(t, 40).join('\n'))) {
-        t.proc.write('\x1b');
-        await sleep(350);
-      }
-      if (t.exited === null) {
-        t.proc.write('/usage');
-        await sleep(SUBMIT_DELAY);
-        t.proc.write('\r');
-        const pages = [];
-        const ready = await waitFor(() => {
-          const s = readTerm(t, 120).join('\n');
-          if (/Models & Quota/i.test(s) && /Limit/i.test(s)) { pages.push(s); return true; }
-          return false;
-        }, 7000, 300);
-        if (ready) {
-          for (let pg = 0; pg < 3; pg++) {
-            const m = pages[pages.length - 1].match(/\((\d+)[–-](\d+)\s+of\s+(\d+)\s+lines\)/i);
-            if (!m || Number(m[2]) >= Number(m[3])) break;
-            t.proc.write('\x1b[6~'); // Page Down
-            await sleep(350);
-            const next = readTerm(t, 120).join('\n');
-            if (next && next !== pages[pages.length - 1]) pages.push(next);
-          }
-          const parsed = parseAgyQuota(pages.join('\n'));
-          if (parsed) saveAgyQuota(parsed);
-          // Close the modal so the terminal returns cleanly to the prompt and won't leave a partial page visible
-          t.proc.write('\x1b');
-          await sleep(200);
-        }
-      }
-      return send(res, 200, { ok: true, term: termInfo(t), created, quota: agyQuotaCache });
+      const r = await agyQuota.refresh({ force: true });
+      return send(res, 200, r);
     }
     if (p === '/api/term/close' && req.method === 'POST') {
       const b = await body(req);
       const t = terms.get(String(b.id));
-      if (t) forgetTerm(t);
+      if (t) {
+        rememberProjectTerm(t);
+        forgetTerm(t);
+      }
       return send(res, 200, { ok: true });
     }
     if (p.startsWith('/api/artifact')) {
@@ -1621,7 +2117,11 @@ function makeCalendar() {
   return require('./calendar')({ config, port: PORT });
 }
 let calendarMod = makeCalendar();
-if (watchdogOn) calendarMod.start();
+if (watchdogOn) {
+  calendarMod.start();
+  setTimeout(() => { if (agyQuota.ageMs() >= 180_000) agyQuota.refresh({ force: true }).catch(() => {}); }, 3000).unref();
+  setInterval(() => { if (agyQuota.ageMs() >= 4 * 60_000) agyQuota.refresh({ force: true }).catch(() => {}); }, 5 * 60_000).unref();
+}
 
 function reloadModules(which) {
   const done = [];

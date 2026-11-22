@@ -26,4 +26,5 @@ ai-usage/memos.json
 ai-usage/org-emails.json
 ai-usage/*.log
 research/
+projects/
 dist/

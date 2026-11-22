@@ -16,7 +16,7 @@ const BUF_MAX = 1_000_000;
 const terms = new Map(); // id -> { id, proc, buf, exited, cols, rows, meta }
 const subscribers = new Set();
 const emit = (ev) => { const s = JSON.stringify(ev); for (const ws of subscribers) try { ws.send(s); } catch {} };
-const info = (t) => ({ id: t.id, exited: t.exited, cols: t.cols, rows: t.rows, meta: t.meta, startedAt: t.startedAt });
+const info = (t) => ({ id: t.id, pid: t.proc.pid, exited: t.exited, cols: t.cols, rows: t.rows, meta: t.meta, startedAt: t.startedAt });
 
 function spawnTerm({ id, cmd, args = [], cwd, env, cols = 120, rows = 32, meta = {} }) {
   if (terms.has(id)) throw new Error(`terminal ${id} exists`);
