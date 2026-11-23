@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const { spawn } = require('child_process');
 
 const { resolveTaskConfig } = require('./project-harness');
+const { runProjectAutopilot } = require('./project-autopilot');
 
 const projectAgents = ['codex', 'claude', 'agy', 'cursor'];
 
@@ -281,6 +282,22 @@ function createProjectRoutes(hub) {
       return true;
     }
 
+    if (p === '/api/projects/autopilot/complete' && req.method === 'POST') {
+      const b = await body(req);
+      const project = projects.list().find((x) => x.id === b.projectId);
+      const task = project?.tasks.find((x) => x.id === b.taskId);
+      if (!project || !task) { send(res, 404, { error: 'Project 작업을 찾을 수 없습니다.' }); return true; }
+      if (!project.autopilot) { send(res, 200, { ok: true, skipped: true, started: [] }); return true; }
+      let updated = project;
+      if (task.stage !== 'done') {
+        const nextTasks = project.tasks.map((t) => (t.id === task.id ? { ...t, stage: 'done' } : t));
+        updated = projects.save({ ...project, tasks: nextTasks });
+      }
+      const autoRes = await runProjectAutopilot(hub, updated.id, { autoDispatch: true });
+      send(res, 200, { ok: true, project: hub.projects.list().find((x) => x.id === updated.id) || updated, started: autoRes.started });
+      return true;
+    }
+
     if (p === '/api/projects/harness') {
       if (req.method === 'GET') {
         send(res, 200, { ok: true, harness: hub.projectHarness.get() });
@@ -547,7 +564,13 @@ function createProjectRoutes(hub) {
             projects.remember([{ projectId: project.id, sessionId: record.sessionId, agent: record.agent }]);
             pendingPlanRecords.delete(task.id);
           }
-          send(res, 200, { project });
+          let autoStarted = [];
+          if (project.autopilot) {
+            const autoRes = await runProjectAutopilot(hub, project.id, { autoDispatch: true });
+            autoStarted = autoRes.started || [];
+          }
+          const latest = projects.list().find((x) => x.id === project.id) || project;
+          send(res, 200, { project: latest, autoStarted });
         } catch (e) { send(res, 400, { error: e.message }); }
         return true;
       }

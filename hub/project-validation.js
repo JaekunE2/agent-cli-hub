@@ -67,6 +67,7 @@ function validate(p) {
     name: p.name.trim(),
     cwd: p.cwd.trim(),
     goal: p.goal,
+    autopilot: !!p.autopilot,
     agent: p.agent || 'codex',
     account: p.account || '',
     model: String(p.model || '').trim(),

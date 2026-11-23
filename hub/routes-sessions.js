@@ -285,7 +285,7 @@ function createSessionRoutes(hub) {
       if (!hub.projectAgents.includes(kind)) return send(res, 400, { error: '작업 설계에서 CLI를 다시 선택하세요.' });
       hub.ensureProjectDir(project.cwd);
       if (!path.isAbsolute(project.cwd) || !fs.statSync(project.cwd, { throwIfNoEntry: false })?.isDirectory()) return send(res, 400, { error: '작업 설계에서 존재하는 작업 폴더의 전체 경로를 입력하세요.' });
-      b = { kind, cwd: project.cwd, title: parentTask ? `${parentTask.title} › ${task.title}` : task.title, skipPermissions: true, model, effort };
+      b = { kind, cwd: project.cwd, title: parentTask ? `${parentTask.title} › ${task.title}` : task.title, skipPermissions: true, model, effort, _autoDispatch: !!b._autoDispatch, _rawPrompt: b._rawPrompt || '' };
       const parts = parentTask ? [`[상위 작업: ${parentTask.title}]`, parentTask.detail ? parentTask.detail.slice(0, 600) : '', `[서브 개발 작업: ${task.title}]`, task.detail] : [task.title, task.detail];
       const harnessBlock = buildTaskHarnessPrompt(project, task, kind, harnessState);
       if (harnessBlock) parts.push(harnessBlock);
@@ -356,9 +356,54 @@ function createSessionRoutes(hub) {
       if (result?.error) { hub.terms.delete(t.id); return send(res, 502, { error: 'CLI를 시작하지 못했습니다. 설치 경로를 확인하세요.' }); }
       if (!result) return send(res, 503, { error: '터미널 호스트의 응답이 없습니다. 상태를 확인하세요.' });
       overviewStale();
+      if (b._autoDispatch && b._rawPrompt) {
+        const rawPrompt = b._rawPrompt;
+        (async () => {
+          const ready = await hub.waitFor(() => t.exited !== null || hub.inputReady(t), 35000, 500);
+          if (!ready || t.exited !== null) return;
+          const scr = hub.readTerm(t, 40).join('\n');
+          if (/trust this folder|Do you trust/i.test(scr)) return;
+          const ok = await dispatchImmediatePrompt(t, rawPrompt, {
+            agent: hub.agentOf(t),
+            ptyWrite: (id, data) => hub.ptyPost(id, '/write', { id, data }),
+            readTerm: hub.readTerm,
+            wait: (ms) => new Promise((r) => setTimeout(r, ms)),
+          });
+          if (!ok && t.exited === null) {
+            await hub.ptyPost(t.id, '/write', { id: t.id, data: rawPrompt }).catch(() => {});
+            setTimeout(() => { if (t.exited === null) hub.ptyPost(t.id, '/write', { id: t.id, data: '\r' }).catch(() => {}); }, 250);
+          }
+        })().catch(() => {});
+      }
     }
     return send(res, 200, hub.termInfo(t));
   }
+
+  hub.startProjectTaskById = async (projectId, taskId, { autoDispatch = true } = {}) => {
+    let status = 200;
+    let payload = null;
+    const project = projects.list().find((x) => x.id === projectId);
+    const task = project?.tasks.find((x) => x.id === taskId);
+    const harnessState = hub.projectHarness?.get ? hub.projectHarness.get() : null;
+    const resolved = project && task ? resolveTaskConfig(project, task, harnessState) : null;
+    const parentTask = resolved?.parent;
+    const rawParts = task
+      ? (parentTask ? [`[상위 작업: ${parentTask.title}]`, parentTask.detail ? parentTask.detail.slice(0, 600) : '', `[서브 개발 작업: ${task.title}]`, task.detail] : [task.title, task.detail])
+      : [];
+    const harnessBlock = project && task && resolved ? buildTaskHarnessPrompt(project, task, resolved.agent, harnessState) : '';
+    if (harnessBlock) rawParts.push(harnessBlock);
+    const rawPrompt = rawParts.filter(Boolean).join('\n\n');
+
+    await handleStartOrNewTerm(
+      '/api/projects/start',
+      { _autoDispatch: autoDispatch, _rawPrompt: rawPrompt },
+      null,
+      async () => ({ projectId, taskId, _autoDispatch: autoDispatch, _rawPrompt: rawPrompt }),
+      (_res, code, data) => { status = code; payload = data; }
+    );
+    if (status >= 400) return { error: payload?.error || `HTTP ${status}` };
+    return payload;
+  };
 
   async function handleForkOrEdit(p, req, res, body, send) {
     const b = await body(req);

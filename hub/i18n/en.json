@@ -2555,5 +2555,12 @@
   "선택한 작업(하위 서브태스크 포함)을 삭제할까요?": "Delete the selected task (including subtasks)?",
   "선택한 작업": "Selected tasks",
   "개(하위 서브태스크 포함)를 모두 삭제할까요?": " (including subtasks) — delete all?",
-  "선택 삭제 (": "Delete Selected ("
+  "선택 삭제 (": "Delete Selected (",
+  "자동 진행: 후속 작업": "Auto-advance: follow-up tasks",
+  "개 터미널을 시작했습니다.": " terminals started.",
+  "켜면 선행 작업 완료 시 다음 대기 작업의 터미널이 자동으로 시작됩니다": "When enabled, ready downstream tasks automatically launch when prerequisites complete",
+  "자동 진행 ON": "Autopilot ON",
+  "자동 진행 OFF": "Autopilot OFF",
+  "완료 → 다음 작업": "completed → next tasks",
+  "개 자동 시작!": " auto-started!"
 }

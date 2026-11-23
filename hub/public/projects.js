@@ -28,6 +28,10 @@ async function saveProject(p, tab) {
   const gen = viewGen;
   const r = await api('/api/projects', { method: 'POST', body: p });
   if (r.error) throw new Error(r.error);
+  if (Array.isArray(r.autoStarted) && r.autoStarted.length) {
+    toast(`자동 진행: 후속 작업 ${r.autoStarted.length}개 터미널을 시작했습니다.`);
+    if (typeof refreshOverview === 'function') refreshOverview();
+  }
   if (typeof refreshProjects === 'function') await refreshProjects();
   if (gen === viewGen) openProject(r.project.id, tab || (p.id ? projectTab : 'design'));
 }
@@ -561,6 +565,7 @@ async function viewProjects() {
             </div>
             <span class="pj-prog-lbl"><b>${pct}%</b> (${cnt.done}/${total})</span>
           </div>
+          <button id="projectAutopilot" class="btn-sm${p.autopilot ? ' primary' : ''}" title="켜면 선행 작업 완료 시 다음 대기 작업의 터미널이 자동으로 시작됩니다">${p.autopilot ? '자동 진행 ON' : '자동 진행 OFF'}</button>
           <button id="projectHarness" class="btn-sm" title="Role 프리셋 · 에이전트별 하네스 설정">Role 하네스</button>
           <button id="projectAdd" class="primary">${ico.plus || ''} 작업</button>
           <button id="projectMore" class="ghost icon-btn" aria-label="Project 메뉴" aria-haspopup="menu" aria-expanded="false" title="새 Project · 설계 수정 · 삭제">${ico.more || '⋯'}</button>
@@ -574,6 +579,7 @@ async function viewProjects() {
     $('#projectPick').onchange = e => openProject(e.target.value);
     $('#projectTokens').onclick = () => openProjectTokensDrawer(p);
     document.querySelectorAll('[data-pjtab]').forEach(b => (b.onclick = () => openProject(p.id, b.dataset.pjtab)));
+    $('#projectAutopilot').onclick = () => saveProject({ ...p, autopilot: !p.autopilot }).catch((er) => toast(er.message, 5000, 'danger'));
     $('#projectHarness').onclick = () => openProjectHarnessDrawer();
     $('#projectAdd').onclick = () => taskForm(p);
     $('#projectMore').onclick = (e) => {

@@ -261,6 +261,18 @@ function fireTermDoneNotice(t, nextState) {
   }
 
   const msg = nextState === 'exited' ? `터미널 종료됨: ${label}` : `✓ 작업 완료: ${label}`;
+  if (pj && task && task.stage === 'doing' && pj.autopilot && nextState === 'idle') {
+    api('/api/projects/autopilot/complete', { method: 'POST', body: { projectId: pj.id, taskId: task.id } })
+      .then((res) => {
+        if (res?.started?.length) {
+          toast(`✓ ${task.title} 완료 → 다음 작업 ${res.started.length}개 자동 시작!`);
+        }
+        refreshOverview?.();
+        refreshProjects?.();
+        if (state.sel.kind === 'projects' && (state.sel.id === pj.id || projectId === pj.id)) openProject(pj.id);
+      })
+      .catch(() => {});
+  }
   const action = (pj && task && task.stage === 'doing')
     ? {
       label: '검토로 이동',
