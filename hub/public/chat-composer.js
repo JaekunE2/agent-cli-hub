@@ -469,6 +469,9 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
         if (prefKey) chatLaunchPrefs.set(prefKey, cfg);
       }
       await refreshOverview();
+      if (res.term && !state.terms.some((x) => String(x.id) === String(res.term.id))) {
+        state.terms = [res.term, ...state.terms];
+      }
       if (pendingText && res.term?.id) {
         setTimeout(() => {
           api('/api/term/send', { method: 'POST', body: { id: res.term.id, text: pendingText, submit: true } }).catch(() => {});

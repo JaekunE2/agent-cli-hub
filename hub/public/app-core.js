@@ -429,8 +429,9 @@ function consoleStateOf(c) {
   return s?.status === 'busy' ? 'busy' : 'idle';
 }
 function termStatusLabel(t) {
+  if (!t) return '종료됨';
   const st = termStateOf(t);
-  return st === 'exited' ? `종료됨 (${t.exited})` : st === 'idle' ? '대기' : '실행 중';
+  return st === 'exited' ? `종료됨 (${t.exited ?? '?'})` : st === 'idle' ? '대기' : '실행 중';
 }
 const STATE_RANK = { busy: 0, idle: 1, exited: 2 };
 const SIDE_LIVE_RANK = { busy: 0, idle: 0, exited: 2 };

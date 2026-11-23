@@ -448,6 +448,7 @@ function createAccountSwitchService(hub) {
       projectTask: inheritedProjectTask || undefined,
       projectPrompt: inheritedProjectTask ? (handoffPrompt ? fingerprint(handoffPrompt) : t0?.meta?.projectPrompt) : undefined,
     });
+    hub.overviewStale?.();
     if (t0) {
       const favs = hub.loadFavs();
       if (favs.includes(`term:${t0.id}`)) fs.writeFileSync(hub.FAV_FILE, JSON.stringify(favs.map((k) => (k === `term:${t0.id}` ? `term:${t.id}` : k))));

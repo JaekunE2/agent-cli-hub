@@ -483,13 +483,13 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
 function viewTerm() {
   const gen = viewGen;
   clearTimeout(chatPollTimer);
-  const t = state.terms.find((x) => x.id === state.sel.id);
+  const t = state.terms.find((x) => String(x.id) === String(state.sel.id));
   const sid = resolveTermSessionId(t);
   const artSid = sid || (t ? `term:${t.id}` : '');
   const ag = t?.agent || (t?.codex ? 'codex' : t?.agy ? 'agy' : t?.claude ? 'claude' : null);
 
   const pj = projectOfTerm(t);
-  const stNow = termStateOf(t);
+  const stNow = t ? termStateOf(t) : 'exited';
   const justDoneNow = stNow === 'idle' && state.justDoneTerms.has(String(t?.id));
   const pillCls = stNow === 'busy' ? 'busy' : justDoneNow ? 'done' : stNow === 'exited' ? 'exited' : 'idle';
   const pillText = stNow === 'busy'
@@ -497,7 +497,7 @@ function viewTerm() {
     : justDoneNow
       ? `${ICO.check} 작업 완료`
       : stNow === 'exited'
-        ? `<span class="dot dead" style="width:6px;height:6px"></span>종료됨 (${t.exited})`
+        ? `<span class="dot dead" style="width:6px;height:6px"></span>${t ? `종료됨 (${t.exited ?? '?'})` : '연결 확인 중…'}`
         : '대기';
   const isContentTab = state.tab === 'files' || state.tab === 'floorplan';
   let initialPanels = window.ACH_DOCK ? window.ACH_DOCK.getDockOpen('term', isContentTab ? null : state.tab) : ['term', 'chat'];
