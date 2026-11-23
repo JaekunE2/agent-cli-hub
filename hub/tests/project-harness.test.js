@@ -45,7 +45,7 @@ test('createProjectHarnessStore initializes universal-agent-harness presets and 
 
     const reset = store.reset();
     assert.equal(reset.roles.dev.agent, 'codex');
-    assert.equal(reset.roles.dev.model, 'gpt-5.4');
+    assert.equal(reset.roles.dev.model, 'gpt-6.2-sol');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

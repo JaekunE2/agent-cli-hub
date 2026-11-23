@@ -488,18 +488,80 @@ function createAccountSwitchService(hub) {
     } catch { return { model: '', effort: '', enabled: null }; }
   }
 
+  function readCodexModelsCache() {
+    try {
+      const fp = path.join(os.homedir(), '.codex', 'models_cache.json');
+      const raw = JSON.parse(fs.readFileSync(fp, 'utf8'));
+      const list = Array.isArray(raw?.models) ? raw.models : [];
+      const visible = list.filter((m) => m && m.slug && m.visibility === 'list');
+      const models = visible.map((m) => ({
+        id: m.slug,
+        label: m.display_name && m.display_name !== m.slug ? `${m.display_name} (${m.slug})` : m.slug,
+      }));
+      const effortSet = new Set();
+      for (const m of visible) {
+        for (const lv of (m.supported_reasoning_levels || [])) {
+          if (lv?.effort) effortSet.add(lv.effort);
+        }
+      }
+      return { models, efforts: [...effortSet] };
+    } catch { return { models: [], efforts: [] }; }
+  }
+
+  function readClaudeRecentModels() {
+    const found = new Set();
+    try {
+      const pDir = path.join(os.homedir(), '.claude', 'projects');
+      if (!fs.existsSync(pDir)) return [];
+      const dirs = fs.readdirSync(pDir, { withFileTypes: true }).filter((d) => d.isDirectory()).slice(0, 16);
+      for (const d of dirs) {
+        const sub = path.join(pDir, d.name);
+        const files = fs.readdirSync(sub, { withFileTypes: true })
+          .filter((f) => f.isFile() && f.name.endsWith('.jsonl'))
+          .slice(0, 4);
+        for (const f of files) {
+          const head = fs.readFileSync(path.join(sub, f.name), 'utf8').slice(0, 16000);
+          for (const m of head.matchAll(/"model"\s*:\s*"(claude-[a-z0-9.-]+)"/g)) {
+            if (!m[1].includes('<')) found.add(m[1]);
+          }
+        }
+      }
+    } catch {}
+    return [...found];
+  }
+
   function projectCliOptions() {
     const cx = readCodexConfigDefaults();
+    const cxCache = readCodexModelsCache();
+    const cxFallback = [
+      { id: 'gpt-6.2-sol', label: 'GPT-6.2-Sol (gpt-6.2-sol)' },
+      { id: 'gpt-6.2-astra', label: 'GPT-6.2-Astra (gpt-6.2-astra)' },
+      { id: 'gpt-6.1-terra', label: 'GPT-6.1 Terra (gpt-6.1-terra)' },
+      { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol (gpt-6.1-sol)' },
+      { id: 'gpt-6-astra', label: 'GPT-6-Astra (gpt-6-astra)' },
+      { id: 'gpt-6-sol', label: 'GPT-6-Sol (gpt-6-sol)' },
+      { id: 'gpt-6-luna', label: 'GPT-6-Luna (gpt-6-luna)' },
+      { id: 'gpt-5.6-sol', label: 'GPT-5.6-Sol (gpt-5.6-sol)' },
+    ];
     const cxModels = [
       ...(cx.model ? [{ id: cx.model, label: `${cx.model} (현재 기본)` }] : []),
-      { id: 'gpt-6.1-sol', label: 'gpt-6.1-sol' }, { id: 'gpt-5.4', label: 'gpt-5.4' },
-      { id: 'gpt-5.4-mini', label: 'gpt-5.4-mini' }, { id: 'o3', label: 'o3' }, { id: 'o4-mini', label: 'o4-mini' },
+      ...(cxCache.models.length ? cxCache.models : cxFallback),
     ].filter((m, i, arr) => arr.findIndex((x) => x.id === m.id) === i);
-    const cxEffortIds = ['', ...(cx.enabled?.length ? cx.enabled : ['low', 'medium', 'high', 'xhigh', 'max'])];
-    const claudeModels = [
-      { id: 'opus', label: 'Claude Opus (최신)' }, { id: 'sonnet', label: 'Claude Sonnet (최신)' }, { id: 'haiku', label: 'Claude Haiku (최신)' },
-      { id: 'claude-opus-4-6', label: 'claude-opus-4-6' }, { id: 'claude-sonnet-4-6', label: 'claude-sonnet-4-6' },
+    const cxEffortIds = ['', ...(cx.enabled?.length ? cx.enabled : (cxCache.efforts.length ? cxCache.efforts : ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']))];
+    const claudeStatic = [
+      { id: 'opus', label: 'Claude Opus (최신 별칭)' },
+      { id: 'sonnet', label: 'Claude Sonnet (최신 별칭)' },
+      { id: 'haiku', label: 'Claude Haiku (최신 별칭)' },
+      { id: 'claude-opus-5-5', label: 'Claude Opus 5.5 (claude-opus-5-5)' },
+      { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5 (claude-sonnet-5-5)' },
+      { id: 'claude-fable-5-2', label: 'Claude Fable 5.2 (claude-fable-5-2)' },
+      { id: 'claude-opus-4-6', label: 'Claude Opus 4.6 (claude-opus-4-6)' },
+      { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (claude-sonnet-4-6)' },
     ];
+    const claudeModels = [
+      ...claudeStatic,
+      ...readClaudeRecentModels().map((id) => ({ id, label: id })),
+    ].filter((m, i, arr) => arr.findIndex((x) => x.id === m.id) === i);
     const agyDefaultModels = [
       { id: 'gemini-4-neon-high', label: 'Gemini 4 Neon (High)' },
       { id: 'gemini-4-neon-xhigh', label: 'Gemini 4 Neon (XHigh)' },

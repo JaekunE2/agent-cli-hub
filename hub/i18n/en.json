@@ -2562,5 +2562,8 @@
   "자동 진행 ON": "Autopilot ON",
   "자동 진행 OFF": "Autopilot OFF",
   "완료 → 다음 작업": "completed → next tasks",
-  "개 자동 시작!": " auto-started!"
+  "개 자동 시작!": " auto-started!",
+  "Claude Opus (최신 별칭)": "Claude Opus (Latest Alias)",
+  "Claude Sonnet (최신 별칭)": "Claude Sonnet (Latest Alias)",
+  "Claude Haiku (최신 별칭)": "Claude Haiku (Latest Alias)"
 }

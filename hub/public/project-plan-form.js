@@ -8,11 +8,14 @@ const projectModelEffortFields = `<div class="pj-me-grid">
 const FALLBACK_CLI_OPTIONS = {
   codex: {
     models: [
-      { id: 'gpt-6.1-sol', label: 'gpt-6.1-sol' },
-      { id: 'gpt-5.4', label: 'gpt-5.4' },
-      { id: 'gpt-5.4-mini', label: 'gpt-5.4-mini' },
-      { id: 'o3', label: 'o3' },
-      { id: 'o4-mini', label: 'o4-mini' },
+      { id: 'gpt-6.2-sol', label: 'GPT-6.2-Sol (gpt-6.2-sol)' },
+      { id: 'gpt-6.2-astra', label: 'GPT-6.2-Astra (gpt-6.2-astra)' },
+      { id: 'gpt-6.1-terra', label: 'GPT-6.1 Terra (gpt-6.1-terra)' },
+      { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol (gpt-6.1-sol)' },
+      { id: 'gpt-6-astra', label: 'GPT-6-Astra (gpt-6-astra)' },
+      { id: 'gpt-6-sol', label: 'GPT-6-Sol (gpt-6-sol)' },
+      { id: 'gpt-6-luna', label: 'GPT-6-Luna (gpt-6-luna)' },
+      { id: 'gpt-5.6-sol', label: 'GPT-5.6-Sol (gpt-5.6-sol)' },
     ],
     efforts: [
       { id: '', label: 'CLI 기본값' },
@@ -21,13 +24,19 @@ const FALLBACK_CLI_OPTIONS = {
       { id: 'high', label: '높음 (high)' },
       { id: 'xhigh', label: '매우 높음 (xhigh)' },
       { id: 'max', label: '최대 (max)' },
+      { id: 'ultra', label: '울트라 (ultra)' },
     ],
   },
   claude: {
     models: [
-      { id: 'opus', label: 'Claude Opus (최신)' },
-      { id: 'sonnet', label: 'Claude Sonnet (최신)' },
-      { id: 'haiku', label: 'Claude Haiku (최신)' },
+      { id: 'opus', label: 'Claude Opus (최신 별칭)' },
+      { id: 'sonnet', label: 'Claude Sonnet (최신 별칭)' },
+      { id: 'haiku', label: 'Claude Haiku (최신 별칭)' },
+      { id: 'claude-opus-5-5', label: 'Claude Opus 5.5 (claude-opus-5-5)' },
+      { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5 (claude-sonnet-5-5)' },
+      { id: 'claude-fable-5-2', label: 'Claude Fable 5.2 (claude-fable-5-2)' },
+      { id: 'claude-opus-4-6', label: 'Claude Opus 4.6 (claude-opus-4-6)' },
+      { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (claude-sonnet-4-6)' },
     ],
     efforts: [
       { id: '', label: 'CLI 기본값' },

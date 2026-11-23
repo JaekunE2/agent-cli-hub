@@ -33,7 +33,7 @@ const DEFAULT_ROLE_PRESETS = {
     label: '개발 · 구현 (BE / FE Engineer)',
     agent: 'codex',
     account: '',
-    model: 'gpt-5.4',
+    model: 'gpt-6.2-sol',
     effort: 'high',
     template: [
       '[행동 제약]',
