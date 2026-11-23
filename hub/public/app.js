@@ -362,7 +362,7 @@ async function refreshOverview() {
 async function refreshRecent(fresh = false) {
   try { state.recent = (await api(`/api/recent?n=100${fresh ? '&fresh=1' : ''}`)).sessions || []; } catch {}
   const agent = state.recentFilter;
-  if (agent) {
+  if (agent && agent !== 'live') {
     try {
       state.recentByAgent ||= {};
       state.recentByAgent[agent] = (await api(`/api/recent?n=100&agent=${encodeURIComponent(agent)}`)).sessions || [];
@@ -759,24 +759,57 @@ function renderSide() {
     ${pjRows}
   </div>`;
 
-  // Section 2: Terminals & Live Consoles (collapsible; busy always floated to top + Project/kind/done tags + Group toggle + Clean exited)
+  // Section 2: Unified Recent Conversations & Active Terminals (live sessions float to top with 실행 중 / 완료 / 대기 tags; deduplicated by sessionId)
   const cons = sortConsolesByState(visibleConsoles()).filter((c) => matchSide(consoleLabel(c), '콘솔'));
   const terms = sortTermsByState(state.terms || []).filter((t) => matchSide(termLabel(t), t.cwd || '', projectOfTerm(t)?.name || '', t.agent || ''));
-  const tf = state.termFilter || '';
-  const tCounts = { all: terms.length + cons.length, busy: 0, idle: 0, exited: 0 };
-  for (const t of terms) tCounts[termStateOf(t)]++;
-  for (const c of cons) tCounts[consoleStateOf(c)]++;
-  const tfbtn = (val, label, cnt) => `<button data-tfilt="${val}" class="${tf === val ? 'on' : ''}">${label}${cnt ? ` <span class="seg-cnt">${cnt}</span>` : ''}</button>`;
-  const shownTerms = tf ? terms.filter((t) => termStateOf(t) === tf) : terms;
-  const shownCons = tf === 'exited' ? [] : tf ? cons.filter((c) => consoleStateOf(c) === tf) : cons;
-  const termFolded = folded.has('terms') && !fTerms.length;
+  const rf = state.recentFilter || '';
+  const fbtn = (val, label, cnt = 0) => `<button data-rfilt="${val}" class="${rf === val ? 'on' : ''}">${label}${cnt ? ` <span class="seg-cnt">${cnt}</span>` : ''}</button>`;
 
-  const combined = [
+  const liveBySid = new Map((state.live || []).filter((x) => x.sessionId).map((x) => [x.sessionId, x]));
+  const busyCount = terms.filter((t) => termStateOf(t) === 'busy').length + cons.filter((c) => consoleStateOf(c) === 'busy').length;
+  const exitedCount = terms.filter((t) => termStateOf(t) === 'exited').length;
+  const activeTermCount = terms.filter((t) => termStateOf(t) !== 'exited').length + cons.length;
+
+  const seenSids = new Set();
+  for (const t of state.terms || []) {
+    if (t.sessionId) seenSids.add(t.sessionId);
+  }
+  for (const c of visibleConsoles()) {
+    const cs = sessionOfConsole(c);
+    if (cs?.sessionId) seenSids.add(cs.sessionId);
+  }
+
+  const shownTerms = terms.filter((t) => {
+    if (rf === 'live') return termStateOf(t) !== 'exited';
+    if (rf === 'claude' || rf === 'codex' || rf === 'agy') return (t.agent || '') === rf;
+    return true;
+  });
+  const shownCons = cons.filter((c) => {
+    if (!rf || rf === 'live') return true;
+    const cs = sessionOfConsole(c);
+    return (cs?.agent || '') === rf;
+  });
+  const combinedLive = [
     ...shownTerms.map((t) => ({ kind: 'term', rank: STATE_RANK[termStateOf(t)] ?? 9, item: t })),
     ...shownCons.map((c) => ({ kind: 'console', rank: STATE_RANK[consoleStateOf(c)] ?? 9, item: c })),
   ].sort((a, b) => a.rank - b.rank);
 
-  const renderEntryRow = (entry, hidePjTag = false) => {
+  const recSourceKey = (rf && rf !== 'live') ? rf : '';
+  const unlinkedRecent = (state.recentByAgent?.[recSourceKey] || state.recent)
+    .filter((r) => {
+      if (seenSids.has(r.sessionId)) return false;
+      if (!matchSide(sessionLabel(r), r.cwd || '', r.agent || '')) return false;
+      if (rf === 'live') return liveBySid.has(r.sessionId);
+      if (rf && (r.agent || 'claude') !== rf) return false;
+      return true;
+    })
+    .slice(0, 18)
+    .map((r) => ({ kind: 'recent', rank: liveBySid.has(r.sessionId) ? 1 : 9, item: r }));
+
+  const unifiedEntries = [...combinedLive, ...unlinkedRecent];
+  const liveCount = activeTermCount + (state.recent || []).filter((r) => !seenSids.has(r.sessionId) && liveBySid.has(r.sessionId)).length;
+
+  const renderUnifiedRow = (entry, hidePjTag = false) => {
     if (entry.kind === 'term') {
       const t = entry.item;
       const st = termStateOf(t);
@@ -803,7 +836,7 @@ function renderSide() {
             ? `<span class="srow-tag done">완료</span><span>${folderLbl}</span>`
             : st === 'exited'
               ? '<span class="srow-tag">종료됨</span>'
-              : `<span>${folderLbl}</span>`,
+              : `<span class="srow-tag">실행 중</span><span>${folderLbl}</span>`,
       ].filter(Boolean).join('');
       return `<div class="srow${isSel ? ' sel' : ''}${unread ? ' just-done' : ''}${isBr ? ' is-branch' : ''}" data-key="term:${esc(t.id)}" title="${esc(termLabel(t))}${pj ? ` · Project: ${esc(pj.name)}` : ''}${brTip ? ` · ${esc(brTip)}` : ''}">
         ${agentIcon(kind, dot)}
@@ -811,83 +844,74 @@ function renderSide() {
         <span class="srow-end">${unread ? '<span class="srow-unread" title="방금 작업 완료"></span>' : ''}${fk ? `<span class="fav${isStar ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${isStar ? '즐겨찾기 해제' : '즐겨찾기'}">${isStar ? ICO.starFill : ICO.star}</span>` : ''}</span>
       </div>`;
     }
-    const c = entry.item;
-    const st = consoleStateOf(c);
-    const isSel = curKind === 'console' && String(state.sel.id) === String(c.id);
-    return `<div class="srow${isSel ? ' sel' : ''}" data-key="console:${esc(c.id)}">
-      ${agentIcon(sessionOfConsole(c) ? 'claude' : 'shell', st === 'busy' ? 'busy' : 'idle')}
-      <div class="srow-main"><div class="srow-t">${esc(consoleLabel(c))}</div><div class="srow-s"><span class="srow-tag con">콘솔</span>${st === 'busy' ? '<span class="srow-tag busy">실행 중</span>' : '<span>대기</span>'}</div></div>
-    </div>`;
-  };
-
-  let termRows = '';
-  if (!termFolded) {
-    if (!combined.length) {
-      termRows = `<div class="srow-empty">${tf ? '해당 상태 없음' : '열린 터미널 없음'}</div>`;
-    } else if (state.termGroupByProject) {
-      const groups = new Map();
-      for (const entry of combined) {
-        const pj = entry.kind === 'term' ? projectOfTerm(entry.item) : null;
-        const gKey = pj ? `pj:${pj.id}` : '_general';
-        const gLabel = pj ? pj.name : '일반 터미널 · 콘솔';
-        if (!groups.has(gKey)) groups.set(gKey, { label: gLabel, isPj: !!pj, items: [] });
-        groups.get(gKey).items.push(entry);
-      }
-      termRows = [...groups.values()].map((g) => `<div class="sgrp-lbl">${g.isPj ? '<span class="pj-dot"></span>' : ''}${esc(g.label)}</div>${g.items.map((e) => renderEntryRow(e, g.isPj)).join('')}`).join('');
-    } else {
-      termRows = combined.map((e) => renderEntryRow(e, false)).join('');
+    if (entry.kind === 'console') {
+      const c = entry.item;
+      const st = consoleStateOf(c);
+      const cs = sessionOfConsole(c);
+      const isSel = curKind === 'console' && String(state.sel.id) === String(c.id);
+      return `<div class="srow${isSel ? ' sel' : ''}" data-key="console:${esc(c.id)}">
+        ${agentIcon(cs ? (cs.agent || 'claude') : 'shell', st === 'busy' ? 'busy' : 'idle')}
+        <div class="srow-main"><div class="srow-t">${esc(consoleLabel(c))}</div><div class="srow-s"><span class="srow-tag con">콘솔</span>${st === 'busy' ? '<span class="srow-tag busy">실행 중</span>' : '<span class="srow-tag">실행 중</span>'}</div></div>
+      </div>`;
     }
-  }
-
-  const cleanExitedAria = '종료된 터미널 정리';
-  const cleanExitedTitle = `종료된 터미널 정리 (${tCounts.exited})`;
-  const groupProjLbl = 'Project별 터미널 묶어보기';
-  h += `<div class="ssec">
-    <div class="ssec-hd">
-      ${foldBtnHTML('terms', termFolded, '터미널')}
-      <span class="ssec-title" data-key="terms">터미널 <span class="srow-meta">${tCounts.all || ''}</span>${termFolded && tCounts.busy ? `<span class="srow-tag busy">실행 ${tCounts.busy}</span>` : ''}</span>
-      ${tCounts.exited ? `<button class="ghost icon-btn ssec-act" data-side-clean-exited="1" title="${cleanExitedTitle}" aria-label="${cleanExitedAria}">${ICO.trash}</button>` : ''}
-      <button class="ghost icon-btn ssec-act${state.termGroupByProject ? ' on' : ''}" data-tgroup="1" title="${groupProjLbl}" aria-pressed="${state.termGroupByProject}" aria-label="${groupProjLbl}">${ICO.layers}</button>
-      <button class="ghost icon-btn ssec-act" data-hopen-new="1" title="새 터미널 열기" aria-label="새 터미널 열기">${ICO.plus}</button>
-    </div>
-    ${termFolded ? '' : `<div class="seg sm" role="tablist" aria-label="터미널 상태 필터">${tfbtn('', '전체', tCounts.all)}${tfbtn('busy', '실행', tCounts.busy)}${tfbtn('idle', '대기', tCounts.idle)}${tfbtn('exited', '종료', tCounts.exited)}</div>${termRows}`}
-  </div>`;
-
-  // Section 3: Recent Sessions (collapsible; Agent filter)
-  const rf = state.recentFilter || '';
-  const fbtn = (val, label) => `<button data-rfilt="${val}" class="${rf === val ? 'on' : ''}">${label}</button>`;
-  const allRecent = (state.recentByAgent?.[rf] || state.recent)
-    .filter((r) => (!rf || (r.agent || 'claude') === rf) && matchSide(sessionLabel(r), r.cwd || '', r.agent || ''));
-  const recFolded = folded.has('recent') && !fTerms.length;
-  const recentRows = recFolded ? '' : (allRecent.slice(0, 18).map((r) => {
+    const r = entry.item;
     const ag = r.agent || 'claude';
     const fk = `sid:${r.sessionId}`, on = favs.has(fk);
     const isSel = curKind === 'recent' && state.sel.id === r.sessionId;
     const isBr = !!r.branch?.isBranch;
     const brTip = branchTooltip(r.branch);
+    const liveProc = liveBySid.get(r.sessionId);
+    const liveDot = liveProc ? (liveProc.status === 'busy' ? 'busy' : 'idle') : null;
     const delRecTitle = '기록 삭제';
     const delRecAria = `기록 삭제: ${sessionLabel(r)}`;
     const subHTML = [
       branchTagHTML(r.branch, true),
+      liveProc ? `<span class="srow-tag${liveProc.status === 'busy' ? ' busy' : ''}">실행 중</span>` : '',
       `<span>${esc([base(r.cwd), ago(r.mtime)].filter(Boolean).join(' · '))}</span>`,
     ].filter(Boolean).join('');
     return `<div class="srow${isSel ? ' sel' : ''}${isBr ? ' is-branch' : ''}" data-key="recent:${esc(r.sessionId)}" title="${esc(sessionLabel(r))}${brTip ? ` · ${esc(brTip)}` : ''}">
-      ${agentIcon(ag)}
+      ${agentIcon(ag, liveDot)}
       <div class="srow-main"><div class="srow-t">${esc(sessionLabel(r))}</div><div class="srow-s">${subHTML}</div></div>
       <span class="srow-end">
         <span class="fav${on ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${on ? '즐겨찾기 해제' : '즐겨찾기'}">${on ? ICO.starFill : ICO.star}</span>
         <button class="record-delete danger ghost icon-btn" data-hide-record="${esc(r.sessionId)}" title="${delRecTitle}" aria-label="${esc(delRecAria)}">${ICO.trash}</button>
       </span>
     </div>`;
-  }).join('') || '<div class="srow-empty">최근 기록 없음</div>');
+  };
 
+  const recFolded = folded.has('recent') && !fTerms.length;
+  let recentRows = '';
+  if (!recFolded) {
+    if (!unifiedEntries.length) {
+      recentRows = `<div class="srow-empty">${rf === 'live' ? '실행 중인 대화 없음' : '최근 기록 없음'}</div>`;
+    } else if (state.termGroupByProject) {
+      const groups = new Map();
+      for (const entry of unifiedEntries) {
+        const pj = entry.kind === 'term' ? projectOfTerm(entry.item) : null;
+        const gKey = pj ? `pj:${pj.id}` : '_general';
+        const gLabel = pj ? pj.name : '일반 대화 · 터미널';
+        if (!groups.has(gKey)) groups.set(gKey, { label: gLabel, isPj: !!pj, items: [] });
+        groups.get(gKey).items.push(entry);
+      }
+      recentRows = [...groups.values()].map((g) => `<div class="sgrp-lbl">${g.isPj ? '<span class="pj-dot"></span>' : ''}${esc(g.label)}</div>${g.items.map((e) => renderUnifiedRow(e, g.isPj)).join('')}`).join('');
+    } else {
+      recentRows = unifiedEntries.map((e) => renderUnifiedRow(e, false)).join('');
+    }
+  }
+
+  const cleanExitedAria = '종료된 터미널 정리';
+  const cleanExitedTitle = `종료된 터미널 정리 (${exitedCount})`;
+  const groupProjLbl = 'Project별 묶어보기';
   h += `<div class="ssec">
     <div class="ssec-hd">
       ${foldBtnHTML('recent', recFolded, '최근 대화')}
-      <span class="ssec-title" data-key="terms-recent">최근 대화</span>
+      <span class="ssec-title" data-key="terms-recent">최근 대화${liveCount ? ` <span class="srow-meta">${liveCount}</span>` : ''}${recFolded && busyCount ? `<span class="srow-tag busy">실행 ${busyCount}</span>` : ''}</span>
+      ${exitedCount ? `<button class="ghost icon-btn ssec-act" data-side-clean-exited="1" title="${cleanExitedTitle}" aria-label="${cleanExitedAria}">${ICO.trash}</button>` : ''}
+      <button class="ghost icon-btn ssec-act${state.termGroupByProject ? ' on' : ''}" data-tgroup="1" title="${groupProjLbl}" aria-pressed="${state.termGroupByProject}" aria-label="${groupProjLbl}">${ICO.layers}</button>
       <button class="ghost icon-btn ssec-act" data-rrefresh="1" title="세션 기록 새로고침" aria-label="세션 기록 새로고침">${ICO.refresh}</button>
+      <button class="ghost icon-btn ssec-act" data-hopen-new="1" title="새 대화 · 터미널 열기" aria-label="새 대화 · 터미널 열기">${ICO.plus}</button>
     </div>
-    ${recFolded ? '' : `<div class="seg sm" role="tablist" aria-label="에이전트 필터">${fbtn('', '전체')}${fbtn('claude', 'Claude')}${fbtn('codex', 'Codex')}${fbtn('agy', 'AGY')}</div>${recentRows}`}
+    ${recFolded ? '' : `<div class="seg sm" role="tablist" aria-label="대화 · 상태 필터">${fbtn('', '전체')}${fbtn('live', '실행 중', liveCount)}${fbtn('claude', 'Claude')}${fbtn('codex', 'Codex')}${fbtn('agy', 'AGY')}</div>${recentRows}`}
   </div>`;
 
   // Section 4: Autonomous Research (collapsible; only when active)
@@ -950,7 +974,13 @@ $('#side')?.addEventListener('click', async (e) => {
   const rrBtn = e.target.closest('[data-rrefresh]');
   if (rrBtn) { e.stopPropagation(); rrBtn.disabled = true; refreshRecent(true).finally(() => { rrBtn.disabled = false; }); return; }
   const rfBtn = e.target.closest('[data-rfilt]');
-  if (rfBtn) { e.stopPropagation(); state.recentFilter = rfBtn.dataset.rfilt; renderSide(); refreshRecent(); return; }
+  if (rfBtn) {
+    e.stopPropagation();
+    state.recentFilter = rfBtn.dataset.rfilt;
+    renderSide();
+    if (state.recentFilter !== 'live') refreshRecent();
+    return;
+  }
   const star = e.target.closest('[data-fav]');
   if (star) {
     e.stopPropagation();
@@ -2054,8 +2084,7 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
     <div class="att-strip" data-chat-atts hidden></div>
     <div class="chat-reply-in">
       <label class="ghost icon-btn btn-sm filebtn" title="파일 · 이미지 첨부 (드래그&드롭 / 붙여넣기)" style="flex:none;height:38px;min-height:38px;width:36px;justify-content:center;border-radius:10px;border:1px solid var(--line-strong)">${ICO.clip}<input type="file" class="fpick" multiple hidden></label>
-      <textarea rows="1" placeholder="대화 기록에서 바로 프롬프트 입력 (Enter 전송 · Ctrl+Enter 즉시 보내기 · Shift+Enter 줄바꿈)"></textarea>
-      <button type="button" class="btn-sm" data-chat-send-now hidden title="진행 중인 응답을 중단(Esc)하고 지금 바로 전송합니다 (Ctrl+Enter)">즉시 보내기</button>
+      <textarea rows="1" placeholder="대화 기록에서 바로 프롬프트 입력 (Enter 전송 · Shift+Enter 줄바꿈)"></textarea>
       <button type="button" class="primary">보내기 ⏎</button>
     </div>
   </div>`;
@@ -2064,7 +2093,6 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
   const jumpBtn = $('[data-chat-jump]', barHost);
   const accSel = $('[data-chat-acc]', barHost);
   const applyBtn = $('[data-chat-apply]', barHost);
-  const sendNowBtn = $('[data-chat-send-now]', barHost);
   const repIn = $('textarea', barHost);
   const repBtn = $('.chat-reply-in button.primary', barHost);
 
@@ -2191,15 +2219,12 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       const meBadge = [lt.model, lt.effort].filter(Boolean).join('/');
       connEl.innerHTML = `<span class="dot ${dotCls}" style="width:7px;height:7px"></span><span>터미널 t:${esc(lt.id)} 연결됨 · ${esc(stTxt)}${meBadge ? ` · ${esc(meBadge)}` : ''}</span>`;
       if (jumpBtn) jumpBtn.hidden = !onJumpTerm;
-      if (sendNowBtn) sendNowBtn.hidden = st !== 'busy';
     } else if (activeConsolePid) {
       connEl.innerHTML = `<span class="dot idle" style="width:7px;height:7px"></span><span>콘솔 pid:${esc(activeConsolePid)} 연결됨</span>`;
       if (jumpBtn) jumpBtn.hidden = !onJumpTerm;
-      if (sendNowBtn) sendNowBtn.hidden = false;
     } else {
       connEl.innerHTML = `<span class="ums" style="margin:0">연결된 터미널 없음 · 입력 시 세션을 이어 열어 전송합니다</span>`;
       if (jumpBtn) jumpBtn.hidden = true;
-      if (sendNowBtn) sendNowBtn.hidden = true;
     }
     syncApplyBtn();
   };
@@ -2333,7 +2358,7 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
   attachFileInput(dropZone, null, cwd, { onFiles: (fl, it) => chatAttCtl.addFiles(fl, it) });
   bindFilePick(barHost, null, cwd, { onFiles: (fl, it) => chatAttCtl.addFiles(fl, it) });
 
-  const sendReply = async (immediate = false) => {
+  const sendReply = async () => {
     if (chatAttCtl.isLoading()) return toast('첨부 파일을 준비하는 중입니다…');
     const attPaths = chatAttCtl.takePaths();
     const typed = repIn.value.trim();
@@ -2341,7 +2366,6 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
     if (!text) return;
     repIn.value = ''; fitRep();
     repBtn.disabled = true;
-    if (sendNowBtn) sendNowBtn.disabled = true;
     try {
       const existing = findLiveTerm();
       if (existing) {
@@ -2353,19 +2377,17 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
           await launchWithConfig({ openTerm: false, pendingText: text });
           return;
         }
-        const r = await api('/api/term/send', { method: 'POST', body: { id: existing.id, text, submit: true, ...(immediate ? { immediate: true } : {}) } });
+        const r = await api('/api/term/send', { method: 'POST', body: { id: existing.id, text, submit: true } });
         if (r.error) throw new Error(r.error);
         syncConn();
         notifySent(existing.id, text);
-        if (immediate) toast('진행 중인 작업을 중단하고 메시지를 즉시 전송했습니다');
         return;
       }
       if (activeConsolePid) {
-        const r = await api('/api/console/send', { method: 'POST', body: { pid: activeConsolePid, text, submit: true, ...(immediate ? { immediate: true } : {}) } });
+        const r = await api('/api/console/send', { method: 'POST', body: { pid: activeConsolePid, text, submit: true } });
         if (r.error) throw new Error(r.error);
         syncConn();
         notifySent(null, text);
-        if (immediate) toast('진행 중인 작업을 중단하고 메시지를 즉시 전송했습니다');
         return;
       }
       const t = await launchWithConfig({ openTerm: false, pendingText: text });
@@ -2374,15 +2396,10 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       toast(er.message, 6000, 'danger');
     } finally {
       if (repBtn.isConnected) repBtn.disabled = false;
-      if (sendNowBtn?.isConnected) sendNowBtn.disabled = false;
     }
   };
-  repBtn.onclick = () => sendReply(false);
-  if (sendNowBtn) sendNowBtn.onclick = () => sendReply(true);
-  repIn.onkeydown = (e) => {
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.isComposing) { e.preventDefault(); sendReply(true); return; }
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendReply(false); }
-  };
+  repBtn.onclick = sendReply;
+  repIn.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendReply(); } };
 }
 
 function openResumedTerm(t, request) {
@@ -2715,7 +2732,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
           if (r?.error) throw new Error(r.error);
           curHint.until = Date.now() + 30000;
           lastLiveMode = '';
-          toast('진행 중인 작업을 중단하고 메시지를 즉시 전송했습니다');
+          toast(r?.alreadyRecognized ? 'CLI가 이미 해당 메시지를 처리 중입니다' : '보류 중인 메시지를 즉시 전송했습니다');
           container._triggerPoll?.();
         } catch (er) {
           toast(er.message, 5000, 'danger');

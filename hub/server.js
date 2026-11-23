@@ -2570,6 +2570,17 @@ const server = http.createServer(async (req, res) => {
       const b = await body(req);
       const pid = Number(b.pid);
       if (b.immediate) {
+        const snap = await helperCall({ op: 'read', pid, lines: 30 }).catch(() => null);
+        const rawScr = String((snap?.lines || []).join('\n')).replace(/\s+/g, ' ');
+        const tailScr = String((snap?.lines || []).slice(-10).join('\n')).replace(/\s+/g, ' ');
+        const needle = String(b.text || '').trim().replace(/\s+/g, ' ').slice(0, 20);
+        if (needle && (tailScr.includes(needle) || /\[pasted text/i.test(tailScr))) {
+          const r = await helperCall({ op: 'send', pid, keys: ['enter'] });
+          return send(res, 200, { ...r, submittedExisting: true });
+        }
+        if (b.resendIfMissing && needle && rawScr.includes(needle)) {
+          return send(res, 200, { ok: true, immediate: true, alreadyRecognized: true });
+        }
         await helperCall({ op: 'send', pid, keys: ['esc'] });
         await sleep(500);
       }
@@ -2617,16 +2628,56 @@ const server = http.createServer(async (req, res) => {
       const t = terms.get(String(b.id));
       if (!t || t.exited !== null) return send(res, 404, { ok: false, error: 'no such running terminal' });
       if (b.immediate) {
-        const busyNow = (isCodexTerm(t) ? codexStatus(t) : isAgyTerm(t) ? agyStatus(t) : claudeStatus(t)) === 'busy';
-        if (busyNow) {
-          t.proc.write(PTY_KEYS.esc);
-          await sleep(500);
-        }
-        const tailScreen = stripAnsi(readTerm(t, 10).join('\n')).replace(/\s+/g, ' ');
-        const needle = String(b.text || '').trim().replace(/\s+/g, ' ').slice(0, 28);
-        if (b.resendIfMissing && needle && tailScreen.includes(needle)) {
+        const normTxt = (s) => stripAnsi(s || '').replace(/\s+/g, ' ').trim();
+        const rawMsg = normTxt(b.text || '');
+        const head = rawMsg.slice(0, 20);
+        const tail = rawMsg.length > 20 ? rawMsg.slice(-20) : '';
+        const hasMsg = (scr) => !!(scr && ((head && scr.includes(head)) || (tail && scr.includes(tail)) || /\[pasted text/i.test(scr)));
+        const cli = isCodexTerm(t) ? 'codex' : isAgyTerm(t) ? 'agy' : 'claude';
+        const isBusy = () => (cli === 'codex' ? codexStatus(t) : cli === 'agy' ? agyStatus(t) : claudeStatus(t)) === 'busy';
+
+        const bottom10 = normTxt(readTerm(t, 10).join('\n'));
+        const screen40 = normTxt(readTerm(t, 40).join('\n'));
+
+        // 1) Already sitting unsubmitted in the CLI prompt input box -> submit ONLY without re-typing text
+        if (hasMsg(bottom10)) {
+          if (cli === 'codex' && isBusy() && /tab to (?:queue|steer)/i.test(bottom10)) {
+            t.proc.write(PTY_KEYS.tab);
+            return send(res, 200, { ok: true, immediate: true, steered: true });
+          }
           t.proc.write('\r');
           return send(res, 200, { ok: true, immediate: true, submittedExisting: true });
+        }
+
+        // 2) Already accepted/visible in CLI scrollback or queue -> steer per CLI, NEVER duplicate b.text
+        if (b.resendIfMissing && hasMsg(screen40)) {
+          if (cli === 'codex' && isBusy() && /tab to (?:queue|steer)|queued/i.test(bottom10)) {
+            t.proc.write(PTY_KEYS.tab);
+            return send(res, 200, { ok: true, immediate: true, steered: true });
+          }
+          if (cli === 'claude' && isBusy() && /up to edit|queued/i.test(bottom10)) {
+            t.proc.write(PTY_KEYS.esc);
+            await sleep(450);
+            const afterEsc = normTxt(readTerm(t, 10).join('\n'));
+            if (hasMsg(afterEsc)) t.proc.write('\r');
+            return send(res, 200, { ok: true, immediate: true, flushedQueued: true });
+          }
+          return send(res, 200, { ok: true, immediate: true, alreadyRecognized: true });
+        }
+
+        // 3) CLI did not receive/recognize the message yet -> interrupt busy turn if AGY/Claude, re-check, then send once
+        if (isBusy() && cli !== 'codex') {
+          t.proc.write(PTY_KEYS.esc);
+          await sleep(500);
+          const afterBottom = normTxt(readTerm(t, 10).join('\n'));
+          const afterScr = normTxt(readTerm(t, 40).join('\n'));
+          if (hasMsg(afterBottom)) {
+            t.proc.write('\r');
+            return send(res, 200, { ok: true, immediate: true, submittedExisting: true });
+          }
+          if (b.resendIfMissing && hasMsg(afterScr)) {
+            return send(res, 200, { ok: true, immediate: true, alreadyRecognized: true });
+          }
         }
       }
       if (b.text) t.proc.write(b.text);
