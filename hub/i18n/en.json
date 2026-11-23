@@ -2459,5 +2459,6 @@
   "보류 중인 메시지를 즉시 전송했습니다": "Dispatched pending message immediately",
   "직접 추가 (": "Manual (",
   "표시할 스킬이 없습니다. 상단 CLI 카드를 누르거나 “모든 CLI에서 모으기”로 가져오세요.": "No skills to display. Click a CLI card above or “Gather from All CLIs” to import.",
-  "한 번 등록하면 Claude · Codex · Antigravity 형식으로 자동 변환되며, 스위치와 CLI 버튼으로 개별/전용 적용할 수 있습니다.": "Register once to convert automatically for Claude, Codex, and Antigravity, and toggle switches or target CLIs per item."
+  "한 번 등록하면 Claude · Codex · Antigravity 형식으로 자동 변환되며, 스위치와 CLI 버튼으로 개별/전용 적용할 수 있습니다.": "Register once to convert automatically for Claude, Codex, and Antigravity, and toggle switches or target CLIs per item.",
+  "전체 목록 보기": "View all sessions"
 }

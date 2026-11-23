@@ -24,6 +24,7 @@ OPEN_EXISTING = 3
 INVALID_HANDLE = wt.HANDLE(-1).value
 TH32CS_SNAPPROCESS = 0x2
 KEY_EVENT = 0x1
+LEFT_ALT_PRESSED = 0x2
 LEFT_CTRL_PRESSED = 0x8
 
 CANDIDATES = {
@@ -202,7 +203,8 @@ def cmd_read(req):
 
 VK = {"enter": (0x0D, "\r"), "esc": (0x1B, "\x1b"), "tab": (0x09, "\t"),
       "backspace": (0x08, "\b"), "up": (0x26, "\0"), "down": (0x28, "\0"),
-      "left": (0x25, "\0"), "right": (0x27, "\0"), "ctrl+c": (0x43, "\x03")}
+      "left": (0x25, "\0"), "right": (0x27, "\0"), "ctrl+c": (0x43, "\x03"),
+      "alt+m": (0x4D, "m")}
 
 
 def key_records(vk, ch, ctrl=0):
@@ -227,7 +229,8 @@ def cmd_send(req):
             recs += key_records(0, ch)
     for key in req.get("keys", []):
         vk, ch = VK[key]
-        recs += key_records(vk, ch, LEFT_CTRL_PRESSED if key.startswith("ctrl+") else 0)
+        mod = LEFT_CTRL_PRESSED if key.startswith("ctrl+") else LEFT_ALT_PRESSED if key.startswith("alt+") else 0
+        recs += key_records(vk, ch, mod)
     with attached(req["pid"]) as a:
         h = a.handle("CONIN$")
         try:

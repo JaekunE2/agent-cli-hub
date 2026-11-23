@@ -14,6 +14,7 @@ const { WebSocketServer } = require('ws');
 const pty = require('@lydell/node-pty');
 const { SearchIndex } = require('./searchindex');
 const codexRecoveryArgs = require('./terminal-recovery');
+const { PTY_KEYS, dispatchImmediatePrompt, AGY_ALTM_RE } = require('./immediate-send');
 const { readSession: readAgySession, agyStatusFromScreen, stripAnsi } = require('./agy-session');
 const { createAgyQuotaService, parseAgyQuotaTui } = require('./agy-quota');
 const { findAgySwapExe, createAgySwapService } = require('./agy-swap');
@@ -949,8 +950,6 @@ function readTerm(t, n = 60) {
   for (let i = Math.max(0, last - n + 1); i <= last; i++) lines.push(text(i));
   return lines;
 }
-const PTY_KEYS = { enter: '\r', esc: '\x1b', tab: '\t', backspace: '\x7f', up: '\x1b[A', down: '\x1b[B',
-  right: '\x1b[C', left: '\x1b[D', 'ctrl+c': '\x03', 'shift+tab': '\x1b[Z' };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // TUIs (claude) treat text+CR arriving in one chunk as a paste with a newline,
 // so a "submit" Enter is sent separately after a short pause.
@@ -1823,6 +1822,7 @@ const termInfo = (t) => ({ id: t.id, title: t.title, liveTitle: t.liveTitle, acc
   model: t.meta?.model || '', effort: t.meta?.effort || '',
   ...(isCodexTerm(t) ? { status: codexStatus(t) } : isAgyTerm(t) ? { status: agyStatus(t) } : /claude(\.exe)?$/i.test(t.meta?.cmd || '') ? { status: claudeStatus(t) } : {}), ...(isAgyTerm(t) ? { sessionId: agySessionOf(t) } : {}),
   lastOutputAt: t.lastOutputAt || 0,
+  startedAt: t.startedAt || 0,
   projectTask: t.meta?.projectTask, cwd: t.cwd, pid: t.pid, exited: t.exited, cols: t.cols, rows: t.rows });
 
 // ---------- HTTP ----------
@@ -2574,6 +2574,10 @@ const server = http.createServer(async (req, res) => {
         const rawScr = String((snap?.lines || []).join('\n')).replace(/\s+/g, ' ');
         const tailScr = String((snap?.lines || []).slice(-10).join('\n')).replace(/\s+/g, ' ');
         const needle = String(b.text || '').trim().replace(/\s+/g, ' ').slice(0, 20);
+        if (AGY_ALTM_RE.test(rawScr)) {
+          const r = await helperCall({ op: 'send', pid, keys: ['alt+m'] });
+          return send(res, 200, { ...r, immediate: true, flushedQueued: true, steered: true });
+        }
         if (needle && (tailScr.includes(needle) || /\[pasted text/i.test(tailScr))) {
           const r = await helperCall({ op: 'send', pid, keys: ['enter'] });
           return send(res, 200, { ...r, submittedExisting: true });
@@ -2628,57 +2632,18 @@ const server = http.createServer(async (req, res) => {
       const t = terms.get(String(b.id));
       if (!t || t.exited !== null) return send(res, 404, { ok: false, error: 'no such running terminal' });
       if (b.immediate) {
-        const normTxt = (s) => stripAnsi(s || '').replace(/\s+/g, ' ').trim();
-        const rawMsg = normTxt(b.text || '');
-        const head = rawMsg.slice(0, 20);
-        const tail = rawMsg.length > 20 ? rawMsg.slice(-20) : '';
-        const hasMsg = (scr) => !!(scr && ((head && scr.includes(head)) || (tail && scr.includes(tail)) || /\[pasted text/i.test(scr)));
         const cli = isCodexTerm(t) ? 'codex' : isAgyTerm(t) ? 'agy' : 'claude';
-        const isBusy = () => (cli === 'codex' ? codexStatus(t) : cli === 'agy' ? agyStatus(t) : claudeStatus(t)) === 'busy';
-
-        const bottom10 = normTxt(readTerm(t, 10).join('\n'));
-        const screen40 = normTxt(readTerm(t, 40).join('\n'));
-
-        // 1) Already sitting unsubmitted in the CLI prompt input box -> submit ONLY without re-typing text
-        if (hasMsg(bottom10)) {
-          if (cli === 'codex' && isBusy() && /tab to (?:queue|steer)/i.test(bottom10)) {
-            t.proc.write(PTY_KEYS.tab);
-            return send(res, 200, { ok: true, immediate: true, steered: true });
-          }
-          t.proc.write('\r');
-          return send(res, 200, { ok: true, immediate: true, submittedExisting: true });
-        }
-
-        // 2) Already accepted/visible in CLI scrollback or queue -> steer per CLI, NEVER duplicate b.text
-        if (b.resendIfMissing && hasMsg(screen40)) {
-          if (cli === 'codex' && isBusy() && /tab to (?:queue|steer)|queued/i.test(bottom10)) {
-            t.proc.write(PTY_KEYS.tab);
-            return send(res, 200, { ok: true, immediate: true, steered: true });
-          }
-          if (cli === 'claude' && isBusy() && /up to edit|queued/i.test(bottom10)) {
-            t.proc.write(PTY_KEYS.esc);
-            await sleep(450);
-            const afterEsc = normTxt(readTerm(t, 10).join('\n'));
-            if (hasMsg(afterEsc)) t.proc.write('\r');
-            return send(res, 200, { ok: true, immediate: true, flushedQueued: true });
-          }
-          return send(res, 200, { ok: true, immediate: true, alreadyRecognized: true });
-        }
-
-        // 3) CLI did not receive/recognize the message yet -> interrupt busy turn if AGY/Claude, re-check, then send once
-        if (isBusy() && cli !== 'codex') {
-          t.proc.write(PTY_KEYS.esc);
-          await sleep(500);
-          const afterBottom = normTxt(readTerm(t, 10).join('\n'));
-          const afterScr = normTxt(readTerm(t, 40).join('\n'));
-          if (hasMsg(afterBottom)) {
-            t.proc.write('\r');
-            return send(res, 200, { ok: true, immediate: true, submittedExisting: true });
-          }
-          if (b.resendIfMissing && hasMsg(afterScr)) {
-            return send(res, 200, { ok: true, immediate: true, alreadyRecognized: true });
-          }
-        }
+        const outcome = await dispatchImmediatePrompt({
+          cli,
+          isBusy: () => (cli === 'codex' ? codexStatus(t) : cli === 'agy' ? agyStatus(t) : claudeStatus(t)) === 'busy',
+          readNormLines: (n) => stripAnsi(readTerm(t, n).join('\n')),
+          write: (d) => t.proc.write(d),
+          sleep,
+          text: b.text || '',
+          resendIfMissing: !!b.resendIfMissing,
+          submitDelay: SUBMIT_DELAY,
+        });
+        if (outcome.handled) return send(res, 200, outcome.result);
       }
       if (b.text) t.proc.write(b.text);
       for (const k of b.keys || []) {

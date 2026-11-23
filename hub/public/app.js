@@ -432,11 +432,43 @@ function termStatusLabel(t) {
   return st === 'exited' ? `종료됨 (${t.exited})` : st === 'idle' ? '대기' : '실행 중';
 }
 const STATE_RANK = { busy: 0, idle: 1, exited: 2 };
+function termActivityTs(t, recentMap = null) {
+  if (!t) return 0;
+  const r = t.sessionId ? (recentMap ? recentMap.get(t.sessionId) : (state.recent || []).find((x) => x.sessionId === t.sessionId)) : null;
+  return Math.max(Number(t.lastOutputAt) || 0, Number(t.startedAt) || 0, Number(r?.mtime) || 0);
+}
+function consoleActivityTs(c) {
+  const cs = sessionOfConsole(c);
+  return Math.max(Number(cs?.mtime) || 0, Number(c?.mtime) || 0, Number(c?.pid) || 0);
+}
+function entryActivityTs(entry, recentMap = null) {
+  if (!entry) return 0;
+  if (entry.kind === 'term') return termActivityTs(entry.item, recentMap);
+  if (entry.kind === 'console') return consoleActivityTs(entry.item);
+  return Number(entry.item?.mtime) || 0;
+}
+function compareUnifiedEntries(a, b, recentMap = null) {
+  const rd = (a.rank ?? 9) - (b.rank ?? 9);
+  if (rd !== 0) return rd;
+  const td = entryActivityTs(b, recentMap) - entryActivityTs(a, recentMap);
+  if (td !== 0) return td;
+  return (Number(b.item?.id) || 0) - (Number(a.item?.id) || 0);
+}
 function sortTermsByState(list) {
-  return [...list].sort((a, b) => (STATE_RANK[termStateOf(a)] ?? 9) - (STATE_RANK[termStateOf(b)] ?? 9));
+  const recentMap = new Map((state.recent || []).map((r) => [r.sessionId, r]));
+  return [...list].sort((a, b) => {
+    const rd = (STATE_RANK[termStateOf(a)] ?? 9) - (STATE_RANK[termStateOf(b)] ?? 9);
+    if (rd !== 0) return rd;
+    const td = termActivityTs(b, recentMap) - termActivityTs(a, recentMap);
+    return td !== 0 ? td : (Number(b.id) || 0) - (Number(a.id) || 0);
+  });
 }
 function sortConsolesByState(list) {
-  return [...list].sort((a, b) => (STATE_RANK[consoleStateOf(a)] ?? 9) - (STATE_RANK[consoleStateOf(b)] ?? 9));
+  return [...list].sort((a, b) => {
+    const rd = (STATE_RANK[consoleStateOf(a)] ?? 9) - (STATE_RANK[consoleStateOf(b)] ?? 9);
+    if (rd !== 0) return rd;
+    return consoleActivityTs(b) - consoleActivityTs(a);
+  });
 }
 function projectOfTerm(t) {
   if (!t) return null;
@@ -789,10 +821,11 @@ function renderSide() {
     const cs = sessionOfConsole(c);
     return (cs?.agent || '') === rf;
   });
+  const recentMap = new Map((state.recent || []).map((r) => [r.sessionId, r]));
   const combinedLive = [
     ...shownTerms.map((t) => ({ kind: 'term', rank: STATE_RANK[termStateOf(t)] ?? 9, item: t })),
     ...shownCons.map((c) => ({ kind: 'console', rank: STATE_RANK[consoleStateOf(c)] ?? 9, item: c })),
-  ].sort((a, b) => a.rank - b.rank);
+  ];
 
   const recSourceKey = (rf && rf !== 'live') ? rf : '';
   const unlinkedRecent = (state.recentByAgent?.[recSourceKey] || state.recent)
@@ -804,9 +837,13 @@ function renderSide() {
       return true;
     })
     .slice(0, 18)
-    .map((r) => ({ kind: 'recent', rank: liveBySid.has(r.sessionId) ? 1 : 9, item: r }));
+    .map((r) => {
+      const lp = liveBySid.get(r.sessionId);
+      const rank = lp ? (lp.status === 'busy' ? 0 : 1) : 9;
+      return { kind: 'recent', rank, item: r };
+    });
 
-  const unifiedEntries = [...combinedLive, ...unlinkedRecent];
+  const unifiedEntries = [...combinedLive, ...unlinkedRecent].sort((a, b) => compareUnifiedEntries(a, b, recentMap));
   const liveCount = activeTermCount + (state.recent || []).filter((r) => !seenSids.has(r.sessionId) && liveBySid.has(r.sessionId)).length;
 
   const renderUnifiedRow = (entry, hidePjTag = false) => {
@@ -904,8 +941,8 @@ function renderSide() {
   const groupProjLbl = 'Project별 묶어보기';
   h += `<div class="ssec">
     <div class="ssec-hd">
-      ${foldBtnHTML('recent', recFolded, '최근 대화')}
-      <span class="ssec-title" data-key="terms-recent">최근 대화${liveCount ? ` <span class="srow-meta">${liveCount}</span>` : ''}${recFolded && busyCount ? `<span class="srow-tag busy">실행 ${busyCount}</span>` : ''}</span>
+      ${foldBtnHTML('recent', recFolded, isEnUI() ? 'Sessions' : '목록')}
+      <span class="ssec-title" data-key="terms-recent" title="전체 목록 보기">${liveCount ? `<span class="srow-meta">${liveCount}</span>` : ''}${recFolded && busyCount ? `<span class="srow-tag busy">실행 ${busyCount}</span>` : ''}</span>
       ${exitedCount ? `<button class="ghost icon-btn ssec-act" data-side-clean-exited="1" title="${cleanExitedTitle}" aria-label="${cleanExitedAria}">${ICO.trash}</button>` : ''}
       <button class="ghost icon-btn ssec-act${state.termGroupByProject ? ' on' : ''}" data-tgroup="1" title="${groupProjLbl}" aria-pressed="${state.termGroupByProject}" aria-label="${groupProjLbl}">${ICO.layers}</button>
       <button class="ghost icon-btn ssec-act" data-rrefresh="1" title="세션 기록 새로고침" aria-label="세션 기록 새로고침">${ICO.refresh}</button>
@@ -1160,10 +1197,11 @@ function homeStatsHTML() {
 function homeListsHTML() {
   const cons = sortConsolesByState(visibleConsoles());
   const terms = sortTermsByState(state.terms.filter((t) => t.exited === null));
+  const recentMap = new Map((state.recent || []).map((r) => [r.sessionId, r]));
   const merged = [
     ...terms.map((t) => ({ kind: 'term', rank: STATE_RANK[termStateOf(t)] ?? 9, item: t })),
     ...cons.map((c) => ({ kind: 'console', rank: STATE_RANK[consoleStateOf(c)] ?? 9, item: c })),
-  ].sort((a, b) => a.rank - b.rank).slice(0, 6);
+  ].sort((a, b) => compareUnifiedEntries(a, b, recentMap)).slice(0, 6);
   const termRows = merged.map((entry) => {
     if (entry.kind === 'term') {
       const t = entry.item;
@@ -1368,10 +1406,11 @@ function paintTermsBody() {
     for (const c of cons) counts[consoleStateOf(c)]++;
     const shownTerms = tf ? terms.filter((t) => termStateOf(t) === tf) : terms;
     const shownCons = tf === 'exited' ? [] : tf ? cons.filter((c) => consoleStateOf(c) === tf) : cons;
+    const recentMap = new Map((state.recent || []).map((r) => [r.sessionId, r]));
     const mergedActive = [
       ...shownTerms.map((t) => ({ kind: 'term', rank: STATE_RANK[termStateOf(t)] ?? 9, item: t })),
       ...shownCons.map((c) => ({ kind: 'console', rank: STATE_RANK[consoleStateOf(c)] ?? 9, item: c })),
-    ].sort((a, b) => a.rank - b.rank);
+    ].sort((a, b) => compareUnifiedEntries(a, b, recentMap));
     const segBtn = (val, label, cnt) => `<button data-tview-filt="${val}" class="${tf === val ? 'on' : ''}">${label} <span class="seg-cnt">${cnt}</span></button>`;
     const controls = `<div class="row" style="justify-content:space-between;gap:10px">
       <div class="seg" role="tablist" aria-label="터미널 상태 탭">
@@ -1835,7 +1874,6 @@ function viewConsole() {
       agent: s?.agent || 'claude',
       cwd: s?.cwd || '',
       compact: true,
-      onJumpTerm: () => dock?.togglePanel('term', true),
     });
   };
 
@@ -2023,11 +2061,6 @@ function viewTranscript() {
     agent: r?.agent || 'claude',
     cwd: r?.cwd || live?.cwd || '',
     liveDesktop: !!(live && isDesktopSession(live)),
-    onJumpTerm: (tid, cpid) => {
-      if (hasLivePane && dock) dock.togglePanel('term', true);
-      else if (tid) select({ kind: 'term', id: tid }, 'split');
-      else if (cpid) select({ kind: 'console', id: String(cpid) }, 'split');
-    },
   });
   if (hasLivePane && dock.isOpen('term')) ensureTermMounted();
   winCtl = window.ACH_DOCK.mountWindowsPane({
@@ -2042,7 +2075,7 @@ function viewTranscript() {
 
 const chatLaunchPrefs = new Map();
 
-function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null, consolePid = null, agent = 'claude', cwd = '', liveDesktop = false, onJumpTerm = null, compact = false }) {
+function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null, consolePid = null, agent = 'claude', cwd = '', liveDesktop = false, compact = false }) {
   if (!barHost) return;
   let activeTermId = termId ? String(termId) : null;
   let activeConsolePid = consolePid ? Number(consolePid) : null;
@@ -2070,7 +2103,6 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
   barHost.innerHTML = `<div class="chat-reply-bar${compact ? ' compact' : ''}">
     <div class="chat-conn-bar">
       <span class="chat-conn-pill" data-chat-conn></span>
-      <span class="row" style="gap:6px"><button type="button" class="ghost btn-sm" data-chat-jump hidden style="min-height:22px;height:22px;font-size:11.5px;padding:0 7px">터미널 보기 ↗</button></span>
     </div>
     <div class="chat-me-bar" data-chat-me>
       <select data-chat-acc title="사용할 계정 · CLI 선택" aria-label="계정 및 CLI">
@@ -2090,7 +2122,6 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
   </div>`;
 
   const connEl = $('[data-chat-conn]', barHost);
-  const jumpBtn = $('[data-chat-jump]', barHost);
   const accSel = $('[data-chat-acc]', barHost);
   const applyBtn = $('[data-chat-apply]', barHost);
   const repIn = $('textarea', barHost);
@@ -2218,13 +2249,10 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       const stTxt = st === 'busy' ? '실행 중' : '대기';
       const meBadge = [lt.model, lt.effort].filter(Boolean).join('/');
       connEl.innerHTML = `<span class="dot ${dotCls}" style="width:7px;height:7px"></span><span>터미널 t:${esc(lt.id)} 연결됨 · ${esc(stTxt)}${meBadge ? ` · ${esc(meBadge)}` : ''}</span>`;
-      if (jumpBtn) jumpBtn.hidden = !onJumpTerm;
     } else if (activeConsolePid) {
       connEl.innerHTML = `<span class="dot idle" style="width:7px;height:7px"></span><span>콘솔 pid:${esc(activeConsolePid)} 연결됨</span>`;
-      if (jumpBtn) jumpBtn.hidden = !onJumpTerm;
     } else {
       connEl.innerHTML = `<span class="ums" style="margin:0">연결된 터미널 없음 · 입력 시 세션을 이어 열어 전송합니다</span>`;
-      if (jumpBtn) jumpBtn.hidden = true;
     }
     syncApplyBtn();
   };
@@ -2233,13 +2261,6 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
     if (!barHost.isConnected) return clearInterval(connTimer);
     syncConn();
   }, 1500);
-
-  if (jumpBtn && onJumpTerm) {
-    jumpBtn.onclick = () => {
-      const lt = findLiveTerm();
-      onJumpTerm(lt?.id || null, activeConsolePid);
-    };
-  }
 
   const fitRep = () => { repIn.style.height = 'auto'; repIn.style.height = Math.min(140, Math.max(38, repIn.scrollHeight)) + 'px'; };
   repIn.addEventListener('input', fitRep);
@@ -2662,10 +2683,9 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
     const lastUser = [...(messages || [])].reverse().find((m) => m.role === 'user');
     const showPendingUser = !!(hint?.pendingText && (!lastUser || !norm(lastUser.text).includes(norm(hint.pendingText).slice(0, 60))));
     const canImmediate = !!(showPendingUser && (lt || conPid));
-    const canJump = (lt || conPid) && state.sel.kind === 'recent';
     const hasScreen = !!(showLiveScreen && preview);
     const hasToggle = !!preview;
-    const modeKey = `${showPendingUser ? hint.pendingText : ''}|${canImmediate ? 'imm1' : 'imm0'}|${hasScreen ? 'pre' : 'dots'}|${hasToggle ? '1' : '0'}|${canJump ? (lt?.id || conPid) : ''}`;
+    const modeKey = `${showPendingUser ? hint.pendingText : ''}|${canImmediate ? 'imm1' : 'imm0'}|${hasScreen ? 'pre' : 'dots'}|${hasToggle ? '1' : '0'}`;
     const wasNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 120;
 
     if (modeKey === lastLiveMode && hasScreen) {
@@ -2687,9 +2707,6 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
     const toggleBtn = hasToggle
       ? `<button type="button" class="ghost btn-sm" data-live-toggle style="min-height:22px;height:22px;font-size:11px;padding:0 7px">${showLiveScreen ? '터미널 출력 숨기기' : '터미널 출력 보기'}</button>`
       : '';
-    const jumpBtn = canJump
-      ? `<button type="button" class="ghost btn-sm" data-live-jump="${esc(lt ? `t:${lt.id}` : `c:${conPid}`)}" style="min-height:22px;height:22px;font-size:11px;padding:0 7px">터미널로 이동 ↗</button>`
-      : '';
     const bodyHtml = hasScreen
       ? `<pre class="chat-live-pre">${esc(preview)}</pre>`
       : `<div class="chat-typing-row"><span class="typing-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>터미널에서 응답을 생성하고 있습니다</span></div>`;
@@ -2701,7 +2718,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
           <span class="w-role">${esc(who)}</span>
           <span class="chat-working-pill">작업 중 <span class="typing-dots" aria-hidden="true"><i></i><i></i><i></i></span></span>
           <span style="flex:1"></span>
-          ${toggleBtn}${jumpBtn}
+          ${toggleBtn}
         </div>
         <div class="msg-bubble">${bodyHtml}</div>
       </div>
@@ -2728,24 +2745,17 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
         try {
           const r = target.lt
             ? await api('/api/term/send', { method: 'POST', body: { id: target.lt.id, text: curHint.pendingText, submit: true, immediate: true, resendIfMissing: true } })
-            : await api('/api/console/send', { method: 'POST', body: { pid: target.conPid, text: curHint.pendingText, submit: true, immediate: true } });
+            : await api('/api/console/send', { method: 'POST', body: { pid: target.conPid, text: curHint.pendingText, submit: true, immediate: true, resendIfMissing: true } });
           if (r?.error) throw new Error(r.error);
           curHint.until = Date.now() + 30000;
           lastLiveMode = '';
+          if (immBtn.isConnected) { immBtn.disabled = false; immBtn.textContent = '즉시 보내기'; }
           toast(r?.alreadyRecognized ? 'CLI가 이미 해당 메시지를 처리 중입니다' : '보류 중인 메시지를 즉시 전송했습니다');
           container._triggerPoll?.();
         } catch (er) {
           toast(er.message, 5000, 'danger');
           if (immBtn.isConnected) { immBtn.disabled = false; immBtn.textContent = '즉시 보내기'; }
         }
-      };
-    }
-    const jBtn = $('[data-live-jump]', liveHost);
-    if (jBtn) {
-      jBtn.onclick = () => {
-        const val = jBtn.dataset.liveJump || '';
-        if (val.startsWith('t:')) select({ kind: 'term', id: val.slice(2) }, 'split');
-        else if (val.startsWith('c:')) select({ kind: 'console', id: val.slice(2) }, 'split');
       };
     }
     if (wasNearBottom) {
@@ -3338,7 +3348,6 @@ function viewTerm() {
       agent: ag || 'claude',
       cwd: t?.cwd || pj?.cwd || '',
       compact: true,
-      onJumpTerm: () => dock?.togglePanel('term', true),
     });
   };
 
