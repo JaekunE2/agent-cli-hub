@@ -1,13 +1,14 @@
 const stages = ['planned', 'doing', 'review', 'done'];
 const agents = ['claude', 'codex', 'agy', 'cursor'];
-const kinds = ['plan', 'dev', 'test', 'ops'];
+const kinds = ['plan', 'dev', 'test', 'review', 'ops'];
 const efforts = ['', 'minimal', 'low', 'medium', 'high', 'xhigh', 'ultra', 'max'];
 const MODEL_RE = /^[\w.\-:/\[\]]{0,120}$/;
 
 function inferTaskKind(title = '', detail = '') {
   const t = String(title || '').trim();
   const d = String(detail || '').trim();
-  if (/테스트|검증|점검|QA|벤치마크|단위\s*테스트|통합\s*테스트|E2E|회귀|test|verif|validat|assert|audit|qa|benchmark/i.test(t)) return 'test';
+  if (/리뷰|교차\s*검토|코드\s*감사|아키텍처\s*감사|cross[\s-]*review|code[\s-]*audit|review|audit/i.test(t)) return 'review';
+  if (/테스트|검증|점검|QA|벤치마크|단위\s*테스트|통합\s*테스트|E2E|회귀|test|verif|validat|assert|qa|benchmark/i.test(t)) return 'test';
   if (/배포|문서|가이드|매뉴얼|릴리스|패키징|CI\/CD|도커|운영|README|deploy|release|doc|readme|docker|publish|ops/i.test(t)) return 'ops';
   if (/설계|기획|정의|범위|요구\s*사항|아키텍처|스키마\s*정의|구조|분석|조사|초안|명세|plan|design|spec|architect|requir|scope|analy|research/i.test(t)) return 'plan';
   if (/개발|구현|작성|추가|연동|적용|생성|빌드|컴포넌트|API|UI|화면|기능|모듈|수정|개선|implement|build|create|add|develop|feature|integrate|code/i.test(t)) return 'dev';
@@ -77,6 +78,7 @@ function validate(p) {
       detail: t.detail,
       stage: t.stage,
       kind: kinds.includes(t.kind) ? t.kind : inferTaskKind(t.title, t.detail),
+      role: typeof t.role === 'string' && kinds.includes(t.role.trim()) ? t.role.trim() : '',
       agent: t.agent || '',
       account: t.account ?? null,
       model: String(t.model || '').trim(),

@@ -6,13 +6,17 @@ function projectAgentField(label, selected, inherited) {
 
 function effectiveTaskConfig(p, task) {
   const parent = task?.parentId ? (p.tasks || []).find((x) => x.id === task.parentId) : null;
-  const agent = task?.agent || parent?.agent || p.agent || 'codex';
-  const sameAsParent = parent && (!task?.agent || task.agent === (parent.agent || p.agent || 'codex'));
-  const sameAsProject = !task?.agent || task.agent === (p.agent || 'codex');
-  const account = task?.account ?? (sameAsParent ? parent.account : null) ?? (sameAsProject ? p.account : '');
-  const model = task?.model || (sameAsParent ? parent.model : '') || (sameAsProject ? p.model : '') || '';
-  const effort = task?.effort || (sameAsParent ? parent.effort : '') || (sameAsProject ? p.effort : '') || '';
-  return { agent, account: account || '', model, effort, parent };
+  const roleId = String(task?.role || task?.kind || (typeof taskKindOf === 'function' ? taskKindOf(task) : 'dev') || 'dev').toLowerCase();
+  const rolePreset = state.projectHarness?.roles?.[roleId] || null;
+  const projAgent = p?.agent || 'codex';
+  const agent = task?.agent || parent?.agent || rolePreset?.agent || projAgent;
+  const sameAsParent = parent && (!task?.agent || task.agent === (parent.agent || projAgent));
+  const sameAsRole = !task?.agent && !parent?.agent && rolePreset?.agent && agent === rolePreset.agent;
+  const sameAsProject = agent === projAgent;
+  const account = task?.account ?? (sameAsParent ? parent.account : null) ?? (sameAsRole && rolePreset?.account ? rolePreset.account : null) ?? (sameAsProject ? p.account : '');
+  const model = task?.model || (sameAsParent ? parent.model : '') || (sameAsRole ? rolePreset?.model : '') || (sameAsProject ? p.model : '') || '';
+  const effort = task?.effort || (sameAsParent ? parent.effort : '') || (sameAsRole ? rolePreset?.effort : '') || (sameAsProject ? p.effort : '') || '';
+  return { agent, account: account || '', model, effort, parent, roleId, rolePreset };
 }
 
 function projectTaskTerm(p, task) {
@@ -59,10 +63,15 @@ async function startProjectTask(p, task, button) {
     if (!current && !t.existing) {
       const input = $('#tin');
       if (input) {
-        const parent = task.parentId ? (p.tasks || []).find((x) => x.id === task.parentId) : null;
+        const cfg = effectiveTaskConfig(p, task);
+        const parent = cfg.parent;
         const promptParts = parent
           ? [`[상위 작업: ${parent.title}]`, parent.detail ? parent.detail.slice(0, 600) : '', `[서브 개발 작업: ${task.title}]`, task.detail]
           : [task.title, task.detail];
+        const roleTpl = cfg.rolePreset?.template;
+        const adapterRules = state.projectHarness?.adapters?.[cfg.agent]?.rules;
+        if (roleTpl) promptParts.push(`[Role 하네스 · ${cfg.rolePreset?.label || cfg.roleId}]\n${roleTpl}`);
+        if (adapterRules) promptParts.push(`[CLI 어댑터 · ${cfg.agent}]\n${adapterRules}`);
         input.value = promptParts.filter(Boolean).join('\n\n');
         input.dispatchEvent(new Event('input'));
       }

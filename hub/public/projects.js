@@ -1,6 +1,6 @@
 let projectId = '', projectTab = 'board';
 const projectStages = [['planned', '대기'], ['doing', '진행'], ['review', '검토'], ['done', '완료']];
-const projectTaskKinds = [['plan', '설계·기획'], ['dev', '개발·구현'], ['test', '테스트·검증'], ['ops', '배포·문서']];
+const projectTaskKinds = [['plan', '설계·기획'], ['dev', '개발·구현'], ['test', '테스트·검증'], ['review', '교차 리뷰·감사'], ['ops', '배포·문서']];
 const projectViews = [['design', '작업 설계'], ['board', '칸반 보드'], ['flow', '작업 흐름'], ['floorplan', '코드 구조'], ['terms', '터미널 모아보기']];
 const newTaskId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, '0')).join('');
 
@@ -8,7 +8,8 @@ function taskKindOf(t) {
   if (t?.kind && projectTaskKinds.some(([k]) => k === t.kind)) return t.kind;
   const title = String(t?.title || '').trim();
   const detail = String(t?.detail || '').trim();
-  if (/테스트|검증|점검|QA|벤치마크|단위\s*테스트|통합\s*테스트|E2E|회귀|test|verif|validat|assert|audit|qa|benchmark/i.test(title)) return 'test';
+  if (/리뷰|교차\s*검토|코드\s*감사|아키텍처\s*감사|cross[\s-]*review|code[\s-]*audit|review|audit/i.test(title)) return 'review';
+  if (/테스트|검증|점검|QA|벤치마크|단위\s*테스트|통합\s*테스트|E2E|회귀|test|verif|validat|assert|qa|benchmark/i.test(title)) return 'test';
   if (/배포|문서|가이드|매뉴얼|릴리스|패키징|CI\/CD|도커|운영|README|deploy|release|doc|readme|docker|publish|ops/i.test(title)) return 'ops';
   if (/설계|기획|정의|범위|요구\s*사항|아키텍처|스키마\s*정의|구조|분석|조사|초안|명세|plan|design|spec|architect|requir|scope|analy|research/i.test(title)) return 'plan';
   if (/개발|구현|작성|추가|연동|적용|생성|빌드|컴포넌트|API|UI|화면|기능|모듈|수정|개선|implement|build|create|add|develop|feature|integrate|code/i.test(title)) return 'dev';
@@ -519,6 +520,7 @@ async function viewProjects() {
     const projectList = r.projects;
     state.projects = projectList;
     if (r.defaultCwd) state.defaultProjectCwd = r.defaultCwd;
+    if (r.harness) state.projectHarness = r.harness;
     const p = projectList.find(x => x.id === (state.sel.id || projectId)) || projectList[0];
     if (p) { projectId = p.id; state.sel.id = p.id; }
     if (typeof renderSide === 'function') renderSide();
@@ -559,6 +561,7 @@ async function viewProjects() {
             </div>
             <span class="pj-prog-lbl"><b>${pct}%</b> (${cnt.done}/${total})</span>
           </div>
+          <button id="projectHarness" class="btn-sm" title="Role 프리셋 · 에이전트별 하네스 설정">Role 하네스</button>
           <button id="projectAdd" class="primary">${ico.plus || ''} 작업</button>
           <button id="projectMore" class="ghost icon-btn" aria-label="Project 메뉴" aria-haspopup="menu" aria-expanded="false" title="새 Project · 설계 수정 · 삭제">${ico.more || '⋯'}</button>
         </div>
@@ -571,6 +574,7 @@ async function viewProjects() {
     $('#projectPick').onchange = e => openProject(e.target.value);
     $('#projectTokens').onclick = () => openProjectTokensDrawer(p);
     document.querySelectorAll('[data-pjtab]').forEach(b => (b.onclick = () => openProject(p.id, b.dataset.pjtab)));
+    $('#projectHarness').onclick = () => openProjectHarnessDrawer();
     $('#projectAdd').onclick = () => taskForm(p);
     $('#projectMore').onclick = (e) => {
       e.stopPropagation();

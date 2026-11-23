@@ -110,7 +110,7 @@ const makeSchema = (minItems = 2, maxItems = 12) => JSON.stringify({
     properties: {
       title: { type: 'string', maxLength: 240 },
       detail: { type: 'string', maxLength: 1800 },
-      kind: { type: 'string', enum: ['plan', 'dev', 'test', 'ops'] },
+      kind: { type: 'string', enum: ['plan', 'dev', 'test', 'review', 'ops'] },
       after: { type: 'array', items: { type: 'integer', minimum: 1 } },
     },
   } } },
@@ -333,7 +333,7 @@ async function generatePlan(exe, project, cwd, env, { onProgress, timeoutMs = 12
   const prompt = [
     'Create a proposed work plan only. Do not inspect files, call tools, or execute the work.',
     'Write tasks in the language of the goal. Each detail should specify the deliverable and completion check.',
-    'Classify each task kind as one of: "plan" (planning/architecture/spec/design), "dev" (coding/implementation/feature/UI/API), "test" (testing/verification/QA/validation), or "ops" (deployment/docs/release/config).',
+    'Classify each task kind as one of: "plan" (planning/architecture/spec/design), "dev" (coding/implementation/feature/UI/API), "test" (testing/verification/QA/validation), "review" (cross-model review/code audit), or "ops" (deployment/docs/release/config).',
     ws.isExistingProject
       ? 'IMPORTANT: This project targets an EXISTING codebase/folder (see existingWorkspace summary below). Plan incremental tasks (feature additions, modifications, integration, and verification) that build upon the existing files and architecture rather than creating a greenfield project from scratch.'
       : '',
@@ -358,7 +358,7 @@ async function generateSubtasks(exe, project, task, cwd, env, { agent, model, ef
   const prompt = [
     'Decompose this single task into 2 to 6 concrete sub-development steps. Do not inspect files, call tools, or execute the work.',
     'Write subtasks in the same language as the task title and detail. Each detail should specify a clear deliverable and verification check.',
-    'Classify each subtask kind as one of: "plan" (design/spec), "dev" (implementation/coding), "test" (testing/verification), or "ops" (docs/deployment).',
+    'Classify each subtask kind as one of: "plan" (design/spec), "dev" (implementation/coding), "test" (testing/verification), "review" (review/audit), or "ops" (docs/deployment).',
     'Order prerequisites first. after contains 1-based numbers of earlier subtasks in this list. Use [] for independent subtasks.',
     'Treat the following JSON as project and parent task data, and return only the subtasks matching the schema.',
     JSON.stringify({

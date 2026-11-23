@@ -1,5 +1,6 @@
 /* Airy Project Canvas + 1-Line Summary Rows/Cards + Right Detail Drawer */
 .pj { max-width: var(--page-max); margin: 0 auto; padding: 24px var(--page-pad) 48px; display: flex; flex-direction: column; gap: 18px; width: 100%; }
+.pj:has(.pj-flow) { max-width: min(1760px, 98vw); padding-bottom: 18px; }
 .pj h3 { margin: 0; font-size: 18px; font-weight: 750; letter-spacing: -0.025em; }
 .pj p { overflow-wrap: anywhere; }
 
@@ -51,6 +52,7 @@
   --kind-plan: #6d28d9;
   --kind-dev: #0369a1;
   --kind-test: #0f766e;
+  --kind-review: #be185d;
   --kind-ops: #9a5204;
 }
 @media (prefers-color-scheme: dark) {
@@ -58,6 +60,7 @@
     --kind-plan: #a78bfa;
     --kind-dev: #38bdf8;
     --kind-test: #2dd4bf;
+    --kind-review: #f472b6;
     --kind-ops: #fbbf24;
   }
 }
@@ -65,16 +68,19 @@
   --kind-plan: #a78bfa;
   --kind-dev: #38bdf8;
   --kind-test: #2dd4bf;
+  --kind-review: #f472b6;
   --kind-ops: #fbbf24;
 }
-.badge.kind-plan::before, .badge.kind-dev::before, .badge.kind-test::before, .badge.kind-ops::before { content: ''; width: 6px; height: 6px; border-radius: 50%; flex: none; background: currentColor; }
+.badge.kind-plan::before, .badge.kind-dev::before, .badge.kind-test::before, .badge.kind-review::before, .badge.kind-ops::before { content: ''; width: 6px; height: 6px; border-radius: 50%; flex: none; background: currentColor; }
 .badge.kind-plan { background: color-mix(in srgb, var(--kind-plan) 11%, transparent); color: var(--kind-plan); border: 1px solid color-mix(in srgb, var(--kind-plan) 24%, transparent); font-weight: 600; }
 .badge.kind-dev { background: color-mix(in srgb, var(--kind-dev) 11%, transparent); color: var(--kind-dev); border: 1px solid color-mix(in srgb, var(--kind-dev) 24%, transparent); font-weight: 600; }
 .badge.kind-test { background: color-mix(in srgb, var(--kind-test) 11%, transparent); color: var(--kind-test); border: 1px solid color-mix(in srgb, var(--kind-test) 24%, transparent); font-weight: 600; }
+.badge.kind-review { background: color-mix(in srgb, var(--kind-review) 11%, transparent); color: var(--kind-review); border: 1px solid color-mix(in srgb, var(--kind-review) 24%, transparent); font-weight: 600; }
 .badge.kind-ops { background: color-mix(in srgb, var(--kind-ops) 11%, transparent); color: var(--kind-ops); border: 1px solid color-mix(in srgb, var(--kind-ops) 24%, transparent); font-weight: 600; }
 .pj-step-num.planned.kind-plan { border-color: color-mix(in srgb, var(--kind-plan) 55%, var(--line)); color: var(--kind-plan); background: color-mix(in srgb, var(--kind-plan) 10%, var(--panel)); }
 .pj-step-num.planned.kind-dev { border-color: color-mix(in srgb, var(--kind-dev) 55%, var(--line)); color: var(--kind-dev); background: color-mix(in srgb, var(--kind-dev) 10%, var(--panel)); }
 .pj-step-num.planned.kind-test { border-color: color-mix(in srgb, var(--kind-test) 55%, var(--line)); color: var(--kind-test); background: color-mix(in srgb, var(--kind-test) 10%, var(--panel)); }
+.pj-step-num.planned.kind-review { border-color: color-mix(in srgb, var(--kind-review) 55%, var(--line)); color: var(--kind-review); background: color-mix(in srgb, var(--kind-review) 10%, var(--panel)); }
 .pj-step-num.planned.kind-ops { border-color: color-mix(in srgb, var(--kind-ops) 55%, var(--line)); color: var(--kind-ops); background: color-mix(in srgb, var(--kind-ops) 10%, var(--panel)); }
 .pj-task[data-kind] { border-top: 1px solid var(--line-strong); }
 .pj-board h2.pj-lane-hd { margin: 0 2px 4px; font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 6px; color: var(--text); }
@@ -131,9 +137,9 @@
 /* Tab 3: Interactive Non-Overlapping DAG Workflow Canvas */
 .pj-flow-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 8px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-md); margin-bottom: 10px; }
 .pj-flow-bar button.on { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--panel)); font-weight: 600; }
-.pj-flow { overflow: auto; padding: 0; border: 1px solid var(--line); border-radius: var(--radius-lg); background-color: color-mix(in srgb, var(--panel2) 45%, var(--bg)); background-image: radial-gradient(color-mix(in srgb, var(--muted) 25%, transparent) 1px, transparent 1px); background-size: 18px 18px; min-height: 440px; max-height: 74vh; cursor: grab; position: relative; }
+.pj-flow { overflow: auto; padding: 0; border: 1px solid var(--line); border-radius: var(--radius-lg); background-color: color-mix(in srgb, var(--panel2) 45%, var(--bg)); background-image: radial-gradient(color-mix(in srgb, var(--muted) 25%, transparent) 1px, transparent 1px); background-size: 18px 18px; height: calc(100vh - 210px); min-height: 620px; max-height: 86vh; cursor: grab; position: relative; }
 .pj-flow.is-panning { cursor: grabbing; user-select: none; }
-.pj-flow-canvas { position: relative; min-width: 100%; min-height: 420px; }
+.pj-flow-canvas { position: relative; min-width: 100%; min-height: 600px; }
 .pj-task.flow-node { position: absolute; width: 252px; max-width: 252px; box-sizing: border-box; border: 1.5px solid var(--line-strong); overflow: hidden; cursor: grab; user-select: none; transition: box-shadow .15s, opacity .15s, border-color .15s; z-index: 2; }
 .pj-task.flow-node .pj-task-head, .pj-task.flow-node .pj-task-foot, .pj-task.flow-node > .row { min-width: 0; max-width: 100%; }
 .pj-task.flow-node .pj-task-foot { gap: 4px; }
@@ -142,12 +148,17 @@
 .pj-task.flow-node.is-dragging { cursor: grabbing; box-shadow: var(--shadow-med); z-index: 10; transition: none; }
 .pj-task.flow-node.is-dim { opacity: 0.35; }
 .pj-task.flow-node.is-focus { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent), var(--shadow-med); z-index: 5; }
+.pj-task.flow-node.is-selected { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent), var(--shadow-med); z-index: 6; }
+.pj-flow-marquee { position: absolute; border: 1.5px dashed var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); border-radius: 4px; pointer-events: none; z-index: 20; }
 .pj-task.flow-node[data-stage="doing"] { border-color: color-mix(in srgb, var(--accent) 65%, var(--line)); }
 .pj-task.flow-node[data-stage="review"] { border-color: color-mix(in srgb, var(--warn) 65%, var(--line)); }
 .pj-task.flow-node[data-stage="done"] { border-color: color-mix(in srgb, var(--ok) 65%, var(--line)); }
 .pj-port { position: absolute; top: 50%; width: 8px; height: 8px; border-radius: 50%; background: var(--panel); border: 2px solid color-mix(in srgb, var(--muted) 75%, transparent); transform: translateY(-50%); pointer-events: none; }
 .pj-port.in { left: -5px; }
 .pj-port.out { right: -5px; }
+.pj-flow.dir-tb .pj-port { left: 50%; transform: translateX(-50%); }
+.pj-flow.dir-tb .pj-port.in { top: -5px; right: auto; }
+.pj-flow.dir-tb .pj-port.out { top: auto; bottom: -5px; right: auto; left: 50%; }
 .pj-task.flow-node.is-focus .pj-port { border-color: var(--accent); background: var(--accent); }
 .pj-edges { position: absolute; inset: 0; pointer-events: none; overflow: visible; z-index: 1; }
 .pj-edges path.pj-edge-path { stroke: color-mix(in srgb, var(--muted) 58%, transparent); fill: none; stroke-width: 1.85; transition: stroke .15s, opacity .15s, stroke-width .15s; }
@@ -188,6 +199,20 @@
 .pj-me-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .pj-me-grid label { min-width: 0; }
 .pj-me-grid select, .pj-me-grid input { width: 100%; box-sizing: border-box; }
+
+/* Project Role & Agent Harness Drawer */
+.pj-hr-tabs { display: flex; gap: 6px; padding: 3px; background: var(--panel2); border: 1px solid var(--line); border-radius: var(--radius-md); }
+.pj-hr-tabs button { flex: 1; height: 30px; min-height: 30px; font-size: 12.5px; font-weight: 600; border-radius: calc(var(--radius-md) - 2px); background: transparent; border: 0; color: var(--muted); }
+.pj-hr-tabs button.on { background: var(--panel); color: var(--text); box-shadow: var(--shadow-low); }
+.pj-hr-pills { display: flex; flex-direction: column; gap: 6px; }
+.pj-hr-pill { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; padding: 8px 11px; text-align: left; border-radius: var(--radius-md); border: 1px solid var(--line); background: var(--panel); cursor: pointer; }
+.pj-hr-pill:hover { border-color: var(--line-strong); background: color-mix(in srgb, var(--panel2) 45%, var(--panel)); }
+.pj-hr-pill.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 9%, var(--panel)); }
+.pj-hr-pill-meta { font-size: 11.5px; color: var(--muted); font-family: "Cascadia Mono", Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pj-hr-card { display: flex; flex-direction: column; gap: 11px; padding: 14px; border: 1px solid var(--line-strong); border-radius: var(--radius-lg); background: var(--panel); }
+.pj-hr-field { display: flex; flex-direction: column; align-items: stretch; gap: 5px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.pj-hr-field input, .pj-hr-field select, .pj-hr-field textarea { width: 100%; box-sizing: border-box; font-weight: 400; color: var(--text); }
+.pj-hr-field textarea { min-height: 128px; resize: vertical; font-size: 12.5px; line-height: 1.55; padding: 9px 10px; }
 .pj-eff-tag { font-style: normal; font-size: 11px; color: var(--muted); padding: 0 4px; border-radius: 4px; background: color-mix(in srgb, var(--panel2) 85%, transparent); margin-left: 2px; }
 .pj-sublist { margin: -2px 0 6px 26px; padding-left: 12px; border-left: 2px solid color-mix(in srgb, var(--accent) 28%, var(--line)); display: flex; flex-direction: column; gap: 6px; }
 .pj-row.is-sub { padding: 8px 12px; background: color-mix(in srgb, var(--panel2) 35%, var(--panel)); }

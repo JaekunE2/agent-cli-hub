@@ -6,6 +6,8 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 
+const { resolveTaskConfig } = require('./project-harness');
+
 const projectAgents = ['codex', 'claude', 'agy', 'cursor'];
 
 /** Create project CRUD, workspace filesystem, planning, sub-chat, and floorplan routes. */
@@ -279,6 +281,23 @@ function createProjectRoutes(hub) {
       return true;
     }
 
+    if (p === '/api/projects/harness') {
+      if (req.method === 'GET') {
+        send(res, 200, { ok: true, harness: hub.projectHarness.get() });
+        return true;
+      }
+      if (req.method === 'POST') {
+        const b = await body(req);
+        const next = b?.action === 'reset'
+          ? hub.projectHarness.reset()
+          : hub.projectHarness.save({ roles: b?.roles, adapters: b?.adapters });
+        send(res, 200, { ok: true, harness: next });
+        return true;
+      }
+      send(res, 405, { error: 'method not allowed' });
+      return true;
+    }
+
     if (p === '/api/projects/cli-options' && req.method === 'GET') {
       send(res, 200, { options: hub.projectCliOptions(), accountPrefs: accountPrefs.get() });
       return true;
@@ -442,11 +461,13 @@ function createProjectRoutes(hub) {
 
         const existingChats = projects.listSubChats(project.id, task.id);
         let chat = b.chatId ? existingChats.find((c) => c.id === b.chatId) : null;
-        const effAgent = b.agent || chat?.agent || task.agent || project.agent || 'codex';
+        const harnessState = hub.projectHarness.get();
+        const resolved = resolveTaskConfig(project, task, harnessState);
+        const effAgent = b.agent || chat?.agent || resolved.agent || 'codex';
         if (!['claude', 'codex', 'agy'].includes(effAgent)) { send(res, 400, { error: '서브 개발 채팅은 Claude Code, Codex, Antigravity를 지원합니다.' }); return true; }
-        const effAccount = b.account ?? chat?.account ?? task.account ?? (effAgent === (project.agent || 'codex') ? project.account : '');
-        const effModel = b.model ?? chat?.model ?? (task.model || (effAgent === (project.agent || 'codex') ? project.model : ''));
-        const effEffort = b.effort ?? chat?.effort ?? (task.effort || (effAgent === (project.agent || 'codex') ? project.effort : ''));
+        const effAccount = b.account ?? chat?.account ?? (effAgent === resolved.agent ? resolved.account : (effAgent === (project.agent || 'codex') ? project.account : ''));
+        const effModel = b.model ?? chat?.model ?? (effAgent === resolved.agent ? resolved.model : (effAgent === (project.agent || 'codex') ? project.model : ''));
+        const effEffort = b.effort ?? chat?.effort ?? (effAgent === resolved.agent ? resolved.effort : (effAgent === (project.agent || 'codex') ? project.effort : ''));
         let auth;
         try { auth = hub.projectAccounts.resolve(effAgent, effAccount); } catch (e) { send(res, 400, { error: e.message }); return true; }
 
@@ -467,7 +488,7 @@ function createProjectRoutes(hub) {
           try { unifiedVault.prepareLaunch(effAgent, { resume: !!chat.sessionId }); } catch {}
           const resTurn = await runTaskSubChatTurn({
             exe, agent: effAgent, cwd: workCwd, env: { ...hub.cleanEnv(), ...auth.env },
-            model: effModel, effort: effEffort, sessionId: chat.sessionId, prompt, project, task,
+            model: effModel, effort: effEffort, sessionId: chat.sessionId, prompt, project, task, harnessState,
             onProgress: (ev) => {
               if (ev?.stage) actState.stage = ev.stage;
               if (ev?.log) actState.logs = [...actState.logs, ev.log].slice(-5);
@@ -500,7 +521,7 @@ function createProjectRoutes(hub) {
         const list = projects.list().map((pr) => ({
           ...pr, tokens: projects.tokenSummary(pr.id, (sid) => index.get(sid)?.tokens), subChats: projects.allSubChats(pr.id),
         }));
-        send(res, 200, { projects: list, defaultCwd: PROJECTS_DIR });
+        send(res, 200, { projects: list, defaultCwd: PROJECTS_DIR, harness: hub.projectHarness.get() });
         return true;
       }
       if (req.method === 'DELETE') {

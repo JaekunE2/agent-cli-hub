@@ -19,6 +19,7 @@ const projects = require('./projects')();
 const { efforts, MODEL_RE } = require('./project-validation');
 const { fingerprint, projectSession, sessionId: validSessionId } = require('./project-history');
 const { createAccountPrefsStore, buildRecoveryLaunchArgs } = require('./account-prefs');
+const { createProjectHarnessStore } = require('./project-harness');
 const { generatePlan, generateSubtasks, cliModelEffortArgs, inspectWorkspace } = require('./project-plan');
 const { scanFloorplan } = require('./workspace-floorplan');
 const { runTaskSubChatTurn } = require('./task-subchat');
@@ -53,6 +54,7 @@ if (!fs.existsSync(TOKEN_FILE)) fs.writeFileSync(TOKEN_FILE, crypto.randomBytes(
 const TOKEN = fs.readFileSync(TOKEN_FILE, 'utf8').trim();
 
 const accountPrefs = createAccountPrefsStore({ cleanModelEffort });
+const projectHarness = createProjectHarnessStore();
 const conversationBranches = createBranchStore(BRANCH_STORE_FILE);
 const index = new SearchIndex(path.join(CLAUDE_DIR, 'projects'));
 const sessionDisplayTitle = (id, doc) => conversationBranches.getTitle(id) || doc?.title || null;
@@ -121,7 +123,7 @@ setInterval(() => refreshIndex(), 10000).unref?.();
 let consoleTitleCache = new Map();
 const hub = {
   baseDir: __dirname, port: PORT, token: TOKEN, config: CONFIG, buildId: SERVER_BUILD_ID, claudeDir: CLAUDE_DIR, I18N,
-  index, projects, accountPrefs, unifiedVault, conversationBranches, sessionDisplayTitle, branchBackupDir: BRANCH_BACKUP_DIR,
+  index, projects, accountPrefs, projectHarness, unifiedVault, conversationBranches, sessionDisplayTitle, branchBackupDir: BRANCH_BACKUP_DIR,
   CA, codexRecoveryArgs, cliModelEffortArgs, buildRecoveryLaunchArgs, cleanModelEffort,
   fingerprint, projectSession, validSessionId, generatePlan, generateSubtasks, inspectWorkspace, scanFloorplan,
   runTaskSubChatTurn, deleteCliRecord, recordUuid, ownedRoots, verifiedRoot, probeRoot, stopTerminal, pickDirectory,
@@ -291,7 +293,7 @@ const STATIC = {
   '/dock.js': 'public/dock.js', '/preview.js': 'public/preview.js', '/vault.js': 'public/vault.js',
   '/projects.js': 'public/projects.js', '/project-forms.js': 'public/project-forms.js', '/project-plan-form.js': 'public/project-plan-form.js',
   '/project-board.js': 'public/project-board.js', '/project-task-form.js': 'public/project-task-form.js', '/project-flow.js': 'public/project-flow.js',
-  '/project-floorplan.js': 'public/project-floorplan.js', '/project-terminals.js': 'public/project-terminals.js', '/projects.css': 'public/projects.css',
+  '/project-harness-ui.js': 'public/project-harness-ui.js', '/project-floorplan.js': 'public/project-floorplan.js', '/project-terminals.js': 'public/project-terminals.js', '/projects.css': 'public/projects.css',
   '/xterm.js': 'node_modules/@xterm/xterm/lib/xterm.js', '/xterm.css': 'node_modules/@xterm/xterm/css/xterm.css',
   '/addon-fit.js': 'node_modules/@xterm/addon-fit/lib/addon-fit.js', '/mermaid.js': 'node_modules/mermaid/dist/mermaid.min.js',
   '/icon-claude.png': 'public/icon-claude.png', '/icon-openai.png': 'public/icon-openai.png',

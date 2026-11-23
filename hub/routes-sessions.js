@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const { resolveTaskConfig, buildTaskHarnessPrompt } = require('./project-harness');
 
 const OV_TTL = 2500;
 
@@ -268,11 +269,13 @@ function createSessionRoutes(hub) {
       if (!task) return send(res, 404, { error: 'Project 작업을 찾을 수 없습니다.' });
       if (task.stage === 'done') return send(res, 409, { error: '완료된 작업입니다. 상태를 바꾼 뒤 시작하세요.' });
       projectTask = { projectId: project.id, taskId: task.id };
-      const parentTask = task.parentId ? project.tasks.find((x) => x.id === task.parentId) : null;
-      const kind = task.agent || parentTask?.agent || project.agent || 'codex';
-      const accountId = task.account ?? (parentTask && (!task.agent || task.agent === (parentTask.agent || project.agent)) ? parentTask.account : null) ?? (kind === (project.agent || 'codex') ? project.account : '');
-      const model = task.model || (parentTask && (!task.agent || task.agent === (parentTask.agent || project.agent)) ? parentTask.model : '') || (kind === (project.agent || 'codex') ? project.model : '') || '';
-      const effort = task.effort || (parentTask && (!task.agent || task.agent === (parentTask.agent || project.agent)) ? parentTask.effort : '') || (kind === (project.agent || 'codex') ? project.effort : '') || '';
+      const harnessState = hub.projectHarness?.get ? hub.projectHarness.get() : null;
+      const resolved = resolveTaskConfig(project, task, harnessState);
+      const parentTask = resolved.parent;
+      const kind = resolved.agent;
+      const accountId = resolved.account;
+      const model = resolved.model;
+      const effort = resolved.effort;
       const existing = [...hub.terms.values()].find((t) => t.exited === null && t.meta.projectTask?.projectId === project.id && t.meta.projectTask.taskId === task.id && hub.agentOf(t) === kind && (t.account?.id || '') === (accountId || ''));
       if (existing) {
         const result = await existing.spawnResult;
@@ -284,6 +287,8 @@ function createSessionRoutes(hub) {
       if (!path.isAbsolute(project.cwd) || !fs.statSync(project.cwd, { throwIfNoEntry: false })?.isDirectory()) return send(res, 400, { error: '작업 설계에서 존재하는 작업 폴더의 전체 경로를 입력하세요.' });
       b = { kind, cwd: project.cwd, title: parentTask ? `${parentTask.title} › ${task.title}` : task.title, skipPermissions: true, model, effort };
       const parts = parentTask ? [`[상위 작업: ${parentTask.title}]`, parentTask.detail ? parentTask.detail.slice(0, 600) : '', `[서브 개발 작업: ${task.title}]`, task.detail] : [task.title, task.detail];
+      const harnessBlock = buildTaskHarnessPrompt(project, task, kind, harnessState);
+      if (harnessBlock) parts.push(harnessBlock);
       projectPrompt = fingerprint(parts.filter(Boolean).join('\n\n'));
       try { launchAccount = hub.projectAccounts.resolve(kind, accountId); } catch (e) { return send(res, 400, { error: e.message }); }
     }
