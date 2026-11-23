@@ -1,0 +1,528 @@
+'use strict';
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { spawn } = require('child_process');
+const { createAgyQuotaService } = require('./agy-quota');
+const { findAgySwapExe, createAgySwapService } = require('./agy-swap');
+
+const EFFORT_LABELS = {
+  '': 'CLI 기본값',
+  minimal: '최소 (minimal)',
+  low: '낮음 (low)',
+  medium: '보통 (medium)',
+  high: '높음 (high)',
+  xhigh: '매우 높음 (xhigh)',
+  ultra: '울트라 (ultra)',
+  max: '최대 (max)',
+};
+
+/** Create AI usage relay, multi-platform account switching, and CLI option catalog service. */
+function createAccountSwitchService(hub) {
+  const {
+    baseDir, config, index, projects, accountPrefs, CA,
+    cliModelEffortArgs, cleanModelEffort, fingerprint,
+  } = hub;
+
+  const USAGE_URL = process.env.CCD_USAGE_URL || config.usageUrl || 'http://127.0.0.1:4777';
+  const USAGE_DIR = (() => {
+    const localDir = path.resolve(baseDir, '..', 'ai-usage');
+    return process.env.CCD_USAGE_DIR || (config.usageDir && path.resolve(baseDir, config.usageDir)) || (fs.existsSync(localDir) ? localDir : path.join(os.homedir(), 'ai-usage-dashboard'));
+  })();
+
+  const agyExe = () => [config.agy, path.join(os.homedir(), 'AppData', 'Local', 'agy', 'bin', 'agy.exe')].find((f) => f && fs.existsSync(f)) || 'agy.exe';
+  const agyQuota = createAgyQuotaService({ file: path.join(baseDir, 'agy-quota.json'), agyExe, envFn: () => hub.cleanEnv() });
+  const agySwapExe = () => findAgySwapExe(config.agySwap);
+  const agySwap = createAgySwapService({ exeFn: agySwapExe, envFn: () => hub.cleanEnv() });
+  const codexExe = () => CA.codexExe(config.codex);
+
+  let usageCache = { at: 0, data: null };
+  let usageServerUp = false, usageCheckAt = 0;
+
+  async function checkUsageServer(force = false) {
+    if (!force && Date.now() - usageCheckAt < 5000) return usageServerUp;
+    usageCheckAt = Date.now();
+    try {
+      const u = new URL(USAGE_URL);
+      usageServerUp = await new Promise((resolve) => {
+        const sock = require('net').createConnection({ host: u.hostname || '127.0.0.1', port: Number(u.port) || 4777 });
+        const done = (ok) => { try { sock.destroy(); } catch {} resolve(ok); };
+        sock.setTimeout(350, () => done(false));
+        sock.once('connect', () => done(true));
+        sock.once('error', () => done(false));
+      });
+    } catch { usageServerUp = false; }
+    return usageServerUp;
+  }
+
+  async function startUsageServer() {
+    if (await checkUsageServer(true)) return { ok: true, alreadyRunning: true, url: USAGE_URL };
+    const entry = path.join(USAGE_DIR, 'server.js');
+    if (!fs.existsSync(entry)) return { ok: false, error: `AI 사용량 서버 파일(${entry})을 찾을 수 없습니다.` };
+    try {
+      spawn(process.execPath, ['--no-warnings', '--use-system-ca', entry], {
+        cwd: USAGE_DIR, detached: true, windowsHide: true, stdio: 'ignore',
+      }).unref();
+    } catch (e) {
+      return { ok: false, error: `AI 사용량 서버 시작 실패: ${e.message}` };
+    }
+    for (let i = 0; i < 16; i++) {
+      await hub.sleep(250);
+      if (await checkUsageServer(true)) {
+        usageCache = { at: 0, data: null };
+        hub.overviewStale();
+        return { ok: true, started: true, url: USAGE_URL };
+      }
+    }
+    return { ok: false, error: `AI 사용량 서버(${USAGE_URL})가 시작되었으나 응답하지 않습니다.` };
+  }
+
+  function ensureTrayMonitor() {
+    if (process.platform !== 'win32') return false;
+    const trayScript = path.resolve(baseDir, '..', 'tray.ps1');
+    if (!fs.existsSync(trayScript)) return false;
+    try {
+      spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', trayScript], {
+        cwd: path.dirname(trayScript), detached: true, windowsHide: true, stdio: 'ignore',
+      }).unref();
+      return true;
+    } catch { return false; }
+  }
+
+  async function aiUsage(force) {
+    if (!force && usageCache.data && Date.now() - usageCache.at < 60_000) return usageCache.data;
+    try {
+      const r = await fetch(`${USAGE_URL}/api/usage${force ? '?force=1' : ''}`, { signal: AbortSignal.timeout(45_000) });
+      const j = await r.json();
+      const data = {
+        available: true, generatedAt: j.generatedAt,
+        accounts: (j.accounts || []).map((a) => ({
+          id: a.id, provider: a.provider, label: a.label, plan: a.plan, ok: a.ok, live: a.live,
+          email: a.email, error: a.error, notes: a.notes || [], fetchedAt: a.fetchedAt,
+          billing: a.billing ? { label: a.billing.label, at: a.billing.at } : null,
+          meters: (a.meters || []).map((m) => ({ name: m.name, usedPercent: m.usedPercent, resetsAt: m.resetsAt, detail: m.detail, headline: m.headline })),
+        })),
+      };
+      usageCache = { at: Date.now(), data };
+      return data;
+    } catch (e) {
+      return usageCache.data ? { ...usageCache.data, stale: true } : { available: false, error: `AI 사용량 대시보드(${USAGE_URL})에 연결할 수 없음: ${e.message}` };
+    }
+  }
+
+  function readUsageAccounts() {
+    try { return JSON.parse(fs.readFileSync(path.join(USAGE_DIR, 'accounts.json'), 'utf8')).accounts || []; } catch { return []; }
+  }
+
+  function tokenAccounts() {
+    return readUsageAccounts().filter((a) => (a.type === 'claude-token' && (a.token || a.tokenPath)) || (a.type === 'claude' && a.credentialsPath)).map((a) => ({
+      id: a.id, label: a.label, type: a.type, credentialsPath: a.credentialsPath,
+      token: () => (a.type === 'claude-token' ? (a.token || fs.readFileSync(a.tokenPath, 'utf8')).trim() : null),
+    }));
+  }
+
+  function geminiAccounts() {
+    return readUsageAccounts().filter((a) => a.type === 'gemini').map((a) => ({
+      id: a.id, label: a.label,
+      apiKey: () => { try { return (a.apiKey || (a.keyPath && fs.readFileSync(a.keyPath, 'utf8')) || '').trim() || null; } catch { return null; } },
+    }));
+  }
+
+  function agySwapProjectAccounts() {
+    return (agySwap.getFast().accounts || []).map((a) => {
+      const base = a.name ? `${a.name} (${a.email})` : a.email;
+      return { id: a.id, label: a.active ? `● ${base} (현재 활성)` : base, email: a.email };
+    });
+  }
+
+  async function ensureAgySwap(auth) {
+    if (auth?.switchAgySwap && agySwap.available()) {
+      await agySwap.switchTo(auth.switchAgySwap);
+      agyQuota.noteAccount(auth.switchAgySwap);
+    }
+  }
+
+  const projectAccounts = require('./project-accounts')({
+    claude: tokenAccounts, codex: () => CA.accounts(USAGE_DIR), agy: () => [...agySwapProjectAccounts(), ...geminiAccounts()], codexEnv: CA.envFor,
+  });
+
+  function codexLaunch(extra = []) {
+    const exe = codexExe();
+    const pre = /plugin-appserver/i.test(exe) ? ['--no-daemon'] : [];
+    return /\.cmd$/i.test(exe) ? { cmd: 'cmd.exe', args: ['/c', exe, ...pre, ...extra] } : { cmd: exe, args: [...pre, ...extra] };
+  }
+
+  const meterPct = (acc, re) => { const m = (acc?.meters || []).find((x) => re.test(x.name)); return m ? m.usedPercent : null; };
+
+  async function switchCandidates(currentId) {
+    const u = await aiUsage(false);
+    const usageById = new Map((u.accounts || []).map((a) => [a.id, a]));
+    const localUsage = (u.accounts || []).find((a) => a.provider === 'Claude' && a.live && /Claude Code/.test(a.label));
+    const list = [{ id: 'default', label: 'Claude Code (이 PC)', usage: localUsage },
+      ...tokenAccounts().map((a) => ({ id: a.id, label: a.label, usage: usageById.get(a.id) }))];
+    const emailOf = (c) => (c.usage?.email || (c.id === 'default' ? null : c.label) || '').toLowerCase() || null;
+    const curEmail = list.find((c) => c.id === currentId) && emailOf(list.find((c) => c.id === currentId));
+    const out = list.map((c) => {
+      const fiveH = meterPct(c.usage, /5시간/), weekly = meterPct(c.usage, /주간 \(전체|주간/);
+      const known = c.usage?.ok && (fiveH !== null || weekly !== null);
+      const score = known ? Math.min(100 - (fiveH ?? 0), 100 - (weekly ?? 0)) : 50;
+      const reset = (c.usage?.meters || []).find((m) => /5시간/.test(m.name))?.resetsAt || null;
+      const current = !!currentId && (c.id === currentId || (!!curEmail && emailOf(c) === curEmail));
+      return { id: c.id, agent: 'claude', provider: 'Claude', label: c.label, fiveH, weekly, score, reset, current, sameAccount: current && c.id !== currentId, usable: c.usage?.ok !== false && score > 0 };
+    });
+    const best = out.filter((c) => c.usable && !c.current).sort((a, b) => b.score - a.score || (a.weekly ?? 0) - (b.weekly ?? 0))[0];
+    if (best) best.best = true;
+    return { candidates: out, stale: !!u.stale, usageAvailable: u.available !== false };
+  }
+
+  async function codexCandidates(currentId) {
+    const u = await aiUsage(false);
+    const ranked = CA.rank(CA.accounts(USAGE_DIR), u);
+    const cur = currentId ? (ranked.find((a) => a.id === currentId) || (currentId === 'auto-codex' ? ranked.find((a) => a.main) : null)) : null;
+    const out = ranked.map((a) => {
+      const current = !!cur && (a.id === cur.id || (!!cur.email && a.email === cur.email));
+      return { id: a.id, agent: 'codex', provider: 'ChatGPT (Codex)', label: a.label || a.email, email: a.email, fiveH: a.fiveH, weekly: a.weekly, score: a.score, reset: a.reset, current, sameAccount: current && a.id !== cur.id, usable: a.usable };
+    });
+    const best = out.find((c) => c.usable && !c.current);
+    if (best) best.best = true;
+    return { candidates: out, stale: !!u.stale, usageAvailable: u.available !== false, codex: true };
+  }
+
+  function locateSession(sessionId, consoles) {
+    const s = hub.liveSessions().find((x) => x.sessionId === sessionId);
+    if (!s) return { live: false };
+    const c = consoles.find((x) => x.pids.includes(s.pid));
+    const t = c && [...hub.terms.values()].find((x) => x.pid && c.pids.includes(x.pid) && x.exited === null);
+    return { live: true, s, console: c, term: t, account: t?.account?.id || 'default' };
+  }
+
+  async function allSwitchCandidates({ sessionId = '', termId = '' }) {
+    const cons = (await hub.helperCall({ op: 'list' })).consoles || [];
+    const loc = sessionId ? locateSession(sessionId, cons) : { live: false };
+    const tt = termId ? [...hub.terms.values()].find((x) => String(x.id) === String(termId)) : loc.term;
+    const d = sessionId ? index.get(sessionId) : (tt && hub.isCodexTerm(tt) ? hub.codexDocOf(tt) : null);
+    const sourceAgent = tt ? (hub.isCodexTerm(tt) ? 'codex' : hub.isAgyTerm(tt) ? 'agy' : 'claude') : (d?.agent || 'claude');
+    const isLive = tt ? tt.exited === null : !!loc.live;
+    const curClaudeId = isLive && sourceAgent === 'claude' ? (tt?.account?.id || loc.account || 'default') : null;
+    const curCodexId = isLive && sourceAgent === 'codex' ? (tt?.account?.id || 'auto-codex') : null;
+    const curAgyId = isLive && sourceAgent === 'agy' ? (tt?.account?.id || 'agy-cli') : null;
+    const curAgyEmail = isLive && sourceAgent === 'agy' ? (tt?.account?.email || null) : null;
+
+    const [clRes, cxRes, u] = await Promise.all([switchCandidates(curClaudeId), codexCandidates(curCodexId), aiUsage(false)]);
+    let swapAccounts = agySwap.getFast().accounts || [];
+    if (agySwap.available() && !swapAccounts.length) {
+      try { swapAccounts = (await agySwap.refresh({ force: false })).accounts || []; } catch {}
+    }
+    const agyQ = agyQuota.get();
+    const agyG0 = agyQ?.groups?.[0];
+    const agyFiveH = agyG0?.fiveH ?? null;
+    const agyWeekly = agyG0?.weekly ?? null;
+    const agyStale = !agyQ?.fetchedAt || (Date.now() - Date.parse(agyQ.fetchedAt)) > 6 * 3600e3;
+    const agyScore = (!agyStale && (agyFiveH != null || agyWeekly != null)) ? Math.min(100 - (agyFiveH ?? 0), 100 - (agyWeekly ?? 0)) : 80;
+    const swapCands = swapAccounts.map((a) => {
+      const g0 = a.groups?.[0];
+      const fiveH = g0?.fiveH ?? null;
+      const weekly = g0?.weekly ?? null;
+      const known = fiveH != null || weekly != null;
+      const score = known ? Math.min(100 - (fiveH ?? 0), 100 - (weekly ?? 0)) : 80;
+      const current = isLive && sourceAgent === 'agy' && (curAgyEmail ? curAgyEmail.toLowerCase() === a.email.toLowerCase() : (curAgyId === a.id || (curAgyId === 'agy-cli' && a.active)));
+      return {
+        id: a.id, agent: 'agy', provider: 'Antigravity (agy-swap)',
+        label: a.name ? `${a.name} (${a.email})` : a.email, email: a.email,
+        fiveH, weekly, score, reset: g0?.fiveHResetAt || null, active: !!a.active,
+        current, sameAccount: false, usable: !known || score > 0,
+      };
+    });
+    const agyCands = [
+      ...(swapCands.length ? swapCands : [{
+        id: 'agy-cli', agent: 'agy', provider: 'Antigravity (Gemini)',
+        label: agyQ?.account ? `Antigravity (${agyQ.account})` : 'Antigravity IDE / CLI',
+        fiveH: agyFiveH, weekly: agyWeekly, score: agyScore,
+        current: curAgyId === 'agy-cli', sameAccount: false, usable: agyStale || agyScore > 0,
+      }]),
+      ...geminiAccounts().map((g) => {
+        const gu = (u.accounts || []).find((a) => a.id === g.id);
+        return {
+          id: g.id, agent: 'agy', provider: 'Gemini (Antigravity)',
+          label: `${g.label} (Gemini)`,
+          fiveH: agyFiveH, weekly: agyWeekly, score: agyScore,
+          current: curAgyId === g.id, sameAccount: false, usable: gu?.ok !== false,
+        };
+      }),
+    ];
+
+    const groups = {
+      claude: clRes.candidates.map((c) => ({ ...c, best: false })),
+      codex: cxRes.candidates.map((c) => ({ ...c, best: false })),
+      agy: agyCands.map((c) => ({ ...c, best: false })),
+    };
+    const order = sourceAgent === 'codex' ? ['codex', 'claude', 'agy'] : sourceAgent === 'agy' ? ['agy', 'codex', 'claude'] : ['claude', 'codex', 'agy'];
+    const all = order.flatMap((k) => groups[k]);
+    const bestSame = groups[sourceAgent].filter((c) => c.usable && !c.current).sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
+    const bestAny = all.filter((c) => c.usable && !c.current).sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
+    if (bestSame) bestSame.best = true;
+    else if (bestAny) bestAny.best = true;
+
+    return {
+      candidates: all, sourceAgent, stale: !!(clRes.stale || cxRes.stale), usageAvailable: clRes.usageAvailable,
+      live: isLive, fresh: !!tt && !sessionId && !d, busy: loc.s?.status === 'busy',
+      where: tt ? `t:${tt.id}` : loc.console ? `c:${loc.console.id}` : null,
+    };
+  }
+
+  function writeHandoffFile({ sessionId, d, t0, sourceAgent, targetAgent, cwd }) {
+    const dir = path.join(baseDir, 'uploads');
+    fs.mkdirSync(dir, { recursive: true });
+    const tag = (sessionId || (t0 && `term-${t0.id}`) || String(Date.now())).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 16);
+    const file = path.join(dir, `handoff-${tag}.md`);
+    const lines = [
+      `# 세션 이어받기 맥락 (${sourceAgent.toUpperCase()} → ${targetAgent.toUpperCase()})`,
+      `- 원본 세션 ID: ${sessionId || (t0 ? `t:${t0.id}` : 'unknown')}`,
+      `- 작업 폴더: ${cwd || ''}`,
+      d?.title || d?.firstPrompt ? `- 세션 제목: ${(d.title || d.firstPrompt).split('\n')[0]}` : '',
+      '', '## 최근 대화 기록 (직전 맥락)',
+    ].filter((x) => x !== null);
+    if (d?.msgs?.length) {
+      for (const m of d.msgs.filter((m) => !String(m.text || '').startsWith('⚙')).slice(-10)) {
+        const who = m.role === 'user' ? '사용자 (User)' : `이전 에이전트 (${sourceAgent})`;
+        const txt = String(m.text || '').replace(/<external_codex_apps_[^>]*>[\s\S]*?<\/external_codex_apps_[^>]*>/gi, '').trim().slice(0, 1500);
+        if (txt) lines.push(`\n### [${who}]\n${txt}`);
+      }
+    } else if (t0) {
+      const scr = hub.readTerm(t0, 60).join('\n').trim();
+      if (scr) lines.push('\n```text\n' + scr.slice(-3000) + '\n```');
+    }
+    fs.writeFileSync(file, lines.join('\n') + '\n', 'utf8');
+    return file;
+  }
+
+  function launchExternalWindow({ cwd, title, cmd, args = [], env = {}, openMode = 'external' }) {
+    const workCwd = (cwd && fs.existsSync(cwd)) ? cwd : os.homedir();
+    if (openMode === 'ide') {
+      const ideExe = [
+        path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'antigravity', 'Antigravity.exe'),
+        path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'cursor', 'Cursor.exe'),
+      ].find((f) => fs.existsSync(f)) || agyExe();
+      spawn(ideExe, [workCwd], { cwd: workCwd, env: { ...process.env, ...env }, detached: true, stdio: 'ignore', windowsHide: false }).unref();
+      return { ok: true, external: true, openMode: 'ide' };
+    }
+    const q = (s) => (/\s|[&()^|<>"]/.test(String(s)) ? `"${String(s).replace(/"/g, '\\"')}"` : String(s));
+    const safeTitle = String(title || 'Agent CLI').replace(/["^&|<>]/g, '');
+    spawn('cmd.exe', ['/c', 'start', `"${safeTitle}"`, '/d', workCwd, 'cmd.exe', '/k', [q(cmd), ...args.map(q)].join(' ')], {
+      cwd: workCwd, env: { ...process.env, ...env }, detached: true, stdio: 'ignore', windowsHide: false,
+    }).unref();
+    return { ok: true, external: true, openMode: 'external' };
+  }
+
+  async function switchAccount({ sessionId, termId, account = 'auto', model = '', effort = '', cont = false, skip = true, interrupt = false, force = false, openMode = 'dashboard' }) {
+    let t0 = termId != null && termId !== '' ? [...hub.terms.values()].find((x) => String(x.id) === String(termId)) : null;
+    let sid = sessionId || (t0 && hub.termSessionId(t0)) || '';
+    if (!t0 && sid) t0 = [...hub.terms.values()].find((x) => x.exited === null && hub.termSessionId(x) === sid) || null;
+    const d = sid ? index.get(sid) : (t0 ? hub.termDocOf(t0) : null);
+    if (d) { sid = sid || d.id; if (d.file) await index.updateFile(d.file); }
+
+    const cons = (await hub.helperCall({ op: 'list' })).consoles || [];
+    const loc = sid ? locateSession(sid, cons) : { live: false };
+    const { candidates, sourceAgent } = await allSwitchCandidates({ sessionId: sid, termId: t0?.id });
+    const reqME = cleanModelEffort(model, effort);
+    const cliDirect = /^__cli__:(claude|codex|agy)$/.exec(String(account || ''));
+    const pick = account === 'auto'
+      ? (candidates.find((c) => c.best) || candidates.find((c) => c.usable && !c.current))
+      : cliDirect
+        ? (candidates.find((c) => c.agent === cliDirect[1] && c.current) || candidates.find((c) => c.agent === cliDirect[1]) || { id: 'default', agent: cliDirect[1], label: `${cliDirect[1]} (기본)` })
+        : candidates.find((c) => c.id === account);
+    if (!pick) return { ok: false, error: account === 'auto' ? '여유 있는 다른 계정이 없습니다 (AI 사용량 확인)' : '선택한 계정을 찾을 수 없습니다' };
+
+    const targetAgent = pick.agent || 'claude';
+    const samePlatform = sourceAgent === targetAgent;
+    const savedME = accountPrefs.getForAccount(pick.id, targetAgent);
+    const useME = cleanModelEffort(model === undefined ? savedME.model : reqME.model, effort === undefined ? savedME.effort : reqME.effort);
+    if (model !== undefined || effort !== undefined) accountPrefs.save({ account: pick.id, agent: targetAgent, model: useME.model, effort: useME.effort });
+    const cwd = d?.cwd || t0?.cwd || loc.s?.cwd || os.homedir();
+
+    let handoffPrompt = null;
+    if (!samePlatform && (d?.msgs?.length || t0)) {
+      const hf = writeHandoffFile({ sessionId: sid, d, t0, sourceAgent, targetAgent, cwd });
+      handoffPrompt = cont
+        ? `이전 ${sourceAgent.toUpperCase()} 세션의 작업을 이어받았습니다. "${hf}" 파일에 정리된 직전 대화 맥락을 먼저 읽고, 마지막으로 논의하던 작업을 바로 이어서 진행해 주세요.`
+        : `이전 ${sourceAgent.toUpperCase()} 세션에서 작업을 넘겨받았습니다. "${hf}" 파일에 정리된 직전 대화 맥락을 먼저 읽고, 현재까지의 진행 상황을 간단히 파악한 뒤 다음 지시를 기다려 주세요.`;
+    }
+
+    const inheritedProjectTask = t0?.meta?.projectTask || null;
+    if (t0 && inheritedProjectTask) {
+      if (d?.file) await index.updateFile(d.file).catch(() => {});
+      hub.rememberProjectTerm(t0);
+      if (sid) projects.remember([{ projectId: inheritedProjectTask.projectId, taskId: inheritedProjectTask.taskId, sessionId: sid, agent: sourceAgent, accountId: t0.account?.id, tokens: index.get(sid)?.tokens }]);
+    }
+
+    const matchingTerms = [...hub.terms.values()].filter((x) => (t0 && x.id === t0.id) || (sid && hub.termSessionId(x) === sid));
+    if (matchingTerms.length && openMode === 'dashboard') {
+      for (const tm of matchingTerms) {
+        if (tm.exited === null) {
+          if (hub.isCodexTerm(tm)) { tm.proc.write('\x03'); await hub.sleep(350); tm.proc.write('\x03'); }
+          else if (hub.isAgyTerm(tm)) { tm.proc.write('\x03'); await hub.sleep(250); tm.proc.write('/exit'); await hub.sleep(hub.SUBMIT_DELAY); tm.proc.write('\r'); }
+          else { tm.proc.write('\x1b'); await hub.sleep(350); tm.proc.write('/exit'); await hub.sleep(hub.SUBMIT_DELAY); tm.proc.write('\r'); }
+          if (!(await hub.waitFor(() => tm.exited !== null, 4500))) try { tm.proc.kill(); } catch {}
+        }
+        hub.forgetTerm(tm);
+      }
+    } else if (loc.live && openMode === 'dashboard') {
+      if (loc.s.status === 'busy' && !interrupt) return { ok: false, busy: true, error: '세션이 작업 중입니다. 중단하고 전환할까요?' };
+      const gone = () => !hub.pidAlive(loc.s.pid) || (loc.term && loc.term.exited !== null);
+      if (loc.term) {
+        loc.term.proc.write('\x1b'); await hub.sleep(1000); loc.term.proc.write('/exit'); await hub.sleep(hub.SUBMIT_DELAY); loc.term.proc.write('\r');
+        if (!(await hub.waitFor(gone, 8000))) try { loc.term.proc.kill(); } catch {}
+        await hub.waitFor(gone, 5000);
+        hub.forgetTerm(loc.term);
+      } else if (loc.console) {
+        if (!force) {
+          await hub.helperCall({ op: 'send', pid: loc.console.id, keys: ['esc'] }); await hub.sleep(1000);
+          await hub.helperCall({ op: 'send', pid: loc.console.id, text: '/exit' }); await hub.sleep(hub.SUBMIT_DELAY);
+          await hub.helperCall({ op: 'send', pid: loc.console.id, keys: ['enter'] });
+        }
+        if (!(await hub.waitFor(gone, force ? 1000 : 15000))) {
+          if (!force) return { ok: false, stuck: true, error: '기존 창의 프로세스가 /exit에 반응하지 않습니다. 강제 종료하고 전환할까요? (대화 기록은 보존됨)' };
+          try { process.kill(loc.s.pid); } catch {}
+          if (!(await hub.waitFor(gone, 8000))) return { ok: false, error: `기존 프로세스(pid ${loc.s.pid})를 종료하지 못했습니다.` };
+        }
+      }
+    }
+
+    let cmd, args = [], env = {};
+    if (targetAgent === 'codex') {
+      const acc = CA.accounts(USAGE_DIR).find((a) => a.id === pick.id);
+      env = CA.envFor(acc);
+      ({ cmd, args } = codexLaunch([
+        ...(skip ? ['--dangerously-bypass-approvals-and-sandbox'] : []),
+        ...cliModelEffortArgs('codex', useME.model, useME.effort),
+        ...(samePlatform && sid ? ['resume', sid, ...(cont ? ['계속 진행해'] : [])] : samePlatform && t0 ? ['resume', '--last', ...(cont ? ['계속 진행해'] : [])] : handoffPrompt ? [handoffPrompt] : []),
+      ]));
+    } else if (targetAgent === 'agy') {
+      cmd = agyExe();
+      if (String(pick.id).startsWith('agyswap:')) {
+        try {
+          await agySwap.switchTo(pick.email || pick.id);
+          agyQuota.noteAccount(pick.email || String(pick.id).slice(8));
+          agyQuota.refresh({ force: true }).catch(() => {});
+        } catch (e) { return { ok: false, error: `Antigravity 계정 전환 실패: ${e.message}` }; }
+      } else {
+        const gKey = geminiAccounts().find((a) => a.id === pick.id)?.apiKey?.();
+        if (gKey) env = { GEMINI_API_KEY: gKey, GOOGLE_API_KEY: gKey };
+      }
+      if (samePlatform && sid) args.push('--conversation', sid);
+      if (skip) args.push('--dangerously-skip-permissions');
+      args.push(...cliModelEffortArgs('agy', useME.model, useME.effort));
+      const agyPrompt = !samePlatform ? handoffPrompt : (cont && sid ? '계속 진행해' : null);
+      if (agyPrompt) args.push('--prompt-interactive', agyPrompt);
+    } else {
+      cmd = 'claude.exe';
+      if (pick.id !== 'default') {
+        const acc = tokenAccounts().find((a) => a.id === pick.id);
+        if (acc?.type === 'claude' && acc.credentialsPath) env.CLAUDE_CONFIG_DIR = path.dirname(acc.credentialsPath);
+        else if (acc) try { env.CLAUDE_CODE_OAUTH_TOKEN = acc.token(); } catch (e) { return { ok: false, error: `토큰을 읽지 못함: ${e.message}` }; }
+      }
+      if (samePlatform && sid) args.push('--resume', sid);
+      if (skip) args.push('--dangerously-skip-permissions');
+      args.push(...cliModelEffortArgs('claude', useME.model, useME.effort));
+    }
+
+    const short = (pick.email || pick.label || targetAgent).replace(/@.*/, '');
+    const baseTitle = d?.title || d?.firstPrompt?.split('\n')[0].slice(0, 36) || (t0 ? String(t0.title || targetAgent).replace(/ [⇄·] .*$/, '') : sid ? sid.slice(0, 8) : targetAgent);
+    const title = `${baseTitle} ⇄ ${short}`;
+
+    if (openMode === 'external' || openMode === 'ide') {
+      launchExternalWindow({ cwd, title, cmd, args, env, openMode });
+      return { ok: true, external: true, openMode, account: { id: pick.id, label: pick.label, agent: targetAgent, fiveH: pick.fiveH, weekly: pick.weekly } };
+    }
+
+    let project = null;
+    if (samePlatform && targetAgent === 'claude' && sid) {
+      try { project = require('../research-harness/lib/project').listProjects().find((p) => p.state.director_session_id === sid) || null; } catch {}
+      if (project) Object.assign(env, { RESEARCH_ROLE: 'director', CLAUDE_CODE_STOP_HOOK_BLOCK_CAP: '200' });
+    }
+    const t = hub.createTerm({
+      cwd, cmd, args, env, title,
+      account: { id: pick.id, label: pick.label, kind: targetAgent, ...(pick.email ? { email: pick.email } : {}) },
+      model: useME.model, effort: useME.effort, research: project ? project.dir : null,
+      projectTask: inheritedProjectTask || undefined,
+      projectPrompt: inheritedProjectTask ? (handoffPrompt ? fingerprint(handoffPrompt) : t0?.meta?.projectPrompt) : undefined,
+    });
+    if (t0) {
+      const favs = hub.loadFavs();
+      if (favs.includes(`term:${t0.id}`)) fs.writeFileSync(hub.FAV_FILE, JSON.stringify(favs.map((k) => (k === `term:${t0.id}` ? `term:${t.id}` : k))));
+    }
+    if (project) {
+      t.research = project.dir;
+      require('../research-harness/lib/project').updateState(project.dir, (s) => {
+        s.director_account = pick.id === 'default' ? null : pick.id;
+        s.status = 'running'; s.wake_at = null; s.wait_reason = ''; s.limited = false; s.limit_notice_at = null;
+      });
+    }
+
+    const promptToSend = targetAgent === 'claude' ? (!samePlatform && handoffPrompt ? handoffPrompt : (cont && samePlatform && sid ? '계속 진행해' : null)) : null;
+    if (promptToSend) (async () => {
+      if (await hub.waitFor(() => t.exited === null && hub.inputReady(t), 45000, 700)) {
+        await hub.sleep(600);
+        t.proc.write(promptToSend); await hub.sleep(hub.SUBMIT_DELAY); t.proc.write('\r');
+      }
+    })();
+
+    return {
+      ok: true, term: hub.termInfo(t),
+      account: { id: pick.id, label: pick.label, agent: targetAgent, fiveH: pick.fiveH, weekly: pick.weekly },
+      crossPlatform: !samePlatform,
+      stopped: t0 ? `t:${t0.id}` : loc.live ? (loc.term ? `t:${loc.term.id}` : `c:${loc.console?.id}`) : null,
+    };
+  }
+
+  function readCodexConfigDefaults() {
+    try {
+      const raw = fs.readFileSync(path.join(os.homedir(), '.codex', 'config.toml'), 'utf8');
+      const model = /^\s*model\s*=\s*"([^"]+)"/m.exec(raw)?.[1] || '';
+      const effort = /^\s*model_reasoning_effort\s*=\s*"([^"]+)"/m.exec(raw)?.[1] || '';
+      const enM = /enabled-reasoning-efforts\s*=\s*\[([^\]]+)\]/m.exec(raw);
+      const enabled = enM ? enM[1].match(/"([^"]+)"/g)?.map((s) => s.slice(1, -1)) : null;
+      return { model, effort, enabled };
+    } catch { return { model: '', effort: '', enabled: null }; }
+  }
+
+  function projectCliOptions() {
+    const cx = readCodexConfigDefaults();
+    const cxModels = [
+      ...(cx.model ? [{ id: cx.model, label: `${cx.model} (현재 기본)` }] : []),
+      { id: 'gpt-6.1-sol', label: 'gpt-6.1-sol' }, { id: 'gpt-5.4', label: 'gpt-5.4' },
+      { id: 'gpt-5.4-mini', label: 'gpt-5.4-mini' }, { id: 'o3', label: 'o3' }, { id: 'o4-mini', label: 'o4-mini' },
+    ].filter((m, i, arr) => arr.findIndex((x) => x.id === m.id) === i);
+    const cxEffortIds = ['', ...(cx.enabled?.length ? cx.enabled : ['low', 'medium', 'high', 'xhigh', 'max'])];
+    const claudeModels = [
+      { id: 'opus', label: 'Claude Opus (최신)' }, { id: 'sonnet', label: 'Claude Sonnet (최신)' }, { id: 'haiku', label: 'Claude Haiku (최신)' },
+      { id: 'claude-opus-4-6', label: 'claude-opus-4-6' }, { id: 'claude-sonnet-4-6', label: 'claude-sonnet-4-6' },
+    ];
+    const agyDefaultModels = [
+      { id: 'gemini-4-neon-high', label: 'Gemini 4 Neon (High)' }, { id: 'gemini-4-neon-xhigh', label: 'Gemini 4 Neon (XHigh)' },
+      { id: 'gemini-4-neon-medium', label: 'Gemini 4 Neon (Medium)' }, { id: 'gemini-4-argon-high', label: 'Gemini 4 Argon (High)' },
+      { id: 'gemini-4-hydrogen-high', label: 'Gemini 4 Hydrogen (High)' }, { id: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' },
+      { id: 'claude-opus-5-5-high', label: 'Claude Opus 5.5 (High)' }, { id: 'claude-sonnet-5-5-high', label: 'Claude Sonnet 5.5 (High)' },
+      { id: 'gpt-oss-120b-medium', label: 'GPT-OSS 120B (Medium)' },
+    ];
+    const mapEff = (ids) => [...new Set(ids)].map((id) => ({ id, label: EFFORT_LABELS[id] || id }));
+    return {
+      codex: { models: cxModels, efforts: mapEff(cxEffortIds), defaultModel: cx.model, defaultEffort: cx.effort },
+      claude: { models: claudeModels, efforts: mapEff(['', 'low', 'medium', 'high', 'xhigh', 'max']), defaultModel: '', defaultEffort: '' },
+      agy: { models: agyDefaultModels, efforts: mapEff(['', 'low', 'medium', 'high', 'xhigh', 'max']), defaultModel: '', defaultEffort: '' },
+      cursor: { models: [], efforts: [{ id: '', label: EFFORT_LABELS[''] }], defaultModel: '', defaultEffort: '' },
+    };
+  }
+
+  return {
+    USAGE_URL, USAGE_DIR, agyExe, agyQuota, agySwapExe, agySwap, codexExe, codexLaunch,
+    checkUsageServer, startUsageServer, ensureTrayMonitor, aiUsage,
+    clearUsageCache: () => { usageCache = { at: 0, data: null }; },
+    tokenAccounts, geminiAccounts, ensureAgySwap, projectAccounts,
+    switchCandidates, codexCandidates, locateSession, allSwitchCandidates,
+    launchExternalWindow, switchAccount, projectCliOptions,
+  };
+}
+
+module.exports = { createAccountSwitchService };
