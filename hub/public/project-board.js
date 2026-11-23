@@ -1,6 +1,7 @@
 function openProjectTaskMenu(p, task, anchor, onMove) {
   if (!task) return;
   const ico = window.UI_ICO || {};
+  const running = projectTaskTerm(p, task);
   const moveItems = projectStages
     .filter(([st]) => st !== task.stage)
     .map(([st, label]) => ({
@@ -11,6 +12,7 @@ function openProjectTaskMenu(p, task, anchor, onMove) {
       },
     }));
   openMoreMenu(anchor, [
+    running || task.stage !== 'done' ? { label: running ? '터미널 열기' : '작업 시작', icon: ico.play || '', onClick: () => startProjectTask(p, task) } : null,
     ...moveItems,
     { divider: true },
     { label: '서브 개발 채팅 열기', icon: ico.chat || '', onClick: () => openProjectTaskDrawer(p, task, true) },
@@ -47,11 +49,10 @@ function projectBoard(p) {
     const subDone = subs.filter((x) => x.stage === 'done').length;
     const k = typeof taskKindOf === 'function' ? taskKindOf(t) : 'dev';
     const chatCnt = (p.subChats?.[t.id] || []).length;
-    const tokBadge = typeof taskTokenBadgeHTML === 'function' ? taskTokenBadgeHTML(p, t, true) : '';
     const menuAria = `${t.title} 메뉴`;
     return `<article class="pj-task" draggable="true" data-task="${esc(t.id)}" data-kind="${esc(k)}">
       <div class="row" style="justify-content:space-between;gap:6px">
-        <div class="row" style="gap:5px;min-width:0">${typeof kindBadgeHTML === 'function' ? kindBadgeHTML(t) : ''}${subs.length ? `<span class="badge" title="클릭해 하위 서브태스크 확인">서브 ${subDone}/${subs.length}</span>` : ''}${tokBadge}</div>
+        <div class="row" style="gap:5px;min-width:0">${typeof kindBadgeHTML === 'function' ? kindBadgeHTML(t) : ''}${subs.length ? `<span class="badge" title="클릭해 하위 서브태스크 확인">하위 ${subDone}/${subs.length}</span>` : ''}</div>
         <button class="ghost icon-btn btn-sm" data-task-more="${esc(t.id)}" aria-label="${esc(menuAria)}" aria-haspopup="menu" aria-expanded="false">${ico.more || '⋯'}</button>
       </div>
       <div class="pj-task-head">
@@ -59,7 +60,7 @@ function projectBoard(p) {
       </div>
       ${t.detail ? `<p class="pj-card-desc">${esc(t.detail)}</p>` : ''}
       <div class="pj-task-foot">
-        <div class="row" style="gap:5px;min-width:0">${projectCliBadgeHTML(p, t)}<button class="ghost btn-sm" data-subchat-task="${esc(t.id)}" title="서브 개발 채팅 열기" aria-label="서브 개발 채팅">${ico.chat || ''}${chatCnt ? ` ${chatCnt}` : ''}</button></div>
+        <button class="ghost btn-sm" data-subchat-task="${esc(t.id)}" title="서브 개발 채팅 열기" aria-label="서브 개발 채팅">${ico.chat || ''}${chatCnt ? ` ${chatCnt}` : ''}</button>
         ${projectStartBtnHTML(p, t)}
       </div>
     </article>`;
@@ -69,7 +70,7 @@ function projectBoard(p) {
     ? projectFlow(p)
     : `<div class="pj-board">${projectStages.map(([stage, label]) => {
       const items = topTasks.filter((t) => t.stage === stage);
-      return `<section data-drop="${stage}"><h2 class="pj-lane-hd">${label} <span class="badge">${items.length}</span></h2>${items.map(card).join('') || '<div class="pj-lane-empty">비어 있음</div>'}</section>`;
+      return `<section data-drop="${stage}"><h2 class="pj-lane-hd">${label} <span class="badge">${items.length}</span></h2>${items.map(card).join('') || '<div class="pj-lane-empty">작업을 여기로 이동</div>'}</section>`;
     }).join('')}</div>`;
   if (projectTab === 'flow') bindProjectFlow(p, viewGen);
   let saving = false;

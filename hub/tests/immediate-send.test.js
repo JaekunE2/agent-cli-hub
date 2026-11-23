@@ -1,8 +1,35 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { PTY_KEYS, dispatchImmediatePrompt } = require('../immediate-send');
+const { createSessionRoutes } = require('../routes-sessions');
 
 const noopSleep = () => Promise.resolve();
+
+test('sending from the Hub exits Codex history search before typing, once', async () => {
+  const prompt = '데스크톱 기준으로 다시 확인해 주세요';
+  const normal = ['reverse-i-search: previous search in scrollback', '› Ask Codex to do anything'];
+  for (const active of [true, false]) {
+    const lines = active ? ['› Ask Codex to do anything', '  reverse-i-search: no match', ''] : normal;
+    for (const target of ['term', 'console']) {
+      const writes = [];
+      const { handleSessionRoutes } = createSessionRoutes({
+        terms: new Map([['12', { exited: null, proc: { write: (text) => writes.push(text) } }]]),
+        isCodexTerm: () => true, readTerm: () => lines, touchUserInput: () => {},
+        consoleInputAt: new Map(), sleep: noopSleep, consoleSubmitDelay: () => 0, PTY_KEYS,
+        helperCall: async ({ op, keys, text }) => {
+          if (op === 'read') return { ok: true, lines };
+          if (text) writes.push(text);
+          for (const key of keys) writes.push(PTY_KEYS[key]);
+          return { ok: true };
+        },
+      });
+      const body = async () => ({ id: '12', pid: 12, text: prompt, submit: true });
+      const send = (_res, status, payload) => { assert.equal(status, 200); assert.equal(payload.ok, true); };
+      await handleSessionRoutes(`/api/${target}/send`, null, { method: 'POST' }, null, body, send, () => true);
+      assert.deepEqual(writes, active ? ['\x1b', prompt, '\r'] : [prompt, '\r']);
+    }
+  }
+});
 
 test('AGY sends Alt+M (\\x1bm) when alt+m to send immediately is visible without duplicating text', async () => {
   const writes = [];

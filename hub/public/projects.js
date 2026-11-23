@@ -1,7 +1,13 @@
 let projectId = '', projectTab = 'board';
 const projectStages = [['planned', '대기'], ['doing', '진행'], ['review', '검토'], ['done', '완료']];
 const projectTaskKinds = [['plan', '설계·기획'], ['dev', '개발·구현'], ['test', '테스트·검증'], ['review', '교차 리뷰·감사'], ['ops', '배포·문서']];
-const projectViews = [['design', '작업 설계'], ['board', '칸반 보드'], ['flow', '작업 흐름'], ['floorplan', '코드 구조'], ['terms', '터미널 모아보기']];
+const projectViews = [
+  ['design', '작업 설계', '목표와 작업을 정의하고 편집합니다.'],
+  ['board', '칸반 보드', '작업을 상태별로 보고 옮깁니다.'],
+  ['flow', '작업 흐름', '선행 작업과 의존성을 확인합니다.'],
+  ['floorplan', '코드 구조', '코드 구성과 주요 연결을 확인합니다.'],
+  ['terms', '터미널 모아보기', '이 프로젝트에서 열린 터미널을 확인합니다.'],
+];
 const newTaskId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, '0')).join('');
 
 function taskKindOf(t) {
@@ -572,8 +578,9 @@ async function viewProjects() {
         </div>
       </header>
       <div class="pj-toolbar">
-        <div class="tablist" role="tablist" aria-label="Project 보기">${projectViews.map(([id, label]) => `<button role="tab" data-pjtab="${id}" aria-selected="${projectTab === id}" class="${projectTab === id ? 'on' : ''}">${label}</button>`).join('')}</div>
+        <div class="tablist" role="tablist" aria-label="Project 보기">${projectViews.map(([id, label, description]) => `<button type="button" role="tab" data-pjtab="${id}" title="${description}" aria-selected="${projectTab === id}" class="${projectTab === id ? 'on' : ''}">${label}</button>`).join('')}</div>
       </div>
+      <p class="pj-view-description">${projectViews.find(([id]) => id === projectTab)[2]}</p>
       <div id="projectContent"></div>
     </div>`;
     $('#projectPick').onchange = e => openProject(e.target.value);

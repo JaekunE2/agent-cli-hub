@@ -340,7 +340,7 @@ function paintGpu() {
   const active = q.active || [], waiting = q.waiting || [], history = q.history || [];
   const validGpus = (q.gpus || []).filter((g) => g.index >= 0);
 
-  const tabs = `<div class="tablist" role="tablist" aria-label="GPU 대기열 보기">
+  const tabs = `<div class="tablist gpu-tabs" role="tablist" aria-label="GPU 대기열 보기">
     <button role="tab" data-gtab="queue" aria-selected="${tab === 'queue'}" class="${tab === 'queue' ? 'on' : ''}">작업 대기열 <span class="badge" style="margin-left:4px">${active.length + waiting.length}</span></button>
     <button role="tab" data-gtab="devices" aria-selected="${tab === 'devices'}" class="${tab === 'devices' ? 'on' : ''}">GPU · 서버 장치 <span class="badge" style="margin-left:4px">${validGpus.length + (q.servers?.length || 0)}</span></button>
     <button role="tab" data-gtab="history" aria-selected="${tab === 'history'}" class="${tab === 'history' ? 'on' : ''}">최근 기록 <span class="badge" style="margin-left:4px">${history.length}</span></button>
@@ -359,7 +359,11 @@ function paintGpu() {
         <button class="danger ghost btn-sm" data-gact="release" data-id="${esc(t.id)}">${t.adopted ? '등록 해제' : isWaiting ? '취소' : '해제'}</button>
       </div>
     </div>`;
-    content = `<h1 class="sr-only">GPU 대기열</h1>
+    content = !active.length && !waiting.length ? `<div class="h-empty-card">
+      <h2>GPU 작업이 없습니다</h2>
+      <span>${validGpus.length ? `감지된 GPU ${validGpus.length}개 · 사용 가능 ${validGpus.filter((g) => g.enabled !== false).length}개` : '감지된 GPU가 없습니다'}</span>
+      <button type="button" class="btn-sm" data-gtab="devices">GPU · 서버 장치 보기</button>
+    </div>` : `<h1 class="sr-only">GPU 대기열</h1>
       <section class="sheet">
         <div class="sheet-hd"><h2>사용 중 <span class="badge c">${active.length}</span></h2><span class="ums" style="margin:0">항목 클릭 시 상세 정보</span></div>
         ${active.map((t) => qRow(t, false)).join('') || '<div class="empty" style="padding:20px 16px">현재 GPU를 사용 중인 작업이 없습니다.</div>'}

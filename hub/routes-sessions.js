@@ -5,6 +5,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { resolveTaskConfig, buildTaskHarnessPrompt } = require('./project-harness');
+const { codexHistorySearchActive } = require('./immediate-send');
 
 const OV_TTL = 2500;
 
@@ -613,8 +614,15 @@ function createSessionRoutes(hub) {
       const b = await body(req);
       const pid = Number(b.pid);
       if (b.submit || b.immediate || b.text) hub.consoleInputAt.set(pid, Date.now());
-      if (b.immediate) {
-        const snap = await hub.helperCall({ op: 'read', pid, lines: 30 }).catch(() => null);
+      const snap = (b.immediate || (b.submit && b.text))
+        ? await hub.helperCall({ op: 'read', pid, lines: b.immediate ? 30 : 5 }).catch(() => null) : null;
+      const inHistorySearch = codexHistorySearchActive(snap?.lines || []);
+      if (inHistorySearch) {
+        const r = await hub.helperCall({ op: 'send', pid, keys: ['esc'] });
+        if (!r.ok) { send(res, 200, r); return true; }
+        await hub.sleep(hub.SUBMIT_DELAY);
+      }
+      if (b.immediate && !inHistorySearch) {
         const rawScr = String((snap?.lines || []).join('\n')).replace(/\s+/g, ' ');
         const tailScr = String((snap?.lines || []).slice(-10).join('\n')).replace(/\s+/g, ' ');
         const needle = String(b.text || '').trim().replace(/\s+/g, ' ').slice(0, 20);
@@ -661,7 +669,13 @@ function createSessionRoutes(hub) {
       const b = await body(req); const t = hub.terms.get(String(b.id));
       if (!t || t.exited !== null) { send(res, 404, { ok: false, error: 'no such running terminal' }); return true; }
       if (b.submit || b.immediate || b.text) hub.touchUserInput(t);
-      if (b.immediate) {
+      const inHistorySearch = (b.immediate || (b.submit && b.text)) && hub.isCodexTerm(t)
+        && codexHistorySearchActive(hub.readTerm(t, 5));
+      if (inHistorySearch) {
+        await t.proc.write(PTY_KEYS.esc);
+        await hub.sleep(hub.SUBMIT_DELAY);
+      }
+      if (b.immediate && !inHistorySearch) {
         const cli = hub.isCodexTerm(t) ? 'codex' : hub.isAgyTerm(t) ? 'agy' : 'claude';
         const outcome = await dispatchImmediatePrompt({
           cli, isBusy: () => (cli === 'codex' ? hub.codexStatus(t) : cli === 'agy' ? hub.agyStatus(t) : hub.claudeStatus(t)) === 'busy',
@@ -675,7 +689,7 @@ function createSessionRoutes(hub) {
         if (!(k in PTY_KEYS)) { send(res, 400, { ok: false, error: `unknown key ${k}; one of ${Object.keys(PTY_KEYS)}` }); return true; }
         t.proc.write(PTY_KEYS[k]);
       }
-      if (b.submit) { await hub.sleep(hub.SUBMIT_DELAY); t.proc.write('\r'); }
+      if (b.submit) { await hub.sleep(b.fromTerminalInput && b.text ? hub.SUBMIT_DELAY + Math.min(3000, b.text.length * 2) : hub.SUBMIT_DELAY); t.proc.write('\r'); }
       send(res, 200, { ok: true, immediate: !!b.immediate });
       return true;
     }

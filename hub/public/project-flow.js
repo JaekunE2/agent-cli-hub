@@ -189,23 +189,16 @@ function projectFlow(p) {
     const subs = p.tasks.filter((x) => x.parentId === t.id);
     const subDone = subs.filter((x) => x.stage === 'done').length;
     const k = typeof taskKindOf === 'function' ? taskKindOf(t) : 'dev';
-    const chatCnt = (p.subChats?.[t.id] || []).length;
-    const tokBadge = typeof taskTokenBadgeHTML === 'function' ? taskTokenBadgeHTML(p, t, true) : '';
     const menuAria = `${t.title} 메뉴`;
     return `<article class="pj-task flow-node" data-task="${esc(t.id)}" data-stage="${esc(t.stage)}" data-kind="${esc(k)}">
       <span class="pj-port in" aria-hidden="true"></span>
       <span class="pj-port out" aria-hidden="true"></span>
       <div class="row" style="justify-content:space-between;gap:6px">
-        <div class="row" style="gap:5px;min-width:0">${typeof kindBadgeHTML === 'function' ? kindBadgeHTML(t) : ''}${subs.length ? `<span class="badge" title="클릭해 우측 상세 패널에서 하위 서브태스크 확인">서브 ${subDone}/${subs.length}</span>` : ''}${tokBadge}</div>
+        <div class="row" style="gap:5px;min-width:0;flex-wrap:wrap">${kindBadgeHTML(t)}${stageBadgeHTML(t.stage)}${subs.length ? `<span class="badge">하위 ${subDone}/${subs.length}</span>` : ''}</div>
         <button class="ghost icon-btn btn-sm" data-task-more="${esc(t.id)}" aria-label="${esc(menuAria)}" aria-haspopup="menu" aria-expanded="false">${ico.more || '⋯'}</button>
       </div>
       <div class="pj-task-head">
         <button data-edit="${esc(t.id)}" class="pj-title">${esc(t.title)}</button>
-      </div>
-      ${t.detail ? `<p class="pj-card-desc">${esc(t.detail)}</p>` : ''}
-      <div class="pj-task-foot">
-        <div class="row" style="gap:5px;min-width:0">${projectCliBadgeHTML(p, t)}<button class="ghost btn-sm" data-subchat-task="${esc(t.id)}" title="서브 개발 채팅 열기" aria-label="서브 개발 채팅">${ico.chat || ''}${chatCnt ? ` ${chatCnt}` : ''}</button></div>
-        ${projectStartBtnHTML(p, t)}
       </div>
     </article>`;
   };
@@ -218,7 +211,6 @@ function projectFlow(p) {
         간선 단순화 ${simplify ? `켜짐${hiddenCount ? ` (-${hiddenCount})` : ''}` : '꺼짐'}
       </button>
       <button type="button" class="btn-sm danger" id="flowDeleteSelected" hidden title="선택한 카드를 일괄 삭제합니다 (Delete 키)">선택 삭제</button>
-      <span class="ums" style="margin:0">좌클릭 드래그: 영역 선택·선택 카드 이동 · 휠 클릭 드래그: 화면 이동 · 휠: 확대/축소</span>
     </div>
     <div class="row" style="gap:4px">
       <button type="button" class="ghost btn-sm" id="flowZoomFit" title="전체 노드가 한눈에 보이도록 화면 맞춤">화면 맞춤</button>
@@ -399,7 +391,13 @@ function bindProjectFlow(p, gen) {
   let dragState = null;
   let marqueeState = null;
   let marqueeEl = null;
+  let panState = null;
+  let suppressDragClick = false;
   const selectedIds = new Set();
+  const canvasPoint = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    return { x: (e.clientX - rect.left) / zoom, y: (e.clientY - rect.top) / zoom };
+  };
 
   const delSelBtn = $('#flowDeleteSelected');
   const syncSelectionClasses = () => {
@@ -455,8 +453,8 @@ function bindProjectFlow(p, gen) {
     el.addEventListener('pointerenter', () => { if (!dragState && !marqueeState) { hoverTaskId = id; drawEdges(); } });
     el.addEventListener('pointerleave', () => { if (!dragState && !marqueeState && hoverTaskId === id) { hoverTaskId = null; drawEdges(); } });
     el.addEventListener('pointerdown', (e) => {
-      if (e.button !== 0) return;
-      if (e.target.closest('button, a, input, select, textarea')) return;
+      if (e.button !== 0 || dragState || marqueeState || panState) return;
+      if (e.target.closest('button:not(.pj-title), a, input, select, textarea')) return;
       if (e.shiftKey || e.ctrlKey || e.metaKey) {
         if (selectedIds.has(id)) selectedIds.delete(id);
         else selectedIds.add(id);
@@ -467,34 +465,35 @@ function bindProjectFlow(p, gen) {
       }
       const groupIds = selectedIds.has(id) && selectedIds.size > 1 ? [...selectedIds] : [id];
       const origMap = new Map(groupIds.map((gid) => [gid, { x: pos[gid]?.x || 0, y: pos[gid]?.y || 0 }]));
+      const origins = [...origMap.values()];
       dragState = {
-        id,
-        el,
+        pointerId: e.pointerId,
         groupIds,
         origMap,
-        startX: e.clientX,
-        startY: e.clientY,
+        start: canvasPoint(e),
+        minDx: 8 - Math.min(...origins.map((p) => p.x)),
+        minDy: 8 - Math.min(...origins.map((p) => p.y)),
         moved: false,
       };
-      el.setPointerCapture?.(e.pointerId);
+      e.target.setPointerCapture?.(e.pointerId);
     });
   }
 
   canvas.addEventListener('pointermove', (e) => {
-    if (!dragState) return;
-    const dx = (e.clientX - dragState.startX) / zoom;
-    const dy = (e.clientY - dragState.startY) / zoom;
+    if (dragState?.pointerId !== e.pointerId) return;
+    const point = canvasPoint(e);
+    const dx = point.x - dragState.start.x;
+    const dy = point.y - dragState.start.y;
     if (!dragState.moved && Math.hypot(dx, dy) < 5) return;
     dragState.moved = true;
+    const moveX = Math.max(dragState.minDx, Math.round(dx / 4) * 4);
+    const moveY = Math.max(dragState.minDy, Math.round(dy / 4) * 4);
     for (const gid of dragState.groupIds) {
       const gel = cardEls.get(gid);
       const orig = dragState.origMap.get(gid);
       if (!gel || !orig) continue;
       gel.classList.add('is-dragging');
-      pos[gid] = {
-        x: Math.max(8, Math.round((orig.x + dx) / 4) * 4),
-        y: Math.max(8, Math.round((orig.y + dy) / 4) * 4),
-      };
+      pos[gid] = { x: orig.x + moveX, y: orig.y + moveY };
       gel.style.left = `${pos[gid].x}px`;
       gel.style.top = `${pos[gid].y}px`;
     }
@@ -502,18 +501,18 @@ function bindProjectFlow(p, gen) {
   });
 
   const endDrag = (e) => {
-    if (!dragState) return;
-    const wasMoved = dragState.moved;
-    for (const gid of dragState.groupIds) {
+    if (dragState?.pointerId !== e.pointerId) return;
+    const { moved, groupIds, origMap } = dragState;
+    const canceled = e.type === 'pointercancel';
+    for (const gid of groupIds) {
       cardEls.get(gid)?.classList.remove('is-dragging');
+      if (canceled) pos[gid] = origMap.get(gid);
     }
-    try { dragState.el.releasePointerCapture?.(e.pointerId); } catch {}
     dragState = null;
-    if (wasMoved) {
+    if (canceled) { applyPositions(); drawEdges(); return; }
+    if (moved) {
       saveFlowPositions(p.id, pos, curDir);
-      // Suppress the synthetic click right after dragging so dragging doesn't pop open the drawer
-      canvas.dataset.justDragged = '1';
-      setTimeout(() => { delete canvas.dataset.justDragged; }, 80);
+      suppressDragClick = true;
       const autoBtn = $('#flowAutoLayout');
       if (autoBtn && !autoBtn.textContent.includes('초기화')) autoBtn.innerHTML = `${ico.refresh || ''} 자동 정렬 (초기화)`;
     }
@@ -522,34 +521,38 @@ function bindProjectFlow(p, gen) {
   canvas.addEventListener('pointercancel', endDrag);
 
   // Intercept click immediately after drag
+  canvas.addEventListener('pointerdown', () => { suppressDragClick = false; }, true);
   canvas.addEventListener('click', (e) => {
-    if (canvas.dataset.justDragged === '1') {
+    const selectClick = (e.shiftKey || e.ctrlKey || e.metaKey) && e.target.closest('.flow-node')
+      && !e.target.closest('button:not(.pj-title), a, input, select, textarea');
+    if (e.detail > 0 && (suppressDragClick || selectClick)) {
+      suppressDragClick = false;
       e.stopPropagation();
       e.preventDefault();
     }
   }, true);
 
   // Middle mouse button (wheel click) drag-to-pan anywhere; Left-click drag on empty space for marquee box selection
-  let panState = null;
   viewport.addEventListener('mousedown', (e) => {
     if (e.button === 1) e.preventDefault(); // prevent browser autoscroll icon
   });
   viewport.addEventListener('pointerdown', (e) => {
+    if (dragState || marqueeState || panState) return;
     if (e.button === 1) {
       e.preventDefault();
-      panState = { startX: e.clientX, startY: e.clientY, scrollL: viewport.scrollLeft, scrollT: viewport.scrollTop };
+      panState = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, scrollL: viewport.scrollLeft, scrollT: viewport.scrollTop };
+      viewport.setPointerCapture?.(e.pointerId);
       viewport.classList.add('is-panning');
       return;
     }
     if (e.button === 0 && (e.target === viewport || e.target === canvas || e.target === svg)) {
-      const rect = viewport.getBoundingClientRect();
-      const wx = (e.clientX - rect.left + viewport.scrollLeft) / zoom;
-      const wy = (e.clientY - rect.top + viewport.scrollTop) / zoom;
+      const { x: wx, y: wy } = canvasPoint(e);
       if (!e.shiftKey && !e.ctrlKey && !e.metaKey) {
         selectedIds.clear();
         syncSelectionClasses();
       }
-      marqueeState = { startX: wx, startY: wy, baseSelected: new Set(selectedIds), moved: false };
+      marqueeState = { pointerId: e.pointerId, startX: wx, startY: wy, baseSelected: new Set(selectedIds) };
+      viewport.setPointerCapture?.(e.pointerId);
       marqueeEl = document.createElement('div');
       marqueeEl.className = 'pj-flow-marquee';
       marqueeEl.style.left = `${wx}px`;
@@ -559,21 +562,18 @@ function bindProjectFlow(p, gen) {
       canvas.appendChild(marqueeEl);
     }
   });
-  window.addEventListener('pointermove', (e) => {
-    if (panState) {
+  viewport.addEventListener('pointermove', (e) => {
+    if (panState?.pointerId === e.pointerId) {
       viewport.scrollLeft = panState.scrollL - (e.clientX - panState.startX);
       viewport.scrollTop = panState.scrollT - (e.clientY - panState.startY);
       return;
     }
-    if (marqueeState && marqueeEl) {
-      const rect = viewport.getBoundingClientRect();
-      const wx = (e.clientX - rect.left + viewport.scrollLeft) / zoom;
-      const wy = (e.clientY - rect.top + viewport.scrollTop) / zoom;
+    if (marqueeState?.pointerId === e.pointerId && marqueeEl) {
+      const { x: wx, y: wy } = canvasPoint(e);
       const x1 = Math.min(marqueeState.startX, wx);
       const y1 = Math.min(marqueeState.startY, wy);
       const x2 = Math.max(marqueeState.startX, wx);
       const y2 = Math.max(marqueeState.startY, wy);
-      if (Math.hypot(wx - marqueeState.startX, wy - marqueeState.startY) >= 4) marqueeState.moved = true;
       marqueeEl.style.left = `${x1}px`;
       marqueeEl.style.top = `${y1}px`;
       marqueeEl.style.width = `${x2 - x1}px`;
@@ -592,13 +592,15 @@ function bindProjectFlow(p, gen) {
       syncSelectionClasses();
     }
   });
-  window.addEventListener('pointerup', () => {
-    if (panState) { panState = null; viewport.classList.remove('is-panning'); }
-    if (marqueeState) {
+  const endViewportDrag = (e) => {
+    if (panState?.pointerId === e.pointerId) { panState = null; viewport.classList.remove('is-panning'); }
+    if (marqueeState?.pointerId === e.pointerId) {
       marqueeState = null;
       if (marqueeEl) { marqueeEl.remove(); marqueeEl = null; }
     }
-  });
+  };
+  viewport.addEventListener('pointerup', endViewportDrag);
+  viewport.addEventListener('pointercancel', endViewportDrag);
 
   // Toolbar controls: Direction toggle, Auto-layout reset, Simplify toggle, Zoom & Wheel Zoom
   const applyZoom = (nextZoom, clientX = null, clientY = null) => {
@@ -623,6 +625,7 @@ function bindProjectFlow(p, gen) {
   };
   viewport.addEventListener('wheel', (e) => {
     e.preventDefault();
+    if (dragState || marqueeState || panState) return;
     const factor = e.deltaY < 0 ? 1.1 : 0.9;
     applyZoom(zoom * factor, e.clientX, e.clientY);
   }, { passive: false });
@@ -682,5 +685,9 @@ function bindProjectFlow(p, gen) {
   if (zIn) zIn.onclick = () => applyZoom(zoom + 0.1);
   if (zReset) zReset.onclick = () => applyZoom(1);
   if (zFit) zFit.onclick = fitToViewport;
-  requestAnimationFrame(() => { drawEdges(); fitToViewport(); });
+  requestAnimationFrame(() => {
+    drawEdges();
+    if (innerWidth >= 1041) applyZoom(0.9);
+    else fitToViewport();
+  });
 }

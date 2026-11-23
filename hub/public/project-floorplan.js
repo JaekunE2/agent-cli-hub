@@ -331,13 +331,16 @@
             ${segBtn('diagram', '시스템 계층도')}
             ${segBtn('health', '보안 · 구조 점검', issues.length)}
           </div>
+          <span class="badge c">실제 코드 분석</span>
           ${previewCwd ? `<span class="badge c mono" title="${esc(previewCwd)}">${esc(base(previewCwd))}</span><button type="button" class="ghost btn-sm" id="fmBackProjDir">원래 폴더로</button>` : ''}
         </div>
         <div class="row" style="gap:6px;flex-wrap:wrap">
           <button type="button" class="btn-sm" id="fmPreviewMd" title="아키텍처 & 품질 보고서 전문 미리보기 · 산출물 저장">${ico.file || ''} 보고서 보기</button>
-          <button type="button" class="btn-sm" id="fmSaveArtifact" title="작업 폴더에 FLOORPLAN.md 생성 및 산출물 탭 등록">${ico.plus || ''} 산출물 저장</button>
-          <button type="button" class="btn-sm" id="fmCopyMd" title="실무자 공유용 마크다운 아키텍처 보고서 복사">${ico.copy || ''} 복사</button>
-          <button type="button" class="btn-sm" id="fmDownloadMd" title="아키텍처 보고서 .md 파일로 다운로드">${ico.external || ''} .md</button>
+          <details class="fm-exports"><summary>보고서 내보내기</summary><div class="row">
+            <button type="button" class="btn-sm" id="fmSaveArtifact" title="작업 폴더에 FLOORPLAN.md 생성 및 산출물 탭 등록">${ico.plus || ''} 산출물 저장</button>
+            <button type="button" class="btn-sm" id="fmCopyMd" title="실무자 공유용 마크다운 아키텍처 보고서 복사">${ico.copy || ''} 복사</button>
+            <button type="button" class="btn-sm" id="fmDownloadMd" title="아키텍처 보고서 .md 파일로 다운로드">${ico.external || ''} .md</button>
+          </div></details>
           <button type="button" class="btn-sm" id="fmPickDir" title="다른 프로젝트 폴더 스캔">${ico.folder || ''} 폴더 선택</button>
           <button type="button" class="ghost icon-btn btn-sm" id="fmRescan" title="다시 스캔" aria-label="다시 스캔">${ico.refresh || ''}</button>
         </div>
@@ -345,7 +348,7 @@
 
       let body = '';
       if (subTab === 'overview') {
-        const kpiHTML = `<div class="h-stats">
+        const kpiHTML = `<div class="h-stats fm-stat-pair">
           <div class="h-stat" style="cursor:default">
             <div class="h-stat-lbl"><span>프로젝트 규모</span><span class="badge">${fp.parts.length}개 계층</span></div>
             <div class="h-stat-val">${fp.stats.files}개 파일</div>
@@ -356,6 +359,8 @@
             <div class="h-stat-val">${fp.stats.endpoints}개</div>
             <div class="h-stat-sub">프론트 호출 ${fp.stats.apiCalls}건 → 서버 라우트</div>
           </div>
+        </div>`;
+        const keyHTML = `<div class="h-stats fm-stat-pair">
           <div class="h-stat" data-fm-open-node="${esc(topHub?.id || '')}">
             <div class="h-stat-lbl"><span>최핵심 허브 (1위)</span><span class="badge c">상세 보기</span></div>
             <div class="h-stat-val" style="font-size:19px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(topHub?.name || '—')}</div>
@@ -422,11 +427,12 @@
           </div>`;
         }).join('') || '<div class="empty" style="padding:20px 16px">조건에 맞는 모듈이 없습니다.</div>';
 
-        body = `${kpiHTML}
+        body = `${keyHTML}
           <section class="list-sec">
             <div class="list-sec-hd"><h2>계층별 핵심 구성 요약 (클릭 시 파일 상세)</h2><span class="ums" style="margin:0">${fp.externalServices?.length ? `외부 연동: ${esc(fp.externalServices.join(' · '))}` : 'UI → API → 코어 → 데이터 흐름'}</span></div>
             <div class="fm-arch-grid">${archCols}</div>
           </section>
+          <details class="fm-metrics"><summary>규모 및 API 지표</summary>${kpiHTML}</details>
           <section class="sheet">
             <div class="sheet-hd" style="flex-wrap:wrap">
               <h2>중요도 순 핵심 파일 목록 <span class="badge">${filtered.length}</span></h2>
@@ -513,6 +519,7 @@
           <div class="sheet-hd" style="flex-wrap:wrap">
             <h2>시스템 아키텍처 계층 맵</h2>
             <div class="fm-map-bar">
+              <button type="button" class="ghost btn-sm" data-fm-go-sub="overview" data-fm-jump>모듈 목록 보기</button>
               <div class="seg" role="tablist">
                 <button type="button" data-fm-map-scope="core" class="${mapScope === 'core' ? 'on' : ''}">핵심 허브 맵</button>
                 <button type="button" data-fm-map-scope="all" class="${mapScope === 'all' ? 'on' : ''}">확장 모듈 보기</button>
@@ -625,7 +632,12 @@
       const subBtn = e.target.closest('[data-fm-sub]');
       if (subBtn) { subTab = subBtn.dataset.fmSub; paint(); return; }
       const goSub = e.target.closest('[data-fm-go-sub]');
-      if (goSub) { subTab = goSub.dataset.fmGoSub; paint(); return; }
+      if (goSub) {
+        subTab = goSub.dataset.fmGoSub;
+        paint();
+        if (goSub.hasAttribute('data-fm-jump')) $('#fmSearchIn', host)?.focus();
+        return;
+      }
       const fBtn = e.target.closest('[data-fm-filt]');
       if (fBtn) { filterLayer = fBtn.dataset.fmFilt; paint(); return; }
       const scopeBtn = e.target.closest('[data-fm-map-scope]');

@@ -106,6 +106,7 @@ function createTermManager(hub) {
   }
 
   function termDocOf(t) {
+    if (isCodexTerm(t)) return codexDocOf(t);
     if (isAgyTerm(t)) {
       const sid = agySessionOf(t);
       if (sid) return index.get(sid);
@@ -114,6 +115,10 @@ function createTermManager(hub) {
     const argStr = (t.meta?.args || []).join(' ');
     const fromArgs = argStr.match(/(?:--resume|resume|--conversation)\s+([0-9a-f-]{8,64})/i);
     if (fromArgs && index.get(fromArgs[1])) return index.get(fromArgs[1]);
+    return recentDocOf(t);
+  }
+
+  function recentDocOf(t) {
     const ag = agentOf(t);
     if (!ag) return null;
     const cwd = path.resolve(t.cwd || '').toLowerCase(), since = (t.meta?.spawnedAt || 0) - 60_000;
@@ -125,7 +130,47 @@ function createTermManager(hub) {
     return best;
   }
 
-  const codexDocOf = (t) => termDocOf(t);
+  function codexResumeArg(t) {
+    const args = t.meta?.args || [];
+    const pos = args.indexOf('resume');
+    return pos >= 0 ? args[pos + 1] : null;
+  }
+
+  function codexResumeId(t) {
+    const arg = codexResumeArg(t);
+    return t.meta?.sessionId || (/^[0-9a-f-]{36}$/i.test(arg) ? arg : null);
+  }
+
+  function matchCodexLaunch(t, records) {
+    const start = t.meta?.spawnedAt;
+    const dir = t.cwd || t.meta?.cwd;
+    if (!start || !dir) return null;
+    const cwd = path.resolve(dir).toLowerCase();
+    // Recent writes to a rollout must never move it to another terminal in the same folder.
+    let end = start + 60_000;
+    for (const other of terms.values()) {
+      const next = other.meta?.spawnedAt;
+      if (next > start && next < end && isCodexTerm(other) && !codexResumeId(other) && codexResumeArg(other) !== '--last'
+          && other.cwd && path.resolve(other.cwd).toLowerCase() === cwd) end = next;
+    }
+    let best = null, earliest = Infinity;
+    for (const d of records) {
+      if (d.agent !== 'codex' || d.auto || !d.cwd || path.resolve(d.cwd).toLowerCase() !== cwd) continue;
+      const uuid = d.id.match(/^([\da-f]{8})-([\da-f]{4})-7/i);
+      const stamp = path.basename(d.file || '').match(/^rollout-(\d{4}-\d\d-\d\dT\d\d)-(\d\d)-(\d\d)-/);
+      const created = uuid ? parseInt(uuid[1] + uuid[2], 16) : stamp ? Date.parse(`${stamp[1]}:${stamp[2]}:${stamp[3]}`) : NaN;
+      const from = uuid ? start : Math.floor(start / 1000) * 1000;
+      const until = uuid ? end : Math.floor(end / 1000) * 1000;
+      if (created >= from && created < until && created < earliest) { best = d; earliest = created; }
+    }
+    return best;
+  }
+
+  function codexDocOf(t) {
+    const id = codexResumeId(t);
+    if (id) return index.get(id);
+    return codexResumeArg(t) === '--last' ? recentDocOf(t) : matchCodexLaunch(t, index.docs.values());
+  }
 
   function codexStatus(t) {
     if (t.exited !== null) return 'exited';
@@ -144,29 +189,33 @@ function createTermManager(hub) {
   }
 
   function codexSessionOf(t) {
+    const id = codexResumeId(t);
+    if (id) return id;
     const hit = codexDocOf(t);
     if (hit) return hit.id;
-    const fromArgs = (t.meta?.args || []).join(' ').match(/resume ([0-9a-f-]{36})/i);
-    let best = null;
-    const walk = (d, depth) => {
+    if (codexResumeArg(t) === '--last' || !t.meta?.spawnedAt || !(t.cwd || t.meta?.cwd)) return null;
+    const root = t.meta?.envFlags?.CODEX_HOME || process.env.CODEX_HOME || CA.MAIN;
+    function* walk(d) {
       let ents = []; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
       for (const e of ents) {
-        const f = path.join(d, e.name);
-        if (e.isDirectory() && depth < 3) walk(f, depth + 1);
-        else if (/^rollout-.*\.jsonl$/.test(e.name)) {
-          let st; try { st = fs.statSync(f); } catch { continue; }
-          if (st.mtimeMs < (t.meta?.spawnedAt || 0) - 60_000 || (best && st.mtimeMs <= best.m)) continue;
-          try {
-            const first = JSON.parse(fs.readFileSync(f, 'utf8').split('\n', 1)[0]);
-            const meta = first.payload || first;
-            if (meta.cwd && path.resolve(meta.cwd).toLowerCase() === path.resolve(t.cwd).toLowerCase() && meta.id) best = { id: meta.id, m: st.mtimeMs };
-          } catch {}
-        }
+        if (!e.isFile() || !/^rollout-.*\.jsonl$/.test(e.name)) continue;
+        const file = path.join(d, e.name);
+        try {
+          if (fs.statSync(file).mtimeMs < t.meta.spawnedAt) continue;
+          const meta = JSON.parse(fs.readFileSync(file, 'utf8').split('\n', 1)[0]).payload;
+          if (meta?.id) yield { id: meta.id, cwd: meta.cwd, file, agent: 'codex', auto: /exec/i.test(`${meta.originator || ''} ${meta.source || ''}`) };
+        } catch {}
       }
+    }
+    const dayDir = (ms) => {
+      const d = new Date(ms);
+      return path.join(root, 'sessions', String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0'));
     };
-    const now = new Date(), days = [0, 1].map((k) => new Date(now - k * 864e5));
-    for (const d of days) walk(path.join(CA.MAIN, 'sessions', String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')), 3);
-    return best?.id || fromArgs?.[1] || null;
+    for (const dir of new Set([dayDir(t.meta.spawnedAt), dayDir(t.meta.spawnedAt + 60_000)])) {
+      const match = matchCodexLaunch(t, walk(dir));
+      if (match) return match.id;
+    }
+    return null;
   }
 
   function termSessionId(t) {

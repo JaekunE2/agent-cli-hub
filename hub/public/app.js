@@ -95,7 +95,7 @@ function runSearch(q) {
 function viewSearch() {
   const gen = viewGen;
   const S = state.search;
-  setBar(`<h2 style="flex:none">${ICO.search} 전체 검색</h2><input id="sq" class="btn-sm" type="search" value="${esc(S.q)}" style="flex:1;min-width:180px;max-width:520px" placeholder="검색어 (공백 = AND)"><button class="primary btn-sm" id="sGo">검색</button>`);
+  setBar(`<h2 style="flex:none">${ICO.search} 전체 검색</h2><input id="sq" class="btn-sm search-query" type="search" value="${esc(S.q)}" placeholder="검색어 (공백 = AND)"><button class="primary btn-sm" id="sGo">검색</button>`);
   const filterBar = `<div class="subtoolbar">
     <div class="filters">
       <select id="sRole" class="btn-sm" aria-label="화자 필터"><option value="all">전체</option><option value="user">내 입력</option><option value="assistant">에이전트 답변·명령</option></select>
@@ -122,43 +122,52 @@ function viewSearch() {
     S.sessions = d.sessions;
     const terms = termsOf(S.q);
     const nHits = d.sessions.reduce((a, r) => a + r.total, 0);
+    const snippets = (preview, other, render) => preview.map(render).join('') + (other.length
+      ? `<details class="search-more"><summary>추가 일치 항목 <span class="badge">${other.length}</span></summary>${other.map(render).join('')}</details>` : '');
     let h = `<div class="empty" style="padding:0 0 6px">세션 ${d.sessions.length}개 · 메시지 ${nHits}건 · 창 ${d.screens.length}개 · ${d.ms}ms</div>`;
     if (!d.ready) h += `<div class="empty">인덱스 구축 중 (${d.progress?.done || 0}/${d.progress?.total || '?'} 파일) — 결과가 일부만 나올 수 있습니다.</div>`;
     if (d.screens.length) {
       h += '<h3>열린 창 화면</h3>' + d.screens.map((c) => `<div class="rgroup">
         <div class="rh" data-console="${c.id}"><span class="t">${esc(c.title || 'pid ' + c.id)}</span><span class="badge">${c.total}줄</span></div>
-        ${c.hits.map((x) => `<div class="hit mono" data-console="${c.id}"><span class="r">화면</span><span class="x">${hl(x.text, terms)}</span></div>`).join('')}</div>`).join('');
+        ${snippets(c.hits.slice(0, 2), c.hits.slice(2), (x) => `<div class="hit mono" data-console="${c.id}"><span class="r">화면</span><span class="x">${hl(x.text, terms)}</span></div>`)}</div>`).join('');
     }
     if (d.sessions.length) {
       h += '<h3>세션 대화 기록</h3>' + d.sessions.map((r) => {
         const live = state.live.some((s) => s.sessionId === r.sessionId);
+        const isToolHit = (x) => x.role === 'assistant' && /^\s*⚙|^\s*…\s*(?:text\(|await tools\.|tools\.exec_command|[\w.]+patch\()/i.test(x.snippet);
+        const preview = r.hits.filter((x) => !isToolHit(x)).slice(0, 2);
+        const other = r.hits.filter((x) => !preview.includes(x));
         return `<div class="rgroup">
         <div class="rh" data-sid="${r.sessionId}" data-at="-1"><span class="dot ${live ? 'idle' : 'dead'}" style="margin-top:0"></span>
         <span class="t">${hl(sessionLabel(r), terms)}</span>
           ${r.idMatch ? '<span class="badge lim">세션 ID 일치</span>' : ''}${branchTagHTML(r.branch)}${r.auto ? '<span class="badge">sdk</span>' : ''}${agentBadge(r.agent)}
           <span class="ums" style="margin:0">${esc([base(r.cwd), ago(r.mtime)].filter(Boolean).join(' · '))}</span>
           <span class="badge c">${r.idMatch ? `메시지 ${r.total}개` : `${r.total}건`}</span></div>
-        ${r.hits.map((x) => `<div class="hit${x.snippet.startsWith('⚙') ? ' mono' : ''}" data-sid="${r.sessionId}" data-at="${x.i}">
-          <span class="r">${x.role === 'user' ? '사용자' : r.agent === 'codex' ? 'Codex' : r.agent === 'agy' ? 'Antigravity' : 'Claude'}</span><span class="x">${hl(x.snippet, terms)}</span></div>`).join('')}
-        ${!r.idMatch && r.total > r.hits.length ? `<div class="hit" data-sid="${r.sessionId}" data-at="${r.hits[r.hits.length - 1].i}"><span class="r"></span><span class="x" style="color:var(--muted)">… ${r.total - r.hits.length}건 더 (세션 열어서 보기)</span></div>` : ''}
+        ${snippets(preview, other, (x) => `<div class="hit${isToolHit(x) ? ' mono' : ''}" data-sid="${r.sessionId}" data-at="${x.i}">
+          <span class="r">${x.role === 'user' ? '사용자' : r.agent === 'codex' ? 'Codex' : r.agent === 'agy' ? 'Antigravity' : 'Claude'}</span><span class="x">${hl(x.snippet, terms)}</span></div>`)}
+        ${!r.idMatch && r.total > r.hits.length ? `<div class="hit" data-sid="${r.sessionId}" data-at="${r.hits.at(-1)?.i ?? -1}"><span class="r"></span><span class="x" style="color:var(--muted)">대화에서 나머지 ${r.total - r.hits.length}건 보기 →</span></div>` : ''}
       </div>`;
       }).join('');
     }
     if (!d.sessions.length && !d.screens.length) h += '<div class="empty" style="padding:12px 0">결과 없음</div>';
     const host = $('#searchBody');
-    if (host) host.innerHTML = h;
+    if (host) {
+      host.innerHTML = h;
+      if (state.sel.restoreScroll) $('#view').scrollTo({ top: S.scrollTop || 0, behavior: 'instant' });
+    }
   }).catch((e) => { const host = $('#searchBody'); if (host) host.innerHTML = `<div class="err">${esc(e.message)}</div>`; });
 
   $('#view').onclick = (e) => {
     const el = e.target.closest('[data-sid],[data-console]');
     if (!el) return;
     if (el.dataset.console) return select({ kind: 'console', id: el.dataset.console, hl: S.q });
-    select({ kind: 'recent', id: el.dataset.sid, at: Number(el.dataset.at), q: S.q }, 'chat');
+    S.scrollTop = $('#view').scrollTop;
+    select({ kind: 'recent', id: el.dataset.sid, at: Number(el.dataset.at), q: S.q, fromSearch: true }, 'chat');
   };
   setTimeout(() => $('#sq')?.focus(), 0);
 }
 
-// ---------- Ctrl+K Instant Command Palette ----------
+// ---------- Instant Command Palette ----------
 function openCommandPalette() {
   if ($('.cmdk-backdrop')) return;
   const wrap = document.createElement('div');
@@ -184,10 +193,11 @@ function openCommandPalette() {
       for (const x of arr) out.push(x);
     };
 
-    const termHits = sortTermsByState(state.terms || [])
+    const matchingTerms = sortTermsByState(state.terms || [])
       .filter((t) => hit(termLabel(t), t.cwd || '', projectOfTerm(t)?.name || '', '터미널'))
-      .slice(0, 8)
-      .map((t) => {
+      .slice(0, 8);
+    const visibleSessionIds = new Set(matchingTerms.map((t) => t.sessionId).filter(Boolean));
+    const termHits = matchingTerms.map((t) => {
         const pj = projectOfTerm(t);
         const st = termStateOf(t);
         return {
@@ -211,7 +221,7 @@ function openCommandPalette() {
     pushGrp('Project', pjHits);
 
     const recHits = (state.recent || [])
-      .filter((r) => hit(sessionLabel(r), r.cwd || '', r.agent || ''))
+      .filter((r) => !visibleSessionIds.has(r.sessionId) && hit(sessionLabel(r), r.cwd || '', r.agent || ''))
       .slice(0, 6)
       .map((r) => ({
         icon: agentIcon(r.agent || 'claude'),
@@ -270,13 +280,6 @@ function openCommandPalette() {
   inp.focus();
 }
 
-document.addEventListener('keydown', (e) => {
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k' && !xterm) {
-    e.preventDefault();
-    openCommandPalette();
-  }
-});
-
 // calendar counts in the TopNav (todo.md changes come from other sessions too)
 loadCalendar();
 setInterval(whenShown(loadCalendar), 60000);
@@ -307,7 +310,10 @@ function openNewTermDrawer(projectCwd = '', onCreated = null, initialKind = null
           <button type="button" class="btn-sm" id="nPickDir" title="호스트 컴퓨터 경로 탐색기 열기">${ICO.folder || ''} 폴더 선택</button>
         </div>
         <datalist id="cwdl">${cwds.map((c) => `<option value="${esc(c)}">`).join('')}</datalist></label>
-      <div id="nMeHost" style="display:flex;flex-direction:column;gap:8px">${typeof projectModelEffortFields === 'string' ? projectModelEffortFields : ''}</div>
+      <details class="new-term-options">
+        <summary>모델 및 추론 옵션</summary>
+        <div id="nMeHost" style="display:flex;flex-direction:column;gap:8px">${typeof projectModelEffortFields === 'string' ? projectModelEffortFields : ''}</div>
+      </details>
       <label class="row"><input type="checkbox" id="nSkip" checked> YOLO 모드 자동 승인 (Claude · Codex · Antigravity)</label>
     </div>
     <div id="nRes" hidden style="display:flex;flex-direction:column;gap:10px">
@@ -318,6 +324,7 @@ function openNewTermDrawer(projectCwd = '', onCreated = null, initialKind = null
       <div class="rban ok" style="margin:0"><b>중간에 묻지 않고 목표까지 알아서 진행합니다.</b> 환경 설치·데이터 받기·테스트도 스스로 합니다. 진행할 수 없는 문제가 생겼을 때만 멈추고 알려드립니다.</div>
     </div>`;
   const d = openDrawer({ title: '새로 열기', bodyHTML: body, footerHTML: '<button data-drw-close>취소</button><button id="nExt" title="이 PC의 새 Windows 콘솔 창(외부 터미널)에서 엽니다">외부 창으로 열기</button><button class="primary" id="nOk">대시보드에서 열기</button>', width: 480 });
+  d.classList.add('drw-compact');
   const kindOf = () => $('input[name=k]:checked', d).value;
   const supportsME = (k) => k === 'claude' || k === 'codex' || k === 'agy';
   const nMeCtl = typeof createCliModelEffortController === 'function'
@@ -336,8 +343,7 @@ function openNewTermDrawer(projectCwd = '', onCreated = null, initialKind = null
     const isRes = k === 'research';
     $('#nTerm', d).style.display = isRes ? 'none' : 'flex';
     $('#nRes', d).style.display = isRes ? 'flex' : 'none';
-    const meHost = $('#nMeHost', d);
-    if (meHost) meHost.style.display = supportsME(k) ? 'flex' : 'none';
+    $('.new-term-options', d).hidden = !supportsME(k);
     if (supportsME(k)) nMeCtl?.setCli(k);
     const extBtn = $('#nExt', d);
     if (extBtn) extBtn.style.display = isRes ? 'none' : '';
@@ -472,8 +478,41 @@ if (sideFilterIn) {
   sideFilterIn.addEventListener('input', () => { state.sideFilter = sideFilterIn.value; renderSide(); });
   sideFilterIn.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { sideFilterIn.value = ''; state.sideFilter = ''; renderSide(); }
-    if (e.key === 'Enter' && sideFilterIn.value.trim()) runSearch(sideFilterIn.value);
   });
+}
+const sideResize = $('#sideResize');
+if (sideResize) {
+  const setSideWidth = (width) => {
+    const px = Math.max(248, Math.min(380, Math.round(width)));
+    document.documentElement.style.setProperty('--side-w', `${px}px`);
+    sideResize.setAttribute('aria-valuenow', String(px));
+    return px;
+  };
+  const saveSideWidth = () => {
+    try { localStorage.setItem('ach-side-width', sideResize.getAttribute('aria-valuenow')); } catch {}
+    window.dispatchEvent(new Event('resize'));
+  };
+  const currentWidth = () => sideResize.parentElement.getBoundingClientRect().width;
+  try {
+    const saved = Number(localStorage.getItem('ach-side-width'));
+    if (saved >= 248 && saved <= 380) setSideWidth(saved);
+  } catch {}
+  sideResize.addEventListener('focus', () => sideResize.setAttribute('aria-valuenow', String(Math.round(currentWidth()))));
+  sideResize.onpointerdown = (e) => {
+    if (e.button !== 0) return;
+    sideResize.setPointerCapture(e.pointerId);
+    sideResize.classList.add('dragging');
+  };
+  sideResize.onpointermove = (e) => { if (sideResize.hasPointerCapture(e.pointerId)) setSideWidth(e.clientX); };
+  sideResize.onlostpointercapture = () => { sideResize.classList.remove('dragging'); saveSideWidth(); };
+  sideResize.onkeydown = (e) => {
+    const width = currentWidth();
+    const next = { ArrowLeft: width - 20, ArrowRight: width + 20, Home: 248, End: 380 }[e.key];
+    if (next == null) return;
+    e.preventDefault();
+    setSideWidth(next);
+    saveSideWidth();
+  };
 }
 $('#btnSideMore').onclick = (e) => {
   e.stopPropagation();

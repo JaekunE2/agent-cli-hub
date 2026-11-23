@@ -77,6 +77,9 @@ function renderSide() {
   const side = $('#side');
   if (!side) return;
   const prevTop = side.scrollTop;
+  const prevHistoryTop = $('.side-history', side)?.scrollTop || 0;
+  const focusedNav = side.contains(document.activeElement) && document.activeElement.closest('.snav-item')?.dataset.key;
+  const focusedSession = side.contains(document.activeElement) && document.activeElement.closest('.srow-open')?.closest('[data-key]')?.dataset.key;
   const folded = sideFolded();
   const curKind = state.sel.kind;
   const isSys = ['usage', 'gpu', 'vault'].includes(curKind);
@@ -91,11 +94,11 @@ function renderSide() {
   const fTerms = termsOf(state.sideFilter);
   const matchSide = (...parts) => !fTerms.length || fTerms.every((q) => parts.join(' ').toLowerCase().includes(q));
 
-  let h = `<nav class="snav" aria-label="주요 메뉴">
-    <div class="snav-item${curKind === 'home' ? ' sel' : ''}" data-key="home">${ICO.home}<span class="snav-lbl">홈</span></div>
-    <div class="snav-item${curKind === 'search' ? ' sel' : ''}" data-key="cmdk">${ICO.search}<span class="snav-lbl">빠른 이동 · 검색</span><span class="snav-kbd">Ctrl+K</span></div>
-    <div class="snav-item${isSys ? ' sel' : ''}" data-key="system">${ICO.settings}<span class="snav-lbl">설정</span>${sysAlert ? '<span class="snav-dot danger" title="확인할 항목 있음"></span>' : '<span class="snav-meta">사용량·GPU·자원</span>'}</div>
-    <div class="snav-item${curKind === 'calendar' ? ' sel' : ''}" data-key="calendar">${ICO.calendar}<span class="snav-lbl">캘린더</span>${overN ? '<span class="snav-dot danger" title="기한 지난 할 일 있음"></span>' : '<span class="snav-meta">일정·할 일</span>'}</div>
+  const navigation = `<nav class="snav" aria-label="주요 메뉴">
+    <button type="button" class="snav-item${curKind === 'home' ? ' sel' : ''}" data-key="home">${ICO.home}<span class="snav-lbl">홈</span></button>
+    <button type="button" class="snav-item${curKind === 'search' ? ' sel' : ''}" data-key="cmdk" aria-haspopup="dialog">${ICO.search}<span class="snav-lbl">빠른 이동 · 검색</span></button>
+    <button type="button" class="snav-item${isSys ? ' sel' : ''}" data-key="system">${ICO.settings}<span class="snav-lbl">설정</span>${sysAlert ? '<span class="snav-dot danger" title="확인할 항목 있음"></span>' : ''}</button>
+    <button type="button" class="snav-item${curKind === 'calendar' ? ' sel' : ''}" data-key="calendar">${ICO.calendar}<span class="snav-lbl">캘린더</span>${overN ? '<span class="snav-dot danger" title="기한 지난 할 일 있음"></span>' : ''}</button>
   </nav>`;
 
   // Section 0: Dedicated Favorites (Projects + Terminals + Recent Sessions — resolved live items only!)
@@ -124,7 +127,7 @@ function renderSide() {
         const isSel = curKind === 'term' && String(state.sel.id) === String(t.id);
         const unread = state.unreadTerms.has(String(t.id));
         const isBr = !!t.branch?.isBranch;
-        favRowsArr.push(`<div class="srow${isSel ? ' sel' : ''}${unread ? ' just-done' : ''}${isBr ? ' is-branch' : ''}" data-key="term:${esc(t.id)}"${isBr ? ` title="${esc(branchTooltip(t.branch))}"` : ''}>
+        favRowsArr.push(`<div class="srow${isSel ? ' sel' : ''}${unread ? ' just-done' : ''}" data-key="term:${esc(t.id)}"${isBr ? ` title="${esc(branchTooltip(t.branch))}"` : ''}>
           ${agentIcon(t.operator ? 'operator' : t.agent || 'shell', dot)}
           <div class="srow-main"><div class="srow-t">${esc(termLabel(t))}</div></div>
           <span class="srow-end">${branchTagHTML(t.branch, true)}${unread ? '<span class="srow-tag done">완료</span>' : ''}<span class="fav on" data-fav="${esc(fk)}" data-fav-keys="${esc((entry.allKeys || [fk]).join(','))}" role="button" tabindex="0" aria-label="즐겨찾기 해제">${ICO.starFill}</span></span>
@@ -136,7 +139,7 @@ function renderSide() {
         if (!matchSide(lbl, r?.cwd || '')) continue;
         const isSel = curKind === 'recent' && state.sel.id === sid;
         const isBr = !!r?.branch?.isBranch;
-        favRowsArr.push(`<div class="srow${isSel ? ' sel' : ''}${isBr ? ' is-branch' : ''}" data-key="recent:${esc(sid)}"${isBr ? ` title="${esc(branchTooltip(r.branch))}"` : ''}>
+        favRowsArr.push(`<div class="srow${isSel ? ' sel' : ''}" data-key="recent:${esc(sid)}"${isBr ? ` title="${esc(branchTooltip(r.branch))}"` : ''}>
           ${agentIcon(r?.agent || 'claude')}
           <div class="srow-main"><div class="srow-t">${esc(lbl)}</div></div>
           <span class="srow-end">${branchTagHTML(r?.branch, true)}<span class="fav on" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="즐겨찾기 해제">${ICO.starFill}</span></span>
@@ -144,9 +147,10 @@ function renderSide() {
       }
     }
   }
+  let favorites = '';
   if (resolvedFavList.length) {
     const favCountLabel = fTerms.length && !favFolded ? `${favRowsArr.length}/${resolvedFavList.length}` : String(resolvedFavList.length);
-    h += `<div class="ssec">
+    favorites = `<div class="ssec">
       <div class="ssec-hd">
         ${foldBtnHTML('favs', favFolded, '즐겨찾기')}
         <span class="ssec-title" data-key="terms-favs"><span style="color:var(--star);display:inline-flex">${ICO.starFill}</span> 즐겨찾기 <span class="srow-meta">${favCountLabel}</span></span>
@@ -181,16 +185,16 @@ function renderSide() {
       </span>
     </div>`;
   }).join('') || '<div class="srow-empty">Project 없음</div>');
-  h += `<div class="ssec">
+  let h = `${navigation}<div class="ssec">
     <div class="ssec-hd">
       ${foldBtnHTML('projects', pjFolded, 'Project')}
       <span class="ssec-title" data-key="projects">Project <span class="srow-meta">${projects.length || ''}</span>${pjFolded && pjBusyN ? `<span class="srow-tag busy">실행 ${pjBusyN}</span>` : ''}</span>
       <button class="ghost icon-btn ssec-act" data-side-new-project="1" title="새 Project 만들기" aria-label="새 Project 만들기">${ICO.plus}</button>
     </div>
     ${pjRows}
-  </div>`;
+  </div>${favorites}`;
 
-  // Section 2: Unified Recent Conversations & Active Terminals (live sessions float to top with 실행 중 / 완료 / 대기 tags; deduplicated by sessionId)
+  // Unified Recent Conversations & Active Terminals
   const cons = sortConsolesByState(visibleConsoles()).filter((c) => matchSide(consoleLabel(c), '콘솔'));
   const terms = sortTermsByState(state.terms || []).filter((t) => matchSide(termLabel(t), t.cwd || '', projectOfTerm(t)?.name || '', t.agent || ''));
   const rf = state.recentFilter || '';
@@ -255,7 +259,7 @@ function renderSide() {
           : '<span class="srow-tag idle">대기</span>'
   );
 
-  const renderUnifiedRow = (entry, hidePjTag = false) => {
+  const renderUnifiedRow = (entry) => {
     if (entry.kind === 'term') {
       const t = entry.item;
       const st = termStateOf(t);
@@ -269,19 +273,15 @@ function renderSide() {
       const subKindTag = t.operator
         ? '<span class="srow-tag">관제</span>'
         : (!t.agent ? '<span class="srow-tag">셸</span>' : '');
-      const folderLbl = esc(base(t.cwd) || (t.agent === 'agy' ? 'Antigravity' : t.agent || '대기'));
-      const isBr = !!t.branch?.isBranch;
       const brTip = branchTooltip(t.branch);
       const tags = [
         branchTagHTML(t.branch, true),
-        pj && !hidePjTag ? `<span class="srow-tag proj" title="Project: ${esc(pj.name)}">${esc(pj.name)}</span>` : '',
         subKindTag,
         sideLiveStateTag(st, unread),
-        st !== 'exited' ? `<span>${folderLbl}</span>` : '',
       ].filter(Boolean).join('');
-      return `<div class="srow${isSel ? ' sel' : ''}${unread ? ' just-done' : ''}${isBr ? ' is-branch' : ''}" data-key="term:${esc(t.id)}" title="${esc(termLabel(t))}${pj ? ` · Project: ${esc(pj.name)}` : ''}${brTip ? ` · ${esc(brTip)}` : ''}">
+      return `<div class="srow${isSel ? ' sel' : ''}${unread ? ' just-done' : ''}" data-key="term:${esc(t.id)}" title="${esc([termLabel(t), pj?.name, t.cwd, brTip].filter(Boolean).join(' · '))}">
         ${agentIcon(kind, dot)}
-        <div class="srow-main"><div class="srow-t">${esc(termLabel(t))}</div><div class="srow-s">${tags}</div></div>
+        <button type="button" class="ghost srow-main srow-open"><span class="srow-t">${esc(termLabel(t))}</span><span class="srow-s">${tags}</span></button>
         <span class="srow-end">${unread ? '<span class="srow-unread" title="방금 작업 완료"></span>' : ''}${fk ? `<span class="fav${isStar ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${isStar ? '즐겨찾기 해제' : '즐겨찾기'}">${isStar ? ICO.starFill : ICO.star}</span>` : ''}</span>
       </div>`;
     }
@@ -292,14 +292,13 @@ function renderSide() {
       const isSel = curKind === 'console' && String(state.sel.id) === String(c.id);
       return `<div class="srow${isSel ? ' sel' : ''}" data-key="console:${esc(c.id)}">
         ${agentIcon(cs ? (cs.agent || 'claude') : 'shell', st === 'busy' ? 'busy' : 'idle')}
-        <div class="srow-main"><div class="srow-t">${esc(consoleLabel(c))}</div><div class="srow-s"><span class="srow-tag con">콘솔</span>${sideLiveStateTag(st)}</div></div>
+        <button type="button" class="ghost srow-main srow-open"><span class="srow-t">${esc(consoleLabel(c))}</span><span class="srow-s"><span class="srow-tag con">콘솔</span>${sideLiveStateTag(st)}</span></button>
       </div>`;
     }
     const r = entry.item;
     const ag = r.agent || 'claude';
     const fk = `sid:${r.sessionId}`, on = favs.has(fk);
     const isSel = curKind === 'recent' && state.sel.id === r.sessionId;
-    const isBr = !!r.branch?.isBranch;
     const brTip = branchTooltip(r.branch);
     const liveProc = liveBySid.get(r.sessionId);
     const liveDot = liveProc ? (liveProc.status === 'busy' ? 'busy' : 'idle') : null;
@@ -308,11 +307,11 @@ function renderSide() {
     const subHTML = [
       branchTagHTML(r.branch, true),
       liveProc ? sideLiveStateTag(liveProc.status === 'busy' ? 'busy' : 'idle') : '',
-      `<span>${esc([base(r.cwd), ago(r.mtime)].filter(Boolean).join(' · '))}</span>`,
+      `<span>${esc(ago(r.mtime))}</span>`,
     ].filter(Boolean).join('');
-    return `<div class="srow${isSel ? ' sel' : ''}${isBr ? ' is-branch' : ''}" data-key="recent:${esc(r.sessionId)}" title="${esc(sessionLabel(r))}${brTip ? ` · ${esc(brTip)}` : ''}">
+    return `<div class="srow${isSel ? ' sel' : ''}" data-key="recent:${esc(r.sessionId)}" title="${esc([sessionLabel(r), r.cwd, brTip].filter(Boolean).join(' · '))}">
       ${agentIcon(ag, liveDot)}
-      <div class="srow-main"><div class="srow-t">${esc(sessionLabel(r))}</div><div class="srow-s">${subHTML}</div></div>
+      <button type="button" class="ghost srow-main srow-open"><span class="srow-t">${esc(sessionLabel(r))}</span><span class="srow-s">${subHTML}</span></button>
       <span class="srow-end">
         <span class="fav${on ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${on ? '즐겨찾기 해제' : '즐겨찾기'}">${on ? ICO.starFill : ICO.star}</span>
         <button class="record-delete danger ghost icon-btn" data-hide-record="${esc(r.sessionId)}" title="${delRecTitle}" aria-label="${esc(delRecAria)}">${ICO.trash}</button>
@@ -334,9 +333,9 @@ function renderSide() {
         if (!groups.has(gKey)) groups.set(gKey, { label: gLabel, isPj: !!pj, items: [] });
         groups.get(gKey).items.push(entry);
       }
-      recentRows = [...groups.values()].map((g) => `<div class="sgrp-lbl">${g.isPj ? '<span class="pj-dot"></span>' : ''}${esc(g.label)}</div>${g.items.map((e) => renderUnifiedRow(e, g.isPj)).join('')}`).join('');
+      recentRows = [...groups.values()].map((g) => `<div class="sgrp-lbl">${g.isPj ? '<span class="pj-dot"></span>' : ''}${esc(g.label)}</div>${g.items.map(renderUnifiedRow).join('')}`).join('');
     } else {
-      recentRows = unifiedEntries.map((e) => renderUnifiedRow(e, false)).join('');
+      recentRows = unifiedEntries.map(renderUnifiedRow).join('');
     }
   }
 
@@ -346,13 +345,13 @@ function renderSide() {
   h += `<div class="ssec">
     <div class="ssec-hd">
       ${foldBtnHTML('recent', recFolded, isEnUI() ? 'Sessions' : '목록')}
-      <span class="ssec-title" data-key="terms-recent" title="전체 목록 보기">대화 기록 ${liveCount ? `<span class="srow-meta">${liveCount}</span>` : ''}${recFolded && busyCount ? `<span class="srow-tag busy">실행 ${busyCount}</span>` : ''}</span>
+      <span class="ssec-title" data-key="terms-recent" title="전체 목록 보기">작업 세션 ${liveCount ? `<span class="srow-meta">${liveCount}</span>` : ''}${recFolded && busyCount ? `<span class="srow-tag busy">실행 ${busyCount}</span>` : ''}</span>
       ${exitedCount ? `<button class="ghost icon-btn ssec-act" data-side-clean-exited="1" title="${cleanExitedTitle}" aria-label="${cleanExitedAria}">${ICO.trash}</button>` : ''}
       <button class="ghost icon-btn ssec-act${state.termGroupByProject ? ' on' : ''}" data-tgroup="1" title="${groupProjLbl}" aria-pressed="${state.termGroupByProject}" aria-label="${groupProjLbl}">${ICO.layers}</button>
       <button class="ghost icon-btn ssec-act" data-rrefresh="1" title="세션 기록 새로고침" aria-label="세션 기록 새로고침">${ICO.refresh}</button>
       <button class="ghost icon-btn ssec-act" data-hopen-new="1" title="새 대화 · 터미널 열기" aria-label="새 대화 · 터미널 열기">${ICO.plus}</button>
     </div>
-    ${recFolded ? '' : `<div class="seg sm" role="tablist" aria-label="대화 · 상태 필터">${fbtn('', '전체')}${fbtn('live', '활성', liveCount)}${fbtn('claude', 'Claude')}${fbtn('codex', 'Codex')}${fbtn('agy', 'AGY')}</div>${recentRows}`}
+    ${recFolded ? '' : `<div class="seg sm" role="tablist" aria-label="대화 · 상태 필터">${fbtn('', '전체')}${fbtn('live', '활성', liveCount)}${fbtn('claude', 'Claude')}${fbtn('codex', 'Codex')}${fbtn('agy', 'AGY')}</div><div class="side-history">${recentRows}</div>`}
   </div>`;
 
   // Section 4: Autonomous Research (collapsible; only when active)
@@ -370,7 +369,11 @@ function renderSide() {
   }
 
   side.innerHTML = h;
+  const historyList = $('.side-history', side);
+  if (historyList) historyList.scrollTop = prevHistoryTop;
   side.scrollTop = prevTop;
+  if (focusedNav) [...side.querySelectorAll('.snav-item')].find((nav) => nav.dataset.key === focusedNav)?.focus({ preventScroll: true });
+  if (focusedSession) [...side.querySelectorAll('.side-history [data-key]')].find((row) => row.dataset.key === focusedSession)?.querySelector('.srow-open')?.focus({ preventScroll: true });
 
   const banner = $('#diskBanner');
   if (banner) {

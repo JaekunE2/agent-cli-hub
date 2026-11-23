@@ -170,14 +170,15 @@ async function paintResearch(auto) {
 
   const [label, tone] = R_STATUS[d.status] || [d.status, 'muted'];
   const running = !['paused', 'blocked', 'done'].includes(d.status);
-  setBar(`<h2>${ICO.flask} ${esc(d.name)}</h2><span class="pill ${tone}">${esc(label)}</span>
+  const blockedOverview = d.status === 'blocked' && tab === 'overview';
+  setBar(`<h2 class="research-title" title="${esc(d.name)}">${ICO.flask} <span>${esc(d.name)}</span></h2>${blockedOverview ? '' : `<span class="pill ${tone}">${esc(label)}</span>`}
     <button class="btn-sm" data-ract="open">디렉터 화면</button>
-    ${running ? '<button class="btn-sm" data-ract="pause">일시정지</button>' : `<button data-ract="resume" class="btn-sm${d.status === 'blocked' ? '' : ' primary'}">${d.status === 'done' ? '다시 진행' : '재개'}</button>`}
+    ${blockedOverview ? '' : running ? '<button class="btn-sm" data-ract="pause">일시정지</button>' : `<button data-ract="resume" class="btn-sm${d.status === 'blocked' ? '' : ' primary'}">${d.status === 'done' ? '다시 진행' : '재개'}</button>`}
     <button class="ghost icon-btn btn-sm" data-ract="more" aria-label="연구 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
 
   const prog = goalProgress(d);
   const msgVal = $('#rMsg')?.value || '';
-  const tabs = `<div class="tablist" role="tablist" aria-label="연구 보기" style="padding:0 var(--page-pad);background:var(--panel)">${R_TABS.map(([k, t]) => `<button role="tab" data-rtab="${k}" aria-selected="${k === tab}" class="${k === tab ? 'on' : ''}">${t}</button>`).join('')}</div>`;
+  const tabs = `<div class="tablist research-tabs" role="tablist" aria-label="연구 보기" style="padding:0 var(--page-pad);background:var(--panel)">${R_TABS.map(([k, t]) => `<button role="tab" data-rtab="${k}" aria-selected="${k === tab}" class="${k === tab ? 'on' : ''}">${t}</button>`).join('')}</div>`;
   let body = '';
 
   if (tab === 'overview') {
@@ -189,8 +190,9 @@ async function paintResearch(auto) {
         · 채택 논문 비교 ${benchHtml}</div>
         ${rv.passed ? '<div>종료 기준 충족</div>' : `<div class="empty" style="padding:0">남은 조건: ${esc(rv.reasons.join(' · '))}</div>`}
         ${rv.stalled ? '<div>최근 라운드에서 판정이 나아지지 않아 실험 보강(P7)으로 돌아가도록 안내 중</div>' : ''}</div>` : '';
+    const nextAction = `<div class="rnow"><span class="empty">다음 작업</span> <b>${esc(d.next_action || '-')}</b></div>`;
     const banner = d.status === 'blocked'
-      ? `<div class="rban bad"><b>확인이 필요합니다</b><div>${esc(d.blocked_reason || '')}</div>${d.questions?.split('\n').length > 2 ? md(d.questions) : ''}<div class="row"><button class="primary" data-ract="resume">해결했어요 · 재개</button><span class="empty">또는 하단 입력창으로 지시</span></div></div>`
+      ? `<div class="rban bad"><b>확인이 필요합니다</b><div>${esc(d.blocked_reason || '')}</div>${d.questions?.split('\n').length > 2 ? md(d.questions) : ''}${nextAction}<div class="row"><button class="primary" data-ract="resume">해결했어요 · 재개</button><span class="empty">또는 하단 입력창으로 지시</span></div></div>`
       : d.status === 'done'
         ? `<div class="rban ok"><b>목표(${esc(GOAL_KO[prog.goal])})에 도달했습니다</b> ${resultBadge(d)}${d.result_summary ? ` <span class="empty">${esc(d.result_summary)}</span>` : ''}
             <div class="row" style="margin:6px 0">${prog.goal !== 'P10_submission' ? '<button class="primary" data-ract="submit" title="이 연구를 이어서 투고 패키지까지 준비 (제출은 직접)">투고 준비 진행</button>' : '<span class="empty">투고 패키지: 산출물 탭 → research/submission · 제출은 직접 하세요</span>'}
@@ -206,14 +208,19 @@ async function paintResearch(auto) {
       return `<div class="rstep ${cls}" title="${esc(PHASE_DESC[ph])}"><span class="n">${d.gates?.[ph]?.passed ? '✓' : i + 1}</span><span class="l">${PHASE_KO[ph]}</span></div>`;
     }).join('');
     const items = journalItems(d.journal).slice(-8).reverse();
-    const myGpu = (state.gpu?.active || []).filter((t) => (t.requester?.cwd || '').toLowerCase().startsWith(d.dir.toLowerCase()) || (t.command || '').toLowerCase().includes(d.dir.toLowerCase()));
-    body = `${reviewCard}${banner}
+    const dir = (d.dir || '').toLowerCase();
+    const myGpu = dir ? (state.gpu?.active || []).filter((t) => (t.requester?.cwd || '').toLowerCase().startsWith(dir) || (t.command || '').toLowerCase().includes(dir)) : [];
+    body = `
+      <div class="rcard">
+        <div class="rnow"><span class="empty">지금 단계</span> <b>${PHASE_KO[d.phase] || d.phase}</b> — ${esc(PHASE_DESC[d.phase] || '')}</div>
+        ${banner}
+        ${blockedOverview ? '' : nextAction}
+      </div>
+      ${reviewCard}
       <div class="rcard">
         <div class="rprog"><div><b>진행률</b> <span class="empty">목표: ${esc(GOAL_KO[prog.goal])}</span></div><b>${prog.pct}%</b></div>
         ${bar(prog.pct)}
         <div class="rsteps">${steps}</div>
-        <div class="rnow"><span class="empty">지금 단계</span> <b>${PHASE_KO[d.phase] || d.phase}</b> — ${esc(PHASE_DESC[d.phase] || '')}</div>
-        <div class="rnow" style="border-top:1px solid var(--line);padding-top:8px"><span class="empty">다음 작업</span> <b>${esc(d.next_action || '-')}</b></div>
         ${d.lineage ? `<div><span class="empty">${d.lineage.kind === 'derived' ? '기반 연구' : '종합 대상'}</span> ${d.lineage.parents.map((x) => `<button class="linkbtn" data-rgo="${esc(x.slug)}">${esc(x.name || x.slug)}</button>`).join(' · ')}</div>` : ''}
         ${d.children?.length ? `<div><span class="empty">이어진 연구</span> ${d.children.map((c) => `<button class="linkbtn" data-rgo="${esc(c)}">${esc((state.research.find((x) => x.slug === c) || {}).name || c)}</button>`).join(' · ')}</div>` : ''}
         <div class="empty" style="padding:0">디렉터 ${d.director ? `<span class="dot ${d.director.busy ? 'busy' : 'idle'}" style="display:inline-block;width:7px;height:7px;margin:0 4px 0 0;vertical-align:middle"></span>` + (d.director.busy ? '작업 중' : '대기') + ` · ${d.director.term ? 't:' + d.director.term : 'c:' + d.director.console}` : '<span class="dot dead" style="display:inline-block;width:7px;height:7px;margin:0 4px 0 0;vertical-align:middle"></span>실행 중 아님 (워치독이 자동 재개)'} · 시작 ${esc(d.created_at ? new Date(d.created_at).toLocaleDateString(uiLocale()) : '-')} · 갱신 ${d.updated_at ? relTime(Date.parse(d.updated_at)) : '-'}</div>

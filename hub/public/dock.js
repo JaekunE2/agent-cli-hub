@@ -35,7 +35,7 @@
   function getDockSizes() {
     const raw = loadJson(SIZES_KEY, null);
     return {
-      term: Number(raw?.term) > 0.2 ? Number(raw.term) : 1.15,
+      term: Number(raw?.term) > 0.2 ? Number(raw.term) : 1,
       chat: Number(raw?.chat) > 0.2 ? Number(raw.chat) : 1.0,
       windows: Number(raw?.windows) > 0.2 ? Number(raw.windows) : 0.9,
     };
@@ -317,8 +317,8 @@
           const move = (ev) => {
             if (sumW <= 120) return;
             const dx = ev.clientX - startX;
-            const minW = Math.min(200, sumW * 0.25);
-            const nextLw = Math.max(minW, Math.min(sumW - minW, lw + dx));
+            const minWidth = (id) => Math.min(id === 'chat' ? 400 : 260, sumW * (id === 'chat' ? 0.44 : 0.30));
+            const nextLw = Math.max(minWidth(leftId), Math.min(sumW - minWidth(rightId), lw + dx));
             const ratio = nextLw / sumW;
             sizes[leftId] = Math.max(0.25, sumF * ratio);
             sizes[rightId] = Math.max(0.25, sumF * (1 - ratio));

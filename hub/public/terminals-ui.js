@@ -59,7 +59,7 @@ function paintScreen(el, r, maxLines) {
 }
 
 
-function mountConsoleScreen(hostEl, { pid, gen, s }) {
+function mountConsoleScreen(hostEl, { pid, gen, s, chatHost = null }) {
   if (!hostEl) return;
   const keysOpen = getTuiKeysOpen();
   hostEl.innerHTML = `<div class="full">
@@ -67,6 +67,7 @@ function mountConsoleScreen(hostEl, { pid, gen, s }) {
     <div class="term-dock">
       <div class="tdock-bar">
         <div class="tdock-tools">
+          <button type="button" class="ghost btn-sm" id="conDockToggle" aria-expanded="${!chatHost}">터미널 입력</button>
           <label class="filebtn" title="PC 파일·스크린샷 첨부 → 경로 입력">${ICO.clip}<span>파일 첨부</span><input type="file" class="fpick" multiple hidden></label>
           <button data-copy="1" title="선택한 부분(없으면 화면 전체) 복사">${ICO.copy}<span>화면 복사</span></button>
           <button type="button" id="btnConBottom" title="터미널 최하단으로 이동">${ICO.chevDown}<span>최하단</span></button>
@@ -79,11 +80,11 @@ function mountConsoleScreen(hostEl, { pid, gen, s }) {
           </div>
         </div>
       </div>
-      <div class="tdock-comp" style="flex-direction:column;align-items:stretch;gap:6px">
+      <div class="tdock-comp" id="conDockComp" ${chatHost ? 'hidden' : ''} style="flex-direction:column;align-items:stretch;gap:6px">
         <div class="att-strip" id="cAttStrip" hidden style="margin:0;max-width:none"></div>
         <div class="row" style="gap:6px;align-items:flex-end;width:100%">
           <textarea id="inp" rows="1" placeholder="보낼 내용 입력 (Enter 전송 · Shift+Enter 줄바꿈 · 빈 칸에서 ↑↓/Esc는 창으로 전달)"></textarea>
-          <button class="primary" id="btnSend">보내기 ⏎</button>
+          <button class="${chatHost ? '' : 'primary'}" id="btnSend">터미널 전송</button>
         </div>
       </div>
     </div>
@@ -97,6 +98,13 @@ function mountConsoleScreen(hostEl, { pid, gen, s }) {
     try { localStorage.setItem('ccd.tuiKeysOpen', next ? '1' : '0'); } catch {}
   };
   const inp = $('#inp', fullEl);
+  const conComp = $('#conDockComp', fullEl);
+  const conToggle = $('#conDockToggle', fullEl);
+  const setConsoleInput = (expanded) => {
+    conComp.hidden = !expanded;
+    conToggle.setAttribute('aria-expanded', String(expanded));
+  };
+  conToggle.onclick = () => { setConsoleInput(conComp.hidden); if (!conComp.hidden) inp.focus(); };
   const fitInp = () => { inp.style.height = 'auto'; inp.style.height = Math.min(140, Math.max(36, inp.scrollHeight)) + 'px'; };
   inp.addEventListener('input', fitInp);
   const scrEl = $('#scr', fullEl);
@@ -151,10 +159,17 @@ function mountConsoleScreen(hostEl, { pid, gen, s }) {
     if (k) sendKey(k);
   };
   tick();
-  const addPath = (txt) => { inp.value += (inp.value && !inp.value.endsWith(' ') ? ' ' : '') + txt; fitInp(); inp.focus(); };
-  attachFileInput(fullEl, addPath, s?.cwd, { onFiles: (fl, it) => cAttCtl.addFiles(fl, it) });
-  bindFilePick(fullEl, addPath, s?.cwd, { onFiles: (fl, it) => cAttCtl.addFiles(fl, it) });
-  inp.focus();
+  const addPath = (txt) => { setConsoleInput(true); inp.value += (inp.value && !inp.value.endsWith(' ') ? ' ' : '') + txt; fitInp(); inp.focus(); };
+  const addFiles = (fl, it) => { setConsoleInput(true); return cAttCtl.addFiles(fl, it); };
+  attachFileInput(fullEl, addPath, s?.cwd, { onFiles: addFiles });
+  bindFilePick(fullEl, addPath, s?.cwd, { onFiles: addFiles });
+  if (!chatHost) inp.focus();
+  return { syncChatPane(next) {
+    if (!!next === !!chatHost) return;
+    chatHost = next;
+    setConsoleInput(!chatHost || !!inp.value);
+    $('#btnSend', fullEl).classList.toggle('primary', !chatHost);
+  } };
 }
 
 function viewConsole() {
@@ -168,13 +183,13 @@ function viewConsole() {
   if (!sid) initialPanels = initialPanels.filter((p) => p !== 'chat');
   if (!initialPanels.length) initialPanels = ['term'];
 
-  setBar(`<button id="btnBackTerms" class="ghost btn-sm">${ICO.chevLeft} 터미널</button><h2><span>${esc(c ? consoleLabel(c) : 'pid ' + state.sel.id)}</span></h2>
-    ${dockTopSegHTML({ openSet: new Set(initialPanels), isContentTab, hasTerm: true, hasChat: !!sid, showFiles: !!sid, curTab: state.tab })}
-    <button id="btnConMore" class="ghost icon-btn btn-sm desk" aria-label="콘솔 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
+  const title = esc(c ? consoleLabel(c) : 'pid ' + state.sel.id);
+  setSessionBar(`<h2 title="${title}"><span>${title}</span></h2>`,
+    dockTopSegHTML({ openSet: new Set(initialPanels), isContentTab, hasTerm: true, hasChat: !!sid, showFiles: !!sid, curTab: state.tab }),
+    `<button id="btnConMore" class="ghost icon-btn btn-sm desk" aria-label="콘솔 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
 
   let dock = null;
   $('#bar').onclick = (e) => {
-    if (e.target.closest('#btnBackTerms')) return select({ kind: 'terms' });
     const dt = e.target.closest('[data-dock-toggle]');
     if (dt) {
       const p = dt.dataset.dockToggle;
@@ -215,6 +230,7 @@ function viewConsole() {
   }
 
   let winCtl = null;
+  let termCtl = null;
   let chatMounted = false;
   let chatScrollEl = null;
   const ensureChatMounted = () => {
@@ -237,11 +253,15 @@ function viewConsole() {
       ...(sid ? { chat: { title: '대화 기록', icon: ICO.chat, onShow: ensureChatMounted } } : {}),
       windows: { title: '창', icon: ICO.monitor, onShow: () => winCtl?.renderWindows() },
     },
-    onOpenChange: (openList) => syncBarDockButtons(openList),
+    onOpenChange: (openList) => {
+      syncBarDockButtons(openList);
+      if (openList.includes('chat')) ensureChatMounted();
+      termCtl?.syncChatPane(openList.includes('chat') ? chatScrollEl : null);
+    },
   });
 
-  mountConsoleScreen(dock.getBody('term'), { pid, gen, s });
   if (sid && dock.isOpen('chat')) ensureChatMounted();
+  termCtl = mountConsoleScreen(dock.getBody('term'), { pid, gen, s, chatHost: chatScrollEl });
   winCtl = window.ACH_DOCK.mountWindowsPane({
     rootEl: dock.getBody('windows'),
     consolePid: pid,
@@ -266,8 +286,8 @@ async function copyText(text) {
 }
 // selected text inside el (for the plain-text console screens)
 const selectionIn = (el) => { const sel = window.getSelection(); return sel && !sel.isCollapsed && el && el.contains(sel.anchorNode) ? sel.toString() : ''; };
-let dockCollapsed = false;
-try { dockCollapsed = localStorage.getItem('ccd.dockCollapsed') === '1'; } catch {}
+let termInputCollapsed = false;
+try { termInputCollapsed = localStorage.getItem('ccd.dockCollapsed') === '1'; } catch {}
 function getTuiKeysOpen() {
   try {
     const v = localStorage.getItem('ccd.tuiKeysOpen');
@@ -281,14 +301,15 @@ const termPromptHist = [];
 function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = null }) {
   if (!hostEl) return;
   const termId = t?.id || state.sel.id;
+  let dockCollapsed = chatHost ? true : termInputCollapsed;
   const keysOpen = getTuiKeysOpen();
   hostEl.innerHTML = `<div class="full"><div id="termwrap"><button type="button" class="scroll-bottom-btn term-bottom-float" id="btnTermFloatBottom" hidden title="터미널 최하단으로 이동" aria-label="터미널 최하단으로 이동">${ICO.chevDown}<span>최하단</span></button></div>
     <div class="term-dock">
       <div class="tdock-bar">
-        <button class="ghost btn-sm" id="tDockToggle" aria-expanded="${!dockCollapsed}" title="하단 프롬프트 작성창 접기/펼치기">${dockCollapsed ? `${ICO.chevUp} 입력창` : `${ICO.chevDown} 입력창`}</button>
+        <button class="ghost btn-sm" id="tDockToggle" aria-expanded="${!dockCollapsed}" title="하단 프롬프트 작성창 접기/펼치기">${dockCollapsed ? `${ICO.chevUp} 터미널 입력` : `${ICO.chevDown} 터미널 입력`}</button>
         <div class="tdock-tools">
           <label class="filebtn" title="이 PC의 파일·스크린샷 첨부 → 경로 자동 입력 (드래그/Ctrl+V 가능)">${ICO.clip}<span>파일 첨부</span><input type="file" class="fpick" multiple hidden></label>
-          <button id="tArt" title="세션이나 연구의 산출물 경로 선택">${ICO.folder}<span>산출물</span></button>
+          <button id="tArt" title="세션이나 연구의 산출물 경로 선택">${ICO.folder}<span>산출물 삽입</span></button>
           <button data-copy="1" title="선택 텍스트(없으면 화면 전체) 복사">${ICO.copy}<span>복사</span></button>
           <button type="button" id="btnTermBottom" title="터미널 최하단으로 이동">${ICO.chevDown}<span>최하단</span></button>
         </div>
@@ -308,8 +329,8 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
       <div class="tdock-comp" id="tDockComp" ${dockCollapsed ? 'hidden' : ''} style="flex-direction:column;align-items:stretch;gap:6px">
         <div class="att-strip" id="tAttStrip" hidden style="margin:0;max-width:none"></div>
         <div class="row" style="gap:6px;align-items:flex-end;width:100%">
-          <textarea id="tin" rows="1" placeholder="프롬프트 입력 (Enter 전송 · 파일 첨부)" enterkeyhint="send"></textarea>
-          <button class="primary" id="tsend" title="터미널에 프롬프트 전송 (Enter)">보내기 ⏎</button>
+          <textarea id="tin" rows="1" aria-label="터미널 프롬프트" placeholder="터미널 프롬프트 · Enter 전송" enterkeyhint="send"></textarea>
+          <button class="${chatHost ? '' : 'primary'}" id="tsend" title="터미널에 프롬프트 전송 (Enter)">터미널 전송</button>
         </div>
       </div>
     </div>
@@ -369,6 +390,7 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
   xterm.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
     const k = e.key.toLowerCase();
+    if (t?.agent === 'codex' && e.ctrlKey && !e.altKey && !e.shiftKey && k === 'r') { e.preventDefault(); return false; }
     if ((e.ctrlKey || e.metaKey) && k === 'c' && (e.shiftKey || xterm.hasSelection())) { copyText(xterm.getSelection()); xterm.clearSelection(); return false; }
     if ((e.ctrlKey || e.metaKey) && k === 'v') { pasteWithShift = !!e.shiftKey; return false; }
     return true;
@@ -382,13 +404,20 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
     tin.style.height = 'auto';
     tin.style.height = Math.min(140, Math.max(36, tin.scrollHeight)) + 'px';
   };
-  tin.addEventListener('input', fitTin);
-  $('#tDockToggle', fullEl).onclick = () => {
-    dockCollapsed = !dockCollapsed;
-    try { localStorage.setItem('ccd.dockCollapsed', dockCollapsed ? '1' : '0'); } catch {}
+  const dockToggle = $('#tDockToggle', fullEl);
+  const setInputCollapsed = (collapsed) => {
+    dockCollapsed = collapsed;
+    if (!chatHost) {
+      termInputCollapsed = dockCollapsed;
+      try { localStorage.setItem('ccd.dockCollapsed', dockCollapsed ? '1' : '0'); } catch {}
+    }
     comp.hidden = dockCollapsed;
-    $('#tDockToggle', fullEl).innerHTML = dockCollapsed ? `${ICO.chevUp} 입력창` : `${ICO.chevDown} 입력창`;
-    $('#tDockToggle', fullEl).setAttribute('aria-expanded', String(!dockCollapsed));
+    dockToggle.innerHTML = dockCollapsed ? `${ICO.chevUp} 터미널 입력` : `${ICO.chevDown} 터미널 입력`;
+    dockToggle.setAttribute('aria-expanded', String(!dockCollapsed));
+  };
+  tin.addEventListener('input', () => { if (dockCollapsed && tin.value) setInputCollapsed(false); fitTin(); });
+  dockToggle.onclick = () => {
+    setInputCollapsed(!dockCollapsed);
     setTimeout(() => { resize(); if (dockCollapsed && !IS_MOBILE) xterm?.focus(); else if (!dockCollapsed) tin.focus(); }, 30);
   };
   const tkBtn = $('#btnTuiKeys', fullEl), tkBox = $('#tuiKeysBox', fullEl);
@@ -426,8 +455,10 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
     sendCtrlV: () => send('\x16'),
   });
   let histIdx = -1;
-  const submit = () => {
+  const submit = async () => {
     if (!dockCollapsed && tAttCtl.isLoading()) return toast('첨부 파일을 준비하는 중입니다…');
+    const submitBtn = $('#tsend', fullEl);
+    if (submitBtn.disabled) return;
     const attPaths = !dockCollapsed ? tAttCtl.takePaths() : [];
     const typed = tin.value;
     const v = [...attPaths, typed].filter(Boolean).join(' ');
@@ -438,7 +469,19 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
       if (termPromptHist[0] !== v) termPromptHist.unshift(v);
       if (termPromptHist.length > 50) termPromptHist.pop();
     }
-    if (v) { send(v); setTimeout(() => send('\r'), 350 + Math.min(3000, v.length * 2)); } else send('\r');
+    if (!v) { send('\r'); return; }
+    submitBtn.disabled = true;
+    try {
+      const r = await api('/api/term/send', { method: 'POST', body: { id: termId, text: v, submit: true, fromTerminalInput: true } });
+      if (!r.ok) throw new Error(r.error);
+    } catch (err) {
+      tin.value = [v, tin.value].filter(Boolean).join('\n');
+      fitTin();
+      toast(err.message, 5000, 'danger');
+      return;
+    } finally {
+      submitBtn.disabled = false;
+    }
     if (chatHost && v.trim()) {
       chatHost._liveChatHint = { termId: String(termId), pendingText: v.trim(), sentAt: Date.now(), until: Date.now() + 30000 };
       chatHost._triggerPoll?.();
@@ -476,8 +519,20 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
   window.onresize = resize;
   window.onfocus = resize;
   document.onvisibilitychange = () => { if (!document.hidden) resize(); };
-  setTimeout(() => { resize(); if (!IS_MOBILE) xterm?.focus(); }, 60);
-  return { resize };
+  const syncChatPane = (next) => {
+    if (!!next === !!chatHost) return;
+    chatHost = next;
+    setInputCollapsed(!tin.value && (chatHost ? true : termInputCollapsed));
+    $('#tsend', fullEl).classList.toggle('primary', !chatHost);
+  };
+  setTimeout(() => {
+    if (gen !== viewGen) return;
+    resize();
+    if (IS_MOBILE) return;
+    if (chatHost) $('textarea', chatHost.parentElement)?.focus();
+    else xterm?.focus();
+  }, 60);
+  return { resize, syncChatPane };
 }
 
 function viewTerm() {
@@ -503,15 +558,22 @@ function viewTerm() {
   let initialPanels = window.ACH_DOCK ? window.ACH_DOCK.getDockOpen('term', isContentTab ? null : state.tab) : ['term', 'chat'];
   if (!initialPanels.length) initialPanels = ['term'];
 
-  setBar(`${state.sel.project || pj ? `<button id="btnBackProject" class="ghost btn-sm" data-proj-id="${esc(state.sel.project || pj.id)}">${ICO.chevLeft} ${esc(pj?.name || 'Project')}</button>` : `<button id="btnBackTerms" class="ghost btn-sm">${ICO.chevLeft} 터미널</button>`}<h2>${ag ? agentIcon(ag) : ''}<span>${esc(t ? termLabel(t) : '터미널')}</span></h2><span id="termLiveBadge" class="term-live-pill ${pillCls}">${pillText}</span>${branchTagHTML(t?.branch)}${t?.account ? `<span class="badge c">${esc(t.account.label.replace(/@.*/, ''))}</span>` : ''}${(t?.model || t?.effort) ? `<span class="badge" title="선택된 모델 · 추론 성능">${esc([t.model, t.effort].filter(Boolean).join(' · '))}</span>` : ''}
-    ${dockTopSegHTML({ openSet: new Set(initialPanels), isContentTab, hasTerm: true, hasChat: true, showFiles: true, curTab: state.tab })}
-    <button id="btnTermMore" class="ghost icon-btn btn-sm" aria-label="터미널 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
+  const title = esc(t ? termLabel(t) : '터미널');
+  const projectName = esc(pj?.name || 'Project');
+  const back = state.sel.project || pj
+    ? `<button id="btnBackProject" class="ghost btn-sm session-back" aria-label="${projectName}" data-proj-id="${esc(state.sel.project || pj.id)}">${ICO.chevLeft}<span>${projectName}</span></button>`
+    : '';
+  setSessionBar(`${back}<h2 title="${title}">${ag ? agentIcon(ag) : ''}<span>${title}</span></h2>
+    <span id="termLiveBadge" class="term-live-pill ${pillCls}">${pillText}</span>
+    <div class="session-meta">${sessionOriginButton(t?.branch)}${branchTagHTML(t?.branch)}${t?.account ? `<span class="badge c">${esc(t.account.label.replace(/@.*/, ''))}</span>` : ''}${(t?.model || t?.effort) ? `<span class="badge" title="선택된 모델 · 추론 성능">${esc([t.model, t.effort].filter(Boolean).join(' · '))}</span>` : ''}</div>`,
+    dockTopSegHTML({ openSet: new Set(initialPanels), isContentTab, hasTerm: true, hasChat: true, showFiles: true, curTab: state.tab }),
+    `<button id="btnTermMore" class="ghost icon-btn btn-sm" aria-label="터미널 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
 
   let dock = null;
   $('#bar').onclick = async (e) => {
+    if (openSessionOrigin(e.target)) return;
     const bp = e.target.closest('#btnBackProject');
     if (bp) return openProject(bp.dataset.projId || state.sel.project);
-    if (e.target.closest('#btnBackTerms')) return select({ kind: 'terms' });
     const dt = e.target.closest('[data-dock-toggle]');
     if (dt) {
       const p = dt.dataset.dockToggle;
@@ -607,7 +669,11 @@ function viewTerm() {
       chat: { title: '대화 기록', icon: ICO.chat, onShow: ensureChatMounted },
       windows: { title: '창', icon: ICO.monitor, onShow: () => winCtl?.renderWindows() },
     },
-    onOpenChange: (openList) => syncBarDockButtons(openList),
+    onOpenChange: (openList) => {
+      syncBarDockButtons(openList);
+      if (openList.includes('chat')) ensureChatMounted();
+      termCtl?.syncChatPane(openList.includes('chat') ? chatScrollEl : null);
+    },
   });
 
   if (dock.isOpen('chat')) ensureChatMounted();

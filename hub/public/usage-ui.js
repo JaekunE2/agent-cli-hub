@@ -59,6 +59,7 @@ function keyMeters(a) {
   return pick.length ? pick : ms.filter((m) => m.headline).concat(ms).slice(0, 2);
 }
 const bar = (pct, thin) => `<span class="ubar${thin ? ' thin' : ''}"><i class="${level(pct)}" style="width:${Math.max(2, Math.min(100, pct))}%"></i></span>`;
+const remainingBar = (used, remaining) => `<span class="ubar" aria-hidden="true"><i class="${level(used)}" style="width:${Math.min(100, remaining)}%"></i></span>`;
 async function openAgyUsage(btn) {
   const prev = btn?.innerHTML;
   if (btn) { btn.disabled = true; btn.textContent = btn.classList.contains('qact') ? '…' : 'agy 조회 중…'; }
@@ -222,8 +223,8 @@ function agyCardHTML(swapAcc) {
   return `<div class="ucard click${activeCls}${soon ? ' reset-soon' : ''}" data-usage-card="${esc(cardKey)}" title="${esc(swapAcc?.email || '')}">
     <div class="uh">${agentIcon('agy', refreshing ? 'busy' : (swapAcc?.active ? 'idle' : ''))}<b style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(titleTxt)}</b>${activeBadge}${switchBtn}${soon ? `<span class="badge soon">${ICO.clock} 금일 리셋</span>` : ''}</div>
     <div>
-      <div class="ucard-hero"><span class="ucard-big ${level(worst)}">${rem}%</span><span class="ums" style="margin:0">남음 (${Math.round(worst)}% 사용)</span></div>
-      <div style="margin-top:8px">${bar(worst)}</div>
+      <div class="ucard-hero"><span class="ucard-big ${level(worst)}">${rem}%</span><span class="ums" style="margin:0">남음</span></div>
+      <div style="margin-top:8px">${remainingBar(worst, rem)}</div>
     </div>
     <div class="ucard-foot"><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(resetHint)}</span><span class="ico">${ICO.chevRight}</span></div>
   </div>`;
@@ -461,18 +462,23 @@ function paintUsage() {
       : tightMeter?.resetsAt
         ? `${tightMeter.name} · ${untilText(tightMeter.resetsAt)}`
         : tightMeter?.detail || a.plan || '상세 보기';
-    return `<div class="ucard click${soon ? ' reset-soon' : ''}" data-usage-card="${esc(a.id || a.label)}">
-      <div class="uh">${agentIcon(kind, a.live ? 'idle' : '')}<b>${esc(shortLabel(a))}</b>${soon ? `<span class="badge soon">${ICO.clock} 금일 리셋</span>` : ''}</div>
+    return { attention: !a.ok || (worst ?? 0) >= 90, html: `<div class="ucard click${soon ? ' reset-soon' : ''}" data-usage-card="${esc(a.id || a.label)}">
+      <div class="uh">${agentIcon(kind, a.live ? 'idle' : '')}<b>${esc(shortLabel(a))}</b>${!a.ok ? '<span class="badge lim">조회 실패</span>' : ''}${soon ? `<span class="badge soon">${ICO.clock} 금일 리셋</span>` : ''}</div>
       <div>
-        <div class="ucard-hero"><span class="ucard-big ${worst != null ? level(worst) : ''}"${rem == null ? ' style="font-size:18px;font-weight:650;color:var(--muted)"' : ''}>${rem != null ? `${rem}%` : '유효'}</span><span class="ums" style="margin:0">${rem != null ? `남음 (${Math.round(worst)}% 사용)` : '상세 보기'}</span></div>
-        <div style="margin-top:8px">${worst != null ? bar(worst) : ''}</div>
+        <div class="ucard-hero"><span class="ucard-big ${worst != null ? level(worst) : ''}"${rem == null ? ' style="font-size:18px;font-weight:650;color:var(--muted)"' : ''}>${rem != null ? `${rem}%` : a.ok ? '유효' : '—'}</span><span class="ums" style="margin:0">${rem != null ? '남음' : a.ok ? '인증 상태' : '조회 실패'}</span></div>
+        <div style="margin-top:8px">${worst != null ? remainingBar(worst, rem) : ''}</div>
       </div>
       <div class="ucard-foot"><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(resetHint)}</span><span class="ico">${ICO.chevRight}</span></div>
-    </div>`;
-  }).join('');
-  const agyCards = swapAccs.length ? shownSwapAgy.map((sa) => agyCardHTML(sa)).join('') : (showFallbackAgy ? agyCardHTML() : '');
-  const gridContent = `${cards}${agyCards}`;
-  $('#view').innerHTML = `<div class="sys-shell">${sysTop}<div class="sys-body"><div class="page-wrap">${controls}${gridContent ? `<div class="ugrid">${gridContent}</div>` : '<div class="h-empty-card"><b>조건에 맞는 계정이 없습니다</b></div>'}</div></div></div>`;
+    </div>` };
+  });
+  for (const sa of shownSwapAgy) cards.push({ attention: (swapWorstOf(sa) ?? 0) >= 90, html: agyCardHTML(sa) });
+  if (showFallbackAgy) cards.push({ attention: (agyWorst ?? 0) >= 90, html: agyCardHTML() });
+  const needsAttention = cards.filter((x) => x.attention).map((x) => x.html).join('');
+  const others = cards.filter((x) => !x.attention).map((x) => x.html).join('');
+  $('#view').innerHTML = `<div class="sys-shell">${sysTop}<div class="sys-body"><div class="page-wrap usage-page">${controls}
+    ${needsAttention ? `<section class="list-sec usage-attention"><h2>확인이 필요한 계정</h2><div class="ugrid">${needsAttention}</div></section>` : ''}
+    ${others ? `<div class="ugrid">${others}</div>` : ''}
+    ${cards.length ? '' : '<div class="h-empty-card"><b>조건에 맞는 계정이 없습니다</b></div>'}</div></div></div>`;
   const sortEl = $('#uSort');
   if (sortEl) sortEl.onchange = (e) => { state.usageSort = e.target.value; paintUsage(); };
 }
@@ -491,7 +497,7 @@ async function openAccounts() {
   const d = openDrawer({
     title: 'AI 사용량 계정 관리',
     bodyHTML: '<div id="acBody">불러오는 중…</div>',
-    footerHTML: '<button data-drw-close>닫기</button><button class="primary" id="acAdd">계정 추가</button>',
+    footerHTML: '<button data-drw-close>닫기</button>',
     width: 480,
   });
   const paint = async () => {
@@ -508,7 +514,7 @@ async function openAccounts() {
       ${swapRows ? `<div class="swlist">${swapRows}</div>` : ''}
       <div class="swlist">${(r.accounts || []).map((a) => `<div class="swrow"><span class="swl">${esc(a.label || a.id)} <span class="badge">${esc(ACCOUNT_TYPES[a.type]?.name || a.type)}</span></span>
         <button class="danger ghost btn-sm" data-del="${esc(a.id)}">삭제</button></div>`).join('') || (!swapRows ? '<div class="empty">직접 추가한 계정 없음</div>' : '')}</div>
-      <h3 style="margin:8px 0 0;font-size:14px">계정 추가</h3>
+      <details class="ac-add"><summary>계정 추가</summary>
       <div class="row" style="gap:6px;flex-wrap:wrap">
         <button id="acCodex" title="터미널이 열리고 코드가 나옵니다. 아무 브라우저(폰도 가능)에서 그 주소를 열어 코드를 넣고, 추가할 ChatGPT 계정으로 로그인하면 끝">＋ Codex 계정 추가 (ChatGPT 로그인)</button>
         ${state.agySwapAvailable ? '<button id="acAgy" title="agy-swap 로그인 터미널을 열어 새 Google Antigravity 계정을 추가합니다">＋ Antigravity 계정 추가 (Google 로그인)</button>' : ''}
@@ -518,7 +524,8 @@ async function openAccounts() {
       <label>이름(라벨)<br><input id="acLabel" style="width:100%" placeholder="예: 연구실 계정"></label>
       <div id="acFields"></div>
       <div class="empty" id="acHelp" style="padding:0"></div>
-      <div class="empty" style="padding:0">토큰·키는 이 PC의 AI 사용량 대시보드 설정 파일에만 저장되고, 화면에는 가려서 표시됩니다.</div>`;
+      <div class="empty" style="padding:0">토큰·키는 이 PC의 AI 사용량 대시보드 설정 파일에만 저장되고, 화면에는 가려서 표시됩니다.</div>
+      <button type="button" class="primary" id="acAdd">입력한 계정 추가</button></details>`;
     const fields = () => {
       const t = ACCOUNT_TYPES[$('#acType', d).value];
       $('#acFields', d).innerHTML = t.fields.map(([k, lab, typ]) => `<label>${esc(lab)}<br><input data-f="${k}" type="${typ}" style="width:100%" autocomplete="off"></label>`).join('');

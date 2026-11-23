@@ -14,8 +14,8 @@ function homeStatsHTML() {
   const rems = [];
   for (const a of okAccs) {
     const ms = keyMeters(a);
-    const worst = ms.length ? Math.max(...ms.map((m) => m.usedPercent || 0)) : 0;
-    rems.push(Math.max(0, Math.round(100 - worst)));
+    const used = ms.map((m) => m.usedPercent).filter((v) => v != null && Number.isFinite(Number(v)));
+    if (used.length) rems.push(Math.max(0, Math.round(100 - Math.max(...used))));
   }
   if (swapAccs.length) {
     for (const sa of swapAccs) {
@@ -26,8 +26,8 @@ function homeStatsHTML() {
     const pcts = agyGroups.flatMap((g) => [g.fiveH, g.weekly]).filter((v) => v != null);
     if (pcts.length) rems.push(Math.max(0, Math.round(100 - Math.max(...pcts))));
   }
-  const bestRem = rems.length ? Math.max(...rems) : null;
-  const totalAccN = okAccs.length + (swapAccs.length || (agyGroups.length ? 1 : 0));
+  const minRemaining = rems.length ? Math.min(...rems) : null;
+  const tightAccounts = rems.filter((pct) => pct <= 10).length;
 
   const calItems = ((typeof CAL !== 'undefined' && CAL?.data?.items) || []).filter((x) => !(x.kind === 'task' && x.done));
   const now = new Date();
@@ -47,9 +47,9 @@ function homeStatsHTML() {
       <div class="h-stat-sub">${runTerms.length + cons.length ? `실행 중 ${busyN} · 대기 ${idleN}` : '열린 세션 없음'}</div>
     </div>
     <div class="h-stat" data-hnav="usage">
-      <div class="h-stat-lbl"><span>AI 남은 한도</span><span class="badge">계정 ${totalAccN}개</span></div>
-      <div class="h-stat-val">${bestRem != null ? `${bestRem}%` : '—'}</div>
-      <div class="h-stat-sub">${bestRem != null ? '가장 여유 있는 계정 기준' : !u ? '불러오는 중…' : '오프라인'}</div>
+      <div class="h-stat-lbl"><span>AI 남은 한도</span>${tightAccounts ? `<span class="badge lim">임박 ${tightAccounts}개</span>` : ''}</div>
+      <div class="h-stat-val">${minRemaining != null ? `${minRemaining}%` : '—'}</div>
+      <div class="h-stat-sub">${minRemaining != null ? `조회된 ${rems.length}개 계정 중 최저` : !u ? '불러오는 중…' : '한도 정보 없음'}</div>
     </div>
     <div class="h-stat" data-hnav="calendar">
       <div class="h-stat-lbl"><span>오늘 일정</span>${overN ? `<span class="badge lim">지연 ${overN}</span>` : ''}</div>
@@ -70,7 +70,7 @@ function homeListsHTML() {
   const merged = [
     ...terms.map((t) => ({ kind: 'term', rank: STATE_RANK[termStateOf(t)] ?? 9, item: t })),
     ...cons.map((c) => ({ kind: 'console', rank: STATE_RANK[consoleStateOf(c)] ?? 9, item: c })),
-  ].sort((a, b) => compareUnifiedEntries(a, b, recentMap)).slice(0, 6);
+  ].sort((a, b) => compareUnifiedEntries(a, b, recentMap)).slice(0, 4);
   const termRows = merged.map((entry) => {
     if (entry.kind === 'term') {
       const t = entry.item;
@@ -93,7 +93,8 @@ function homeListsHTML() {
   }).join('') || '<div class="empty" style="padding:24px 16px;text-align:center">열린 터미널이 없습니다. 위에서 바로 시작해 보세요.</div>';
 
   const liveIds = new Set(state.live.map((s) => s.sessionId));
-  const recents = state.recent.filter((r) => !liveIds.has(r.sessionId)).slice(0, 6);
+  for (const t of terms) liveIds.add(t.sessionId);
+  const recents = state.recent.filter((r) => !liveIds.has(r.sessionId)).slice(0, 4);
   const recentRows = recents.map((r) => {
     const ag = r.agent || 'claude';
     return `<div class="m-row" data-hrecent="${esc(r.sessionId)}">
@@ -135,7 +136,7 @@ function termCardHTML(t, extraBadge = '') {
   const closeBtn = st === 'exited'
     ? `<button class="ghost icon-btn btn-sm" data-term-close="${esc(t.id)}" aria-label="종료된 터미널 닫기" title="종료된 터미널 제거">${ICO.close}</button>`
     : '';
-  return `<div class="card${t.branch?.isBranch ? ' is-branch' : ''}" data-term="${t.id}"><div class="hd">${agentIcon(kind, dot)}
+  return `<div class="card" data-term="${t.id}"><div class="hd">${agentIcon(kind, dot)}
     <span class="t">${esc(termLabel(t))}</span>
     ${branchTagHTML(t.branch)}${pjBadge}${extraBadge}${kindBadge}${stBadge}${closeBtn}</div>
     <div class="mini" id="mini-${t.id}"><div class="mini-in"></div></div></div>`;
@@ -197,23 +198,13 @@ function viewHome() {
   setBar('');
   $('#view').innerHTML = `<div class="page-wrap">
     <header class="h-hero">
-      <div class="h-hero-title">
-        <h1>무엇을 시작할까요?</h1>
-        <span>에이전트 세션을 한 번의 클릭으로 열거나 이어서 작업하세요</span>
-      </div>
-      <div class="h-launch">
-        <button class="h-launch-btn" data-quick="claude">${agentIcon('claude')} Claude</button>
-        <button class="h-launch-btn" data-quick="codex">${agentIcon('codex')} Codex</button>
-        <button class="h-launch-btn" data-quick="agy">${agentIcon('agy')} Antigravity</button>
-        <button class="primary" data-hopen-new="1">${ICO.plus} 새 터미널</button>
-      </div>
+      <h1>홈</h1>
+      <button class="primary" data-hopen-new="1">${ICO.plus} 새 터미널</button>
     </header>
-    <div class="h-stats" id="homeStats">${homeStatsHTML()}</div>
     <div class="h-two" id="homeLists">${homeListsHTML()}</div>
+    <div class="h-stats" id="homeStats">${homeStatsHTML()}</div>
   </div>`;
   $('#view').onclick = async (e) => {
-    const q = e.target.closest('[data-quick]');
-    if (q) return openNewTermDrawer('', null, q.dataset.quick);
     if (e.target.closest('[data-hopen-new]')) return openNewTermDrawer();
     const resBtn = e.target.closest('[data-hresume]');
     if (resBtn) { e.stopPropagation(); return resumeRecentSession(resBtn.dataset.hresume, resBtn); }
@@ -281,7 +272,7 @@ function paintTermsBody() {
       ...shownCons.map((c) => ({ kind: 'console', rank: STATE_RANK[consoleStateOf(c)] ?? 9, item: c })),
     ].sort((a, b) => compareUnifiedEntries(a, b, recentMap));
     const segBtn = (val, label, cnt) => `<button data-tview-filt="${val}" class="${tf === val ? 'on' : ''}">${label} <span class="seg-cnt">${cnt}</span></button>`;
-    const controls = `<div class="row" style="justify-content:space-between;gap:10px">
+    const controls = `<div class="row terms-controls" style="justify-content:space-between;gap:10px">
       <div class="seg" role="tablist" aria-label="터미널 상태 탭">
         ${segBtn('', '전체', counts.all)}
         ${segBtn('busy', '실행 중', counts.busy)}
@@ -291,8 +282,8 @@ function paintTermsBody() {
       <div class="row" style="gap:8px">
         ${counts.exited ? `<button class="ghost btn-sm" id="btnCleanExited">${ICO.trash} 종료됨 정리 (${counts.exited})</button>` : ''}
         <div class="seg" role="tablist" aria-label="보기 방식">
-          <button data-tview-mode="cards" class="${state.termsView !== 'list' ? 'on' : ''}">미리보기</button>
           <button data-tview-mode="list" class="${state.termsView === 'list' ? 'on' : ''}">목록</button>
+          <button data-tview-mode="cards" class="${state.termsView !== 'list' ? 'on' : ''}">미리보기</button>
         </div>
       </div>
     </div>`;
@@ -417,7 +408,7 @@ function viewTerms() {
       <div class="page-hd-left">
         <h1>터미널</h1>
         <div class="seg" role="tablist" aria-label="터미널 영역">
-          ${tbtn('active', '실행 중', activeN)}
+          ${tbtn('active', '터미널', activeN)}
           ${tbtn('recent', '최근 대화')}
           ${tbtn('favs', '즐겨찾기', favN)}
         </div>

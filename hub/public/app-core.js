@@ -47,7 +47,7 @@ const state = {
   sel: { kind: 'home' }, tab: 'screen', showHidden: false, favs: new Set(), showDesktop: (() => { try { return !!localStorage.getItem('ccd-show-desktop'); } catch { return false; } })(),
   live: [], consoles: [], terms: [], recent: [], projects: [], err: null,
   usage: null, research: [], gpu: null, services: null, hubDown: false,
-  termFilter: '', termsTab: 'active', termsView: 'cards', recentQuery: '', sysTab: 'usage',
+  termFilter: '', termsTab: 'active', termsView: 'list', recentQuery: '', sysTab: 'usage',
   usageFilter: 'all', usageSort: 'headroom-desc', gpuTab: 'queue', rActSub: 'timeline',
   filter: '', sideFilter: '', search: { q: '', role: 'all', cwd: '', auto: false, screens: true },
   unreadTerms: new Set(), justDoneTerms: new Set(),

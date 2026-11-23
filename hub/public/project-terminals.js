@@ -84,14 +84,16 @@ function projectTerminals(p, gen) {
   const terms = state.terms.filter(t => t.exited === null && t.projectTask?.projectId === p.id);
   const host = $('#projectContent');
   const stageMap = new Map(projectStages);
+  const nextTask = p.tasks.find((t) => t.stage === 'planned' && !t.parentId && (t.after || []).every((id) => p.tasks.some((prev) => prev.id === id && prev.stage === 'done')));
   host.innerHTML = terms.length
     ? `<div class="grid" style="padding:0">${terms.map((t) => {
       const task = p.tasks.find((x) => x.id === t.projectTask?.taskId);
       const badge = task ? `<span class="badge">${esc(stageMap.get(task.stage) || task.stage)}</span>` : '';
       return termCardHTML(t, badge);
     }).join('')}</div>`
-    : `<div class="pj-empty"><p>작업 설계 또는 칸반에서 작업을 시작하면 전용 터미널이 여기에 표시됩니다.</p><div class="row"><button id="projectGoBoard2" class="primary">칸반 보드 열기</button><button id="projectPlan">작업 설계 열기</button></div></div>`;
+    : `<div class="pj-empty"><p>실행 중인 프로젝트 터미널이 없습니다.</p>${nextTask ? `<p>시작 가능한 작업 · <b>${esc(nextTask.title)}</b></p>` : ''}<div class="row">${nextTask ? '<button id="projectNextTask" class="primary">작업 상세 열기</button>' : ''}<button id="projectGoBoard2">칸반 보드 열기</button><button id="projectPlan">작업 설계 열기</button></div></div>`;
   if (!terms.length) {
+    if (nextTask) $('#projectNextTask').onclick = () => openProjectTaskDrawer(p, nextTask);
     $('#projectGoBoard2').onclick = () => openProject(p.id, 'board');
     $('#projectPlan').onclick = () => openProject(p.id, 'design');
   }

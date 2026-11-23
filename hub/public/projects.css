@@ -28,7 +28,8 @@
 .badge.tok-badge.active { color: var(--accent); background: color-mix(in srgb, var(--accent) 11%, var(--panel)); border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); font-weight: 650; }
 
 .pj-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
-.pj-toolbar .tablist { border-bottom: 0; }
+.pj-toolbar .tablist { border-bottom: 0; max-width: 100%; flex-wrap: wrap; }
+.pj-view-description { margin: -10px 0 0; color: var(--muted); font-size: 13px; }
 
 /* Tab 1: Goal Strip + Readable Task List (Title + Stage Badge + 1-Line Summary) */
 .pj-design-wrap { width: 100%; display: flex; flex-direction: column; gap: 14px; }
@@ -259,6 +260,10 @@
 
 /* Codebase Architecture Brief & Clean Macro Layer View (Astryx-aligned) */
 .fm-wrap { display: flex; flex-direction: column; gap: 16px; }
+.fm-wrap .seg { flex-wrap: wrap; max-width: 100%; }
+.fm-stat-pair { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.fm-exports > summary, .fm-metrics > summary { cursor: pointer; color: var(--muted); }
+.fm-exports > div, .fm-metrics > div { margin-top: 8px; }
 .fm-top-note { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 10px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-md); font-size: 12.5px; }
 .fm-bp-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .fm-bp-col { background: color-mix(in srgb, var(--panel2) 55%, var(--bg)); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 12px; display: flex; flex-direction: column; gap: 9px; }

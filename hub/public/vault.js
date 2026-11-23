@@ -537,7 +537,7 @@
           <button type="button" class="primary btn-sm" id="vNewSkill">${UI_ICO.plus} 새 공통 스킬</button>
         </div>
       </div>
-      ${filteredSkills.length ? renderGroupedBySource(filteredSkills, renderSkillRow) : '<div class="empty">표시할 스킬이 없습니다. 상단 CLI 카드를 누르거나 “모든 CLI에서 모으기”로 가져오세요.</div>'}`;
+      ${filteredSkills.length ? renderGroupedBySource(filteredSkills, renderSkillRow) : '<div class="empty">표시할 스킬이 없습니다. 공통 자원 설정에서 CLI 스킬을 가져올 수 있습니다.</div>'}`;
     } else if (vaultTab === 'mcp') {
       const renderMcpRow = (m) => `<div class="v-row${m.enabled ? '' : ' off'}">
         <div class="v-row-main">
@@ -593,13 +593,19 @@
 
     const body = $('#vaultBody');
     if (!body) return;
-    const shell = body.closest('.sys-shell');
-    const sysTopWrap = shell?.querySelector('.sys-top');
-    if (sysTopWrap) {
-      const vaultActsHTML = `<button type="button" class="btn-sm" id="vGatherBtn">${UI_ICO.refresh} 모든 CLI에서 모으기</button><button type="button" class="primary btn-sm" id="vSyncAllBtn">${UI_ICO.swap} 모든 CLI로 동기화</button>`;
-      sysTopWrap.outerHTML = systemTopHTML('vault', vaultActsHTML);
-    }
-    body.innerHTML = `<div class="rcard" style="gap:10px">
+    const settingsOpen = $('#vSettings', body)?.open;
+    body.innerHTML = `<div class="vault-toolbar"><div class="seg" role="tablist" aria-label="공통 자원">
+      <button type="button" role="tab" data-vtab="skills" aria-selected="${vaultTab === 'skills'}" class="${vaultTab === 'skills' ? 'on' : ''}">스킬 (${skills.length})</button>
+      <button type="button" role="tab" data-vtab="mcp" aria-selected="${vaultTab === 'mcp'}" class="${vaultTab === 'mcp' ? 'on' : ''}">MCP 서버 (${mcps.length})</button>
+      <button type="button" role="tab" data-vtab="harness" aria-selected="${vaultTab === 'harness'}" class="${vaultTab === 'harness' ? 'on' : ''}">하네스 · 규칙 (${rules.length + 1})</button>
+    </div>
+    <details id="vSettings" class="v-settings"${settingsOpen ? ' open' : ''}>
+    <summary>공통 자원 설정</summary>
+    <div class="rcard">
+      <div class="row">
+        <button type="button" class="btn-sm" id="vGatherBtn">${UI_ICO.refresh} 모든 CLI → 공통 자원으로 가져오기</button>
+        <button type="button" class="btn-sm" id="vSyncAllBtn">${UI_ICO.swap} 공통 자원 → 모든 CLI로 동기화</button>
+      </div>
       <div class="row" style="justify-content:space-between;gap:10px;flex-wrap:wrap">
         <div style="min-width:0;flex:1">
           <div style="font-weight:700;font-size:14.5px">공통 자원 경로 (Shared Path)</div>
@@ -614,13 +620,9 @@
         <input type="checkbox" id="vAutoLoadChk" ${st.autoLoad !== false ? 'checked' : ''}>
         <span><b>허브에서 CLI 실행 시 공통 자원 자동 로드</b> · Claude · Codex · Antigravity 실행할 때 공통 스킬 · MCP · 하네스를 자동으로 불러옵니다</span>
       </label>
-      <div class="h-stats" style="grid-template-columns:repeat(3,minmax(0,1fr))">${cliCards}</div>
+      <div class="h-stats v-cli-grid">${cliCards}</div>
     </div>
-    <div class="seg" role="tablist" style="align-self:flex-start">
-      <button type="button" data-vtab="skills" class="${vaultTab === 'skills' ? 'on' : ''}">스킬 (${skills.length})</button>
-      <button type="button" data-vtab="mcp" class="${vaultTab === 'mcp' ? 'on' : ''}">MCP 서버 (${mcps.length})</button>
-      <button type="button" data-vtab="harness" class="${vaultTab === 'harness' ? 'on' : ''}">하네스 · 규칙 (${rules.length + 1})</button>
-    </div>
+    </details></div>
     ${tabBody}`;
 
     $('#vPickDir', body).onclick = () => {
@@ -645,7 +647,7 @@
     const openBtn = $('#vOpenDir', body);
     if (openBtn) openBtn.onclick = () => api('/api/vault/open-dir', { method: 'POST' });
 
-    const gatherBtn = $('#vGatherBtn', shell || document);
+    const gatherBtn = $('#vGatherBtn', body);
     if (gatherBtn) gatherBtn.onclick = async (e) => {
       const btn = e.currentTarget;
       btn.disabled = true;
@@ -659,7 +661,7 @@
       finally { if (btn.isConnected) btn.disabled = false; }
     };
 
-    const syncAllBtn = $('#vSyncAllBtn', shell || document);
+    const syncAllBtn = $('#vSyncAllBtn', body);
     if (syncAllBtn) syncAllBtn.onclick = async (e) => {
       const btn = e.currentTarget;
       btn.disabled = true;
@@ -673,8 +675,17 @@
       finally { if (btn.isConnected) btn.disabled = false; }
     };
 
-    if ($('#vSkillSearch', body)) {
-      $('#vSkillSearch', body).oninput = (e) => { skillQuery = e.target.value; paintVault(); };
+    const skillSearch = $('#vSkillSearch', body);
+    if (skillSearch) {
+      skillSearch.oninput = skillSearch.oncompositionend = (e) => {
+        if (e.isComposing || e.currentTarget.value === skillQuery) return;
+        const { value, selectionStart, selectionEnd } = e.currentTarget;
+        skillQuery = value;
+        paintVault();
+        const search = $('#vSkillSearch', body);
+        search.focus({ preventScroll: true });
+        search.setSelectionRange(selectionStart, selectionEnd);
+      };
     }
     if ($('#vNewSkill', body)) $('#vNewSkill', body).onclick = () => openSkillModal(null);
     if ($('#vNewMcp', body)) $('#vNewMcp', body).onclick = () => openMcpModal(null);

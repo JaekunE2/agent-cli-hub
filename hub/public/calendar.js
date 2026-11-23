@@ -1,7 +1,7 @@
 // Calendar view: month grid + agenda over todo.md deadlines (tasks · milestones), the hub's own
 // events and the connected Google / Teams calendars. Data: /api/calendar.
 'use strict';
-const CAL = { month: null, data: null };
+const CAL = { month: null, day: null, data: null };
 const CAL_KIND = {
   task: { cls: 'ck-task', label: '할 일' }, milestone: { cls: 'ck-ms', label: '마일스톤' },
   event: { cls: 'ck-ev', label: '일정' }, gcal: { cls: 'ck-g', label: '구글' }, mscal: { cls: 'ck-ms365', label: 'Teams' },
@@ -28,6 +28,7 @@ function viewCalendar() {
 
 function paintCalendar() {
   const d = CAL.data || { items: [] }, g = d.google || {}, ms = d.ms || {};
+  const previousAgenda = $('.cal-upcoming');
   const m = CAL.month, y = m.getFullYear(), mo = m.getMonth();
   const anyConn = g.connected || ms.connected;
   const connN = (ms.connected ? 1 : 0) + (g.connected ? 1 : 0);
@@ -40,14 +41,16 @@ function paintCalendar() {
   const calActs = `
     <div class="btn-grp" role="group" aria-label="월 이동">
       <button data-cal="prev" aria-label="이전 달" title="이전 달">${ico.chevLeft || '‹'}</button>
-      <button data-cal="today">오늘</button>
+      <b class="cal-month">${esc(monthText)}</b>
       <button data-cal="next" aria-label="다음 달" title="다음 달">${ico.chevRight || '›'}</button>
     </div>
-    <b style="min-width:84px;text-align:center;font-size:13.5px">${esc(monthText)}</b>
+    <button class="ghost btn-sm" data-cal="today">오늘</button>
     <button class="btn-sm" data-cal="addtask" title="todo.md에 마감 있는 할 일 추가">${ico.plus || ''} 할 일</button>
     <button class="primary btn-sm" data-cal="addev">${ico.plus || ''} 일정</button>
     <button class="ghost icon-btn btn-sm" data-cal="more" aria-label="캘린더 연동 메뉴" aria-haspopup="menu" aria-expanded="false" title="${esc(calMoreTitle)}">${ico.more || '⋯'}</button>`;
   const t = todayStr();
+  const selected = CAL.day || t;
+  const upcomingOpen = previousAgenda?.dataset.day === selected ? previousAgenda.open : null;
   const items = d.items || [], byDate = new Map();
   const overN = items.filter((x) => x.kind === 'task' && !x.done && x.date < t).length;
   const sysTop = `<div class="sys-top">
@@ -56,6 +59,7 @@ function paintCalendar() {
   </div>`;
 
   for (const it of items) { if (!byDate.has(it.date)) byDate.set(it.date, []); byDate.get(it.date).push(it); }
+  const selectedItems = byDate.get(selected) || [];
   const order = { event: 0, mscal: 1, gcal: 1, task: 2, milestone: 3 };
   for (const list of byDate.values()) list.sort((a, b) => (order[a.kind] - order[b.kind]) || String(a.time || '').localeCompare(String(b.time || '')) || a.title.localeCompare(b.title));
   window.__calItems = items;
@@ -68,8 +72,8 @@ function paintCalendar() {
     const day = new Date(start); day.setDate(start.getDate() + i);
     const ds = ymd(day), list = byDate.get(ds) || [];
     const more = list.length > 4 ? `<div class="cmore" data-cday="${ds}">+${list.length - 4}개</div>` : '';
-    cells += `<div class="cday${day.getMonth() !== mo ? ' out' : ''}${ds === t ? ' today' : ''}${[0, 6].includes(day.getDay()) ? ' wk' : ''}" data-cday="${ds}">
-      <div class="cnum">${day.getDate()}</div>${list.slice(0, 4).map(chip).join('')}${more}</div>`;
+    cells += `<div class="cday${day.getMonth() !== mo ? ' out' : ''}${ds === t ? ' today' : ''}${ds === selected ? ' selected' : ''}${[0, 6].includes(day.getDay()) ? ' wk' : ''}" data-cday="${ds}">
+      <button type="button" class="cnum" data-cal-day="${ds}" aria-label="${esc(calDayLabel(ds))}" aria-pressed="${ds === selected}">${day.getDate()}</button>${list.slice(0, 4).map(chip).join('')}${more}</div>`;
   }
   const head = ['월', '화', '수', '목', '금', '토', '일'].map((x) => `<div class="chead">${x}</div>`).join('');
 
@@ -77,11 +81,11 @@ function paintCalendar() {
   const open = items.filter((x) => !(x.kind === 'task' && x.done));
   const over = items.filter((x) => x.kind === 'task' && !x.done && x.date < t).sort((a, b) => a.date.localeCompare(b.date));
   const soon = open.filter((x) => x.date >= t && x.date <= ymd(new Date(Date.now() + 14 * 864e5))).sort((a, b) => a.date.localeCompare(b.date) || String(a.time || '').localeCompare(String(b.time || '')));
-  const row = (it) => `<div class="crow" data-cit="${esc(it.id)}"><span class="cdot ${CAL_KIND[it.kind].cls}"></span><span class="ct">${it.time ? `<b>${esc(it.time)}</b> ` : ''}${esc(it.title)}${it.who ? ` <span class="empty">@${esc(it.who)}</span>` : ''}</span></div>`;
+  const row = (it, showSource = false) => `<div class="crow" data-cit="${esc(it.id)}"><span class="cdot ${CAL_KIND[it.kind].cls}"></span><span class="ct">${it.time ? `<b>${esc(it.time)}</b> ` : ''}${esc(it.title)}${showSource ? ` <span class="badge">${CAL_KIND[it.kind].label}</span>` : ''}${it.who ? ` <span class="empty">@${esc(it.who)}</span>` : ''}</span></div>`;
   const groups = [];
   for (const it of soon) { if (!groups.length || groups[groups.length - 1][0] !== it.date) groups.push([it.date, []]); groups[groups.length - 1][1].push(it); }
   const agenda = `${over.length ? `<div class="cag warn"><b>지난 마감 · 미완료 ${over.length}</b>${over.map((it) => row(it).replace('</span></div>', ` <span class="empty">${esc(dDay(it.date))}</span></span></div>`)).join('')}</div>` : ''}
-    ${groups.map(([ds, xs]) => `<div class="cag"><b>${ds === t ? '오늘 · ' : ''}${esc(calDayLabel(ds))} <span class="empty">${dDay(ds)}</span></b>${xs.map(row).join('')}</div>`).join('') || '<div class="empty">앞으로 2주 동안 일정이 없습니다</div>'}`;
+    ${groups.map(([ds, xs]) => `<div class="cag"><b>${ds === t ? '오늘 · ' : ''}${esc(calDayLabel(ds))} <span class="empty">${dDay(ds)}</span></b>${xs.map((it) => row(it)).join('')}</div>`).join('') || '<div class="empty">앞으로 2주 동안 일정이 없습니다</div>'}`;
 
   const gNote = g.connected ? `구글: ${esc(g.account || '연결됨')}${g.error ? ` · <span style="color:var(--danger)">${esc(g.error)}</span>` : ''}` : '';
   const msNote = ms.connected ? `Teams: ${esc(ms.label || '연결됨')} (${ms.count || 0}건)${ms.error ? ` · <span style="color:var(--danger)">${esc(ms.error)}</span>` : ''}` : '';
@@ -91,7 +95,8 @@ function paintCalendar() {
         <span class="ck-legend"><span class="cdot ck-ev"></span>일정 <span class="cdot ck-task"></span>할 일 <span class="cdot ck-ms"></span>마일스톤 <span class="cdot ck-ms365"></span>Teams <span class="cdot ck-g"></span>구글</span>
         <span>${extSummary}</span>
       </div></div>
-    <div class="calside">${agenda}</div></div></div></div>`;
+    <div class="calside"><section class="cag cal-selected" aria-live="polite"><h2>${esc(calDayLabel(selected))}</h2>${selectedItems.map((it) => row(it, true)).join('') || '<div class="empty">등록된 일정이 없습니다</div>'}</section>
+      <details class="cal-upcoming" data-day="${esc(selected)}"${(upcomingOpen ?? !selectedItems.length) ? ' open' : ''}><summary>다가오는 일정 및 지난 마감</summary>${agenda}</details></div></div></div></div>`;
 }
 
 async function calSyncAll() {
@@ -116,10 +121,14 @@ async function calClick(e) {
   const b = e.target.closest('[data-cal]');
   if (b) {
     const a = b.dataset.cal;
-    if (a === 'prev' || a === 'next') { CAL.month = new Date(CAL.month.getFullYear(), CAL.month.getMonth() + (a === 'next' ? 1 : -1), 1); return paintCalendar(); }
-    if (a === 'today') { const d = new Date(); CAL.month = new Date(d.getFullYear(), d.getMonth(), 1); return paintCalendar(); }
-    if (a === 'addev') return calEventDialog({ date: todayStr() });
-    if (a === 'addtask') return calTaskDialog(todayStr());
+    if (a === 'prev' || a === 'next') {
+      CAL.month = new Date(CAL.month.getFullYear(), CAL.month.getMonth() + (a === 'next' ? 1 : -1), 1);
+      CAL.day = ymd(CAL.month);
+      return paintCalendar();
+    }
+    if (a === 'today') { const d = new Date(); CAL.month = new Date(d.getFullYear(), d.getMonth(), 1); CAL.day = todayStr(); return paintCalendar(); }
+    if (a === 'addev') return calEventDialog({ date: CAL.day || todayStr() });
+    if (a === 'addtask') return calTaskDialog(CAL.day || todayStr());
     if (a === 'more') {
       e.stopPropagation();
       const g = CAL.data?.google || {}, ms = CAL.data?.ms || {};
@@ -138,7 +147,11 @@ async function calClick(e) {
   const more = e.target.closest('.cmore');
   if (more) return calDayList(more.dataset.cday);
   const day = e.target.closest('.cday');
-  if (day && e.target.closest('.cnum, .cday') === day) return calEventDialog({ date: day.dataset.cday });
+  if (day) {
+    CAL.day = day.dataset.cday;
+    paintCalendar();
+    $(`[data-cal-day="${CAL.day}"]`)?.focus({ preventScroll: true });
+  }
 }
 
 function calDayList(ds) {
@@ -224,6 +237,7 @@ function calEventDialog(ev) {
     <label>메모<br><textarea id="ceN" rows="3" style="width:100%">${esc(ev.note || '')}</textarea></label>
     <div class="empty" style="padding:0">마감이 있는 할 일은 “＋ 할 일”로 넣으면 todo.md에 들어가 다른 세션·위젯과 같이 관리됩니다.</div>`;
   const d = openDrawer({ title: ev.id ? '일정 수정' : '새 일정', bodyHTML: body, footerHTML: '<button data-drw-close>취소</button><button class="primary" data-ok>저장</button>', width: 440 });
+  d.classList.add('drw-compact');
   $('#ceT', d).focus();
   d.addEventListener('click', async (e) => {
     if (!e.target.closest('[data-ok]')) return;
@@ -240,6 +254,7 @@ function calTaskDialog(date) {
     <div class="row" style="gap:8px"><label>마감<br><input id="ctD" type="date" value="${esc(date)}"></label><label style="flex:1">태그 (선택, 띄어쓰기로 구분)<br><input id="ctG" style="width:100%" placeholder="행정 서버"></label></div>
     <div class="empty" style="padding:0">todo.md의 “대기 중” 목록 끝에 <span class="mono">- [ ] **할 일** #태그 @due(날짜)</span>로 추가됩니다.</div>`;
   const d = openDrawer({ title: '＋ 할 일 (todo.md)', bodyHTML: body, footerHTML: '<button data-drw-close>취소</button><button class="primary" data-ok>추가</button>', width: 440 });
+  d.classList.add('drw-compact');
   $('#ctT', d).focus();
   d.addEventListener('click', async (e) => {
     if (!e.target.closest('[data-ok]')) return;

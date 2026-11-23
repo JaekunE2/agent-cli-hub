@@ -6,11 +6,27 @@ function dockTopSegHTML({ openSet, isContentTab = false, hasTerm = true, hasChat
     ${hasChat ? `<button type="button" data-dock-toggle="chat" aria-pressed="${on('chat')}" class="${on('chat') ? 'on' : ''}" title="대화 기록 패널 열기/닫기">${ICO.chat} 대화 기록</button>` : ''}
     <button type="button" data-dock-toggle="windows" aria-pressed="${on('windows')}" class="${on('windows') ? 'on' : ''}" title="연결된 창 · 브라우저 미리보기 패널 열기/닫기">${ICO.monitor} 창 <span class="seg-cnt" data-dock-win-cnt>0</span></button>
   </div>
-  <span class="bar-sep" aria-hidden="true"></span>
   <div class="seg bar-tab-seg" role="tablist" aria-label="전용 화면 탭">
     ${showFiles ? `<button type="button" role="tab" aria-selected="${curTab === 'files'}" data-tab="files" class="${curTab === 'files' ? 'on' : ''}" title="이 세션의 산출물 보기 및 지정">산출물</button>` : ''}
     <button type="button" role="tab" aria-selected="${curTab === 'floorplan'}" data-tab="floorplan" class="${curTab === 'floorplan' ? 'on' : ''}" title="코드 구조(Floorplan) 및 보안·품질 점검">${ICO.layers} 코드 구조</button>
   </div>`;
+}
+
+function setSessionBar(identity, views, actions) {
+  setBar(`<div class="session-head">${identity}<div class="session-actions">${actions}</div></div>
+    <div class="session-views">${views}</div>`);
+}
+
+function sessionOriginButton(branch) {
+  if (!branch?.parentSessionId) return '';
+  return `<button type="button" class="ghost btn-sm" data-session-origin="${esc(branch.parentSessionId)}" data-origin-at="${branch.atIndex ?? -1}" title="${esc(branch.parentTitle || '원본 대화 열기')}">${ICO.branch} 원본 열기</button>`;
+}
+
+function openSessionOrigin(target) {
+  const button = target.closest('[data-session-origin]');
+  if (!button) return false;
+  select({ kind: 'recent', id: button.dataset.sessionOrigin, at: Number(button.dataset.originAt) }, 'chat');
+  return true;
 }
 
 function mountChatWorkspace(body, { sid, gen, at = -1, terms = [], composerOpts = {} }) {
@@ -109,10 +125,13 @@ function viewTranscript() {
   if (!hasLivePane) initialPanels = initialPanels.filter((p) => p !== 'term');
   if (!initialPanels.length) initialPanels = ['chat'];
 
-  setBar(`<button id="btnBackRecent" class="ghost btn-sm">${ICO.chevLeft} 최근 대화</button><h2><span>${esc(sessionLabel(r, sid, live?.name))}</span></h2>
+  const title = esc(sessionLabel(r, sid, live?.name));
+  const backLabel = state.sel.fromSearch ? '검색 결과' : '최근 대화';
+  setSessionBar(`<button id="btnBackRecent" class="ghost btn-sm session-back" aria-label="${backLabel}">${ICO.chevLeft}<span>${backLabel}</span></button>
+    <h2 title="${title}"><span>${title}</span></h2>
     <button id="btnRenameSess" class="ghost icon-btn btn-sm" title="대화 제목 수정" aria-label="대화 제목 수정">${ICO.edit}</button>
-    ${branchTagHTML(r?.branch)}${agentBadge(r?.agent)}
-    ${dockTopSegHTML({
+    <div class="session-meta">${sessionOriginButton(r?.branch)}${branchTagHTML(r?.branch)}${agentBadge(r?.agent)}</div>`,
+    dockTopSegHTML({
       openSet: new Set(initialPanels),
       isContentTab,
       hasTerm: true,
@@ -120,13 +139,17 @@ function viewTranscript() {
       showFiles: true,
       curTab: state.tab,
       termTitle: hasLivePane ? '연결된 터미널 패널 열기/닫기' : '이 세션을 터미널로 열어 함께 보기',
-    })}
-    ${!live ? `<button class="primary btn-sm" id="btnResume">${ICO.play} 대시보드에서 이어하기</button>` : isDesktopSession(live) ? `<button class="primary btn-sm" id="btnResume" data-fork="1" title="데스크톱 앱 대화를 여기까지 복제한 새 세션으로 이어갑니다">${ICO.play} 대시보드에서 이어하기 (복제)</button>` : ''}
+    }),
+    `${!live ? `<button class="primary btn-sm" id="btnResume" aria-label="대시보드에서 이어하기">${ICO.play} 이어하기</button>` : isDesktopSession(live) ? `<button class="primary btn-sm" id="btnResume" data-fork="1" title="데스크톱 앱 대화를 여기까지 복제한 새 세션으로 이어갑니다">${ICO.play} 복제 후 이어하기</button>` : ''}
     <button id="btnRecMore" class="ghost icon-btn btn-sm" aria-label="세션 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
 
   let dock = null;
   $('#bar').onclick = async (e) => {
-    if (e.target.closest('#btnBackRecent')) { state.termsTab = 'recent'; return select({ kind: 'terms' }); }
+    if (openSessionOrigin(e.target)) return;
+    if (e.target.closest('#btnBackRecent')) {
+      if (state.sel.fromSearch) return select({ kind: 'search', restoreScroll: true });
+      state.termsTab = 'recent'; return select({ kind: 'terms' });
+    }
     if (e.target.closest('#btnRenameSess')) {
       const curTitle = sessionLabel(r, sid, live?.name);
       const next = prompt('새 대화 제목을 입력하세요:', curTitle);
@@ -177,7 +200,7 @@ function viewTranscript() {
         { label: '기록 삭제', icon: ICO.trash, tone: 'danger', onClick: () => hideRecentRecord(sid, more) },
       ]);
     }
-    if (e.target.id !== 'btnResume') return;
+    if (!e.target.closest('#btnResume')) return;
     return resumeToDockTerm(true);
   };
   if (state.tab === 'files') return renderArtifacts(sid, gen);
@@ -186,14 +209,16 @@ function viewTranscript() {
   }
 
   let winCtl = null;
+  let termCtl = null;
   let termMounted = false;
   let chatScrollEl = null;
   const ensureTermMounted = () => {
     if (termMounted || !hasLivePane || !dock) return;
     termMounted = true;
     const body = dock.getBody('term');
-    if (linkedTerm) mountManagedTermScreen(body, { t: linkedTerm, gen, chatHost: chatScrollEl });
-    else if (linkedConPid) mountConsoleScreen(body, { pid: linkedConPid, gen, s: live });
+    const chatHost = dock.isOpen('chat') ? chatScrollEl : null;
+    if (linkedTerm) termCtl = mountManagedTermScreen(body, { t: linkedTerm, gen, chatHost });
+    else if (linkedConPid) termCtl = mountConsoleScreen(body, { pid: linkedConPid, gen, s: live, chatHost });
   };
 
   dock = window.ACH_DOCK.createDockWorkspace({
@@ -205,7 +230,10 @@ function viewTranscript() {
       chat: { title: '대화 기록', icon: ICO.chat },
       windows: { title: '창', icon: ICO.monitor, onShow: () => winCtl?.renderWindows() },
     },
-    onOpenChange: (openList) => syncBarDockButtons(openList),
+    onOpenChange: (openList) => {
+      syncBarDockButtons(openList);
+      termCtl?.syncChatPane(openList.includes('chat') ? chatScrollEl : null);
+    },
   });
 
   const mounted = mountChatWorkspace(dock.getBody('chat'), {
@@ -262,8 +290,9 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
   barHost.innerHTML = `<div class="chat-reply-bar${compact ? ' compact' : ''}">
     <div class="chat-conn-bar">
       <span class="chat-conn-pill" data-chat-conn></span>
+      <button type="button" class="ghost btn-sm chat-me-toggle" data-chat-settings aria-expanded="false">${ICO.settings} 실행 설정</button>
     </div>
-    <div class="chat-me-bar" data-chat-me>
+    <div class="chat-me-bar" data-chat-me hidden>
       <select data-chat-acc title="사용할 계정 · CLI 선택" aria-label="계정 및 CLI">
         <option value="__cli__:${esc(initAgent)}" data-agent="${esc(initAgent)}">${esc(providerName(initAgent))} (기본)</option>
       </select>
@@ -275,8 +304,8 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
     <div class="att-strip" data-chat-atts hidden></div>
     <div class="chat-reply-in">
       <label class="ghost icon-btn btn-sm filebtn" title="파일 · 이미지 첨부 (드래그&드롭 / 붙여넣기)" style="flex:none;height:38px;min-height:38px;width:36px;justify-content:center;border-radius:10px;border:1px solid var(--line-strong)">${ICO.clip}<input type="file" class="fpick" multiple hidden></label>
-      <textarea rows="1" placeholder="대화 기록에서 바로 프롬프트 입력 (Enter 전송 · Shift+Enter 줄바꿈)"></textarea>
-      <button type="button" class="primary">보내기 ⏎</button>
+      <textarea rows="1" aria-label="대화 프롬프트" placeholder="대화 프롬프트 · Enter 전송"></textarea>
+      <button type="button" class="primary">대화 전송</button>
     </div>
   </div>`;
 
@@ -285,6 +314,12 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
   const applyBtn = $('[data-chat-apply]', barHost);
   const repIn = $('textarea', barHost);
   const repBtn = $('.chat-reply-in button.primary', barHost);
+  const settingsBtn = $('[data-chat-settings]', barHost);
+  const settingsBar = $('[data-chat-me]', barHost);
+  settingsBtn.onclick = () => {
+    settingsBar.hidden = !settingsBar.hidden;
+    settingsBtn.setAttribute('aria-expanded', String(!settingsBar.hidden));
+  };
 
   let baselineAccId = ltInit?.account?.id || `__cli__:${initAgent}`;
   let meCtl = null;

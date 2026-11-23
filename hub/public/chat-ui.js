@@ -411,9 +411,8 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
       };
       const flushTools = () => {
         if (!toolBuf.length) return;
-        const firstLine = (toolBuf[0].m.text || '').split('\n')[0].slice(0, 70);
         const toolBranches = toolBuf.map((x) => branchChipsHTML(x.gi)).filter(Boolean).join('');
-        parts.push(`<details class="toolgrp"><summary>⚙ 도구 실행 ${toolBuf.length}건 · ${esc(firstLine)}</summary><div class="toolgrp-body">${toolBuf.map((x) => `<div>${linkPaths(hl(x.m.text, terms))}</div>`).join('')}</div></details>${toolBranches}`);
+        parts.push(`<details class="toolgrp"><summary>도구 실행 ${toolBuf.length}건</summary><div class="toolgrp-body">${toolBuf.map((x) => `<div>${linkPaths(hl(x.m.text, terms))}</div>`).join('')}</div></details>${toolBranches}`);
         toolBuf = [];
       };
       let lastDay = '';

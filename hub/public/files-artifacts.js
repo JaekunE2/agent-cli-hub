@@ -360,29 +360,58 @@ function artTimeline(pairs, card) { // pairs: [[item, index]]
 }
 async function renderArtifacts(sid, gen) {
   $('#view').innerHTML = '<div class="empty" style="padding:20px">산출물 찾는 중…</div>';
+  let query = '';
+  let showCards = false;
   const paint = async () => {
     const r = await api(`/api/artifacts?session=${encodeURIComponent(sid)}`).catch((e) => ({ error: e.message }));
     if (gen !== viewGen) return;
     if (r.error) { $('#view').innerHTML = `<div class="err">${esc(r.error)}</div>`; return; }
     const all = r.items || [];
     const items = artShowAll ? all : all.filter((x) => x.main);
-    const card = ([it, i]) => `<div class="acard" data-ai="${i}">
+    const card = ([it, i]) => {
+      const location = String(it.path || '').split(/[\\/]/).slice(0, -1).filter(Boolean).slice(-2).join('/');
+      return `<div class="acard" data-ai="${i}">
         <div class="athumb">${it.kind === 'image' ? `<img loading="lazy" src="${artUrl(sid, it.path)}" alt="">` : `<span>${ART_ICON[it.kind] || ART_ICON.file}</span>`}</div>
         <div class="ameta"><b title="${esc(it.path)}">${esc(it.title || it.name)}</b>
+          <span class="artifact-location" title="${esc(it.path)}">${esc(location)}</span>
           <span class="ums">${esc(it.ext.toUpperCase())} · ${fmtSize(it.size)} · ${relTime(it.mtime)}${it.source === 'pinned' ? ' · 지정됨' : ''}</span></div>
         <button class="ahide" data-ahide="${i}" aria-label="목록에서 숨기기" title="목록에서 숨기기">${ICO.close}</button><button class="asend" data-asend="${i}" aria-label="세션에 보내기" title="이 파일을 세션에 보내기 (경로 멘션)">${ICO.arrowUpRight}</button></div>`;
+    };
     $('#view').innerHTML = `<div class="subtoolbar">
         <div class="seg" role="tablist" aria-label="산출물 범위">
           <button data-art-scope="main" class="${!artShowAll ? 'on' : ''}">주요 산출물 <span class="seg-cnt">${all.filter((x) => x.main).length}</span></button>
           <button data-art-scope="all" class="${artShowAll ? 'on' : ''}">전체 파일 <span class="seg-cnt">${all.length}</span></button>
         </div>
         <span class="sp"></span>
+        <input id="artSearch" class="btn-sm" type="search" aria-label="파일명 · 폴더 · 형식 검색" placeholder="파일명 · 폴더 · 형식" value="${esc(query)}">
+        <button class="btn-sm" type="button" id="artLayout" aria-pressed="${showCards}">카드 보기</button>
         ${artOrderSel()}
         <button id="artAdd" class="btn-sm">${ICO.plus} 산출물 지정</button>
       </div>
-      <div class="rwrap">
+      <div class="rwrap session-artifacts${showCards ? '' : ' artifact-list'}">
       ${items.length ? artTimeline(items.map((it, i) => [it, i]), card) : `<div class="h-empty-card" style="margin-top:8px"><b>아직 등록된 산출물이 없습니다</b><span class="ums" style="margin:0;max-width:460px">대화에 나온 파일 경로가 자동으로 모이며, 직접 파일을 지정하거나 코드 구조 탭에서 보고서(FLOORPLAN.md)를 저장할 수 있습니다.</span><button type="button" class="primary btn-sm" id="artEmptyAdd" style="margin-top:6px">${ICO.plus} 산출물 지정</button></div>`}</div>`;
     bindArtOrder(paint);
+    const filterRows = () => {
+      const keywords = termsOf(query);
+      const rows = [...$('#view').querySelectorAll('[data-ai]')];
+      for (const row of rows) {
+        const { title, name, path, ext } = items[Number(row.dataset.ai)];
+        const label = [title, name, path, ext].join(' ').toLowerCase();
+        row.hidden = !keywords.every((term) => label.includes(term));
+      }
+      for (const heading of $('#view').querySelectorAll('.session-artifacts .aday')) {
+        heading.hidden = !heading.nextElementSibling.querySelector('[data-ai]:not([hidden])');
+      }
+      $('#artNoMatch').hidden = !rows.length || rows.some((row) => !row.hidden);
+    };
+    $('.session-artifacts').insertAdjacentHTML('beforeend', '<p id="artNoMatch" class="empty" hidden>일치하는 파일이 없습니다</p>');
+    $('#artSearch').oninput = (e) => { query = e.target.value; filterRows(); };
+    $('#artLayout').onclick = (e) => {
+      showCards = !showCards;
+      e.currentTarget.setAttribute('aria-pressed', String(showCards));
+      $('.session-artifacts').classList.toggle('artifact-list', !showCards);
+    };
+    filterRows();
     $('#view').querySelectorAll('[data-art-scope]').forEach((b) => (b.onclick = () => { artShowAll = b.dataset.artScope === 'all'; paint(); }));
     $('#artAdd').onclick = () => addArtifactDialog(sid, paint);
     const emptyAdd = $('#artEmptyAdd');

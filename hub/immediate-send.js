@@ -16,6 +16,10 @@ const PTY_KEYS = {
 
 const normScreenText = (s) => String(s || '').replace(/\s+/g, ' ').trim();
 
+function codexHistorySearchActive(lines) {
+  return /^reverse-i-search:/i.test(lines.findLast((line) => line.trim())?.trimStart() || '');
+}
+
 /** Check whether the pending prompt (or pasted placeholder) appears in normalized screen text. */
 function hasPromptOnScreen(scr, rawMsg) {
   if (!scr) return false;
@@ -130,4 +134,4 @@ async function dispatchImmediatePrompt({
   return { handled: false };
 }
 
-module.exports = { PTY_KEYS, dispatchImmediatePrompt, hasPromptOnScreen, normScreenText, AGY_ALTM_RE };
+module.exports = { PTY_KEYS, dispatchImmediatePrompt, hasPromptOnScreen, normScreenText, AGY_ALTM_RE, codexHistorySearchActive };
