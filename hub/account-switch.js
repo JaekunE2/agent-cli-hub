@@ -342,11 +342,9 @@ function createAccountSwitchService(hub) {
     const cwd = d?.cwd || t0?.cwd || loc.s?.cwd || os.homedir();
 
     let handoffPrompt = null;
-    if (!samePlatform && (d?.msgs?.length || t0)) {
+    if (!samePlatform && cont && (d?.msgs?.length || t0)) {
       const hf = writeHandoffFile({ sessionId: sid, d, t0, sourceAgent, targetAgent, cwd });
-      handoffPrompt = cont
-        ? `이전 ${sourceAgent.toUpperCase()} 세션의 작업을 이어받았습니다. "${hf}" 파일에 정리된 직전 대화 맥락을 먼저 읽고, 마지막으로 논의하던 작업을 바로 이어서 진행해 주세요.`
-        : `이전 ${sourceAgent.toUpperCase()} 세션에서 작업을 넘겨받았습니다. "${hf}" 파일에 정리된 직전 대화 맥락을 먼저 읽고, 현재까지의 진행 상황을 간단히 파악한 뒤 다음 지시를 기다려 주세요.`;
+      handoffPrompt = `이전 ${sourceAgent.toUpperCase()} 세션의 작업을 이어받았습니다. "${hf}" 파일에 정리된 직전 대화 맥락을 먼저 읽고, 마지막으로 논의하던 작업을 바로 이어서 진행해 주세요.`;
     }
 
     const inheritedProjectTask = t0?.meta?.projectTask || null;
@@ -428,7 +426,9 @@ function createAccountSwitchService(hub) {
     }
 
     const short = (pick.email || pick.label || targetAgent).replace(/@.*/, '');
-    const baseTitle = d?.title || d?.firstPrompt?.split('\n')[0].slice(0, 36) || (t0 ? String(t0.title || targetAgent).replace(/ [⇄·] .*$/, '') : sid ? sid.slice(0, 8) : targetAgent);
+    const baseTitle = !samePlatform
+      ? targetAgent
+      : (d?.title || d?.firstPrompt?.split('\n')[0].slice(0, 36) || (t0 ? String(t0.title || targetAgent).replace(/ [⇄·] .*$/, '') : sid ? sid.slice(0, 8) : targetAgent));
     const title = `${baseTitle} ⇄ ${short}`;
 
     if (openMode === 'external' || openMode === 'ide') {

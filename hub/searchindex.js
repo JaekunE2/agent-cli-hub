@@ -52,7 +52,7 @@ const isCodexFile = (f) => /^rollout-.*\.jsonl$/.test(path.basename(f));
 // rollout-2026-10-26T14-29-50-<session uuid>.jsonl → the uuid (what `codex resume <id>` takes)
 const codexIdOf = (f) => { const m = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i.exec(f); return m ? m[1] : path.basename(f, '.jsonl'); };
 // injected context, not something the user typed
-const codexNoise = (t) => /^\s*<(environment_context|user_instructions|skills_instructions|permissions|collaboration_mode|turn_aborted|subagent|external_codex_apps_|in-app-browser)/.test(t)
+const codexNoise = (t) => /^\s*<(environment_context|user_instructions|skills_instructions|permissions|collaboration_mode|turn_aborted|subagent|external_codex_apps_|in-app-browser|system_instruction|tools)/.test(t)
   || /^\s*(# AGENTS\.md|# Files mentioned by the user:|## Referenced ChatGPT conversation:|\[\{"questionItemId":)/i.test(t);
 function cleanPromptTitle(raw) {
   let s = String(raw || '').replace(/<external_codex_apps_[^>]*>[\s\S]*?<\/external_codex_apps_[^>]*>/gi, '').trim();
@@ -95,8 +95,19 @@ function codexLine(e) {
     return { msg: { role: pl.role, text, ts: e.timestamp } };
   }
   if (pl.type === 'function_call' || pl.type === 'custom_tool_call' || pl.type === 'local_shell_call') {
+    const rawArgs = pl.arguments ?? pl.action ?? pl.input ?? '';
     let hint = '';
-    try { const a = typeof pl.arguments === 'string' ? JSON.parse(pl.arguments) : (pl.arguments || pl.action || {}); hint = [].concat(a.command || a.cmd || a.path || a.query || '').join(' '); } catch { hint = String(pl.arguments || pl.input || '').slice(0, 300); }
+    if (typeof rawArgs === 'string') {
+      try {
+        const a = JSON.parse(rawArgs);
+        hint = [].concat(a.command || a.cmd || a.path || a.query || a.file_path || '').join(' ');
+      } catch {
+        const cmdM = /(?:cmd|command|path|file_path|query)\s*:\s*"([^"]+)"/.exec(rawArgs);
+        hint = cmdM ? cmdM[1] : rawArgs.replace(/\s+/g, ' ').trim();
+      }
+    } else if (rawArgs && typeof rawArgs === 'object') {
+      hint = [].concat(rawArgs.command || rawArgs.cmd || rawArgs.path || rawArgs.query || rawArgs.file_path || '').join(' ');
+    }
     return { msg: { role: 'assistant', text: `⚙ ${pl.name || pl.type}${hint ? ': ' + String(hint).slice(0, 300) : ''}`, ts: e.timestamp } };
   }
   return {};
