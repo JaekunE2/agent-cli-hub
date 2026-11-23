@@ -1652,9 +1652,12 @@ function mountConsoleScreen(hostEl, { pid, gen, s }) {
           </div>
         </div>
       </div>
-      <div class="tdock-comp">
-        <textarea id="inp" rows="1" placeholder="보낼 내용 입력 (Enter 전송 · Shift+Enter 줄바꿈 · 빈 칸에서 ↑↓/Esc는 창으로 전달)"></textarea>
-        <button class="primary" id="btnSend">보내기 ⏎</button>
+      <div class="tdock-comp" style="flex-direction:column;align-items:stretch;gap:6px">
+        <div class="att-strip" id="cAttStrip" hidden style="margin:0;max-width:none"></div>
+        <div class="row" style="gap:6px;align-items:flex-end;width:100%">
+          <textarea id="inp" rows="1" placeholder="보낼 내용 입력 (Enter 전송 · Shift+Enter 줄바꿈 · 빈 칸에서 ↑↓/Esc는 창으로 전달)"></textarea>
+          <button class="primary" id="btnSend">보내기 ⏎</button>
+        </div>
       </div>
     </div>
   </div>`;
@@ -1695,8 +1698,12 @@ function mountConsoleScreen(hostEl, { pid, gen, s }) {
     await api('/api/console/send', { method: 'POST', body: { pid, keys: [k] } });
     setTimeout(tick, 150);
   };
+  const cAttCtl = createAttachmentStrip($('#cAttStrip', fullEl), s?.cwd);
   const sendText = async () => {
-    const text = inp.value;
+    if (cAttCtl.isLoading()) return toast('첨부 파일을 준비하는 중입니다…');
+    const paths = cAttCtl.takePaths();
+    const raw = inp.value;
+    const text = [...paths, raw].filter(Boolean).join(' ');
     inp.value = ''; fitInp();
     const r = await api('/api/console/send', { method: 'POST', body: text ? { pid, text, submit: true } : { pid, keys: ['enter'] } });
     if (!r.ok) alertBar(r.error);
@@ -1718,8 +1725,8 @@ function mountConsoleScreen(hostEl, { pid, gen, s }) {
   };
   tick();
   const addPath = (txt) => { inp.value += (inp.value && !inp.value.endsWith(' ') ? ' ' : '') + txt; fitInp(); inp.focus(); };
-  attachFileInput(fullEl, addPath, s?.cwd);
-  bindFilePick(fullEl, addPath, s?.cwd);
+  attachFileInput(fullEl, addPath, s?.cwd, { onFiles: (fl, it) => cAttCtl.addFiles(fl, it) });
+  bindFilePick(fullEl, addPath, s?.cwd, { onFiles: (fl, it) => cAttCtl.addFiles(fl, it) });
   inp.focus();
 }
 
@@ -2044,8 +2051,11 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       <select data-chat-effort title="선택한 계정 CLI에 맞는 추론 성능" aria-label="추론 성능"></select>
       <button type="button" class="btn-sm primary" data-chat-apply hidden>변경 적용</button>
     </div>
+    <div class="att-strip" data-chat-atts hidden></div>
     <div class="chat-reply-in">
-      <textarea rows="1" placeholder="대화 기록에서 바로 프롬프트 입력 (Enter 전송 · Shift+Enter 줄바꿈)"></textarea>
+      <label class="ghost icon-btn btn-sm filebtn" title="파일 · 이미지 첨부 (드래그&드롭 / 붙여넣기)" style="flex:none;height:38px;min-height:38px;width:36px;justify-content:center;border-radius:10px;border:1px solid var(--line-strong)">${ICO.clip}<input type="file" class="fpick" multiple hidden></label>
+      <textarea rows="1" placeholder="대화 기록에서 바로 프롬프트 입력 (Enter 전송 · Ctrl+Enter 즉시 보내기 · Shift+Enter 줄바꿈)"></textarea>
+      <button type="button" class="btn-sm" data-chat-send-now hidden title="진행 중인 응답을 중단(Esc)하고 지금 바로 전송합니다 (Ctrl+Enter)">즉시 보내기</button>
       <button type="button" class="primary">보내기 ⏎</button>
     </div>
   </div>`;
@@ -2054,6 +2064,7 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
   const jumpBtn = $('[data-chat-jump]', barHost);
   const accSel = $('[data-chat-acc]', barHost);
   const applyBtn = $('[data-chat-apply]', barHost);
+  const sendNowBtn = $('[data-chat-send-now]', barHost);
   const repIn = $('textarea', barHost);
   const repBtn = $('.chat-reply-in button.primary', barHost);
 
@@ -2180,12 +2191,15 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       const meBadge = [lt.model, lt.effort].filter(Boolean).join('/');
       connEl.innerHTML = `<span class="dot ${dotCls}" style="width:7px;height:7px"></span><span>터미널 t:${esc(lt.id)} 연결됨 · ${esc(stTxt)}${meBadge ? ` · ${esc(meBadge)}` : ''}</span>`;
       if (jumpBtn) jumpBtn.hidden = !onJumpTerm;
+      if (sendNowBtn) sendNowBtn.hidden = st !== 'busy';
     } else if (activeConsolePid) {
       connEl.innerHTML = `<span class="dot idle" style="width:7px;height:7px"></span><span>콘솔 pid:${esc(activeConsolePid)} 연결됨</span>`;
       if (jumpBtn) jumpBtn.hidden = !onJumpTerm;
+      if (sendNowBtn) sendNowBtn.hidden = false;
     } else {
       connEl.innerHTML = `<span class="ums" style="margin:0">연결된 터미널 없음 · 입력 시 세션을 이어 열어 전송합니다</span>`;
       if (jumpBtn) jumpBtn.hidden = true;
+      if (sendNowBtn) sendNowBtn.hidden = true;
     }
     syncApplyBtn();
   };
@@ -2314,11 +2328,20 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
     }
   };
 
-  const sendReply = async () => {
-    const text = repIn.value.trim();
+  const chatAttCtl = createAttachmentStrip($('[data-chat-atts]', barHost), cwd);
+  const dropZone = barHost.closest('.chat-shell') || barHost;
+  attachFileInput(dropZone, null, cwd, { onFiles: (fl, it) => chatAttCtl.addFiles(fl, it) });
+  bindFilePick(barHost, null, cwd, { onFiles: (fl, it) => chatAttCtl.addFiles(fl, it) });
+
+  const sendReply = async (immediate = false) => {
+    if (chatAttCtl.isLoading()) return toast('첨부 파일을 준비하는 중입니다…');
+    const attPaths = chatAttCtl.takePaths();
+    const typed = repIn.value.trim();
+    const text = [...attPaths, typed].filter(Boolean).join(' ');
     if (!text) return;
     repIn.value = ''; fitRep();
     repBtn.disabled = true;
+    if (sendNowBtn) sendNowBtn.disabled = true;
     try {
       const existing = findLiveTerm();
       if (existing) {
@@ -2330,17 +2353,19 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
           await launchWithConfig({ openTerm: false, pendingText: text });
           return;
         }
-        const r = await api('/api/term/send', { method: 'POST', body: { id: existing.id, text, submit: true } });
+        const r = await api('/api/term/send', { method: 'POST', body: { id: existing.id, text, submit: true, ...(immediate ? { immediate: true } : {}) } });
         if (r.error) throw new Error(r.error);
         syncConn();
         notifySent(existing.id, text);
+        if (immediate) toast('진행 중인 작업을 중단하고 메시지를 즉시 전송했습니다');
         return;
       }
       if (activeConsolePid) {
-        const r = await api('/api/console/send', { method: 'POST', body: { pid: activeConsolePid, text, submit: true } });
+        const r = await api('/api/console/send', { method: 'POST', body: { pid: activeConsolePid, text, submit: true, ...(immediate ? { immediate: true } : {}) } });
         if (r.error) throw new Error(r.error);
         syncConn();
         notifySent(null, text);
+        if (immediate) toast('진행 중인 작업을 중단하고 메시지를 즉시 전송했습니다');
         return;
       }
       const t = await launchWithConfig({ openTerm: false, pendingText: text });
@@ -2349,10 +2374,15 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       toast(er.message, 6000, 'danger');
     } finally {
       if (repBtn.isConnected) repBtn.disabled = false;
+      if (sendNowBtn?.isConnected) sendNowBtn.disabled = false;
     }
   };
-  repBtn.onclick = sendReply;
-  repIn.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendReply(); } };
+  repBtn.onclick = () => sendReply(false);
+  if (sendNowBtn) sendNowBtn.onclick = () => sendReply(true);
+  repIn.onkeydown = (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.isComposing) { e.preventDefault(); sendReply(true); return; }
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendReply(false); }
+  };
 }
 
 function openResumedTerm(t, request) {
@@ -2614,10 +2644,11 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
     const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
     const lastUser = [...(messages || [])].reverse().find((m) => m.role === 'user');
     const showPendingUser = !!(hint?.pendingText && (!lastUser || !norm(lastUser.text).includes(norm(hint.pendingText).slice(0, 60))));
+    const canImmediate = !!(showPendingUser && (lt || conPid));
     const canJump = (lt || conPid) && state.sel.kind === 'recent';
     const hasScreen = !!(showLiveScreen && preview);
     const hasToggle = !!preview;
-    const modeKey = `${showPendingUser ? hint.pendingText : ''}|${hasScreen ? 'pre' : 'dots'}|${hasToggle ? '1' : '0'}|${canJump ? (lt?.id || conPid) : ''}`;
+    const modeKey = `${showPendingUser ? hint.pendingText : ''}|${canImmediate ? 'imm1' : 'imm0'}|${hasScreen ? 'pre' : 'dots'}|${hasToggle ? '1' : '0'}|${canJump ? (lt?.id || conPid) : ''}`;
     const wasNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 120;
 
     if (modeKey === lastLiveMode && hasScreen) {
@@ -2634,7 +2665,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
     lastLiveMode = modeKey;
 
     const userHtml = showPendingUser
-      ? `<div class="msg user msg-pending"><div class="msg-bubble"><div class="msg-body">${esc(hint.pendingText)}</div></div><div class="msg-meta"><span>전송됨 · 응답 대기 중</span></div></div>`
+      ? `<div class="msg user msg-pending"><div class="msg-bubble"><div class="msg-body">${linkPaths(esc(hint.pendingText))}</div></div><div class="msg-meta"><span>전송됨 · 응답 대기 중</span>${canImmediate ? '<button type="button" class="msg-send-now-btn" data-pending-send-now title="응답 대기 중이거나 보류된 메시지를 중단(Esc) 후 즉시 전송합니다">즉시 보내기</button>' : ''}</div></div>`
       : '';
     const toggleBtn = hasToggle
       ? `<button type="button" class="ghost btn-sm" data-live-toggle style="min-height:22px;height:22px;font-size:11px;padding:0 7px">${showLiveScreen ? '터미널 출력 숨기기' : '터미널 출력 보기'}</button>`
@@ -2666,6 +2697,30 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
         try { localStorage.setItem('ach.chatLiveScreen', showLiveScreen ? '1' : '0'); } catch {}
         lastLiveMode = '';
         updateLiveBubble(lastMessages);
+      };
+    }
+    const immBtn = $('[data-pending-send-now]', liveHost);
+    if (immBtn) {
+      immBtn.onclick = async () => {
+        const curHint = container._liveChatHint;
+        if (!curHint?.pendingText) return;
+        const target = resolveLiveTarget();
+        if (!target.lt && !target.conPid) return toast('연결된 실행 중 터미널을 찾을 수 없습니다', 4000, 'danger');
+        immBtn.disabled = true;
+        immBtn.textContent = '전송 중…';
+        try {
+          const r = target.lt
+            ? await api('/api/term/send', { method: 'POST', body: { id: target.lt.id, text: curHint.pendingText, submit: true, immediate: true, resendIfMissing: true } })
+            : await api('/api/console/send', { method: 'POST', body: { pid: target.conPid, text: curHint.pendingText, submit: true, immediate: true } });
+          if (r?.error) throw new Error(r.error);
+          curHint.until = Date.now() + 30000;
+          lastLiveMode = '';
+          toast('진행 중인 작업을 중단하고 메시지를 즉시 전송했습니다');
+          container._triggerPoll?.();
+        } catch (er) {
+          toast(er.message, 5000, 'danger');
+          if (immBtn.isConnected) { immBtn.disabled = false; immBtn.textContent = '즉시 보내기'; }
+        }
       };
     }
     const jBtn = $('[data-live-jump]', liveHost);
@@ -2977,9 +3032,12 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
           </div>
         </div>
       </div>
-      <div class="tdock-comp" id="tDockComp" ${dockCollapsed ? 'hidden' : ''}>
-        <textarea id="tin" rows="1" placeholder="프롬프트 입력 (Enter 전송 · 파일 첨부)" enterkeyhint="send"></textarea>
-        <button class="primary" id="tsend" title="터미널에 프롬프트 전송 (Enter)">보내기 ⏎</button>
+      <div class="tdock-comp" id="tDockComp" ${dockCollapsed ? 'hidden' : ''} style="flex-direction:column;align-items:stretch;gap:6px">
+        <div class="att-strip" id="tAttStrip" hidden style="margin:0;max-width:none"></div>
+        <div class="row" style="gap:6px;align-items:flex-end;width:100%">
+          <textarea id="tin" rows="1" placeholder="프롬프트 입력 (Enter 전송 · 파일 첨부)" enterkeyhint="send"></textarea>
+          <button class="primary" id="tsend" title="터미널에 프롬프트 전송 (Enter)">보내기 ⏎</button>
+        </div>
       </div>
     </div>
     <div class="note"></div></div>`;
@@ -3068,6 +3126,7 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
     try { localStorage.setItem('ccd.tuiKeysOpen', next ? '1' : '0'); } catch {}
     setTimeout(resize, 30);
   };
+  const tAttCtl = createAttachmentStrip($('#tAttStrip', fullEl), t?.cwd);
   const insert = (txt) => {
     if (dockCollapsed) {
       send((txt.endsWith(' ') ? txt : txt + ' '));
@@ -3079,7 +3138,13 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
     fitTin();
     tin.focus();
   };
+  const onTermFiles = (files, items) => {
+    if (dockCollapsed) return false;
+    tAttCtl.addFiles(files, items);
+    return true;
+  };
   attachFileInput(fullEl, insert, t?.cwd, {
+    onFiles: onTermFiles,
     shouldPassCtrlV: (e, dt, files) => {
       const shifted = pasteWithShift;
       pasteWithShift = false;
@@ -3089,7 +3154,10 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
   });
   let histIdx = -1;
   const submit = () => {
-    const v = tin.value;
+    if (!dockCollapsed && tAttCtl.isLoading()) return toast('첨부 파일을 준비하는 중입니다…');
+    const attPaths = !dockCollapsed ? tAttCtl.takePaths() : [];
+    const typed = tin.value;
+    const v = [...attPaths, typed].filter(Boolean).join(' ');
     tin.value = '';
     fitTin();
     histIdx = -1;
@@ -3131,7 +3199,7 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
     const k = e.target.closest('[data-key]')?.dataset.key;
     if (k) { send(PTY_KEYS[k]); if (!IS_MOBILE) xterm?.focus(); }
   });
-  bindFilePick(fullEl, insert, t?.cwd);
+  bindFilePick(fullEl, insert, t?.cwd, { onFiles: onTermFiles });
   window.onresize = resize;
   window.onfocus = resize;
   document.onvisibilitychange = () => { if (!document.hidden) resize(); };
@@ -3293,13 +3361,111 @@ const IS_MOBILE = matchMedia('(max-width: 760px), (pointer: coarse)').matches;
 // opened from another device (Tailscale): hide buttons that act on this PC's desktop (open folder, ...)
 const IS_REMOTE = !['127.0.0.1', 'localhost', '::1', '[::1]'].includes(location.hostname);
 if (IS_REMOTE) document.body.classList.add('remote');
-function bindFilePick(root, insert, cwd) {
+const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|bmp|svg)$/i;
+function createAttachmentStrip(stripEl, cwd) {
+  let items = [];
+  let seq = 0;
+
+  const paint = () => {
+    if (!stripEl) return;
+    if (!items.length) {
+      stripEl.hidden = true;
+      stripEl.innerHTML = '';
+      return;
+    }
+    stripEl.hidden = false;
+    stripEl.innerHTML = items.map((it) => {
+      const visual = it.thumbUrl
+        ? `<img class="att-thumb" src="${esc(it.thumbUrl)}" alt="">`
+        : `<span class="att-chip-ext">${esc(it.ext)}</span>`;
+      const meta = it.loading
+        ? '<span class="att-chip-sz">준비 중…</span>'
+        : it.failed
+          ? '<span class="att-chip-sz" style="color:var(--danger)">실패</span>'
+          : (it.size ? `<span class="att-chip-sz">${esc(fmtSize(it.size))}</span>` : '');
+      return `<span class="att-chip" title="${esc(it.path || it.name)}">${visual}<span class="att-chip-name">${esc(it.name)}</span>${meta}<button type="button" class="att-chip-rm" data-att-rm="${it.id}" aria-label="첨부 파일 제거" title="첨부 파일 제거">×</button></span>`;
+    }).join('');
+    stripEl.querySelectorAll('[data-att-rm]').forEach((b) => {
+      b.onclick = () => {
+        const id = Number(b.dataset.attRm);
+        const found = items.find((x) => x.id === id);
+        if (found?.thumbUrl) try { URL.revokeObjectURL(found.thumbUrl); } catch {}
+        items = items.filter((x) => x.id !== id);
+        paint();
+      };
+    });
+  };
+
+  const addFiles = (fileList, dtItems = []) => {
+    const arr = [...(fileList || [])];
+    if (!arr.length) return;
+    const itemEntries = [...(dtItems || [])];
+    if (itemEntries.some((it) => it.webkitGetAsEntry?.()?.isDirectory)) toast('폴더는 경로를 알 수 없어 제외합니다 (파일만 가능)');
+    for (let i = 0; i < arr.length; i++) {
+      if (itemEntries[i]?.webkitGetAsEntry?.()?.isDirectory) continue;
+      const f = arr[i];
+      const extM = /\.([a-z0-9]+)$/i.exec(f.name || '');
+      const ext = extM ? extM[1].toUpperCase() : 'FILE';
+      const isImg = /^image\//i.test(f.type || '') || IMAGE_EXT_RE.test(f.name || '');
+      let thumbUrl = '';
+      if (isImg) { try { thumbUrl = URL.createObjectURL(f); } catch {} }
+      const entry = {
+        id: ++seq,
+        name: f.name || 'image.png',
+        size: f.size || 0,
+        ext,
+        isImg,
+        thumbUrl,
+        path: null,
+        loading: true,
+        failed: false,
+      };
+      items.push(entry);
+      paint();
+      fileToPath(f, cwd)
+        .then((p) => {
+          entry.loading = false;
+          if (p) entry.path = p;
+          else entry.failed = true;
+          paint();
+        })
+        .catch(() => {
+          entry.loading = false;
+          entry.failed = true;
+          paint();
+        });
+    }
+  };
+
+  return {
+    addFiles,
+    hasItems: () => items.length > 0,
+    isLoading: () => items.some((x) => x.loading),
+    takePaths: () => {
+      const out = items.filter((x) => x.path).map((x) => quotePath(x.path));
+      for (const it of items) { if (it.thumbUrl) try { URL.revokeObjectURL(it.thumbUrl); } catch {} }
+      items = [];
+      paint();
+      return out;
+    },
+    clear: () => {
+      for (const it of items) { if (it.thumbUrl) try { URL.revokeObjectURL(it.thumbUrl); } catch {} }
+      items = [];
+      paint();
+    },
+  };
+}
+
+function bindFilePick(root, insert, cwd, opts = {}) {
   for (const inp of root.querySelectorAll('.fpick')) {
     inp.onchange = async () => {
-      const paths = [];
-      for (const f of inp.files) { const p = await fileToPath(f, cwd).catch(() => null); if (p) paths.push(quotePath(p)); }
+      const chosen = [...(inp.files || [])];
       inp.value = '';
-      if (paths.length) insert(paths.join(' ') + ' ');
+      if (!chosen.length) return;
+      if (typeof opts.onFiles === 'function' && opts.onFiles(chosen, []) !== false) return;
+      const paths = [];
+      for (const f of chosen) { const p = await fileToPath(f, cwd).catch(() => null); if (p) paths.push(quotePath(p)); }
+      if (paths.length && insert) insert(paths.join(' ') + ' ');
     };
   }
 }
@@ -3322,11 +3488,24 @@ async function fileToPath(f, cwd) {
 }
 // clipboard images sometimes come only as items (kind "file"), with dt.files empty
 const clipFiles = (dt) => { const f = [...(dt?.files || [])]; return f.length ? f : [...(dt?.items || [])].filter((it) => it.kind === 'file').map((it) => it.getAsFile()).filter(Boolean); };
+if (!window.__achDropGuard) {
+  window.__achDropGuard = true;
+  document.addEventListener('dragover', (e) => {
+    if (e.dataTransfer?.types?.includes('Files')) e.preventDefault();
+  });
+  document.addEventListener('drop', (e) => {
+    if (e.dataTransfer?.types?.includes('Files') || e.dataTransfer?.files?.length) {
+      e.preventDefault();
+    }
+  });
+}
 function attachFileInput(el, insert, cwd, opts = {}) {
   el.dataset.fileInput = '1';
   const handle = async (dt) => {
     const files = clipFiles(dt);
     const items = [...(dt.items || [])];
+    if (!files.length) return;
+    if (typeof opts.onFiles === 'function' && opts.onFiles(files, items) !== false) return;
     if (items.some((it) => it.webkitGetAsEntry?.()?.isDirectory)) toast('폴더는 경로를 알 수 없어 제외합니다 (파일만 가능)');
     const paths = [];
     for (let i = 0; i < files.length; i++) {
@@ -3334,10 +3513,10 @@ function attachFileInput(el, insert, cwd, opts = {}) {
       const p = await fileToPath(files[i], cwd).catch(() => null);
       if (p) paths.push(quotePath(p));
     }
-    if (paths.length) insert(paths.join(' ') + ' ');
+    if (paths.length && insert) insert(paths.join(' ') + ' ');
   };
   el.addEventListener('dragover', (e) => { if (e.dataTransfer?.types?.includes('Files')) { e.preventDefault(); el.classList.add('dropping'); } });
-  el.addEventListener('dragleave', () => el.classList.remove('dropping'));
+  el.addEventListener('dragleave', (e) => { if (!el.contains(e.relatedTarget)) el.classList.remove('dropping'); });
   el.addEventListener('drop', (e) => {
     el.classList.remove('dropping');
     if (!e.dataTransfer?.files?.length) return;
@@ -3959,10 +4138,20 @@ const ART_ICON = {
 const artUrl = (sid, p) => `/api/artifact-file?session=${encodeURIComponent(sid)}&path=${encodeURIComponent(p)}&t=${encodeURIComponent(TOKEN)}`;
 const rRawUrl = (slug, rel) => `/api/research/raw?slug=${encodeURIComponent(slug)}&path=${encodeURIComponent(rel)}&t=${encodeURIComponent(TOKEN)}`;
 const fmtSize = (n) => (n > 1e9 ? `${(n / 1e9).toFixed(1)}GB` : n > 1e6 ? `${(n / 1e6).toFixed(1)}MB` : `${Math.max(1, Math.round(n / 1024))}KB`);
-// wrap Windows / git-bash paths with a viewable extension (already HTML-escaped text) in clickable links
+// wrap Windows / git-bash paths with a viewable extension (already HTML-escaped text) as compact clickable file chips
 function linkPaths(html) {
-  return html.replace(/((?:[A-Za-z]:[\\/]|\/[a-z]\/)[^\s"'`<>|*?()\[\]{}]+?\.(?:mp4|webm|mov|mkv|pdf|png|jpe?g|gif|webp|svg|html?|md|txt|log|csv|json|ya?ml|tex|py|ply|glb|obj|docx|xlsx|pptx))(?=[\s.,;:)\]]|$|&)/gi,
-    (m) => `<a class="artlink" data-apath="${m}">${m}</a>`);
+  const extPattern = 'mp4|webm|mov|mkv|pdf|png|jpe?g|gif|webp|svg|html?|md|txt|log|csv|json|ya?ml|tex|py|js|ts|tsx|jsx|css|ply|glb|obj|docx|xlsx|pptx';
+  const mkChip = (raw) => {
+    const clean = String(raw || '').replace(/&quot;/g, '');
+    const file = clean.split(/[\\/]/).pop() || clean;
+    const extM = /\.([a-z0-9]+)$/i.exec(file);
+    const ext = extM ? extM[1].toUpperCase() : 'FILE';
+    const isImg = IMAGE_EXT_RE.test(file);
+    return `<a class="artlink art-chip" data-apath="${clean}" title="${clean}">${isImg ? (ICO.image || ICO.file) : ICO.file}<span class="art-chip-name">${file}</span><span class="art-chip-ext">${ext}</span></a>`;
+  };
+  return String(html || '')
+    .replace(new RegExp(`&quot;((?:[A-Za-z]:[\\\\/]|\\/[a-z]\\/)[^&"\`<>|*?]+?\\.(?:${extPattern}))&quot;`, 'gi'), (_, p) => mkChip(p))
+    .replace(new RegExp(`(^|[\\s(>])((?:[A-Za-z]:[\\\\/]|\\/[a-z]\\/)[^\\s"'\`<>|*?()\\[\\]{}]+?\\.(?:${extPattern}))(?=[\\s.,;:)<]|$|&)`, 'gi'), (_, pre, p) => `${pre}${mkChip(p)}`);
 }
 document.addEventListener('click', async (e) => {
   const a = e.target.closest('.artlink');

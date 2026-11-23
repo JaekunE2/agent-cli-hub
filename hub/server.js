@@ -2569,6 +2569,10 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/console/send' && req.method === 'POST') {
       const b = await body(req);
       const pid = Number(b.pid);
+      if (b.immediate) {
+        await helperCall({ op: 'send', pid, keys: ['esc'] });
+        await sleep(500);
+      }
       let r = await helperCall({ op: 'send', pid, text: b.text || '', keys: b.keys || [] });
       if (r.ok && b.submit) { await sleep(consoleSubmitDelay(b.text)); r = await helperCall({ op: 'send', pid, keys: ['enter'] }); }
       return send(res, 200, r);
@@ -2612,13 +2616,26 @@ const server = http.createServer(async (req, res) => {
       const b = await body(req);
       const t = terms.get(String(b.id));
       if (!t || t.exited !== null) return send(res, 404, { ok: false, error: 'no such running terminal' });
+      if (b.immediate) {
+        const busyNow = (isCodexTerm(t) ? codexStatus(t) : isAgyTerm(t) ? agyStatus(t) : claudeStatus(t)) === 'busy';
+        if (busyNow) {
+          t.proc.write(PTY_KEYS.esc);
+          await sleep(500);
+        }
+        const tailScreen = stripAnsi(readTerm(t, 10).join('\n')).replace(/\s+/g, ' ');
+        const needle = String(b.text || '').trim().replace(/\s+/g, ' ').slice(0, 28);
+        if (b.resendIfMissing && needle && tailScreen.includes(needle)) {
+          t.proc.write('\r');
+          return send(res, 200, { ok: true, immediate: true, submittedExisting: true });
+        }
+      }
       if (b.text) t.proc.write(b.text);
       for (const k of b.keys || []) {
         if (!(k in PTY_KEYS)) return send(res, 400, { ok: false, error: `unknown key ${k}; one of ${Object.keys(PTY_KEYS)}` });
         t.proc.write(PTY_KEYS[k]);
       }
       if (b.submit) { await sleep(SUBMIT_DELAY); t.proc.write('\r'); }
-      return send(res, 200, { ok: true });
+      return send(res, 200, { ok: true, immediate: !!b.immediate });
     }
     // ---- notice board: the operator session (or you) posts; hub terminals running an agent get it typed in ----
     if (p === '/api/notices') return send(res, 200, { notices: readNotices(Number(url.searchParams.get('n')) || 20) });
