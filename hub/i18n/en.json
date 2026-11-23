@@ -2463,5 +2463,7 @@
   "전체 목록 보기": "View all sessions",
   "분할 패널 토글": "Split panel toggles",
   "전용 화면 탭": "Dedicated view tabs",
-  "설정 (AI 사용량 · GPU · 공통 자원)": "Settings (AI Usage · GPU · Shared Vault)"
+  "설정 (AI 사용량 · GPU · 공통 자원)": "Settings (AI Usage · GPU · Shared Vault)",
+  "활성 대화 · 터미널 없음": "No active conversations or terminals",
+  "활성": "Active"
 }

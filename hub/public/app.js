@@ -846,6 +846,16 @@ function renderSide() {
   const unifiedEntries = [...combinedLive, ...unlinkedRecent].sort((a, b) => compareUnifiedEntries(a, b, recentMap));
   const liveCount = activeTermCount + (state.recent || []).filter((r) => !seenSids.has(r.sessionId) && liveBySid.has(r.sessionId)).length;
 
+  const sideLiveStateTag = (st, unread = false) => (
+    st === 'busy'
+      ? '<span class="srow-tag busy">실행 중</span>'
+      : unread
+        ? '<span class="srow-tag done">완료</span>'
+        : st === 'exited'
+          ? '<span class="srow-tag">종료됨</span>'
+          : '<span class="srow-tag idle">대기</span>'
+  );
+
   const renderUnifiedRow = (entry, hidePjTag = false) => {
     if (entry.kind === 'term') {
       const t = entry.item;
@@ -867,13 +877,8 @@ function renderSide() {
         branchTagHTML(t.branch, true),
         pj && !hidePjTag ? `<span class="srow-tag proj" title="Project: ${esc(pj.name)}">${esc(pj.name)}</span>` : '',
         subKindTag,
-        st === 'busy'
-          ? `<span class="srow-tag busy">실행 중</span><span>${folderLbl}</span>`
-          : unread
-            ? `<span class="srow-tag done">완료</span><span>${folderLbl}</span>`
-            : st === 'exited'
-              ? '<span class="srow-tag">종료됨</span>'
-              : `<span class="srow-tag">실행 중</span><span>${folderLbl}</span>`,
+        sideLiveStateTag(st, unread),
+        st !== 'exited' ? `<span>${folderLbl}</span>` : '',
       ].filter(Boolean).join('');
       return `<div class="srow${isSel ? ' sel' : ''}${unread ? ' just-done' : ''}${isBr ? ' is-branch' : ''}" data-key="term:${esc(t.id)}" title="${esc(termLabel(t))}${pj ? ` · Project: ${esc(pj.name)}` : ''}${brTip ? ` · ${esc(brTip)}` : ''}">
         ${agentIcon(kind, dot)}
@@ -888,7 +893,7 @@ function renderSide() {
       const isSel = curKind === 'console' && String(state.sel.id) === String(c.id);
       return `<div class="srow${isSel ? ' sel' : ''}" data-key="console:${esc(c.id)}">
         ${agentIcon(cs ? (cs.agent || 'claude') : 'shell', st === 'busy' ? 'busy' : 'idle')}
-        <div class="srow-main"><div class="srow-t">${esc(consoleLabel(c))}</div><div class="srow-s"><span class="srow-tag con">콘솔</span>${st === 'busy' ? '<span class="srow-tag busy">실행 중</span>' : '<span class="srow-tag">실행 중</span>'}</div></div>
+        <div class="srow-main"><div class="srow-t">${esc(consoleLabel(c))}</div><div class="srow-s"><span class="srow-tag con">콘솔</span>${sideLiveStateTag(st)}</div></div>
       </div>`;
     }
     const r = entry.item;
@@ -903,7 +908,7 @@ function renderSide() {
     const delRecAria = `기록 삭제: ${sessionLabel(r)}`;
     const subHTML = [
       branchTagHTML(r.branch, true),
-      liveProc ? `<span class="srow-tag${liveProc.status === 'busy' ? ' busy' : ''}">실행 중</span>` : '',
+      liveProc ? sideLiveStateTag(liveProc.status === 'busy' ? 'busy' : 'idle') : '',
       `<span>${esc([base(r.cwd), ago(r.mtime)].filter(Boolean).join(' · '))}</span>`,
     ].filter(Boolean).join('');
     return `<div class="srow${isSel ? ' sel' : ''}${isBr ? ' is-branch' : ''}" data-key="recent:${esc(r.sessionId)}" title="${esc(sessionLabel(r))}${brTip ? ` · ${esc(brTip)}` : ''}">
@@ -920,7 +925,7 @@ function renderSide() {
   let recentRows = '';
   if (!recFolded) {
     if (!unifiedEntries.length) {
-      recentRows = `<div class="srow-empty">${rf === 'live' ? '실행 중인 대화 없음' : '최근 기록 없음'}</div>`;
+      recentRows = `<div class="srow-empty">${rf === 'live' ? '활성 대화 · 터미널 없음' : '최근 기록 없음'}</div>`;
     } else if (state.termGroupByProject) {
       const groups = new Map();
       for (const entry of unifiedEntries) {
@@ -948,7 +953,7 @@ function renderSide() {
       <button class="ghost icon-btn ssec-act" data-rrefresh="1" title="세션 기록 새로고침" aria-label="세션 기록 새로고침">${ICO.refresh}</button>
       <button class="ghost icon-btn ssec-act" data-hopen-new="1" title="새 대화 · 터미널 열기" aria-label="새 대화 · 터미널 열기">${ICO.plus}</button>
     </div>
-    ${recFolded ? '' : `<div class="seg sm" role="tablist" aria-label="대화 · 상태 필터">${fbtn('', '전체')}${fbtn('live', '실행 중', liveCount)}${fbtn('claude', 'Claude')}${fbtn('codex', 'Codex')}${fbtn('agy', 'AGY')}</div>${recentRows}`}
+    ${recFolded ? '' : `<div class="seg sm" role="tablist" aria-label="대화 · 상태 필터">${fbtn('', '전체')}${fbtn('live', '활성', liveCount)}${fbtn('claude', 'Claude')}${fbtn('codex', 'Codex')}${fbtn('agy', 'AGY')}</div>${recentRows}`}
   </div>`;
 
   // Section 4: Autonomous Research (collapsible; only when active)
