@@ -565,6 +565,7 @@
   "시간 한도": "-hour limit",
   "시간 후": "h later",
   "시간은 HH:MM": "Time as HH:MM",
+  "끝 시간은 시작 시간보다 늦어야 합니다": "End time must be after start time",
   "시스템 · 데이터": "System & Data",
   "시스템 · 데이터 메뉴": "System & Data tabs",
   "시작 (선택)": "Start (optional)",

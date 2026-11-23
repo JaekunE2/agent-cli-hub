@@ -95,6 +95,10 @@ module.exports = function calendar({ config = {}, port = 7777 } = {}) {
   function upsertEvent(ev) {
     if (!ev.title || !/^\d{4}-\d{2}-\d{2}$/.test(ev.date || '')) throw new Error('제목과 날짜(YYYY-MM-DD)가 필요합니다');
     if (ev.time && !/^\d{1,2}:\d{2}$/.test(ev.time)) throw new Error('시간은 HH:MM');
+    if (ev.end && !/^\d{1,2}:\d{2}$/.test(ev.end)) throw new Error('시간은 HH:MM');
+    if (ev.time && ev.end && toMinutes(ev.end) <= toMinutes(ev.time)) {
+      throw new Error('끝 시간은 시작 시간보다 늦어야 합니다');
+    }
     const events = loadEvents();
     const i = ev.id ? events.findIndex((x) => x.id === ev.id) : -1;
     const clean = { id: ev.id || 'ev-' + crypto.randomBytes(5).toString('hex'), title: String(ev.title), date: ev.date, time: ev.time || null, end: ev.end || null, note: ev.note || '', updated: new Date().toISOString() };
@@ -128,14 +132,36 @@ module.exports = function calendar({ config = {}, port = 7777 } = {}) {
     return j;
   }
   const addDays = (d, n) => { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
-  const plusHour = (t) => { const [h, m] = t.split(':').map(Number); return `${String(Math.min(23, h + 1)).padStart(2, '0')}:${String(m).padStart(2, '0')}`; };
+  const toMinutes = (t) => {
+    const [h, m] = String(t || '').split(':').map(Number);
+    return (Number.isFinite(h) && Number.isFinite(m)) ? (h * 60 + m) : -1;
+  };
+  const fmtHm = (t) => {
+    const [h, m] = String(t || '').split(':').map((x) => x.padStart(2, '0'));
+    return `${h}:${m}`;
+  };
+  const plusMinutes = (date, time, deltaMin) => {
+    const total = toMinutes(time) + deltaMin;
+    const endDate = total >= 1440 ? addDays(date, 1) : date;
+    const rem = ((total % 1440) + 1440) % 1440;
+    return { date: endDate, hm: `${String(Math.floor(rem / 60)).padStart(2, '0')}:${String(rem % 60).padStart(2, '0')}` };
+  };
   function toGoogle(it) {
     const timed = it.kind === 'event' && it.time;
     const summary = it.kind === 'task' ? `☐ ${it.title}` : it.kind === 'milestone' ? `📌 ${it.title}` : it.title;
     const description = [it.note, it.kind === 'task' ? `todo.md 할 일${it.paper ? ` · ${it.paper}` : ''}${it.tags?.length ? ' · #' + it.tags.join(' #') : ''}` : '', it.kind === 'milestone' ? 'todo.md 마일스톤' : '', 'Agent CLI Hub 캘린더에서 동기화 — 수정은 허브에서 하세요'].filter(Boolean).join('\n');
-    const body = { summary, description, extendedProperties: { private: { hubId: it.id } },
-      start: timed ? { dateTime: `${it.date}T${it.time.padStart(5, '0')}:00`, timeZone: TZ } : { date: it.date },
-      end: timed ? { dateTime: `${it.date}T${(it.end || plusHour(it.time)).padStart(5, '0')}:00`, timeZone: TZ } : { date: addDays(it.date, 1) } };
+    let start, end;
+    if (timed) {
+      const sHm = fmtHm(it.time);
+      const validEnd = it.end && toMinutes(it.end) > toMinutes(it.time);
+      const eSpec = validEnd ? { date: it.date, hm: fmtHm(it.end) } : plusMinutes(it.date, it.time, 60);
+      start = { dateTime: `${it.date}T${sHm}:00`, timeZone: TZ };
+      end = { dateTime: `${eSpec.date}T${eSpec.hm}:00`, timeZone: TZ };
+    } else {
+      start = { date: it.date };
+      end = { date: addDays(it.date, 1) };
+    }
+    const body = { summary, description, extendedProperties: { private: { hubId: it.id } }, start, end };
     body.extendedProperties.private.hubHash = sha(JSON.stringify([body.summary, body.description, body.start, body.end]));
     return body;
   }
@@ -314,5 +340,5 @@ module.exports = function calendar({ config = {}, port = 7777 } = {}) {
     interval.syncAll = setInterval(() => { sync(); syncMs(); }, 10 * 60e3);
   }
   function stop() { clearInterval(interval); if (interval) clearInterval(interval.syncAll); clearTimeout(syncTimer); }
-  return { handle, oauthCallback, start, stop, sync, upsertEvent, parseTodo };
+  return { handle, oauthCallback, start, stop, sync, upsertEvent, parseTodo, toGoogle };
 };
