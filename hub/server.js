@@ -29,7 +29,7 @@ const cleanModelEffort = (model, effort) => {
   };
 };
 const { fingerprint, projectSession, sessionId: validSessionId } = require('./project-history');
-const { createAccountPrefsStore } = require('./account-prefs');
+const { createAccountPrefsStore, buildRecoveryLaunchArgs } = require('./account-prefs');
 const accountPrefs = createAccountPrefsStore({ cleanModelEffort });
 const { generatePlan, generateSubtasks, cliModelEffortArgs, inspectWorkspace } = require('./project-plan');
 const { scanFloorplan } = require('./workspace-floorplan');
@@ -376,7 +376,7 @@ async function buildOverview() {
     agyQuota: { ok: !!agyQuota.get(), refreshing: agyQuota.getFast().refreshing, account: agyQuota.get()?.account || null },
     helper: { ok: !helperMissing, error: helperMissing || null },
   };
-  return { live, consoles, terms: termsOut, consoleError: cons.error, favs: liveFavs(), disk: diskLow, consolesOff: CONFIG.consoles === false, services, buildId: SERVER_BUILD_ID };
+  return { live, consoles, terms: termsOut, consoleError: cons.error, favs: liveFavs(), disk: diskLow, consolesOff: CONFIG.consoles === false, services, buildId: SERVER_BUILD_ID, accountPrefs: accountPrefs.get() };
 }
 
 function projectRecord(t) {
@@ -662,7 +662,7 @@ function launchSpecWithShared(cmd, args = [], env = {}) {
   }
 }
 
-function createTerm({ cwd, cmd, args = [], title, env = {}, account = null, model = '', effort = '', research = null, operator = false, projectTask, projectPrompt }) {
+function createTerm({ cwd, cmd, args = [], title, env = {}, account = null, model = '', effort = '', lastInputAt = 0, research = null, operator = false, projectTask, projectPrompt }) {
   const id = String(++termSeq);
   if (!cwd || !fs.existsSync(cwd)) cwd = os.homedir();
   const me = cleanModelEffort(model, effort);
@@ -678,8 +678,9 @@ function createTerm({ cwd, cmd, args = [], title, env = {}, account = null, mode
     if (previous !== -1) args = args.filter((_, i) => i !== previous && i !== previous + 1);
     args = [...args, '--log-file', path.join(dir, crypto.randomUUID() + '.log')];
   }
+  const now = Date.now();
   const meta = {
-    title: title || [cmd, ...args].join(' '), cwd, cmd, args, account, research, envFlags, spawnedAt: Date.now(), lastInputAt: Date.now(),
+    title: title || [cmd, ...args].join(' '), cwd, cmd, args, account, research, envFlags, spawnedAt: now, lastInputAt: Number(lastInputAt) || now,
     ...(me.model ? { model: me.model } : {}),
     ...(me.effort ? { effort: me.effort } : {}),
     ...(operator ? { operator: true } : {}),
@@ -908,14 +909,18 @@ async function recoverTerms(note = RESTART_NOTE) {
       const acc = tokenAccounts().find((a) => a.id === m.account.id);
       if (acc) try { env.CLAUDE_CODE_OAUTH_TOKEN = acc.token(); } catch {}
     }
-    let args = isClaude
-      ? ['--resume', x.sessionId, ...((m.args || []).includes('--dangerously-skip-permissions') ? ['--dangerously-skip-permissions'] : [])]
-      : isCodexTerm({ meta: m }) ? codexRecoveryArgs(m.args || [], x.sessionId) : (m.args || []);
-    if (isAgyTerm({ meta: m }) && x.sessionId && !args.includes('--conversation') && !args.includes('--continue')) {
-      args = [...args, '--conversation', x.sessionId];
-    }
-    const t = createTerm({ cwd: m.cwd, cmd: m.cmd, args, title: m.title, env, account: m.account, research: m.research,
-      projectTask: m.projectTask, projectPrompt: m.projectPrompt });
+    const cliKind = isClaude ? 'claude' : isCodexTerm({ meta: m }) ? 'codex' : isAgyTerm({ meta: m }) ? 'agy' : '';
+    const savedME = cliKind ? accountPrefs.getForAccount(m.account?.id || '', cliKind) : { model: '', effort: '' };
+    const recModel = m.model || savedME.model || '';
+    const recEffort = m.effort || savedME.effort || '';
+    const args = cliKind
+      ? buildRecoveryLaunchArgs({ cli: cliKind, rawArgs: m.args || [], sessionId: x.sessionId, model: recModel, effort: recEffort, codexRecoveryArgs, cliModelEffortArgs })
+      : (m.args || []);
+    const t = createTerm({
+      cwd: m.cwd, cmd: m.cmd, args, title: m.title, env, account: m.account,
+      model: recModel, effort: recEffort, lastInputAt: m.lastInputAt || m.spawnedAt || 0,
+      research: m.research, projectTask: m.projectTask, projectPrompt: m.projectPrompt,
+    });
     if (m.research) t.research = m.research;
     t.meta.sessionId = x.sessionId;
     // explain the interruption (directors get the watchdog's own nudge)

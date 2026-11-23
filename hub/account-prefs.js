@@ -74,4 +74,34 @@ function createAccountPrefsStore({ file = DEFAULT_FILE, cleanModelEffort } = {})
   return { file, reload: () => { state = load(); return get(); }, get, getForAccount, save };
 }
 
-module.exports = { createAccountPrefsStore, normalizeAccountKey };
+function buildRecoveryLaunchArgs({ cli, rawArgs = [], sessionId = '', model = '', effort = '', codexRecoveryArgs, cliModelEffortArgs }) {
+  const stripMeFlags = (arr) => {
+    const out = [];
+    for (let i = 0; i < arr.length; i++) {
+      const a = String(arr[i] || '');
+      if (a === '--model' || a === '-m' || a === '--effort') { i++; continue; }
+      if (a === '-c' && /model_reasoning_effort/.test(String(arr[i + 1] || ''))) { i++; continue; }
+      if (/^--(model|effort)=/.test(a)) continue;
+      out.push(arr[i]);
+    }
+    return out;
+  };
+  const me = typeof cliModelEffortArgs === 'function' ? cliModelEffortArgs(cli, model, effort) : [];
+  if (cli === 'claude') {
+    const skip = rawArgs.includes('--dangerously-skip-permissions');
+    return ['--resume', sessionId, ...(skip ? ['--dangerously-skip-permissions'] : []), ...me];
+  }
+  if (cli === 'codex') {
+    const base = typeof codexRecoveryArgs === 'function' ? stripMeFlags(codexRecoveryArgs(rawArgs, sessionId)) : stripMeFlags(rawArgs);
+    const resumeIdx = base.indexOf('resume');
+    return resumeIdx >= 0 ? [...base.slice(0, resumeIdx), ...me, ...base.slice(resumeIdx)] : [...base, ...me];
+  }
+  if (cli === 'agy') {
+    const clean = stripMeFlags(rawArgs);
+    if (sessionId && !clean.includes('--conversation') && !clean.includes('--continue')) clean.push('--conversation', sessionId);
+    return [...clean, ...me];
+  }
+  return [...rawArgs];
+}
+
+module.exports = { createAccountPrefsStore, normalizeAccountKey, buildRecoveryLaunchArgs };

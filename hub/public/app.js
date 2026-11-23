@@ -331,6 +331,7 @@ async function refreshOverview() {
       activeBuildId = o.buildId;
     }
     Object.assign(state, { live: o.live || [], consoles: o.consoles || [], terms: o.terms || [], err: o.consoleError || null, services: o.services || state.services, hubDown: false });
+    if (o.accountPrefs && typeof syncServerAccountPrefs === 'function') syncServerAccountPrefs(o.accountPrefs);
     if (Array.isArray(o.favs)) state.favs = new Set(o.favs);
     state.disk = o.disk || null;
     state.consolesOff = !!o.consolesOff;
