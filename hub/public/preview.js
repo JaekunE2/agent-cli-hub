@@ -1,10 +1,13 @@
-// Canvas / IDE-style Live Preview Pane & Local Mermaid Flowchart Renderer
+// Canvas / IDE-style Auto-Split Preview Pane & Local Mermaid Flowchart Renderer
 'use strict';
 (function () {
   let mermaidPromise = null;
   let lastTheme = '';
   let renderSeq = 0;
   let activeCtl = null;
+
+  const SPLIT_PCT_KEY = 'ach.chatPvPct.v1';
+  const DISMISS_PREFIX = 'ach.pvDismiss:';
 
   const isDarkTheme = () => {
     const dt = document.documentElement.dataset.theme;
@@ -58,7 +61,6 @@
           h.dataset.mmdDone = '1';
           h.classList.add('ready');
         } catch {
-          // Leave fallback source <pre> intact if diagram syntax is incomplete or invalid
           h.dataset.mmdDone = 'err';
         }
       }
@@ -93,7 +95,6 @@
     if (!bodyEl || !item) return;
     bodyEl.innerHTML = '';
 
-    // Inline code / chat block item
     if (item.source === 'code') {
       const text = String(item.code || '');
       if (mode === 'source' || !supportsPreviewMode(item.kind)) {
@@ -126,7 +127,6 @@
       }
     }
 
-    // Artifact file from session
     const it = item.artifact;
     const artSid = item.sid || sid;
     if (!it || !artSid) return;
@@ -200,7 +200,23 @@
     paint();
   }
 
-  function mountPreviewPane({ rootEl, getSessionId, onEnsureOpen }) {
+  function isDismissed(sid) {
+    if (!sid) return false;
+    try { return sessionStorage.getItem(`${DISMISS_PREFIX}${sid}`) === '1'; } catch { return false; }
+  }
+  function setDismissed(sid, val) {
+    if (!sid) return;
+    try {
+      if (val) sessionStorage.setItem(`${DISMISS_PREFIX}${sid}`, '1');
+      else sessionStorage.removeItem(`${DISMISS_PREFIX}${sid}`);
+    } catch {}
+  }
+
+  /**
+   * Mount an auto-splitting Canvas preview pane directly inside a conversation `.chat-split` container.
+   * Automatically shows side-by-side when previewable HTML/MD/SVG/Mermaid blocks or artifacts exist.
+   */
+  function mountPreviewPane({ rootEl, splitEl = null, resizerEl = null, getSessionId }) {
     if (!rootEl) return null;
     let chatItems = [];
     let artItems = [];
@@ -208,18 +224,54 @@
     let selectedId = '';
     let viewMode = 'preview';
     let lastLoadedSid = '';
+    let isPaneVisible = false;
+
+    const applySplitRatio = () => {
+      if (!splitEl || !rootEl) return;
+      try {
+        const pct = Number(localStorage.getItem(SPLIT_PCT_KEY));
+        if (pct >= 28 && pct <= 68) rootEl.style.flex = `0 0 ${pct}%`;
+      } catch {}
+    };
+
+    if (resizerEl && splitEl) {
+      applySplitRatio();
+      resizerEl.addEventListener('pointerdown', (e) => {
+        if (window.innerWidth <= 900) return;
+        e.preventDefault();
+        resizerEl.setPointerCapture?.(e.pointerId);
+        resizerEl.classList.add('dragging');
+        const rect = splitEl.getBoundingClientRect();
+        const move = (ev) => {
+          if (rect.width <= 120) return;
+          const pct = Math.max(28, Math.min(68, ((rect.right - ev.clientX) / rect.width) * 100));
+          rootEl.style.flex = `0 0 ${pct.toFixed(1)}%`;
+          try { localStorage.setItem(SPLIT_PCT_KEY, pct.toFixed(1)); } catch {}
+        };
+        const up = () => {
+          resizerEl.classList.remove('dragging');
+          window.removeEventListener('pointermove', move);
+          window.removeEventListener('pointerup', up);
+          window.dispatchEvent(new Event('resize'));
+        };
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', up);
+      });
+    }
 
     rootEl.innerHTML = `<div class="pv-shell">
       <div class="pv-bar">
+        <span class="pv-lbl">${UI_ICO.eye || ''} <b>미리보기</b></span>
         <select class="btn-sm" data-pv-pick aria-label="미리보기 대상 선택"></select>
         <div class="seg" data-pv-modes role="tablist" aria-label="보기 전환">
           <button type="button" data-pv-mode="preview" class="on">미리보기</button>
           <button type="button" data-pv-mode="source">소스</button>
         </div>
-        <div class="row" style="gap:4px;flex:none;margin-left:auto">
+        <div class="row" style="gap:3px;flex:none;margin-left:auto">
           <button type="button" class="ghost icon-btn btn-sm" data-pv-copy title="내용 복사" aria-label="복사">${UI_ICO.copy}</button>
           <button type="button" class="ghost icon-btn btn-sm" data-pv-ext title="새 탭에서 열기" aria-label="새 탭">${UI_ICO.external}</button>
           <button type="button" class="ghost icon-btn btn-sm" data-pv-refresh title="목록 새로고침" aria-label="새로고침">${UI_ICO.refresh}</button>
+          <button type="button" class="ghost icon-btn btn-sm" data-pv-close title="미리보기 닫기" aria-label="닫기">${UI_ICO.close}</button>
         </div>
       </div>
       <div class="pv-body" data-pv-body></div>
@@ -228,6 +280,14 @@
     const pickEl = $('[data-pv-pick]', rootEl);
     const modesEl = $('[data-pv-modes]', rootEl);
     const bodyEl = $('[data-pv-body]', rootEl);
+
+    const setVisible = (show) => {
+      isPaneVisible = !!show;
+      rootEl.hidden = !show;
+      if (resizerEl) resizerEl.hidden = !show;
+      splitEl?.classList.toggle('has-pv', !!show);
+      if (show) applySplitRatio();
+    };
 
     const allItems = () => [...manualItems, ...chatItems, ...artItems];
     const findItem = (id) => allItems().find((x) => x.id === id) || allItems()[0] || null;
@@ -289,13 +349,13 @@
       const found = [];
       let idx = 0;
       for (const blk of chatRoot.querySelectorAll('.codeblk')) {
-        const pre = blk.querySelector('.mdpre') || blk.querySelector('.mermaid-src');
+        const pre = blk.querySelector('.mermaid-src') || blk.querySelector('.mdpre');
         const host = blk.querySelector('.mermaid-host');
         const code = host ? (host.dataset.mermaidSrc || '') : (pre?.textContent || '');
         if (!code.trim()) continue;
         const langRaw = (blk.querySelector('.codeblk-hd > span')?.textContent || 'code').split('·')[0].trim();
         const kind = host ? 'mermaid' : normCodeKind(langRaw);
-        if (!supportsPreviewMode(kind) && kind !== 'json') continue;
+        if (!supportsPreviewMode(kind)) continue;
         idx++;
         const firstLine = code.trim().split('\n')[0].replace(/^[#<!-\s]+/, '').slice(0, 36);
         found.push({
@@ -309,11 +369,21 @@
       }
       chatItems = found.reverse();
       if (!selectedId && chatItems.length) selectedId = chatItems[0].id;
-      syncControlsAndPaint();
+
+      // Auto-split the Canvas Preview inside Conversation History whenever previewable blocks exist
+      const sid = getSessionId?.() || '';
+      const wideEnough = !splitEl || splitEl.getBoundingClientRect().width >= 560 || window.innerWidth > 900;
+      if ((chatItems.length > 0 || manualItems.length > 0) && !isDismissed(sid) && wideEnough) {
+        setVisible(true);
+      } else if (!chatItems.length && !manualItems.length && !isPaneVisible) {
+        setVisible(false);
+      }
+      if (isPaneVisible) syncControlsAndPaint();
     };
 
     const openCode = ({ title = '코드 미리보기', lang = 'html', code = '', mode = 'preview' }) => {
       const kind = normCodeKind(lang);
+      setDismissed(getSessionId?.() || '', false);
       const existing = allItems().find((x) => x.source === 'code' && x.code === code && x.kind === kind);
       if (existing) {
         selectedId = existing.id;
@@ -331,12 +401,13 @@
         selectedId = item.id;
       }
       viewMode = supportsPreviewMode(kind) ? mode : 'source';
-      onEnsureOpen?.();
+      setVisible(true);
       syncControlsAndPaint();
     };
 
     const openArtifact = (sid, it) => {
       if (!it) return;
+      setDismissed(sid || getSessionId?.() || '', false);
       const id = `art:${it.path}`;
       const existing = artItems.find((x) => x.id === id);
       if (!existing) {
@@ -352,7 +423,7 @@
       }
       selectedId = id;
       viewMode = 'preview';
-      onEnsureOpen?.();
+      setVisible(true);
       syncControlsAndPaint();
     };
 
@@ -388,10 +459,14 @@
       await loadArtifacts(true);
       syncControlsAndPaint();
     };
+    $('[data-pv-close]', rootEl).onclick = () => {
+      setDismissed(getSessionId?.() || '', true);
+      setVisible(false);
+    };
 
     const refresh = async (force = false) => {
       await loadArtifacts(force);
-      syncControlsAndPaint();
+      if (isPaneVisible) syncControlsAndPaint();
     };
 
     return {
@@ -399,6 +474,7 @@
       openArtifact,
       scanChatBlocks,
       refresh,
+      isOpen: () => isPaneVisible,
     };
   }
 

@@ -68,12 +68,76 @@ async function loadCliOptions() {
   if (state.cliOptions) return state.cliOptions;
   try {
     const r = await api('/api/projects/cli-options');
+    if (r?.accountPrefs) syncServerAccountPrefs(r.accountPrefs);
     if (r?.options) { state.cliOptions = r.options; return r.options; }
   } catch {}
   return FALLBACK_CLI_OPTIONS;
 }
 
 const CLI_DEFAULTS_STORAGE_KEY = 'ach.cliDefaults.v1';
+const ACCOUNT_PREFS_STORAGE_KEY = 'ach.accountPrefs.v1';
+
+function syncServerAccountPrefs(srv) {
+  if (!srv || typeof srv !== 'object') return;
+  try {
+    const byAcc = (srv.byAccount && typeof srv.byAccount === 'object') ? srv.byAccount : {};
+    const byCli = (srv.byCli && typeof srv.byCli === 'object') ? srv.byCli : {};
+    if (typeof state !== 'undefined' && state) state.accountPrefs = { byAccount: byAcc, byCli };
+    localStorage.setItem(ACCOUNT_PREFS_STORAGE_KEY, JSON.stringify({ byAccount: byAcc, byCli }));
+    const cliMap = readCliDefaultsMap();
+    for (const cli of ['claude', 'codex', 'agy']) {
+      if (byCli[cli] && typeof byCli[cli] === 'object') {
+        cliMap[cli] = {
+          account: String(byCli[cli].account || cliMap[cli]?.account || ''),
+          model: String(byCli[cli].model ?? cliMap[cli]?.model ?? ''),
+          effort: String(byCli[cli].effort ?? cliMap[cli]?.effort ?? ''),
+        };
+      }
+    }
+    localStorage.setItem(CLI_DEFAULTS_STORAGE_KEY, JSON.stringify(cliMap));
+  } catch {}
+}
+
+function readAccountPrefsMap() {
+  if (typeof state !== 'undefined' && state?.accountPrefs?.byAccount) return state.accountPrefs;
+  try {
+    const o = JSON.parse(localStorage.getItem(ACCOUNT_PREFS_STORAGE_KEY) || '{}');
+    return {
+      byAccount: (o?.byAccount && typeof o.byAccount === 'object') ? o.byAccount : {},
+      byCli: (o?.byCli && typeof o.byCli === 'object') ? o.byCli : {},
+    };
+  } catch { return { byAccount: {}, byCli: {} }; }
+}
+
+function normalizeAccPrefKey(account, cli) {
+  const raw = String(account || '').trim();
+  if (!raw || raw === '__cli__:claude') return cli === 'claude' ? 'default' : `__cli__:${cli || 'claude'}`;
+  return raw;
+}
+
+function readSavedAccountPref(account, cli) {
+  const prefs = readAccountPrefsMap();
+  const key = normalizeAccPrefKey(account, cli);
+  const entry = prefs.byAccount?.[key] || (account ? prefs.byAccount?.[String(account).trim()] : null);
+  if (entry && typeof entry === 'object') {
+    return { model: String(entry.model || ''), effort: String(entry.effort || '') };
+  }
+  return readSavedCliDefaults(cli);
+}
+
+function saveAccountPref({ account = '', cli = 'claude', model = '', effort = '' } = {}) {
+  const ag = ['claude', 'codex', 'agy'].includes(cli) ? cli : 'claude';
+  const key = normalizeAccPrefKey(account, ag);
+  const prefs = readAccountPrefsMap();
+  const nextByAcc = { ...(prefs.byAccount || {}), [key]: { agent: ag, model: String(model || ''), effort: String(effort || ''), updatedAt: Date.now() } };
+  const nextByCli = { ...(prefs.byCli || {}), [ag]: { account: key, model: String(model || ''), effort: String(effort || ''), updatedAt: Date.now() } };
+  if (typeof state !== 'undefined' && state) state.accountPrefs = { byAccount: nextByAcc, byCli: nextByCli };
+  try { localStorage.setItem(ACCOUNT_PREFS_STORAGE_KEY, JSON.stringify({ byAccount: nextByAcc, byCli: nextByCli })); } catch {}
+  saveCliDefaults(ag, { account: key, model, effort });
+  if (typeof api === 'function') {
+    api('/api/account-prefs', { method: 'POST', body: { account: key, agent: ag, model: String(model || ''), effort: String(effort || '') } }).catch(() => {});
+  }
+}
 
 function readCliDefaultsMap() {
   try {
@@ -83,6 +147,10 @@ function readCliDefaultsMap() {
 }
 
 function readSavedCliDefaults(cli) {
+  const mem = typeof state !== 'undefined' ? state?.accountPrefs?.byCli?.[cli] : null;
+  if (mem && typeof mem === 'object') {
+    return { account: String(mem.account || ''), model: String(mem.model || ''), effort: String(mem.effort || '') };
+  }
   const map = readCliDefaultsMap();
   const d = cli ? map[cli] : null;
   return d && typeof d === 'object'
@@ -114,13 +182,15 @@ function createCliModelEffortController({
   useSavedDefaults = !project,
   persistDefaults = !project,
   inheritProjectAgent = null,
+  getAccount = null,
   onChange = null,
 } = {}) {
   const modelByCli = new Map();
   const effortByCli = new Map();
   let curKind = initialKind || 'claude';
   let cliOpts = (typeof state !== 'undefined' && state?.cliOptions) || FALLBACK_CLI_OPTIONS;
-  const initSaved = useSavedDefaults ? readSavedCliDefaults(curKind) : { model: '', effort: '' };
+  const initAcc = typeof getAccount === 'function' ? getAccount() : '';
+  const initSaved = useSavedDefaults ? (initAcc ? readSavedAccountPref(initAcc, curKind) : readSavedCliDefaults(curKind)) : { model: '', effort: '' };
   const startModel = initialModel !== '' ? initialModel : initSaved.model;
   const startEffort = initialEffort !== '' ? initialEffort : initSaved.effort;
   modelByCli.set(curKind, startModel || '');
@@ -184,7 +254,10 @@ function createCliModelEffortController({
     const ef = currentEffort();
     modelByCli.set(curKind, m);
     effortByCli.set(curKind, ef);
-    if (persistDefaults) saveCliDefaults(curKind, { model: m, effort: ef });
+    if (persistDefaults) {
+      const accId = typeof getAccount === 'function' ? getAccount() : '';
+      saveAccountPref({ account: accId, cli: curKind, model: m, effort: ef });
+    }
     onChange?.({ kind: curKind, model: m, effort: ef });
   };
 
@@ -206,10 +279,20 @@ function createCliModelEffortController({
   if (effortSel) effortSel.addEventListener('change', emit);
 
   paint(curKind, startModel, startEffort);
+  let dirty = false;
+  if (modelPick) modelPick.addEventListener('change', () => { dirty = true; });
+  if (modelIn) modelIn.addEventListener('input', () => { dirty = true; });
+  if (effortSel) effortSel.addEventListener('change', () => { dirty = true; });
   loadCliOptions().then((opts) => {
     if (!opts) return;
     cliOpts = opts;
     if (modelPick && !modelPick.isConnected) return;
+    if (!dirty && useSavedDefaults && initialModel === '' && initialEffort === '') {
+      const accNow = typeof getAccount === 'function' ? getAccount() : '';
+      const srv = accNow ? readSavedAccountPref(accNow, curKind) : readSavedCliDefaults(curKind);
+      paint(curKind, srv.model || currentModel(), srv.effort || currentEffort());
+      return;
+    }
     paint(curKind, currentModel(), currentEffort());
   });
 

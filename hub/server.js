@@ -29,6 +29,8 @@ const cleanModelEffort = (model, effort) => {
   };
 };
 const { fingerprint, projectSession, sessionId: validSessionId } = require('./project-history');
+const { createAccountPrefsStore } = require('./account-prefs');
+const accountPrefs = createAccountPrefsStore({ cleanModelEffort });
 const { generatePlan, generateSubtasks, cliModelEffortArgs, inspectWorkspace } = require('./project-plan');
 const { scanFloorplan } = require('./workspace-floorplan');
 const { runTaskSubChatTurn } = require('./task-subchat');
@@ -1579,6 +1581,13 @@ async function switchAccount({ sessionId, termId, account = 'auto', model = '', 
 
   const targetAgent = pick.agent || 'claude';
   const samePlatform = sourceAgent === targetAgent;
+  const savedME = accountPrefs.getForAccount(pick.id, targetAgent);
+  const effModel = model === undefined ? savedME.model : reqME.model;
+  const effEffort = effort === undefined ? savedME.effort : reqME.effort;
+  const useME = cleanModelEffort(effModel, effEffort);
+  if (model !== undefined || effort !== undefined) {
+    accountPrefs.save({ account: pick.id, agent: targetAgent, model: useME.model, effort: useME.effort });
+  }
   const cwd = d?.cwd || t0?.cwd || loc.s?.cwd || os.homedir();
 
   // Capture cross-platform handoff BEFORE stopping t0 so screen fallback stays pristine
@@ -1647,7 +1656,7 @@ async function switchAccount({ sessionId, termId, account = 'auto', model = '', 
     env = CA.envFor(acc);
     const extra = [
       ...(skip ? ['--dangerously-bypass-approvals-and-sandbox'] : []),
-      ...cliModelEffortArgs('codex', reqME.model, reqME.effort),
+      ...cliModelEffortArgs('codex', useME.model, useME.effort),
       ...(samePlatform && sid
         ? ['resume', sid, ...(cont ? ['계속 진행해'] : [])]
         : samePlatform && t0
@@ -1672,7 +1681,7 @@ async function switchAccount({ sessionId, termId, account = 'auto', model = '', 
     }
     if (samePlatform && sid) args.push('--conversation', sid);
     if (skip) args.push('--dangerously-skip-permissions');
-    args.push(...cliModelEffortArgs('agy', reqME.model, reqME.effort));
+    args.push(...cliModelEffortArgs('agy', useME.model, useME.effort));
     const agyPrompt = !samePlatform ? handoffPrompt : (cont && sid ? '계속 진행해' : null);
     if (agyPrompt) args.push('--prompt-interactive', agyPrompt);
   } else {
@@ -1687,7 +1696,7 @@ async function switchAccount({ sessionId, termId, account = 'auto', model = '', 
     }
     if (samePlatform && sid) args.push('--resume', sid);
     if (skip) args.push('--dangerously-skip-permissions');
-    args.push(...cliModelEffortArgs('claude', reqME.model, reqME.effort));
+    args.push(...cliModelEffortArgs('claude', useME.model, useME.effort));
   }
 
   const short = (pick.email || pick.label || targetAgent).replace(/@.*/, '');
@@ -1707,8 +1716,8 @@ async function switchAccount({ sessionId, termId, account = 'auto', model = '', 
   const t = createTerm({
     cwd, cmd, args, env, title,
     account: { id: pick.id, label: pick.label, kind: targetAgent, ...(pick.email ? { email: pick.email } : {}) },
-    model: reqME.model,
-    effort: reqME.effort,
+    model: useME.model,
+    effort: useME.effort,
     research: project ? project.dir : null,
     projectTask: inheritedProjectTask || undefined,
     projectPrompt: inheritedProjectTask ? (handoffPrompt ? fingerprint(handoffPrompt) : t0?.meta?.projectPrompt) : undefined,
@@ -2021,7 +2030,15 @@ const server = http.createServer(async (req, res) => {
       });
     }
     if (p === '/api/projects/cli-options' && req.method === 'GET') {
-      return send(res, 200, { options: projectCliOptions() });
+      return send(res, 200, { options: projectCliOptions(), accountPrefs: accountPrefs.get() });
+    }
+    if (p === '/api/account-prefs') {
+      if (req.method === 'GET') return send(res, 200, { ok: true, ...accountPrefs.get() });
+      if (req.method === 'POST') {
+        const b = await body(req);
+        return send(res, 200, { ok: true, ...accountPrefs.save({ account: b.account, agent: b.agent, model: b.model, effort: b.effort }) });
+      }
+      return send(res, 405, { error: 'method not allowed' });
     }
     if (p === '/api/projects/floorplan' && req.method === 'GET') {
       const pid = url.searchParams.get('id') || '';
@@ -2434,12 +2451,13 @@ const server = http.createServer(async (req, res) => {
       }
 
       const reqME = cleanModelEffort(b.model, b.effort);
+      accountPrefs.save({ account: launchAccount?.account?.id || b.account || '', agent: targetAgent, model: reqME.model, effort: reqME.effort });
       const launchAndDeliver = async ({ agent, resumeId, title, promptToSend }) => {
         let cmd, args = [];
         if (agent === 'codex') {
           const extra = [
             '--dangerously-bypass-approvals-and-sandbox',
-            ...cliModelEffortArgs('codex', reqME.model, reqME.effort),
+            ...cliModelEffortArgs('codex', useME.model, useME.effort),
             ...(resumeId ? ['resume', resumeId] : []),
             ...(!resumeId && promptToSend ? [promptToSend] : []),
           ];
@@ -2448,13 +2466,13 @@ const server = http.createServer(async (req, res) => {
           cmd = agyExe();
           if (resumeId) args.push('--conversation', resumeId);
           args.push('--dangerously-skip-permissions');
-          args.push(...cliModelEffortArgs('agy', reqME.model, reqME.effort));
+          args.push(...cliModelEffortArgs('agy', useME.model, useME.effort));
           if (!resumeId && promptToSend) args.push('--prompt-interactive', promptToSend);
         } else {
           cmd = 'claude.exe';
           if (resumeId) args.push('--resume', resumeId);
           args.push('--dangerously-skip-permissions');
-          args.push(...cliModelEffortArgs('claude', reqME.model, reqME.effort));
+          args.push(...cliModelEffortArgs('claude', useME.model, useME.effort));
         }
         const term = createTerm({ cwd, cmd, args, env: launchAccount?.env || {}, title, account: launchAccount?.account || null, model: reqME.model, effort: reqME.effort });
         if (promptToSend && (agent === 'claude' || resumeId)) {
@@ -2699,10 +2717,11 @@ const server = http.createServer(async (req, res) => {
       } catch (e) { return send(res, 502, { error: `AI 사용량 대시보드(${USAGE_URL})에 연결할 수 없음: ${e.message}` }); }
     }
     if (p === '/api/switch/candidates') {
-      return send(res, 200, await allSwitchCandidates({
+      const info = await allSwitchCandidates({
         sessionId: url.searchParams.get('id') || '',
         termId: url.searchParams.get('term') || '',
-      }));
+      });
+      return send(res, 200, { ...info, accountPrefs: accountPrefs.get() });
     }
     if (p === '/api/switch' && req.method === 'POST') return send(res, 200, await switchAccount(await body(req)));
     if (p === '/api/term/external' && req.method === 'POST') {
@@ -2907,6 +2926,9 @@ const server = http.createServer(async (req, res) => {
         }
       }
       const t = createTerm({ cwd, cmd, args, title: b.title || title, ...(codexStart || {}), ...launchAccount, model: b.model || '', effort: b.effort || '', projectTask, projectPrompt });
+      if (!projectTask && ['claude', 'codex', 'agy'].includes(b.kind) && (b.model !== undefined || b.effort !== undefined || launchAccount?.account?.id)) {
+        accountPrefs.save({ account: launchAccount?.account?.id || b.account || '', agent: b.kind, model: b.model || '', effort: b.effort || '' });
+      }
       if (projectTask) {
         const result = await t.spawnResult;
         if (result?.error) {

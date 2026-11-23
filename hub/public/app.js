@@ -1696,7 +1696,6 @@ function dockTopSegHTML({ openSet, isContentTab = false, hasTerm = true, hasChat
     ${hasTerm ? `<button type="button" data-dock-toggle="term" aria-pressed="${on('term')}" class="${on('term') ? 'on' : ''}" title="${esc(termTitle)}">${ICO.terminal} 터미널</button>` : ''}
     ${hasChat ? `<button type="button" data-dock-toggle="chat" aria-pressed="${on('chat')}" class="${on('chat') ? 'on' : ''}" title="대화 기록 패널 열기/닫기">${ICO.chat} 대화 기록</button>` : ''}
     <button type="button" data-dock-toggle="windows" aria-pressed="${on('windows')}" class="${on('windows') ? 'on' : ''}" title="연결된 창 · 브라우저 미리보기 패널 열기/닫기">${ICO.monitor} 창 <span class="seg-cnt" data-dock-win-cnt>0</span></button>
-    <button type="button" data-dock-toggle="preview" aria-pressed="${on('preview')}" class="${on('preview') ? 'on' : ''}" title="HTML · Markdown · 플로우차트 미리보기 패널 열기/닫기">${ICO.eye} 미리보기</button>
   </div>
   <span class="bar-sep" aria-hidden="true"></span>
   <div class="seg bar-tab-seg" role="tablist" aria-label="전용 화면 탭">
@@ -1705,16 +1704,34 @@ function dockTopSegHTML({ openSet, isContentTab = false, hasTerm = true, hasChat
   </div>`;
 }
 
-function mountPreviewDock(dock, getSid) {
-  if (!dock || !window.ACH_PREVIEW) return null;
-  const pvCtl = window.ACH_PREVIEW.mountPreviewPane({
-    rootEl: dock.getBody('preview'),
-    getSessionId: getSid,
-    onEnsureOpen: () => dock.togglePanel('preview', true),
-  });
-  window.ACH_PREVIEW.setActiveController(pvCtl);
-  if (dock.isOpen('preview')) pvCtl?.refresh(false);
-  return pvCtl;
+function mountChatWorkspace(body, { sid, gen, at = -1, terms = [], composerOpts = {} }) {
+  if (!body) return null;
+  body.innerHTML = `<div class="chat-split">
+    <div class="chat-shell">
+      <div class="chat-scroll"></div>
+      <div class="chat-comp-host"></div>
+    </div>
+    <div class="chat-pv-resizer" hidden role="separator" aria-orientation="vertical" aria-label="미리보기 크기 조절"></div>
+    <aside class="chat-pv-pane" hidden aria-label="미리보기"></aside>
+  </div>`;
+  const splitEl = $('.chat-split', body);
+  const scrollEl = $('.chat-scroll', body);
+  const compEl = $('.chat-comp-host', body);
+  const pvPane = $('.chat-pv-pane', body);
+  const pvResizer = $('.chat-pv-resizer', body);
+  if (window.ACH_PREVIEW) {
+    const pvCtl = window.ACH_PREVIEW.mountPreviewPane({
+      rootEl: pvPane,
+      splitEl,
+      resizerEl: pvResizer,
+      getSessionId: () => sid || composerOpts.sid || currentSessionId() || '',
+    });
+    window.ACH_PREVIEW.setActiveController(pvCtl);
+    pvCtl?.refresh(false);
+  }
+  renderChat(sid, gen, at, terms, scrollEl);
+  mountChatComposer({ barHost: compEl, chatHost: scrollEl, sid, ...composerOpts });
+  return { scrollEl, compEl };
 }
 const barSystemBtnHTML = () => `<button type="button" class="ghost icon-btn btn-sm" data-open-system="1" title="설정 (AI 사용량 · GPU · 공통 자원)" aria-label="설정">${ICO.settings}</button>`;
 document.addEventListener('click', (e) => {
@@ -1891,22 +1908,14 @@ function viewConsole() {
   const ensureChatMounted = () => {
     if (chatMounted || !sid || !dock) return;
     chatMounted = true;
-    const body = dock.getBody('chat');
-    body.innerHTML = `<div class="chat-shell"><div class="chat-scroll" data-dock-chat-scroll></div><div data-dock-chat-comp></div></div>`;
-    chatScrollEl = $('[data-dock-chat-scroll]', body);
-    renderChat(sid, gen, -1, [], chatScrollEl);
-    mountChatComposer({
-      barHost: $('[data-dock-chat-comp]', body),
-      chatHost: chatScrollEl,
+    const mounted = mountChatWorkspace(dock.getBody('chat'), {
       sid,
-      consolePid: pid,
-      agent: s?.agent || 'claude',
-      cwd: s?.cwd || '',
-      compact: true,
+      gen,
+      composerOpts: { consolePid: pid, agent: s?.agent || 'claude', cwd: s?.cwd || '', compact: true },
     });
+    chatScrollEl = mounted?.scrollEl || null;
   };
 
-  let pvCtl = null;
   dock = window.ACH_DOCK.createDockWorkspace({
     hostEl: $('#view'),
     mode: 'term',
@@ -1915,11 +1924,9 @@ function viewConsole() {
       term: { title: '터미널', icon: ICO.terminal },
       ...(sid ? { chat: { title: '대화 기록', icon: ICO.chat, onShow: ensureChatMounted } } : {}),
       windows: { title: '창', icon: ICO.monitor, onShow: () => winCtl?.renderWindows() },
-      preview: { title: '미리보기', icon: ICO.eye, onShow: () => pvCtl?.refresh(false) },
     },
     onOpenChange: (openList) => syncBarDockButtons(openList),
   });
-  pvCtl = mountPreviewDock(dock, () => sid || '');
 
   mountConsoleScreen(dock.getBody('term'), { pid, gen, s });
   if (sid && dock.isOpen('chat')) ensureChatMounted();
@@ -2066,7 +2073,6 @@ function viewTranscript() {
     else if (linkedConPid) mountConsoleScreen(body, { pid: linkedConPid, gen, s: live });
   };
 
-  let pvCtl = null;
   dock = window.ACH_DOCK.createDockWorkspace({
     hostEl: $('#view'),
     mode: 'recent',
@@ -2075,28 +2081,23 @@ function viewTranscript() {
       ...(hasLivePane ? { term: { title: '터미널', icon: ICO.terminal, onShow: ensureTermMounted } } : {}),
       chat: { title: '대화 기록', icon: ICO.chat },
       windows: { title: '창', icon: ICO.monitor, onShow: () => winCtl?.renderWindows() },
-      preview: { title: '미리보기', icon: ICO.eye, onShow: () => pvCtl?.refresh(false) },
     },
     onOpenChange: (openList) => syncBarDockButtons(openList),
   });
-  pvCtl = mountPreviewDock(dock, () => sid);
 
-  const chatBody = dock.getBody('chat');
-  chatBody.innerHTML = `<div class="chat-shell">
-    <div class="chat-scroll" id="chatScrollHost"></div>
-    <div id="transcriptCompHost"></div>
-  </div>`;
-  chatScrollEl = $('#chatScrollHost', chatBody);
-  renderChat(sid, gen, state.sel.at ?? -1, termsOf(state.sel.q), chatScrollEl);
-  mountChatComposer({
-    barHost: $('#transcriptCompHost', chatBody),
-    chatHost: chatScrollEl,
+  const mounted = mountChatWorkspace(dock.getBody('chat'), {
     sid,
-    consolePid: linkedConPid || null,
-    agent: r?.agent || 'claude',
-    cwd: r?.cwd || live?.cwd || '',
-    liveDesktop: !!(live && isDesktopSession(live)),
+    gen,
+    at: state.sel.at ?? -1,
+    terms: termsOf(state.sel.q),
+    composerOpts: {
+      consolePid: linkedConPid || null,
+      agent: r?.agent || 'claude',
+      cwd: r?.cwd || live?.cwd || '',
+      liveDesktop: !!(live && isDesktopSession(live)),
+    },
   });
+  chatScrollEl = mounted?.scrollEl || null;
   if (hasLivePane && dock.isOpen('term')) ensureTermMounted();
   winCtl = window.ACH_DOCK.mountWindowsPane({
     rootEl: dock.getBody('windows'),
@@ -2212,20 +2213,25 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       initialEffort: initEffort,
       useSavedDefaults: !ltInit,
       persistDefaults: true,
+      getAccount: () => accSel?.value || '',
       onChange: syncApplyBtn,
     });
   }
 
   accSel.onchange = () => {
     const nextAg = getSelectedAgent();
-    if (typeof saveCliDefaults === 'function') saveCliDefaults(nextAg, { account: accSel.value });
-    meCtl?.setCli(nextAg);
+    const accVal = accSel.value;
+    if (typeof saveCliDefaults === 'function') saveCliDefaults(nextAg, { account: accVal });
+    const accSaved = typeof readSavedAccountPref === 'function' ? readSavedAccountPref(accVal, nextAg) : null;
+    if (accSaved) meCtl?.setCli(nextAg, accSaved.model, accSaved.effort);
+    else meCtl?.setCli(nextAg);
     syncApplyBtn();
   };
 
   const loadCandidates = async () => {
     try {
       const r = await api(`/api/switch/candidates?id=${encodeURIComponent(sid || '')}${activeTermId ? `&term=${encodeURIComponent(activeTermId)}` : ''}`);
+      if (r?.accountPrefs && typeof syncServerAccountPrefs === 'function') syncServerAccountPrefs(r.accountPrefs);
       if (!barHost.isConnected || !Array.isArray(r?.candidates)) return;
       const lt = findLiveTerm();
       const curTermAgent = lt?.agent || baseAgent;
@@ -2265,7 +2271,9 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       baselineAccId = curAccFromResp?.id || [...accSel.options].find((o) => o.dataset.agent === baseAgent)?.value || baselineAccId;
       if (wantAcc) accSel.value = wantAcc;
       const curSelectedAg = getSelectedAgent();
-      const postDef = (!lt && typeof readSavedCliDefaults === 'function') ? readSavedCliDefaults(curSelectedAg) : { model: '', effort: '' };
+      const postDef = (!lt && typeof readSavedAccountPref === 'function')
+        ? readSavedAccountPref(accSel.value, curSelectedAg)
+        : ((!lt && typeof readSavedCliDefaults === 'function') ? readSavedCliDefaults(curSelectedAg) : { model: '', effort: '' });
       const postModel = lt ? initModel : (savedPref ? initModel : postDef.model);
       const postEffort = lt ? initEffort : (savedPref ? initEffort : postDef.effort);
       meCtl?.setCli(curSelectedAg, postModel, postEffort);
@@ -2526,17 +2534,19 @@ async function openBranchDialog({ sid, atIndex = null, message = null, agent = '
       effortSel: d.querySelector('[name=effort]'),
       hintEl: d.querySelector('[data-cli-opt-hint]'),
       initialKind: sourceAg,
+      getAccount: () => accSel?.value || '',
     })
     : null;
   const updateModeHint = () => {
     const tAg = agSel.value;
-    brMeCtl?.setCli(tAg);
+    const accSaved = typeof readSavedAccountPref === 'function' ? readSavedAccountPref(accSel.value, tAg) : null;
+    if (accSaved && accSel.value) brMeCtl?.setCli(tAg, accSaved.model, accSaved.effort);
+    else brMeCtl?.setCli(tAg);
     hintEl.textContent = (sourceAg === 'claude' && tAg === 'claude' && capabilities?.canNativeFork !== false)
       ? 'Claude 원본 JSONL을 이 지점까지만 복제해 네이티브 분기 세션으로 엽니다.'
       : '이 지점까지의 대화 맥락을 브리핑 파일로 정리해 새 세션에 전달합니다.';
   };
   const loadAccounts = async () => {
-    updateModeHint();
     try {
       const tAg = agSel.value;
       const r = await api(`/api/projects/accounts?agent=${encodeURIComponent(tAg)}`);
@@ -2545,8 +2555,10 @@ async function openBranchDialog({ sid, atIndex = null, message = null, agent = '
       const savedDef = typeof readSavedCliDefaults === 'function' ? readSavedCliDefaults(tAg) : { account: '' };
       if (savedDef.account && list.some((a) => a.id === savedDef.account)) accSel.value = savedDef.account;
     } catch {}
+    updateModeHint();
   };
   agSel.onchange = loadAccounts;
+  accSel.onchange = updateModeHint;
   loadAccounts();
 
   $('form', d).onsubmit = async (e) => {
@@ -3373,22 +3385,14 @@ function viewTerm() {
   const ensureChatMounted = () => {
     if (chatMounted || !dock) return;
     chatMounted = true;
-    const body = dock.getBody('chat');
-    body.innerHTML = `<div class="chat-shell"><div class="chat-scroll" id="termChatHost"></div><div id="termChatComp"></div></div>`;
-    chatScrollEl = $('#termChatHost', body);
-    renderChat(sid, gen, -1, [], chatScrollEl);
-    mountChatComposer({
-      barHost: $('#termChatComp', body),
-      chatHost: chatScrollEl,
+    const mounted = mountChatWorkspace(dock.getBody('chat'), {
       sid,
-      termId: t?.id || state.sel.id,
-      agent: ag || 'claude',
-      cwd: t?.cwd || pj?.cwd || '',
-      compact: true,
+      gen,
+      composerOpts: { termId: t?.id || state.sel.id, agent: ag || 'claude', cwd: t?.cwd || pj?.cwd || '', compact: true },
     });
+    chatScrollEl = mounted?.scrollEl || null;
   };
 
-  let pvCtl = null;
   dock = window.ACH_DOCK.createDockWorkspace({
     hostEl: $('#view'),
     mode: 'term',
@@ -3397,11 +3401,9 @@ function viewTerm() {
       term: { title: '터미널', icon: ICO.terminal, onShow: () => setTimeout(() => termCtl?.resize(), 30) },
       chat: { title: '대화 기록', icon: ICO.chat, onShow: ensureChatMounted },
       windows: { title: '창', icon: ICO.monitor, onShow: () => winCtl?.renderWindows() },
-      preview: { title: '미리보기', icon: ICO.eye, onShow: () => pvCtl?.refresh(false) },
     },
     onOpenChange: (openList) => syncBarDockButtons(openList),
   });
-  pvCtl = mountPreviewDock(dock, () => artSid || sid || '');
 
   if (dock.isOpen('chat')) ensureChatMounted();
   termCtl = mountManagedTermScreen(dock.getBody('term'), {
@@ -4489,6 +4491,7 @@ async function openSwitch(sid, termId = '') {
     width: 520,
   });
   const r = await api(`/api/switch/candidates?id=${encodeURIComponent(sid)}${termId ? `&term=${encodeURIComponent(termId)}` : ''}`).catch((e) => ({ error: e.message }));
+  if (r?.accountPrefs && typeof syncServerAccountPrefs === 'function') syncServerAccountPrefs(r.accountPrefs);
   const body = $('#swBody', d);
   if (r.error || !r.candidates) { body.innerHTML = `<div class="err">${esc(r.error || '후보를 불러오지 못함')}</div>`; return; }
   const s = state.live.find((x) => x.sessionId === sid);
@@ -4533,7 +4536,8 @@ async function openSwitch(sid, termId = '') {
     <div id="swHint" class="empty" style="padding:4px 0 0"></div>`;
   const goBtn = $('#swGo', d);
   if (goBtn) goBtn.disabled = !r.candidates.some((c) => c.best || (c.usable && !c.current));
-  const initSelAgent = $('input[name=acc]:checked', d)?.dataset.agent || srcAgent;
+  const initSelAcc = $('input[name=acc]:checked', d);
+  const initSelAgent = initSelAcc?.dataset.agent || srcAgent;
   const swMeCtl = typeof createCliModelEffortController === 'function'
     ? createCliModelEffortController({
       modelPick: d.querySelector('[name=modelPick]'),
@@ -4541,12 +4545,15 @@ async function openSwitch(sid, termId = '') {
       effortSel: d.querySelector('[name=effort]'),
       hintEl: d.querySelector('[data-cli-opt-hint]'),
       initialKind: initSelAgent,
+      getAccount: () => $('input[name=acc]:checked', d)?.value || '',
     })
     : null;
   const updateHint = () => {
     const sel = $('input[name=acc]:checked', d);
     const targetAgent = sel?.dataset.agent || srcAgent;
-    swMeCtl?.setCli(targetAgent);
+    const accSaved = (sel?.value && typeof readSavedAccountPref === 'function') ? readSavedAccountPref(sel.value, targetAgent) : null;
+    if (accSaved) swMeCtl?.setCli(targetAgent, accSaved.model, accSaved.effort);
+    else swMeCtl?.setCli(targetAgent);
     const mode = $('input[name=swMode]:checked', d)?.value || 'dashboard';
     const whereTxt = mode === 'external' ? '새 Windows 외부 콘솔 창' : '대시보드 터미널';
     const skipRow = $('#swSkipRow', d);
@@ -4579,7 +4586,8 @@ async function openSwitch(sid, termId = '') {
     const openMode = $('input[name=swMode]:checked', d)?.value || 'dashboard';
     const meVals = swMeCtl ? swMeCtl.getValues() : { model: '', effort: '' };
     const targetAg = $('input[name=acc]:checked', d)?.dataset.agent || srcAgent;
-    if (typeof saveCliDefaults === 'function') saveCliDefaults(targetAg, { account: acc, model: meVals.model, effort: meVals.effort });
+    if (typeof saveAccountPref === 'function') saveAccountPref({ account: acc, cli: targetAg, model: meVals.model, effort: meVals.effort });
+    else if (typeof saveCliDefaults === 'function') saveCliDefaults(targetAg, { account: acc, model: meVals.model, effort: meVals.effort });
     const go = $('#swGo', d); go.disabled = true; go.textContent = '전환 중…';
     const payload = {
       sessionId: sid || undefined,
@@ -4862,40 +4870,50 @@ const resultBadge = (p) => (p.result && R_RESULT[p.result] ? `<span class="badge
 const R_STATUS = { running: ['자율 진행 중', 'ok', '●'], waiting: ['대기 중', 'warn', '⏳'], paused: ['일시정지', 'muted', '⏸'], blocked: ['확인 필요', 'bad', '⚠'], done: ['목표 달성', 'ok', '✔'] };
 const R_TABS = [['overview', '개요'], ['report', '보고서'], ['plan', '계획'], ['activity', '활동 기록'], ['outputs', '산출물'], ['settings', '브리프·설정']];
 
-// Tiny markdown renderer (escapes everything first; supports http/https and file:// artifact chips).
+// Tiny markdown renderer (escapes everything first; preserves inline code spans; supports Mermaid, tables, lists, and file:// artifact chips).
 function md(src) {
   const lines = String(src || '').replace(/\r/g, '').split('\n');
-  const inline = (t) => esc(t)
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
-    .replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, '$1<i>$2</i>')
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-    .replace(/\[([^\]]+)\]\(file:\/\/\/?([^)#\s]+)(?:#[^)\s]*)?\)/gi, (_, lbl, rawPath) => {
-      const cleanPath = rawPath.replace(/\//g, '\\');
-      return `<a class="filechip artlink" data-apath="${cleanPath}" title="${cleanPath}">${lbl}</a>`;
-    })
-    .replace(/\[([^\]]+)\]\(conversation:\/\/[^)\s]+\)/gi, '<span class="filechip">$1</span>');
+  const inline = (t) => {
+    const spans = [];
+    const masked = esc(t).replace(/`([^`]+)`/g, (_, code) => {
+      spans.push(`<code>${code}</code>`);
+      return `\u0000C${spans.length - 1}\u0000`;
+    });
+    return masked
+      .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+      .replace(/~~([^~]+)~~/g, '<s>$1</s>')
+      .replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, '$1<i>$2</i>')
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+      .replace(/\[([^\]]+)\]\(file:\/\/\/?([^)#\s]+)(?:#[^)\s]*)?\)/gi, (_, lbl, rawPath) => {
+        const cleanPath = rawPath.replace(/\//g, '\\');
+        return `<a class="filechip artlink" data-apath="${cleanPath}" title="${cleanPath}">${lbl}</a>`;
+      })
+      .replace(/\[([^\]]+)\]\(conversation:\/\/[^)\s]+\)/gi, '<span class="filechip">$1</span>')
+      .replace(/\u0000C(\d+)\u0000/g, (_, idx) => spans[Number(idx)] || '');
+  };
   const out = [];
   let i = 0, list = null, para = [];
   const flushPara = () => { if (para.length) { out.push(`<p>${inline(para.join(' '))}</p>`); para = []; } };
   const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
   while (i < lines.length) {
     const l = lines[i];
-    if (/^```/.test(l)) {
+    const fenceM = l.match(/^\s*```(.*)$/);
+    if (fenceM) {
       flushPara(); closeList();
-      const lang = l.slice(3).trim();
-      const langL = lang.toLowerCase();
+      const langRaw = (fenceM[1] || '').trim();
+      const langL = langRaw.split(/[\s{]/)[0].toLowerCase();
       const buf = []; i++;
-      while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]);
+      while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) buf.push(lines[i++]);
       const rawCode = buf.join('\n');
       if (langL === 'mermaid' || langL === 'mmd') {
         out.push(`<div class="codeblk mermaid-card"><div class="codeblk-hd"><span>mermaid · flowchart</span><span class="row" style="gap:4px"><button type="button" data-mermaid-toggle="1">코드 보기</button><button type="button" data-preview-code="mermaid">미리보기</button><button type="button" data-copy-code="1">${ICO.copy} 복사</button></span></div><div class="mermaid-host" data-mermaid-src="${esc(rawCode)}"><pre class="mdpre">${esc(rawCode)}</pre></div><pre class="mdpre mermaid-src" hidden>${esc(rawCode)}</pre></div>`);
       } else {
         const canPv = ['html', 'htm', 'svg', 'markdown', 'md'].includes(langL);
         const pvBtn = canPv ? `<button type="button" data-preview-code="${esc(langL)}">▶ 미리보기</button>` : '';
-        out.push(`<div class="codeblk"><div class="codeblk-hd"><span>${esc(lang || 'code')}</span><span class="row" style="gap:4px">${pvBtn}<button type="button" data-copy-code="1">${ICO.copy} 복사</button></span></div><pre class="mdpre">${esc(rawCode)}</pre></div>`);
+        out.push(`<div class="codeblk"><div class="codeblk-hd"><span>${esc(langL || langRaw || 'code')}</span><span class="row" style="gap:4px">${pvBtn}<button type="button" data-copy-code="1">${ICO.copy} 복사</button></span></div><pre class="mdpre">${esc(rawCode)}</pre></div>`);
       }
-      i++; continue;
+      if (i < lines.length && /^\s*```\s*$/.test(lines[i])) i++;
+      continue;
     }
     if (/^\s*\|.*\|\s*$/.test(l) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
       flushPara(); closeList();
