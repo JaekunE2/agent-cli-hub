@@ -346,7 +346,7 @@ function renderSide() {
   h += `<div class="ssec">
     <div class="ssec-hd">
       ${foldBtnHTML('recent', recFolded, isEnUI() ? 'Sessions' : '목록')}
-      <span class="ssec-title" data-key="terms-recent" title="전체 목록 보기">${liveCount ? `<span class="srow-meta">${liveCount}</span>` : ''}${recFolded && busyCount ? `<span class="srow-tag busy">실행 ${busyCount}</span>` : ''}</span>
+      <span class="ssec-title" data-key="terms-recent" title="전체 목록 보기">대화 기록 ${liveCount ? `<span class="srow-meta">${liveCount}</span>` : ''}${recFolded && busyCount ? `<span class="srow-tag busy">실행 ${busyCount}</span>` : ''}</span>
       ${exitedCount ? `<button class="ghost icon-btn ssec-act" data-side-clean-exited="1" title="${cleanExitedTitle}" aria-label="${cleanExitedAria}">${ICO.trash}</button>` : ''}
       <button class="ghost icon-btn ssec-act${state.termGroupByProject ? ' on' : ''}" data-tgroup="1" title="${groupProjLbl}" aria-pressed="${state.termGroupByProject}" aria-label="${groupProjLbl}">${ICO.layers}</button>
       <button class="ghost icon-btn ssec-act" data-rrefresh="1" title="세션 기록 새로고침" aria-label="세션 기록 새로고침">${ICO.refresh}</button>
