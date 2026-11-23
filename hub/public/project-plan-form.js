@@ -43,11 +43,21 @@ const FALLBACK_CLI_OPTIONS = {
       { id: 'gemini-4-neon-high', label: 'Gemini 4 Neon (High)' },
       { id: 'gemini-4-neon-xhigh', label: 'Gemini 4 Neon (XHigh)' },
       { id: 'gemini-4-neon-medium', label: 'Gemini 4 Neon (Medium)' },
+      { id: 'gemini-4-neon-low', label: 'Gemini 4 Neon (Low)' },
       { id: 'gemini-4-argon-high', label: 'Gemini 4 Argon (High)' },
+      { id: 'gemini-4-argon-medium', label: 'Gemini 4 Argon (Medium)' },
+      { id: 'gemini-4-argon-low', label: 'Gemini 4 Argon (Low)' },
       { id: 'gemini-4-hydrogen-high', label: 'Gemini 4 Hydrogen (High)' },
+      { id: 'gemini-4-hydrogen-xhigh', label: 'Gemini 4 Hydrogen (XHigh)' },
+      { id: 'gemini-4-hydrogen-medium', label: 'Gemini 4 Hydrogen (Medium)' },
+      { id: 'gemini-4-hydrogen-low', label: 'Gemini 4 Hydrogen (Low)' },
       { id: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' },
+      { id: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)' },
       { id: 'claude-opus-5-5-high', label: 'Claude Opus 5.5 (High)' },
+      { id: 'claude-opus-5-5-medium', label: 'Claude Opus 5.5 (Medium)' },
       { id: 'claude-sonnet-5-5-high', label: 'Claude Sonnet 5.5 (High)' },
+      { id: 'claude-sonnet-5-5-medium', label: 'Claude Sonnet 5.5 (Medium)' },
+      { id: 'gpt-oss-120b-medium', label: 'GPT-OSS 120B (Medium)' },
     ],
     efforts: [
       { id: '', label: 'CLI 기본값' },
@@ -272,11 +282,32 @@ function createCliModelEffortController({
           modelIn.value = modelPick.value;
         }
       }
+      if (curKind === 'agy' && effortSel) {
+        const sm = /^(.+)-(low|medium|high|xhigh)$/i.exec(modelPick.value || '');
+        if (sm && [...effortSel.options].some((o) => o.value === sm[2].toLowerCase())) {
+          effortSel.value = sm[2].toLowerCase();
+        }
+      }
       emit();
     });
   }
   if (modelIn) modelIn.addEventListener('input', emit);
-  if (effortSel) effortSel.addEventListener('change', emit);
+  if (effortSel) {
+    effortSel.addEventListener('change', () => {
+      if (curKind === 'agy' && modelPick && modelPick.value && modelPick.value !== '__custom__') {
+        const ef = (effortSel.value === 'max' ? 'xhigh' : effortSel.value) || '';
+        const sm = /^(.+)-(low|medium|high|xhigh)$/i.exec(modelPick.value);
+        if (ef && sm) {
+          const candidate = `${sm[1]}-${ef}`;
+          if ([...modelPick.options].some((o) => o.value === candidate)) {
+            modelPick.value = candidate;
+            if (modelIn) modelIn.value = candidate;
+          }
+        }
+      }
+      emit();
+    });
+  }
 
   paint(curKind, startModel, startEffort);
   let dirty = false;

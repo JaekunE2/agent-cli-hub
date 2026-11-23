@@ -39,7 +39,7 @@ test('buildRecoveryLaunchArgs preserves/restores model & effort flags across Cla
     effort: 'medium',
     cliModelEffortArgs,
   });
-  assert.deepEqual(agyArgs, ['--dangerously-skip-permissions', '--conversation', 'sid-1', '--model', 'gemini-4-hydrogen-high', '--effort', 'medium']);
+  assert.deepEqual(agyArgs, ['--dangerously-skip-permissions', '--conversation', 'sid-1', '--model', 'gemini-4-hydrogen-medium', '--effort', 'medium']);
 
   const codexArgs = buildRecoveryLaunchArgs({
     cli: 'codex',

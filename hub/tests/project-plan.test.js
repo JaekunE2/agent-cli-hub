@@ -104,6 +104,8 @@ test('cliModelEffortArgs builds exact model and reasoning effort flags per CLI',
   assert.deepEqual(cliModelEffortArgs('codex', 'gpt-6.1-sol', 'high'), ['-m', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="high"']);
   assert.deepEqual(cliModelEffortArgs('claude', 'opus', 'max'), ['--model', 'opus', '--effort', 'max']);
   assert.deepEqual(cliModelEffortArgs('agy', 'gemini-4-neon-xhigh', 'xhigh'), ['--model', 'gemini-4-neon-xhigh', '--effort', 'xhigh']);
+  assert.deepEqual(cliModelEffortArgs('agy', 'gemini-4-argon-high', 'medium'), ['--model', 'gemini-4-argon-medium', '--effort', 'medium']);
+  assert.deepEqual(cliModelEffortArgs('agy', 'gemini-4-argon-high', 'xhigh'), ['--model', 'gemini-4-argon-high', '--effort', 'high']);
   assert.deepEqual(cliModelEffortArgs('cursor', 'foo', 'high'), []);
 });
 

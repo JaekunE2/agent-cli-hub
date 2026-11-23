@@ -240,6 +240,37 @@ function spawnCli(exe, args, { cwd, env, timeoutMs = 120_000, maxBuffer = 1024 *
   });
 }
 
+const AGY_FAMILY_EFFORTS = {
+  'gemini-4-neon': ['low', 'medium', 'high', 'xhigh'],
+  'gemini-4-hydrogen': ['low', 'medium', 'high', 'xhigh'],
+  'gemini-4-argon': ['low', 'medium', 'high'],
+  'gemini-3.8-flash': ['low', 'medium', 'high'],
+  'claude-opus-5-5': ['low', 'medium', 'high'],
+  'claude-sonnet-5-5': ['low', 'medium', 'high'],
+  'gpt-oss-120b': ['medium'],
+};
+
+function resolveAgyModelEffort(safeM, safeE) {
+  if (!safeM) return { model: '', effort: safeE === 'max' ? 'xhigh' : safeE };
+  if (/^gemini-pro-orchestrator-/i.test(safeM)) return { model: safeM, effort: '' };
+  const m = /^(.+)-(low|medium|high|xhigh|max)$/i.exec(safeM);
+  const family = (m ? m[1] : safeM).toLowerCase();
+  const suffix = m ? m[2].toLowerCase() : '';
+  const allowed = AGY_FAMILY_EFFORTS[family];
+  let targetE = (safeE === 'max' ? 'xhigh' : safeE) || suffix;
+  if (allowed) {
+    if (!targetE || !allowed.includes(targetE)) {
+      targetE = (suffix && allowed.includes(suffix)) ? suffix : allowed[allowed.length - 1];
+    }
+    return { model: `${family}-${targetE}`, effort: targetE };
+  }
+  if (m) {
+    const eff = targetE || suffix;
+    return { model: `${m[1]}-${eff}`, effort: eff };
+  }
+  return { model: safeM, effort: safeE };
+}
+
 function cliModelEffortArgs(agent, model, effort) {
   const m = String(model || '').trim();
   const ef = String(effort || '').trim();
@@ -249,9 +280,13 @@ function cliModelEffortArgs(agent, model, effort) {
   if (agent === 'codex') {
     if (safeM) out.push('-m', safeM);
     if (safeE) out.push('-c', `model_reasoning_effort="${safeE}"`);
-  } else if (agent === 'claude' || agent === 'agy') {
+  } else if (agent === 'claude') {
     if (safeM) out.push('--model', safeM);
     if (safeE) out.push('--effort', safeE);
+  } else if (agent === 'agy') {
+    const agyME = resolveAgyModelEffort(safeM, safeE);
+    if (agyME.model) out.push('--model', agyME.model);
+    if (agyME.effort) out.push('--effort', agyME.effort);
   }
   return out;
 }
