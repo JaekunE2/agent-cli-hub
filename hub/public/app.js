@@ -432,20 +432,23 @@ function termStatusLabel(t) {
   return st === 'exited' ? `종료됨 (${t.exited})` : st === 'idle' ? '대기' : '실행 중';
 }
 const STATE_RANK = { busy: 0, idle: 1, exited: 2 };
+const SIDE_LIVE_RANK = { busy: 0, idle: 0, exited: 2 };
 function termActivityTs(t, recentMap = null) {
   if (!t) return 0;
+  const own = Number(t.lastInputAt) || Number(t.startedAt) || 0;
+  if (own) return own;
   const r = t.sessionId ? (recentMap ? recentMap.get(t.sessionId) : (state.recent || []).find((x) => x.sessionId === t.sessionId)) : null;
-  return Math.max(Number(t.lastOutputAt) || 0, Number(t.startedAt) || 0, Number(r?.mtime) || 0);
+  return Number(r?.lastUserAt) || 0;
 }
 function consoleActivityTs(c) {
   const cs = sessionOfConsole(c);
-  return Math.max(Number(cs?.mtime) || 0, Number(c?.mtime) || 0, Number(c?.pid) || 0);
+  return Number(c?.lastInputAt) || Number(cs?.lastUserAt) || Number(cs?.mtime) || Number(c?.mtime) || Number(c?.pid) || 0;
 }
 function entryActivityTs(entry, recentMap = null) {
   if (!entry) return 0;
   if (entry.kind === 'term') return termActivityTs(entry.item, recentMap);
   if (entry.kind === 'console') return consoleActivityTs(entry.item);
-  return Number(entry.item?.mtime) || 0;
+  return Number(entry.item?.lastUserAt) || Number(entry.item?.mtime) || 0;
 }
 function compareUnifiedEntries(a, b, recentMap = null) {
   const rd = (a.rank ?? 9) - (b.rank ?? 9);
@@ -457,7 +460,7 @@ function compareUnifiedEntries(a, b, recentMap = null) {
 function sortTermsByState(list) {
   const recentMap = new Map((state.recent || []).map((r) => [r.sessionId, r]));
   return [...list].sort((a, b) => {
-    const rd = (STATE_RANK[termStateOf(a)] ?? 9) - (STATE_RANK[termStateOf(b)] ?? 9);
+    const rd = (SIDE_LIVE_RANK[termStateOf(a)] ?? 9) - (SIDE_LIVE_RANK[termStateOf(b)] ?? 9);
     if (rd !== 0) return rd;
     const td = termActivityTs(b, recentMap) - termActivityTs(a, recentMap);
     return td !== 0 ? td : (Number(b.id) || 0) - (Number(a.id) || 0);
@@ -465,7 +468,7 @@ function sortTermsByState(list) {
 }
 function sortConsolesByState(list) {
   return [...list].sort((a, b) => {
-    const rd = (STATE_RANK[consoleStateOf(a)] ?? 9) - (STATE_RANK[consoleStateOf(b)] ?? 9);
+    const rd = (SIDE_LIVE_RANK[consoleStateOf(a)] ?? 9) - (SIDE_LIVE_RANK[consoleStateOf(b)] ?? 9);
     if (rd !== 0) return rd;
     return consoleActivityTs(b) - consoleActivityTs(a);
   });
@@ -823,8 +826,8 @@ function renderSide() {
   });
   const recentMap = new Map((state.recent || []).map((r) => [r.sessionId, r]));
   const combinedLive = [
-    ...shownTerms.map((t) => ({ kind: 'term', rank: STATE_RANK[termStateOf(t)] ?? 9, item: t })),
-    ...shownCons.map((c) => ({ kind: 'console', rank: STATE_RANK[consoleStateOf(c)] ?? 9, item: c })),
+    ...shownTerms.map((t) => ({ kind: 'term', rank: SIDE_LIVE_RANK[termStateOf(t)] ?? 9, item: t })),
+    ...shownCons.map((c) => ({ kind: 'console', rank: SIDE_LIVE_RANK[consoleStateOf(c)] ?? 9, item: c })),
   ];
 
   const recSourceKey = (rf && rf !== 'live') ? rf : '';
@@ -839,7 +842,7 @@ function renderSide() {
     .slice(0, 18)
     .map((r) => {
       const lp = liveBySid.get(r.sessionId);
-      const rank = lp ? (lp.status === 'busy' ? 0 : 1) : 9;
+      const rank = lp ? 0 : 9;
       return { kind: 'recent', rank, item: r };
     });
 
@@ -1127,6 +1130,7 @@ function select(sel, tab, persistTab = false) {
     } catch {}
   }
   renderSide();
+  window.ACH_PREVIEW?.setActiveController(null);
   ({ home: viewHome, terms: viewTerms, projects: window.viewProjects || (() => { setBar('<h2>Project</h2>'); $('#view').textContent = 'Project 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }), console: viewConsole, recent: viewTranscript, term: viewTerm, search: viewSearch, usage: viewUsage, research: viewResearch, gpu: viewGpu, calendar: viewCalendar, vault: window.viewVault || (() => { setBar('<h2>공통 자원</h2>'); $('#view').textContent = '공통 자원 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }) })[sel.kind]?.();
 }
 
@@ -1692,12 +1696,25 @@ function dockTopSegHTML({ openSet, isContentTab = false, hasTerm = true, hasChat
     ${hasTerm ? `<button type="button" data-dock-toggle="term" aria-pressed="${on('term')}" class="${on('term') ? 'on' : ''}" title="${esc(termTitle)}">${ICO.terminal} 터미널</button>` : ''}
     ${hasChat ? `<button type="button" data-dock-toggle="chat" aria-pressed="${on('chat')}" class="${on('chat') ? 'on' : ''}" title="대화 기록 패널 열기/닫기">${ICO.chat} 대화 기록</button>` : ''}
     <button type="button" data-dock-toggle="windows" aria-pressed="${on('windows')}" class="${on('windows') ? 'on' : ''}" title="연결된 창 · 브라우저 미리보기 패널 열기/닫기">${ICO.monitor} 창 <span class="seg-cnt" data-dock-win-cnt>0</span></button>
+    <button type="button" data-dock-toggle="preview" aria-pressed="${on('preview')}" class="${on('preview') ? 'on' : ''}" title="HTML · Markdown · 플로우차트 미리보기 패널 열기/닫기">${ICO.eye} 미리보기</button>
   </div>
   <span class="bar-sep" aria-hidden="true"></span>
   <div class="seg bar-tab-seg" role="tablist" aria-label="전용 화면 탭">
     ${showFiles ? `<button type="button" role="tab" aria-selected="${curTab === 'files'}" data-tab="files" class="${curTab === 'files' ? 'on' : ''}" title="이 세션의 산출물 보기 및 지정">산출물</button>` : ''}
     <button type="button" role="tab" aria-selected="${curTab === 'floorplan'}" data-tab="floorplan" class="${curTab === 'floorplan' ? 'on' : ''}" title="코드 구조(Floorplan) 및 보안·품질 점검">${ICO.layers} 코드 구조</button>
   </div>`;
+}
+
+function mountPreviewDock(dock, getSid) {
+  if (!dock || !window.ACH_PREVIEW) return null;
+  const pvCtl = window.ACH_PREVIEW.mountPreviewPane({
+    rootEl: dock.getBody('preview'),
+    getSessionId: getSid,
+    onEnsureOpen: () => dock.togglePanel('preview', true),
+  });
+  window.ACH_PREVIEW.setActiveController(pvCtl);
+  if (dock.isOpen('preview')) pvCtl?.refresh(false);
+  return pvCtl;
 }
 const barSystemBtnHTML = () => `<button type="button" class="ghost icon-btn btn-sm" data-open-system="1" title="설정 (AI 사용량 · GPU · 공통 자원)" aria-label="설정">${ICO.settings}</button>`;
 document.addEventListener('click', (e) => {
@@ -1889,6 +1906,7 @@ function viewConsole() {
     });
   };
 
+  let pvCtl = null;
   dock = window.ACH_DOCK.createDockWorkspace({
     hostEl: $('#view'),
     mode: 'term',
@@ -1897,9 +1915,11 @@ function viewConsole() {
       term: { title: '터미널', icon: ICO.terminal },
       ...(sid ? { chat: { title: '대화 기록', icon: ICO.chat, onShow: ensureChatMounted } } : {}),
       windows: { title: '창', icon: ICO.monitor, onShow: () => winCtl?.renderWindows() },
+      preview: { title: '미리보기', icon: ICO.eye, onShow: () => pvCtl?.refresh(false) },
     },
     onOpenChange: (openList) => syncBarDockButtons(openList),
   });
+  pvCtl = mountPreviewDock(dock, () => sid || '');
 
   mountConsoleScreen(dock.getBody('term'), { pid, gen, s });
   if (sid && dock.isOpen('chat')) ensureChatMounted();
@@ -2046,6 +2066,7 @@ function viewTranscript() {
     else if (linkedConPid) mountConsoleScreen(body, { pid: linkedConPid, gen, s: live });
   };
 
+  let pvCtl = null;
   dock = window.ACH_DOCK.createDockWorkspace({
     hostEl: $('#view'),
     mode: 'recent',
@@ -2054,9 +2075,11 @@ function viewTranscript() {
       ...(hasLivePane ? { term: { title: '터미널', icon: ICO.terminal, onShow: ensureTermMounted } } : {}),
       chat: { title: '대화 기록', icon: ICO.chat },
       windows: { title: '창', icon: ICO.monitor, onShow: () => winCtl?.renderWindows() },
+      preview: { title: '미리보기', icon: ICO.eye, onShow: () => pvCtl?.refresh(false) },
     },
     onOpenChange: (openList) => syncBarDockButtons(openList),
   });
+  pvCtl = mountPreviewDock(dock, () => sid);
 
   const chatBody = dock.getBody('chat');
   chatBody.innerHTML = `<div class="chat-shell">
@@ -2901,6 +2924,8 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
       });
       flushTools();
       msgsHost.innerHTML = lineageBanner + (b > 0 ? `<div class="empty" style="margin-bottom:6px">… 이전 메시지 ${b}개 생략</div>` : '') + (parts.join('') || '<div class="empty">메시지 없음</div>') + more;
+      window.ACH_PREVIEW?.hydrateMermaid(msgsHost);
+      window.ACH_PREVIEW?.scanChatBlocks(msgsHost);
       msgsHost.onclick = (e) => {
         const cb = e.target.closest('[data-copy-mi]');
         if (cb) { const m = d.messages[Number(cb.dataset.copyMi)]; if (m) copyText(m.text); return; }
@@ -3363,6 +3388,7 @@ function viewTerm() {
     });
   };
 
+  let pvCtl = null;
   dock = window.ACH_DOCK.createDockWorkspace({
     hostEl: $('#view'),
     mode: 'term',
@@ -3371,9 +3397,11 @@ function viewTerm() {
       term: { title: '터미널', icon: ICO.terminal, onShow: () => setTimeout(() => termCtl?.resize(), 30) },
       chat: { title: '대화 기록', icon: ICO.chat, onShow: ensureChatMounted },
       windows: { title: '창', icon: ICO.monitor, onShow: () => winCtl?.renderWindows() },
+      preview: { title: '미리보기', icon: ICO.eye, onShow: () => pvCtl?.refresh(false) },
     },
     onOpenChange: (openList) => syncBarDockButtons(openList),
   });
+  pvCtl = mountPreviewDock(dock, () => artSid || sid || '');
 
   if (dock.isOpen('chat')) ensureChatMounted();
   termCtl = mountManagedTermScreen(dock.getBody('term'), {
@@ -4174,6 +4202,7 @@ const ART_ICON = {
   file: '<span class="ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></span>',
 };
 const artUrl = (sid, p) => `/api/artifact-file?session=${encodeURIComponent(sid)}&path=${encodeURIComponent(p)}&t=${encodeURIComponent(TOKEN)}`;
+window.artUrl = artUrl;
 const rRawUrl = (slug, rel) => `/api/research/raw?slug=${encodeURIComponent(slug)}&path=${encodeURIComponent(rel)}&t=${encodeURIComponent(TOKEN)}`;
 const fmtSize = (n) => (n > 1e9 ? `${(n / 1e9).toFixed(1)}GB` : n > 1e6 ? `${(n / 1e6).toFixed(1)}MB` : `${Math.max(1, Math.round(n / 1024))}KB`);
 // wrap Windows / git-bash paths with a viewable extension (already HTML-escaped text) as compact clickable file chips
@@ -4200,7 +4229,12 @@ document.addEventListener('click', async (e) => {
   const want = a.dataset.apath.replace(/&amp;/g, '&').replace(/^\/([a-z])\//i, (x, d) => `${d.toUpperCase()}:\\`).replace(/\//g, '\\').toLowerCase();
   const { items = [] } = await api(`/api/artifacts?session=${encodeURIComponent(sid)}`);
   const it = items.find((x) => x.path.toLowerCase() === want || x.path.toLowerCase().endsWith(want));
-  if (it) return openArtifact(sid, it);
+  if (it) {
+    if (window.ACH_PREVIEW?.hasActive() && ['html', 'markdown', 'image', 'pdf', 'text', 'video', 'audio'].includes(it.kind)) {
+      return window.ACH_PREVIEW.openArtifact(sid, it);
+    }
+    return openArtifact(sid, it);
+  }
   toast('산출물로 인식되지 않은 파일입니다 (파일이 없거나 숨김 처리됨)');
 }, true);
 function currentSessionId() {
@@ -4393,17 +4427,46 @@ async function openArtifact(sid, it, url = artUrl(sid, it.path)) {
   else if (it.kind === 'markdown' || it.kind === 'text') {
     if (it.size > 3e6) { body.innerHTML = '<div class="empty">파일이 커서 미리보기를 생략합니다 — 새 탭이나 다운로드로 여세요.</div>'; return; }
     const txt = await (await fetch(url)).text();
-    if (it.kind === 'markdown') body.innerHTML = md(txt);
+    if (it.kind === 'markdown') {
+      body.innerHTML = md(txt);
+      window.ACH_PREVIEW?.hydrateMermaid(body);
+    }
     else { let t = txt; if (it.ext === 'json') { try { t = JSON.stringify(JSON.parse(txt), null, 2); } catch {} } body.innerHTML = `<pre class="mdpre">${esc(t)}</pre>`; }
   } else body.innerHTML = `<div class="empty">이 형식(${esc(it.ext)})은 브라우저에서 미리 볼 수 없습니다. 다운로드해서 여세요.</div>`;
 }
 
 // ---------- account switch drawer (accessible via session/terminal ⋯ menu) ----------
 document.addEventListener('click', (e) => {
+  const mt = e.target.closest('[data-mermaid-toggle]');
+  if (mt) {
+    e.stopPropagation();
+    const card = mt.closest('.mermaid-card');
+    const host = card?.querySelector('.mermaid-host');
+    const srcEl = card?.querySelector('.mermaid-src');
+    if (host && srcEl) {
+      const showSrc = srcEl.hidden;
+      srcEl.hidden = !showSrc;
+      host.hidden = showSrc;
+      mt.textContent = showSrc ? '다이어그램 보기' : '코드 보기';
+    }
+    return;
+  }
+  const pc = e.target.closest('[data-preview-code]');
+  if (pc) {
+    e.stopPropagation();
+    const blk = pc.closest('.codeblk');
+    const host = blk?.querySelector('.mermaid-host');
+    const pre = blk?.querySelector('.mermaid-src') || blk?.querySelector('.mdpre');
+    const code = host ? (host.dataset.mermaidSrc || '') : (pre?.textContent || '');
+    const lang = pc.dataset.previewCode || 'html';
+    if (code) window.ACH_PREVIEW?.openCode({ lang, code });
+    return;
+  }
   const cb = e.target.closest('[data-copy-code]');
   if (cb) {
     e.stopPropagation();
-    const pre = cb.closest('.codeblk')?.querySelector('.mdpre');
+    const blk = cb.closest('.codeblk');
+    const pre = blk?.querySelector('.mermaid-src') || blk?.querySelector('.mdpre');
     if (pre) copyText(pre.textContent);
   }
 }, true);
@@ -4821,9 +4884,18 @@ function md(src) {
     if (/^```/.test(l)) {
       flushPara(); closeList();
       const lang = l.slice(3).trim();
+      const langL = lang.toLowerCase();
       const buf = []; i++;
       while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]);
-      out.push(`<div class="codeblk"><div class="codeblk-hd"><span>${esc(lang || 'code')}</span><button type="button" data-copy-code="1">${ICO.copy} 복사</button></div><pre class="mdpre">${esc(buf.join('\n'))}</pre></div>`); i++; continue;
+      const rawCode = buf.join('\n');
+      if (langL === 'mermaid' || langL === 'mmd') {
+        out.push(`<div class="codeblk mermaid-card"><div class="codeblk-hd"><span>mermaid · flowchart</span><span class="row" style="gap:4px"><button type="button" data-mermaid-toggle="1">코드 보기</button><button type="button" data-preview-code="mermaid">미리보기</button><button type="button" data-copy-code="1">${ICO.copy} 복사</button></span></div><div class="mermaid-host" data-mermaid-src="${esc(rawCode)}"><pre class="mdpre">${esc(rawCode)}</pre></div><pre class="mdpre mermaid-src" hidden>${esc(rawCode)}</pre></div>`);
+      } else {
+        const canPv = ['html', 'htm', 'svg', 'markdown', 'md'].includes(langL);
+        const pvBtn = canPv ? `<button type="button" data-preview-code="${esc(langL)}">▶ 미리보기</button>` : '';
+        out.push(`<div class="codeblk"><div class="codeblk-hd"><span>${esc(lang || 'code')}</span><span class="row" style="gap:4px">${pvBtn}<button type="button" data-copy-code="1">${ICO.copy} 복사</button></span></div><pre class="mdpre">${esc(rawCode)}</pre></div>`);
+      }
+      i++; continue;
     }
     if (/^\s*\|.*\|\s*$/.test(l) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
       flushPara(); closeList();

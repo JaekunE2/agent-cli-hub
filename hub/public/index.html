@@ -543,6 +543,22 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height:
 .codeblk-hd { display: flex; align-items: center; justify-content: space-between; padding: 4px 10px; background: color-mix(in srgb, var(--panel2) 85%, #000); border-bottom: 1px solid var(--line); font-size: 11.5px; color: var(--muted); font-family: "Cascadia Mono", Consolas, monospace; }
 .codeblk-hd button { min-height: 22px; height: 22px; padding: 0 8px; font-size: 11px; border-radius: var(--radius-sm); }
 .codeblk .mdpre { margin: 0; border-radius: 0; border: 0; }
+.mermaid-card { background: var(--panel); }
+.mermaid-host { padding: 12px; overflow: auto; display: flex; justify-content: center; background: var(--bg); }
+.mermaid-host svg { max-width: 100%; height: auto; }
+.mermaid-host .mdpre { width: 100%; border-radius: var(--radius-sm); }
+.mermaid-src { border-top: 1px solid var(--line) !important; }
+.pv-shell { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; background: var(--bg); }
+.pv-bar { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--panel); flex: none; min-width: 0; flex-wrap: wrap; }
+.pv-bar [data-pv-pick] { flex: 1 1 140px; min-width: 0; max-width: 100%; }
+.pv-body { flex: 1; min-height: 0; min-width: 0; overflow: auto; display: flex; flex-direction: column; }
+.pv-frame { width: 100%; height: 100%; flex: 1; min-height: 240px; border: 0; background: #fff; }
+.pv-doc { padding: 18px 22px 36px; overflow: auto; flex: 1; min-width: 0; background: var(--panel); }
+.pv-code { margin: 0; border-radius: 0; flex: 1; min-height: 100%; border: 0; }
+.pv-mermaid { padding: 18px; overflow: auto; flex: 1; display: flex; align-items: flex-start; justify-content: center; background: var(--bg); }
+.pv-mermaid .mermaid-host { width: 100%; border-radius: var(--radius-md); border: 1px solid var(--line); background: var(--panel); }
+.pv-center { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 14px; overflow: auto; }
+.pv-svg-img { max-width: 100%; max-height: 100%; object-fit: contain; background: #fff; border-radius: var(--radius-sm); padding: 8px; }
 .mdtw { overflow-x: auto; margin: 6px 0; }
 .mdt { border-collapse: collapse; font-size: 13px; } .mdt th, .mdt td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; vertical-align: top; } .mdt th { background: var(--panel2); }
 .rwrap { padding: 16px 20px 36px; max-width: var(--page-max); margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
@@ -872,6 +888,7 @@ body.remote .desk { display: none; }
 <script src="/addon-fit.js"></script>
 <script src="/ui.js"></script>
 <script src="/dock.js"></script>
+<script src="/preview.js"></script>
 <script src="/calendar.js"></script>
 <script src="/vault.js"></script>
 <script src="/project-forms.js"></script>

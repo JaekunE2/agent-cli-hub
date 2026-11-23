@@ -330,6 +330,7 @@ async function buildOverview() {
   const consoles = (cons.consoles || []).map((c) => ({
     ...c, claude: c.pids.map((x) => byPid.get(x)).filter(Boolean).map((s) => s.sessionId),
     managed: [...terms.values()].some((t) => c.pids.includes(t.pid)),
+    lastInputAt: Math.max(...c.pids.map((x) => consoleInputAt.get(x) || 0), 0),
   }));
   // name dashboard terminals after the session running in them (Claude, Codex, or Antigravity)
   conversationBranches.resolveLinks(terms, termSessionId);
@@ -606,9 +607,18 @@ function ptyPost(id, p, b) {
   ptyChains.set(id, next);
   return next;
 }
+const consoleInputAt = new Map();
+function touchUserInput(t) {
+  if (!t) return;
+  const now = Date.now();
+  t.lastInputAt = now;
+  t.meta = { ...(t.meta || {}), lastInputAt: now };
+  ptyPost(t.id, '/meta', { id: t.id, meta: { lastInputAt: now } });
+}
 function makeMirror({ id, meta = {}, cols = 120, rows = 32, exited = null }) {
   const t = { id, title: meta.title, cwd: meta.cwd, cmd: meta.cmd, args: meta.args || [], account: meta.account || null, research: meta.research || null,
-    meta, buf: '', clients: new Set(), exited, pid: 0, cols, rows, liveTitle: '' };
+    meta, buf: '', clients: new Set(), exited, pid: 0, cols, rows, liveTitle: '',
+    lastInputAt: Number(meta.lastInputAt) || Number(meta.spawnedAt) || 0 };
   // Headless mirror of the screen so agents/CLI can read rendered text, not raw ANSI.
   t.vt = new HeadlessTerminal({ cols, rows, scrollback: 3000, allowProposedApi: true });
   // claude sets the window title (OSC 0/2) to its session name, e.g. "✳ task name"
@@ -667,7 +677,7 @@ function createTerm({ cwd, cmd, args = [], title, env = {}, account = null, mode
     args = [...args, '--log-file', path.join(dir, crypto.randomUUID() + '.log')];
   }
   const meta = {
-    title: title || [cmd, ...args].join(' '), cwd, cmd, args, account, research, envFlags, spawnedAt: Date.now(),
+    title: title || [cmd, ...args].join(' '), cwd, cmd, args, account, research, envFlags, spawnedAt: Date.now(), lastInputAt: Date.now(),
     ...(me.model ? { model: me.model } : {}),
     ...(me.effort ? { effort: me.effort } : {}),
     ...(operator ? { operator: true } : {}),
@@ -707,6 +717,7 @@ async function connectPtyHost() {
     if (terms.has(x.id)) continue;
     const t = makeMirror(x);
     t.startedAt = x.startedAt || null; // pty host spawn time → matches the root process start
+    if (!t.lastInputAt) t.lastInputAt = t.startedAt || Date.now();
     const { buf = '' } = await ptyCall(`/buf?id=${encodeURIComponent(x.id)}`).catch(() => ({}));
     if (buf) { t.buf = buf.slice(-400_000); t.vt.write(t.buf); }
   }
@@ -1822,6 +1833,7 @@ const termInfo = (t) => ({ id: t.id, title: t.title, liveTitle: t.liveTitle, acc
   model: t.meta?.model || '', effort: t.meta?.effort || '',
   ...(isCodexTerm(t) ? { status: codexStatus(t) } : isAgyTerm(t) ? { status: agyStatus(t) } : /claude(\.exe)?$/i.test(t.meta?.cmd || '') ? { status: claudeStatus(t) } : {}), ...(isAgyTerm(t) ? { sessionId: agySessionOf(t) } : {}),
   lastOutputAt: t.lastOutputAt || 0,
+  lastInputAt: t.lastInputAt || t.meta?.lastInputAt || t.startedAt || t.meta?.spawnedAt || 0,
   startedAt: t.startedAt || 0,
   projectTask: t.meta?.projectTask, cwd: t.cwd, pid: t.pid, exited: t.exited, cols: t.cols, rows: t.rows });
 
@@ -1830,6 +1842,7 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.
 const STATIC = {
   '/ui.js': 'public/ui.js',
   '/dock.js': 'public/dock.js',
+  '/preview.js': 'public/preview.js',
   '/vault.js': 'public/vault.js',
   '/projects.js': 'public/projects.js',
   '/project-forms.js': 'public/project-forms.js',
@@ -1843,6 +1856,7 @@ const STATIC = {
   '/xterm.js': 'node_modules/@xterm/xterm/lib/xterm.js',
   '/xterm.css': 'node_modules/@xterm/xterm/css/xterm.css',
   '/addon-fit.js': 'node_modules/@xterm/addon-fit/lib/addon-fit.js',
+  '/mermaid.js': 'node_modules/mermaid/dist/mermaid.min.js',
   '/icon-claude.png': 'public/icon-claude.png',
   '/icon-openai.png': 'public/icon-openai.png',
 };
@@ -2569,6 +2583,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/console/send' && req.method === 'POST') {
       const b = await body(req);
       const pid = Number(b.pid);
+      if (b.submit || b.immediate || b.text) consoleInputAt.set(pid, Date.now());
       if (b.immediate) {
         const snap = await helperCall({ op: 'read', pid, lines: 30 }).catch(() => null);
         const rawScr = String((snap?.lines || []).join('\n')).replace(/\s+/g, ' ');
@@ -2631,6 +2646,7 @@ const server = http.createServer(async (req, res) => {
       const b = await body(req);
       const t = terms.get(String(b.id));
       if (!t || t.exited !== null) return send(res, 404, { ok: false, error: 'no such running terminal' });
+      if (b.submit || b.immediate || b.text) touchUserInput(t);
       if (b.immediate) {
         const cli = isCodexTerm(t) ? 'codex' : isAgyTerm(t) ? 'agy' : 'claude';
         const outcome = await dispatchImmediatePrompt({
@@ -3094,7 +3110,10 @@ server.on('upgrade', (req, sock, head) => {
     ws.on('message', (m) => {
       let msg; try { msg = JSON.parse(m); } catch { return; }
       if (t.exited !== null) return;
-      if (msg.type === 'input') t.proc.write(msg.data);
+      if (msg.type === 'input') {
+        t.proc.write(msg.data);
+        if (/[\r\n]/.test(String(msg.data || ''))) touchUserInput(t);
+      }
       if (msg.type === 'resize' && msg.cols > 0 && msg.rows > 0 && resizeTerm(t, msg.cols, msg.rows)) {
         // keep read-only overview mirrors on the same grid as the pty
         for (const c of t.clients) if (c !== ws) c.send(JSON.stringify({ type: 'resize', cols: t.cols, rows: t.rows }));

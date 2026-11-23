@@ -222,9 +222,18 @@ class SearchIndex {
       }
       return stMs;
     };
+    const bestUserAt = (d) => {
+      for (let i = d.msgs.length - 1; i >= 0; i--) {
+        if (d.msgs[i]?.role !== 'user') continue;
+        const ts = Date.parse(d.msgs[i]?.ts || '');
+        if (Number.isFinite(ts)) return ts;
+      }
+      return 0;
+    };
     if (doc && doc.file === file && doc.offset === st.size) {
       const m = bestMtime(doc, st.mtimeMs);
       if (m > doc.mtime) { doc.mtime = m; this.dirty = true; }
+      if (doc.lastUserAt === undefined) { doc.lastUserAt = bestUserAt(doc); this.dirty = true; }
       return;
     }
     if (!doc || doc.file !== file || st.size < doc.offset) {
@@ -329,6 +338,7 @@ class SearchIndex {
       stream.on('error', resolve);
     });
     doc.mtime = bestMtime(doc, st.mtimeMs);
+    doc.lastUserAt = bestUserAt(doc);
     this.dirty = true;
   }
 
@@ -353,8 +363,8 @@ class SearchIndex {
   recent(limit = 40, includeAuto = false, agent = '', hidden = new Set()) {
     return [...this.docs.values()]
       .filter((d) => !hidden.has(d.id) && d.msgs.length && (includeAuto || !d.auto) && (!agent || (d.agent || 'claude') === agent))
-      .sort((a, b) => b.mtime - a.mtime).slice(0, limit)
-      .map((d) => ({ sessionId: d.id, agent: d.agent || 'claude', cwd: d.cwd, title: d.title, firstPrompt: d.firstPrompt, mtime: d.mtime, auto: !!d.auto }));
+      .sort((a, b) => (b.lastUserAt || b.mtime) - (a.lastUserAt || a.mtime)).slice(0, limit)
+      .map((d) => ({ sessionId: d.id, agent: d.agent || 'claude', cwd: d.cwd, title: d.title, firstPrompt: d.firstPrompt, mtime: d.mtime, lastUserAt: d.lastUserAt || 0, auto: !!d.auto }));
   }
 
   search(q, { role = 'all', limitSessions = 60, perSession = 6, includeAuto = false, cwd = '', agent = '', hidden = new Set() } = {}) {

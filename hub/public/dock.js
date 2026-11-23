@@ -5,7 +5,7 @@
   const SIZES_KEY = 'ach.dockSizes.v1';
   const OPEN_TERM_KEY = 'ach.dockOpen.term.v1';
   const OPEN_RECENT_KEY = 'ach.dockOpen.recent.v1';
-  const ALL_PANES = ['term', 'chat', 'windows'];
+  const ALL_PANES = ['term', 'chat', 'windows', 'preview'];
 
   function loadJson(key, fallback) {
     try {
@@ -38,6 +38,7 @@
       term: Number(raw?.term) > 0.2 ? Number(raw.term) : 1.15,
       chat: Number(raw?.chat) > 0.2 ? Number(raw.chat) : 1.0,
       windows: Number(raw?.windows) > 0.2 ? Number(raw.windows) : 0.9,
+      preview: Number(raw?.preview) > 0.2 ? Number(raw.preview) : 1.05,
     };
   }
   function saveDockSizes(sizes) {
