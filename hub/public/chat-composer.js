@@ -42,11 +42,6 @@ function mountChatWorkspace(body, { sid, gen, at = -1, terms = [], composerOpts 
   mountChatComposer({ barHost: compEl, chatHost: scrollEl, sid, ...composerOpts });
   return { scrollEl, compEl };
 }
-const barSystemBtnHTML = () => `<button type="button" class="ghost icon-btn btn-sm" data-open-system="1" title="설정 (AI 사용량 · GPU · 공통 자원)" aria-label="설정">${ICO.settings}</button>`;
-document.addEventListener('click', (e) => {
-  if (e.target.closest('#bar [data-open-system]')) select({ kind: ['usage', 'gpu', 'vault'].includes(state.sysTab) ? state.sysTab : 'usage' });
-});
-
 function syncBarDockButtons(openList) {
   const set = new Set(openList || []);
   $('#bar')?.querySelectorAll('[data-dock-toggle]').forEach((b) => {
@@ -127,7 +122,7 @@ function viewTranscript() {
       termTitle: hasLivePane ? '연결된 터미널 패널 열기/닫기' : '이 세션을 터미널로 열어 함께 보기',
     })}
     ${!live ? `<button class="primary btn-sm" id="btnResume">${ICO.play} 대시보드에서 이어하기</button>` : isDesktopSession(live) ? `<button class="primary btn-sm" id="btnResume" data-fork="1" title="데스크톱 앱 대화를 여기까지 복제한 새 세션으로 이어갑니다">${ICO.play} 대시보드에서 이어하기 (복제)</button>` : ''}
-    <button id="btnRecMore" class="ghost icon-btn btn-sm" aria-label="세션 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>${barSystemBtnHTML()}`);
+    <button id="btnRecMore" class="ghost icon-btn btn-sm" aria-label="세션 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
 
   let dock = null;
   $('#bar').onclick = async (e) => {
@@ -163,11 +158,20 @@ function viewTranscript() {
     const more = e.target.closest('#btnRecMore');
     if (more) {
       e.stopPropagation();
+      const cwdPath = r?.cwd || live?.cwd || '';
       return openMoreMenu(more, [
-        { label: '현재 시점에서 분기 만들기', icon: ICO.branch, onClick: () => openBranchDialog({ sid, atIndex: null, agent: r?.agent || 'claude', cwd: r?.cwd || live?.cwd }) },
-        { label: '다른 계정 · 에이전트로 이어하기', icon: ICO.swap, onClick: () => openSwitch(sid) },
+        { label: '현재 시점에서 분기 만들기', icon: ICO.branch, onClick: () => openBranchDialog({ sid, atIndex: null, agent: r?.agent || 'claude', cwd: cwdPath }) },
+        hasCwd && !IS_REMOTE ? {
+          label: '탐색기에서 폴더 열기',
+          icon: ICO.folder,
+          onClick: async () => {
+            const res = await api('/api/fs/open-dir', { method: 'POST', body: { path: cwdPath } }).catch((er) => ({ error: er.message }));
+            if (res?.error) return toast(res.error, 4000, 'danger');
+            toast('탐색기에서 폴더를 열었습니다 (PC)');
+          },
+        } : null,
+        hasCwd && !IS_REMOTE ? { label: 'IDE에서 열기', icon: ICO.external, onClick: () => openExternal(true) } : null,
         { label: '외부 창으로 열기', icon: ICO.external, onClick: () => openExternal(false) },
-        hasCwd && !IS_REMOTE ? { label: 'IDE에서 열기', icon: ICO.folder, onClick: () => openExternal(true) } : null,
         { label: `세션 ID 복사 (${sid.slice(0, 8)})`, icon: ICO.copy, onClick: () => copyText(sid) },
         { divider: true },
         { label: '기록 삭제', icon: ICO.trash, tone: 'danger', onClick: () => hideRecentRecord(sid, more) },

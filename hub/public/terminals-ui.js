@@ -170,7 +170,7 @@ function viewConsole() {
 
   setBar(`<button id="btnBackTerms" class="ghost btn-sm">${ICO.chevLeft} 터미널</button><h2><span>${esc(c ? consoleLabel(c) : 'pid ' + state.sel.id)}</span></h2>
     ${dockTopSegHTML({ openSet: new Set(initialPanels), isContentTab, hasTerm: true, hasChat: !!sid, showFiles: !!sid, curTab: state.tab })}
-    <button id="btnConMore" class="ghost icon-btn btn-sm desk" aria-label="콘솔 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>${barSystemBtnHTML()}`);
+    <button id="btnConMore" class="ghost icon-btn btn-sm desk" aria-label="콘솔 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
 
   let dock = null;
   $('#bar').onclick = (e) => {
@@ -505,7 +505,7 @@ function viewTerm() {
 
   setBar(`${state.sel.project || pj ? `<button id="btnBackProject" class="ghost btn-sm" data-proj-id="${esc(state.sel.project || pj.id)}">${ICO.chevLeft} ${esc(pj?.name || 'Project')}</button>` : `<button id="btnBackTerms" class="ghost btn-sm">${ICO.chevLeft} 터미널</button>`}<h2>${ag ? agentIcon(ag) : ''}<span>${esc(t ? termLabel(t) : '터미널')}</span></h2><span id="termLiveBadge" class="term-live-pill ${pillCls}">${pillText}</span>${branchTagHTML(t?.branch)}${t?.account ? `<span class="badge c">${esc(t.account.label.replace(/@.*/, ''))}</span>` : ''}${(t?.model || t?.effort) ? `<span class="badge" title="선택된 모델 · 추론 성능">${esc([t.model, t.effort].filter(Boolean).join(' · '))}</span>` : ''}
     ${dockTopSegHTML({ openSet: new Set(initialPanels), isContentTab, hasTerm: true, hasChat: true, showFiles: true, curTab: state.tab })}
-    <button id="btnTermMore" class="ghost icon-btn btn-sm" aria-label="터미널 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>${barSystemBtnHTML()}`);
+    <button id="btnTermMore" class="ghost icon-btn btn-sm" aria-label="터미널 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
 
   let dock = null;
   $('#bar').onclick = async (e) => {
@@ -530,9 +530,17 @@ function viewTerm() {
     if (more) {
       e.stopPropagation();
       return openMoreMenu(more, [
-        t?.cwd ? { label: `작업 폴더 복사 (${base(t.cwd) || t.cwd})`, icon: ICO.folder, onClick: () => copyText(t.cwd) } : null,
-        (sid || t?.claude || t?.codex || t?.agy) ? { label: '다른 계정 · 에이전트로 이어하기', icon: ICO.swap, onClick: () => openSwitch(sid || '', t?.id || '') } : null,
-        t?.agy ? { label: 'Antigravity /usage 실행', icon: ICO.chart, onClick: () => openAgyUsage(null, true) } : null,
+        t?.cwd ? (!IS_REMOTE
+          ? {
+              label: `탐색기에서 폴더 열기 (${base(t.cwd) || t.cwd})`,
+              icon: ICO.folder,
+              onClick: async () => {
+                const r = await api('/api/fs/open-dir', { method: 'POST', body: { path: t.cwd } }).catch((er) => ({ error: er.message }));
+                if (r?.error) return toast(r.error, 4000, 'danger');
+                toast('탐색기에서 폴더를 열었습니다 (PC)');
+              },
+            }
+          : { label: `작업 폴더 복사 (${base(t.cwd) || t.cwd})`, icon: ICO.folder, onClick: () => copyText(t.cwd) }) : null,
         { divider: true },
         {
           label: '터미널 종료',

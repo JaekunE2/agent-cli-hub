@@ -331,8 +331,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
     if ((!curSid || tCur?.agy) && state.sel.kind === 'term') {
       const t = state.terms.find((x) => x.id === state.sel.id);
       const updated = resolveTermSessionId(t);
-      if (curSid !== updated) lastSig = '';
-      curSid = updated;
+      if (updated && curSid !== updated) { lastSig = ''; curSid = updated; }
     }
     const box = $('.chat', container);
     if (!box) return;
@@ -360,6 +359,11 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
     const childSig = (d.lineage?.children || []).map((c) => `${c.id || ''}:${c.childSessionId || ''}:${c.atIndex}`).join(',');
     const sig = `${d.size || 0}:${d.rev || 0}:${d.title || ''}:${parentSig}:${childSig}`;
     if (d.error && !d.messages?.length) {
+      if (lastMessages.length) {
+        const working = await updateLiveBubble(lastMessages);
+        if (!jump) chatPollTimer = setTimeout(tick, working ? 1100 : 3000);
+        return;
+      }
       const earlyParentTxt = d.lineage?.parent
         ? `원본: ${d.lineage.parent.parentTitle || d.lineage.parent.parentSessionId.slice(0, 8)} (#${d.lineage.parent.atIndex + 1}에서 분기)`
         : '';

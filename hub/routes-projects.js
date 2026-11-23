@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const { spawn } = require('child_process');
 
 const projectAgents = ['codex', 'claude', 'agy', 'cursor'];
 
@@ -261,6 +262,20 @@ function createProjectRoutes(hub) {
       const b = await body(req);
       const result = await pickDirectory({ initialPath: b.path, fallbackDir: path.resolve(baseDir, '..', '..'), title: '작업할 프로젝트 폴더를 선택하세요' });
       send(res, 200, { ok: result.ok, path: result.path || null, cancelled: !!result.cancelled, ...(result.error ? { error: result.error } : {}) });
+      return true;
+    }
+
+    if (p === '/api/fs/open-dir' && req.method === 'POST') {
+      const b = await body(req);
+      const raw = String(b.path || '').trim();
+      const target = raw && path.isAbsolute(raw) ? path.resolve(raw) : '';
+      if (!target || !fs.statSync(target, { throwIfNoEntry: false })?.isDirectory()) {
+        send(res, 404, { error: '열 폴더를 찾을 수 없습니다.' });
+        return true;
+      }
+      const opener = process.platform === 'win32' ? 'explorer.exe' : (process.platform === 'darwin' ? 'open' : 'xdg-open');
+      spawn(opener, [target], { detached: true, stdio: 'ignore' }).unref();
+      send(res, 200, { ok: true, path: target });
       return true;
     }
 

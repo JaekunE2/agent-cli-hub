@@ -91,9 +91,12 @@
     return 'CODE';
   }
 
-  async function renderItemBody(bodyEl, item, mode = 'preview', sid = '') {
+  async function renderItemBody(bodyEl, item, mode = 'preview', sid = '', preserveScroll = false) {
     if (!bodyEl || !item) return;
-    bodyEl.innerHTML = '';
+    const prevScroll = preserveScroll ? bodyEl.scrollTop : 0;
+    const restoreScroll = () => {
+      if (preserveScroll && prevScroll > 0) requestAnimationFrame(() => { if (bodyEl.isConnected) bodyEl.scrollTop = prevScroll; });
+    };
 
     if (item.source === 'code') {
       const text = String(item.code || '');
@@ -101,6 +104,7 @@
         let shown = text;
         if (item.kind === 'json') { try { shown = JSON.stringify(JSON.parse(text), null, 2); } catch {} }
         bodyEl.innerHTML = `<pre class="mdpre pv-code">${esc(shown)}</pre>`;
+        restoreScroll();
         return;
       }
       if (item.kind === 'html') {
@@ -108,7 +112,7 @@
         f.className = 'pv-frame';
         f.setAttribute('sandbox', 'allow-scripts allow-popups');
         f.srcdoc = text;
-        bodyEl.appendChild(f);
+        bodyEl.replaceChildren(f);
         return;
       }
       if (item.kind === 'svg') {
@@ -118,11 +122,13 @@
       if (item.kind === 'markdown') {
         bodyEl.innerHTML = `<div class="pv-doc">${typeof window.md === 'function' ? window.md(text) : `<pre class="mdpre">${esc(text)}</pre>`}</div>`;
         hydrateMermaid(bodyEl);
+        restoreScroll();
         return;
       }
       if (item.kind === 'mermaid') {
         bodyEl.innerHTML = `<div class="pv-mermaid"><div class="mermaid-host" data-mermaid-src="${esc(text)}"><pre class="mdpre">${esc(text)}</pre></div></div>`;
         hydrateMermaid(bodyEl);
+        restoreScroll();
         return;
       }
     }
@@ -145,7 +151,7 @@
     } else if (it.kind === 'pdf') {
       bodyEl.innerHTML = `<iframe class="pv-frame" src="${url}"></iframe>`;
     } else if (/^(pptx?|ppsx?|odp|docx?|odt|rtf)$/i.test(it.ext || '')) {
-      bodyEl.innerHTML = '<div class="empty" style="padding:18px">문서를 PDF로 변환하는 중…</div>';
+      if (!bodyEl.children.length) bodyEl.innerHTML = '<div class="empty" style="padding:18px">문서를 PDF로 변환하는 중…</div>';
       const pv = `${url}&preview=pdf`;
       const r = await fetch(pv, { method: 'HEAD' }).catch(() => null);
       if (!bodyEl.isConnected) return;
@@ -153,10 +159,13 @@
       bodyEl.innerHTML = `<iframe class="pv-frame" src="${pv}"></iframe>`;
     } else if (it.kind === 'markdown' || it.kind === 'text' || (it.kind === 'html' && mode === 'source')) {
       if (it.size > 3e6) { bodyEl.innerHTML = '<div class="empty" style="padding:18px">파일이 커서 미리보기를 생략합니다 — 새 탭으로 여세요.</div>'; return; }
-      bodyEl.innerHTML = '<div class="empty" style="padding:18px">불러오는 중…</div>';
+      const hadContent = !!bodyEl.querySelector('.pv-doc, .pv-code');
+      if (!hadContent) bodyEl.innerHTML = '<div class="empty" style="padding:18px">불러오는 중…</div>';
       const txt = await (await fetch(url)).text();
       if (!bodyEl.isConnected) return;
+      if (hadContent && item._cachedText === txt && bodyEl.dataset.pvMode === mode) return;
       item._cachedText = txt;
+      bodyEl.dataset.pvMode = mode;
       if (it.kind === 'markdown' && mode !== 'source') {
         bodyEl.innerHTML = `<div class="pv-doc">${typeof window.md === 'function' ? window.md(txt) : `<pre class="mdpre">${esc(txt)}</pre>`}</div>`;
         hydrateMermaid(bodyEl);
@@ -165,6 +174,7 @@
         if (it.ext === 'json') { try { t = JSON.stringify(JSON.parse(txt), null, 2); } catch {} }
         bodyEl.innerHTML = `<pre class="mdpre pv-code">${esc(t)}</pre>`;
       }
+      restoreScroll();
     } else {
       bodyEl.innerHTML = `<div class="empty" style="padding:18px">이 형식(${esc(it.ext || it.kind)})은 인라인 미리보기를 지원하지 않습니다.</div>`;
     }
@@ -225,6 +235,8 @@
     let viewMode = 'preview';
     let lastLoadedSid = '';
     let isPaneVisible = false;
+    let lastPickSig = '';
+    let lastRenderedSig = '';
 
     const applySplitRatio = () => {
       if (!splitEl || !rootEl) return;
@@ -282,26 +294,37 @@
     const bodyEl = $('[data-pv-body]', rootEl);
 
     const setVisible = (show) => {
-      isPaneVisible = !!show;
-      rootEl.hidden = !show;
-      if (resizerEl) resizerEl.hidden = !show;
-      splitEl?.classList.toggle('has-pv', !!show);
-      if (show) applySplitRatio();
+      const next = !!show;
+      if (isPaneVisible === next) return;
+      isPaneVisible = next;
+      rootEl.hidden = !next;
+      if (resizerEl) resizerEl.hidden = !next;
+      splitEl?.classList.toggle('has-pv', next);
+      if (next) applySplitRatio();
     };
 
     const allItems = () => [...manualItems, ...chatItems, ...artItems];
     const findItem = (id) => allItems().find((x) => x.id === id) || allItems()[0] || null;
+    const itemRenderSig = (item, mode) => {
+      if (!item) return 'empty';
+      if (item.source === 'code') return `code|${item.id}|${mode}|${String(item.code || '').length}|${String(item.code || '')}`;
+      return `art|${item.id}|${mode}|${item.artifact?.mtime || 0}|${item.artifact?.size || 0}`;
+    };
 
-    const syncControlsAndPaint = () => {
+    const syncControlsAndPaint = (forcePaint = false) => {
       if (!rootEl.isConnected) return;
       const list = allItems();
       const cur = findItem(selectedId);
       if (cur && cur.id !== selectedId) selectedId = cur.id;
 
-      pickEl.innerHTML = list.length
-        ? list.map((it) => `<option value="${esc(it.id)}">[${esc(itemBadgeLabel(it))}] ${esc(it.title)}</option>`).join('')
-        : '<option value="">미리볼 항목 없음</option>';
-      if (cur) pickEl.value = cur.id;
+      const pickSig = list.map((it) => `${it.id}:${it.title}`).join('\n');
+      if (pickSig !== lastPickSig) {
+        lastPickSig = pickSig;
+        pickEl.innerHTML = list.length
+          ? list.map((it) => `<option value="${esc(it.id)}">[${esc(itemBadgeLabel(it))}] ${esc(it.title)}</option>`).join('')
+          : '<option value="">미리볼 항목 없음</option>';
+      }
+      if (cur && pickEl.value !== cur.id) pickEl.value = cur.id;
       pickEl.disabled = !list.length;
 
       const canSource = cur && (
@@ -313,10 +336,17 @@
       modesEl.querySelectorAll('[data-pv-mode]').forEach((b) => b.classList.toggle('on', b.dataset.pvMode === viewMode));
 
       if (!cur) {
-        bodyEl.innerHTML = `<div class="empty" style="padding:24px;text-align:center;line-height:1.6">대화 중 생성된 HTML · Markdown · Mermaid 플로우차트의 미리보기 버튼이나 파일 링크를 누르면 이 창에서 바로 확인할 수 있습니다.</div>`;
+        if (lastRenderedSig !== 'empty' || forcePaint) {
+          lastRenderedSig = 'empty';
+          bodyEl.innerHTML = `<div class="empty" style="padding:24px;text-align:center;line-height:1.6">대화 중 생성된 HTML · Markdown · Mermaid 플로우차트의 미리보기 버튼이나 파일 링크를 누르면 이 창에서 바로 확인할 수 있습니다.</div>`;
+        }
         return;
       }
-      renderItemBody(bodyEl, cur, viewMode, getSessionId?.() || '');
+      const nextSig = itemRenderSig(cur, viewMode);
+      if (!forcePaint && nextSig === lastRenderedSig) return;
+      const sameItem = lastRenderedSig.startsWith(`${cur.source === 'code' ? 'code' : 'art'}|${cur.id}|`);
+      lastRenderedSig = nextSig;
+      renderItemBody(bodyEl, cur, viewMode, getSessionId?.() || '', sameItem);
     };
 
     const loadArtifacts = async (force = false) => {
@@ -457,7 +487,7 @@
     };
     $('[data-pv-refresh]', rootEl).onclick = async () => {
       await loadArtifacts(true);
-      syncControlsAndPaint();
+      syncControlsAndPaint(true);
     };
     $('[data-pv-close]', rootEl).onclick = () => {
       setDismissed(getSessionId?.() || '', true);
