@@ -1683,14 +1683,21 @@ function paintScreen(el, r, maxLines) {
 
 function dockTopSegHTML({ openSet, isContentTab = false, hasTerm = true, hasChat = true, showFiles = true, curTab = 'dock', termTitle = '터미널 패널 열기/닫기' }) {
   const on = (id) => !isContentTab && openSet.has(id);
-  return `<div class="seg" role="tablist">
+  return `<div class="seg bar-dock-seg" role="group" aria-label="분할 패널 토글">
     ${hasTerm ? `<button type="button" data-dock-toggle="term" aria-pressed="${on('term')}" class="${on('term') ? 'on' : ''}" title="${esc(termTitle)}">${ICO.terminal} 터미널</button>` : ''}
     ${hasChat ? `<button type="button" data-dock-toggle="chat" aria-pressed="${on('chat')}" class="${on('chat') ? 'on' : ''}" title="대화 기록 패널 열기/닫기">${ICO.chat} 대화 기록</button>` : ''}
     <button type="button" data-dock-toggle="windows" aria-pressed="${on('windows')}" class="${on('windows') ? 'on' : ''}" title="연결된 창 · 브라우저 미리보기 패널 열기/닫기">${ICO.monitor} 창 <span class="seg-cnt" data-dock-win-cnt>0</span></button>
-    ${showFiles ? `<button type="button" data-tab="files" class="${curTab === 'files' ? 'on' : ''}" title="이 세션의 산출물 보기 및 지정">산출물</button>` : ''}
-    <button type="button" data-tab="floorplan" class="${curTab === 'floorplan' ? 'on' : ''}" title="코드 구조(Floorplan) 및 보안·품질 점검">${ICO.layers} 코드 구조</button>
+  </div>
+  <span class="bar-sep" aria-hidden="true"></span>
+  <div class="seg bar-tab-seg" role="tablist" aria-label="전용 화면 탭">
+    ${showFiles ? `<button type="button" role="tab" aria-selected="${curTab === 'files'}" data-tab="files" class="${curTab === 'files' ? 'on' : ''}" title="이 세션의 산출물 보기 및 지정">산출물</button>` : ''}
+    <button type="button" role="tab" aria-selected="${curTab === 'floorplan'}" data-tab="floorplan" class="${curTab === 'floorplan' ? 'on' : ''}" title="코드 구조(Floorplan) 및 보안·품질 점검">${ICO.layers} 코드 구조</button>
   </div>`;
 }
+const barSystemBtnHTML = () => `<button type="button" class="ghost icon-btn btn-sm" data-open-system="1" title="설정 (AI 사용량 · GPU · 공통 자원)" aria-label="설정">${ICO.settings}</button>`;
+document.addEventListener('click', (e) => {
+  if (e.target.closest('#bar [data-open-system]')) select({ kind: ['usage', 'gpu', 'vault'].includes(state.sysTab) ? state.sysTab : 'usage' });
+});
 
 function syncBarDockButtons(openList) {
   const set = new Set(openList || []);
@@ -1812,7 +1819,7 @@ function viewConsole() {
 
   setBar(`<button id="btnBackTerms" class="ghost btn-sm">${ICO.chevLeft} 터미널</button><h2><span>${esc(c ? consoleLabel(c) : 'pid ' + state.sel.id)}</span></h2>
     ${dockTopSegHTML({ openSet: new Set(initialPanels), isContentTab, hasTerm: true, hasChat: !!sid, showFiles: !!sid, curTab: state.tab })}
-    <button id="btnConMore" class="ghost icon-btn btn-sm desk" aria-label="콘솔 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
+    <button id="btnConMore" class="ghost icon-btn btn-sm desk" aria-label="콘솔 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>${barSystemBtnHTML()}`);
 
   let dock = null;
   $('#bar').onclick = (e) => {
@@ -1969,7 +1976,7 @@ function viewTranscript() {
       termTitle: hasLivePane ? '연결된 터미널 패널 열기/닫기' : '이 세션을 터미널로 열어 함께 보기',
     })}
     ${!live ? `<button class="primary btn-sm" id="btnResume">${ICO.play} 대시보드에서 이어하기</button>` : isDesktopSession(live) ? `<button class="primary btn-sm" id="btnResume" data-fork="1" title="데스크톱 앱 대화를 여기까지 복제한 새 세션으로 이어갑니다">${ICO.play} 대시보드에서 이어하기 (복제)</button>` : ''}
-    <button id="btnRecMore" class="ghost icon-btn btn-sm" aria-label="세션 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
+    <button id="btnRecMore" class="ghost icon-btn btn-sm" aria-label="세션 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>${barSystemBtnHTML()}`);
 
   let dock = null;
   $('#bar').onclick = async (e) => {
@@ -3259,7 +3266,7 @@ function viewTerm() {
 
   setBar(`${state.sel.project || pj ? `<button id="btnBackProject" class="ghost btn-sm" data-proj-id="${esc(state.sel.project || pj.id)}">${ICO.chevLeft} ${esc(pj?.name || 'Project')}</button>` : `<button id="btnBackTerms" class="ghost btn-sm">${ICO.chevLeft} 터미널</button>`}<h2>${ag ? agentIcon(ag) : ''}<span>${esc(t ? termLabel(t) : '터미널')}</span></h2><span id="termLiveBadge" class="term-live-pill ${pillCls}">${pillText}</span>${branchTagHTML(t?.branch)}${t?.account ? `<span class="badge c">${esc(t.account.label.replace(/@.*/, ''))}</span>` : ''}${(t?.model || t?.effort) ? `<span class="badge" title="선택된 모델 · 추론 성능">${esc([t.model, t.effort].filter(Boolean).join(' · '))}</span>` : ''}
     ${dockTopSegHTML({ openSet: new Set(initialPanels), isContentTab, hasTerm: true, hasChat: true, showFiles: true, curTab: state.tab })}
-    <button id="btnTermMore" class="ghost icon-btn btn-sm" aria-label="터미널 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
+    <button id="btnTermMore" class="ghost icon-btn btn-sm" aria-label="터미널 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>${barSystemBtnHTML()}`);
 
   let dock = null;
   $('#bar').onclick = async (e) => {
