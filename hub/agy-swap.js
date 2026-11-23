@@ -5,7 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFile } = require('child_process');
+const { execFile, spawnSync } = require('child_process');
 
 const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
 const round1 = (n) => Math.round(n * 10) / 10;
@@ -131,7 +131,28 @@ function createAgySwapService({ exeFn = () => findAgySwapExe(), envFn = () => pr
     return Number.isFinite(t) ? Math.max(0, Date.now() - t) : Infinity;
   }
 
+  let lastSyncedTokMtime = 0;
+  function syncActiveTokenIfNewer() {
+    if (runner) return;
+    const exe = exePath();
+    if (!exe) return;
+    try {
+      const tokFile = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'antigravity-oauth-token');
+      const vaultFile = path.join(os.homedir(), '.gemini', 'agy-swap', 'vault.json');
+      if (!fs.existsSync(tokFile)) return;
+      const tokMtime = fs.statSync(tokFile).mtimeMs;
+      const vaultMtime = fs.existsSync(vaultFile) ? fs.statSync(vaultFile).mtimeMs : 0;
+      if (tokMtime <= vaultMtime || tokMtime <= lastSyncedTokMtime) return;
+      lastSyncedTokMtime = tokMtime;
+      const raw = fs.readFileSync(tokFile, 'utf8');
+      if (raw.trim().startsWith('{')) {
+        spawnSync(exe, ['--token', '-'], { input: raw, encoding: 'utf8', windowsHide: true, timeout: 5000 });
+      }
+    } catch {}
+  }
+
   function runCmd(args) {
+    syncActiveTokenIfNewer();
     if (runner) return runner(args);
     const exe = exePath();
     if (!exe) return Promise.reject(new Error('agy-swap 실행 파일을 찾을 수 없습니다'));
