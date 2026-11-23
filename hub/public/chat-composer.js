@@ -128,7 +128,7 @@ function viewTranscript() {
   const title = esc(sessionLabel(r, sid, live?.name));
   const backLabel = state.sel.fromSearch ? '검색 결과' : '최근 대화';
   setSessionBar(`<button id="btnBackRecent" class="ghost btn-sm session-back" aria-label="${backLabel}">${ICO.chevLeft}<span>${backLabel}</span></button>
-    <h2 title="${title}"><span>${title}</span></h2>
+    <h2 title="더블클릭하여 명칭 변경" style="cursor:pointer"><span title="${title}">${title}</span></h2>
     <button id="btnRenameSess" class="ghost icon-btn btn-sm" title="대화 제목 수정" aria-label="대화 제목 수정">${ICO.edit}</button>
     <div class="session-meta">${sessionOriginButton(r?.branch)}${branchTagHTML(r?.branch)}${agentBadge(r?.agent)}</div>`,
     dockTopSegHTML({
@@ -144,23 +144,23 @@ function viewTranscript() {
     <button id="btnRecMore" class="ghost icon-btn btn-sm" aria-label="세션 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
 
   let dock = null;
+  const doRenameSess = async () => {
+    const curTitle = sessionLabel(r, sid, live?.name);
+    const lt = findLiveTerm();
+    const saved = await renameSessionItem({ sessionId: sid, termId: lt?.id || '', currentTitle: curTitle });
+    if (saved !== null) {
+      if (r) r.title = saved || null;
+      return viewTranscript();
+    }
+  };
+  $('#bar h2')?.addEventListener('dblclick', doRenameSess);
   $('#bar').onclick = async (e) => {
     if (openSessionOrigin(e.target)) return;
     if (e.target.closest('#btnBackRecent')) {
       if (state.sel.fromSearch) return select({ kind: 'search', restoreScroll: true });
       state.termsTab = 'recent'; return select({ kind: 'terms' });
     }
-    if (e.target.closest('#btnRenameSess')) {
-      const curTitle = sessionLabel(r, sid, live?.name);
-      const next = prompt('새 대화 제목을 입력하세요:', curTitle);
-      if (next === null) return;
-      const res = await api('/api/transcript/title', { method: 'POST', body: { id: sid, title: next.trim() } });
-      if (res.error) return toast(res.error, 4000, 'danger');
-      if (r) r.title = res.title || null;
-      await refreshOverview();
-      toast('대화 제목을 수정했습니다');
-      return viewTranscript();
-    }
+    if (e.target.closest('#btnRenameSess')) return doRenameSess();
     const dt = e.target.closest('[data-dock-toggle]');
     if (dt) {
       const p = dt.dataset.dockToggle;
@@ -254,6 +254,7 @@ function viewTranscript() {
     rootEl: dock.getBody('windows'),
     termId: linkedTerm?.id || null,
     consolePid: linkedConPid || null,
+    cwd: cwdPath || '',
     gen,
     isOpen: () => !!dock?.isOpen('windows'),
     onCount: (n) => { const c = $('#bar [data-dock-win-cnt]'); if (c) c.textContent = String(n); },
@@ -486,6 +487,7 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
     const lt = findLiveTerm();
     const needsSwitch = !!lt || cfg.agent !== baseAgent || (!!cfg.account && !cfg.account.startsWith('__cli__:'));
     if (needsSwitch) {
+      const isCrossPlatform = cfg.agent !== baseAgent;
       const payload = {
         sessionId: sid || undefined,
         termId: lt?.id || undefined,
@@ -493,6 +495,7 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
         model: cfg.model,
         effort: cfg.effort,
         cont: false,
+        ...(isCrossPlatform && pendingText ? { followUp: pendingText } : {}),
         skip: true,
         openMode: 'dashboard',
       };
@@ -508,9 +511,11 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
         state.terms = [res.term, ...state.terms];
       }
       if (pendingText && res.term?.id) {
-        setTimeout(() => {
-          api('/api/term/send', { method: 'POST', body: { id: res.term.id, text: pendingText, submit: true } }).catch(() => {});
-        }, 2600);
+        if (!isCrossPlatform) {
+          setTimeout(() => {
+            api('/api/term/send', { method: 'POST', body: { id: res.term.id, text: pendingText, submit: true } }).catch(() => {});
+          }, 2600);
+        }
         notifySent(res.term.id, pendingText);
       }
       if (res.term) {
@@ -523,7 +528,8 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
         }
       }
       const meDesc = [providerName(cfg.agent), cfg.model || '', cfg.effort || ''].filter(Boolean).join(' · ');
-      toast(`${meDesc} 설정으로 세션을 연결했습니다`);
+      const handoffNote = res.handoffFile ? ` (맥락 파일 전달)` : '';
+      toast(`${meDesc} 설정으로 세션을 연결했습니다${handoffNote}`);
       return res.term;
     }
 

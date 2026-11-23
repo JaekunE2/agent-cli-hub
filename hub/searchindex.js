@@ -7,7 +7,7 @@ const zlib = require('zlib');
 const addAgyWorkspaces = require('./agy-workspaces');
 
 const CACHE_FILE = path.join(__dirname, '.search-cache.json.gz');
-const CACHE_VER = 9;
+const CACHE_VER = 10;
 
 const emptyTokens = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 });
 function normalizeTokens(t) {
@@ -38,6 +38,12 @@ function textOf(content) {
     if (c.type === 'text') return c.text;
     if (c.type === 'tool_use') {
       const inp = c.input || {};
+      if (c.name === 'AskUserQuestion' && Array.isArray(inp.questions) && inp.questions.length) {
+        return inp.questions.map((q) => {
+          const opts = Array.isArray(q.options) ? q.options.map((o) => o.label).filter(Boolean) : [];
+          return `❓ ${q.question || q.header || '질문'}${opts.length ? ` [${opts.join(' / ')}]` : ''}`;
+        }).join('\n');
+      }
       const hint = inp.command || inp.file_path || inp.pattern || inp.description || inp.url || inp.query || '';
       return `⚙ ${c.name}${hint ? ': ' + String(hint).slice(0, 300) : ''}`;
     }
@@ -45,6 +51,49 @@ function textOf(content) {
   }).filter(Boolean).join('\n');
 }
 const isNoise = (t) => /^<(command|local-command|system-reminder)/.test(t.trim());
+
+function claudeCommandNote(rawText) {
+  const s = String(rawText || '').trim();
+  const cmdM = /<command-name>\s*(\/[^\s<]+)\s*<\/command-name>/i.exec(s);
+  if (cmdM) {
+    const cmd = cmdM[1].trim();
+    if (/^\/(model|effort|plan|permissions|fast|mode|status|approvals|reasoning|sandbox)$/i.test(cmd)) {
+      const argsM = /<command-args>\s*([\s\S]*?)\s*<\/command-args>/i.exec(s);
+      const args = argsM ? argsM[1].trim() : '';
+      return `⚙ [터미널 명령] ${cmd}${args ? ` ${args}` : ''}`;
+    }
+    return null;
+  }
+  const outM = /<local-command-stdout>\s*([\s\S]*?)\s*<\/local-command-stdout>/i.exec(s);
+  if (outM) {
+    const out = outM[1].replace(/\s+/g, ' ').trim();
+    if (out && out.length <= 400 && !/^Dismissed$/i.test(out)) {
+      return `⚙ [터미널 상태] ${out}`;
+    }
+  }
+  return null;
+}
+
+function claudeToolResultNote(e) {
+  if (!e || e.type !== 'user') return null;
+  const ansObj = e.toolUseResult?.answers;
+  if (ansObj && typeof ansObj === 'object' && !Array.isArray(ansObj)) {
+    const entries = Object.entries(ansObj).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`);
+    if (entries.length) return `✓ 선택/응답: ${entries.join(' | ').slice(0, 1200)}`;
+  }
+  const content = e.message?.content;
+  if (Array.isArray(content)) {
+    for (const c of content) {
+      if (c?.type === 'tool_result' && typeof c.content === 'string') {
+        const txt = c.content.trim();
+        if (/^User has answered your questions:/i.test(txt)) {
+          return `✓ 선택/응답: ${txt.replace(/^User has answered your questions:\s*/i, '').slice(0, 1200)}`;
+        }
+      }
+    }
+  }
+  return null;
+}
 
 // ---- Codex rollouts ----
 const CODEX_ROOT = path.join(process.env.CODEX_HOME || path.join(require('os').homedir(), '.codex'), 'sessions');
@@ -77,7 +126,15 @@ function codexText(content) {
 function codexLine(e) {
   const pl = e.payload || {};
   if (e.type === 'session_meta') return { cwd: pl.cwd || null, auto: /exec/i.test(`${pl.originator || ''} ${pl.source || ''}`) };
-  if (e.type === 'turn_context' && pl.cwd) return { cwd: pl.cwd };
+  if (e.type === 'turn_context') {
+    const mode = (typeof pl.collaboration_mode === 'object' ? pl.collaboration_mode?.mode : pl.collaboration_mode) || pl.approval_policy || '';
+    const effort = pl.effort || pl.reasoning_effort || '';
+    const model = pl.model || '';
+    return {
+      ...(pl.cwd ? { cwd: pl.cwd } : {}),
+      ...((model || effort || mode) ? { turnCtx: { model: String(model), effort: String(effort), mode: String(mode) } } : {}),
+    };
+  }
   if (e.type === 'event_msg' && pl.type === 'token_count' && pl.info?.total_token_usage) {
     const u = pl.info.total_token_usage;
     const cached = Number(u.cached_input_tokens) || 0;
@@ -94,8 +151,33 @@ function codexLine(e) {
     if (!text || (pl.role === 'user' && codexNoise(text))) return {};
     return { msg: { role: pl.role, text, ts: e.timestamp } };
   }
+  if (pl.type === 'function_call_output') {
+    try {
+      const out = typeof pl.output === 'string' ? JSON.parse(pl.output) : pl.output;
+      if (out?.answers && typeof out.answers === 'object') {
+        const parts = Object.entries(out.answers).map(([k, v]) => {
+          const val = Array.isArray(v?.answers) ? v.answers.join(', ') : Array.isArray(v) ? v.join(', ') : (v?.answer ?? v);
+          return `${k}: ${typeof val === 'object' ? JSON.stringify(val) : val}`;
+        });
+        if (parts.length) return { msg: { role: 'user', text: `✓ 선택/응답: ${parts.join(' | ').slice(0, 1200)}`, ts: e.timestamp } };
+      }
+    } catch {}
+    return {};
+  }
   if (pl.type === 'function_call' || pl.type === 'custom_tool_call' || pl.type === 'local_shell_call') {
     const rawArgs = pl.arguments ?? pl.action ?? pl.input ?? '';
+    if (pl.name === 'request_user_input') {
+      try {
+        const a = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs;
+        if (Array.isArray(a?.questions) && a.questions.length) {
+          const qTxt = a.questions.map((q) => {
+            const opts = Array.isArray(q.options) ? q.options.map((o) => o.label).filter(Boolean) : [];
+            return `❓ ${q.question || q.header || '질문'}${opts.length ? ` [${opts.join(' / ')}]` : ''}`;
+          }).join('\n');
+          return { msg: { role: 'assistant', text: qTxt, ts: e.timestamp } };
+        }
+      } catch {}
+    }
     let hint = '';
     if (typeof rawArgs === 'string') {
       try {
@@ -126,13 +208,26 @@ function agyUserText(raw) {
   const stripped = s.replace(/@\[[^\]]+\]\s*/g, '').trim();
   return stripped || s.replace(/@\[([^\]]+)\]/g, (_, p) => path.basename(p)).trim();
 }
+function agySettingsNote(raw) {
+  const m = /<USER_SETTINGS_CHANGE>\s*([\s\S]*?)\s*<\/USER_SETTINGS_CHANGE>/i.exec(String(raw || ''));
+  if (!m) return null;
+  const txt = m[1].replace(/\s+/g, ' ').trim();
+  const ch = /changed setting\s+`([^`]+)`\s+from\s+(.+?)\s+to\s+([^.]+)/i.exec(txt);
+  if (ch) return `⚙ [설정 변경] ${ch[1]}: ${ch[2]} → ${ch[3]}`;
+  return txt ? `⚙ [설정 변경] ${txt.slice(0, 240)}` : null;
+}
 function agyLine(e) {
   if (e.type === 'USER_INPUT') {
     const raw = String(e.content || '');
     const m = /@\[([A-Za-z]:\\[^\]\r\n]+|\/[^\]\r\n]+)\]/.exec(raw);
     const cwd = m ? m[1].trim() : null;
     const text = agyUserText(raw);
-    return text ? { cwd, msg: { role: 'user', text, ts: e.created_at } } : { cwd };
+    const settingsNote = agySettingsNote(raw);
+    return {
+      ...(cwd ? { cwd } : {}),
+      ...(text ? { msg: { role: 'user', text, ts: e.created_at } } : {}),
+      ...(settingsNote ? { settingsNote } : {}),
+    };
   }
   if (e.type === 'PLANNER_RESPONSE') {
     const hasTok = e.input_tokens != null || e.output_tokens != null || e.cache_read_tokens != null;
@@ -258,14 +353,32 @@ class SearchIndex {
     await new Promise((resolve) => {
       const stream = fs.createReadStream(file, { start: doc.offset, end: end - 1 });
       let rest = Buffer.alloc(0), consumed = doc.offset;
+      const pushMsg = (msg) => {
+        const text = String(msg.text || '').slice(0, 6000);
+        const last = doc.msgs[doc.msgs.length - 1];
+        if (last && last.role === 'assistant' && msg.role === 'assistant' && last.text === text) return;
+        doc.msgs.push({ ...msg, text });
+      };
       const handleCodex = (lineBuf) => {
         // big tool outputs / reasoning blobs are skipped before JSON.parse
         const head = lineBuf.subarray(0, 300).toString('utf8');
         if (!/"type":"(session_meta|turn_context|response_item|event_msg)"/.test(head)) return;
-        if (head.includes('"type":"response_item"') && /"type":"(reasoning|function_call_output|custom_tool_call_output)"/.test(head)) return;
+        const isAnswerOut = head.includes('"function_call_output"') && lineBuf.length < 32768 && lineBuf.includes('answers');
+        if (!isAnswerOut && head.includes('"type":"response_item"') && /"type":"(reasoning|function_call_output|custom_tool_call_output)"/.test(head)) return;
         let e; try { e = JSON.parse(lineBuf.toString('utf8')); } catch { return; }
         const r = codexLine(e);
         if (r.cwd && !doc.cwd) doc.cwd = r.cwd;
+        if (r.turnCtx) {
+          if (!doc._lastCtx) {
+            doc._lastCtx = r.turnCtx;
+          } else {
+            const diff = [];
+            if (r.turnCtx.model && r.turnCtx.model !== doc._lastCtx.model) { diff.push(`모델: ${r.turnCtx.model}`); doc._lastCtx.model = r.turnCtx.model; }
+            if (r.turnCtx.effort && r.turnCtx.effort !== doc._lastCtx.effort) { diff.push(`추론: ${r.turnCtx.effort}`); doc._lastCtx.effort = r.turnCtx.effort; }
+            if (r.turnCtx.mode && r.turnCtx.mode !== doc._lastCtx.mode) { diff.push(`모드: ${r.turnCtx.mode}`); doc._lastCtx.mode = r.turnCtx.mode; }
+            if (diff.length) doc.msgs.push({ role: 'assistant', text: `⚙ [설정 변경] ${diff.join(' · ')}`, ts: e.timestamp });
+          }
+        }
         if (r.auto !== undefined && doc.auto === null) doc.auto = r.auto;
         if (r.limit) doc.limit = r.limit;
         if (r.tokens && r.tokens.total >= (doc.tokens?.total || 0)) doc.tokens = r.tokens;
@@ -275,7 +388,7 @@ class SearchIndex {
           const clean = cleanPromptTitle(r.msg.text);
           if (clean && !codexNoise(clean)) doc.firstPrompt = clean;
         }
-        doc.msgs.push({ ...r.msg, text: r.msg.text.slice(0, 6000) });
+        pushMsg(r.msg);
       };
       const handleAgy = (lineBuf) => {
         // Fast raw-buffer pre-filter: skips large GENERIC / SYSTEM_MESSAGE lines before UTF-8 decode & JSON.parse
@@ -294,9 +407,10 @@ class SearchIndex {
           };
           doc.tokens = recomputeTokensFromMap(doc._tokMap);
         }
+        if (r.settingsNote) doc.msgs.push({ role: 'assistant', text: r.settingsNote, ts: e.created_at });
         if (!r.msg) return;
         if (r.msg.role === 'user' && !doc.firstPrompt) doc.firstPrompt = cleanPromptTitle(r.msg.text);
-        doc.msgs.push({ ...r.msg, text: r.msg.text.slice(0, 6000) });
+        pushMsg(r.msg);
       };
       const handle = codex ? handleCodex : agy ? handleAgy : (lineBuf) => {
         // Cheap pre-filter before JSON.parse; tool results / attachments can be MBs.
@@ -307,12 +421,18 @@ class SearchIndex {
         if (doc.auto === null) { const m = head.match(/"entrypoint":"([^"]*)"/); if (m) doc.auto = m[1].startsWith('sdk'); }
         if (!isMsg && !isTitle && doc.cwd) return;
         const s = lineBuf.toString('utf8');
-        if (isMsg && s.includes('"tool_use_id"')) { if (!doc.cwd) { const m = s.match(/"cwd":"((?:[^"\\]|\\.)*)"/); if (m) doc.cwd = JSON.parse(`"${m[1]}"`); } return; }
+        const hasToolAnswer = isMsg && s.includes('"tool_use_id"') && s.length < 32768 && (s.includes('"toolUseResult"') || s.includes('"answers"') || s.includes('User has answered'));
+        if (isMsg && s.includes('"tool_use_id"') && !hasToolAnswer) { if (!doc.cwd) { const m = s.match(/"cwd":"((?:[^"\\]|\\.)*)"/); if (m) doc.cwd = JSON.parse(`"${m[1]}"`); } return; }
         let e; try { e = JSON.parse(s); } catch { return; }
         doc.cwd = doc.cwd || e.cwd || null;
         if (e.type === 'custom-title' && e.customTitle) doc.title = e.customTitle;
         else if (e.type === 'summary' && e.summary && !doc.title) doc.title = e.summary;
         if ((e.type !== 'user' && e.type !== 'assistant') || e.isMeta || e.isSidechain) return;
+        if (hasToolAnswer) {
+          const ansNote = claudeToolResultNote(e);
+          if (ansNote) doc.msgs.push({ role: 'user', text: ansNote, ts: e.timestamp });
+          return;
+        }
         if (e.type === 'assistant' && e.message?.usage) {
           const u = e.message.usage;
           const mkey = String(e.message.id || e.uuid || e.timestamp || doc.msgs.length);
@@ -331,9 +451,14 @@ class SearchIndex {
           if (e.error === 'rate_limit' || e.apiErrorStatus === 429) doc.limit = { ts: e.timestamp, text: (text || '').slice(0, 200) };
           else if (!e.isApiErrorMessage && text) doc.limit = null;
         }
-        if (!text || isNoise(text)) return;
-        if (e.type === 'user' && !doc.firstPrompt && !e.isCompactSummary && !text.startsWith('This session is being continued')) doc.firstPrompt = text.slice(0, 160);
-        doc.msgs.push({ role: e.type, text: text.slice(0, 6000), ts: e.timestamp });
+        if (!text) return;
+        if (isNoise(text)) {
+          const cmdNote = claudeCommandNote(text);
+          if (cmdNote) doc.msgs.push({ role: 'assistant', text: cmdNote, ts: e.timestamp });
+          return;
+        }
+        if (e.type === 'user' && !doc.firstPrompt && !e.isCompactSummary && !text.startsWith('This session is being continued') && !text.startsWith('⚙')) doc.firstPrompt = text.slice(0, 160);
+        pushMsg({ role: e.type, text, ts: e.timestamp });
       };
       stream.on('data', (chunk) => {
         let buf = rest.length ? Buffer.concat([rest, chunk]) : chunk;
@@ -427,4 +552,4 @@ function snippet(text, low, terms) {
   return (a > 0 ? '…' : '') + text.slice(a, b).replace(/\s+/g, ' ') + (b < text.length ? '…' : '');
 }
 
-module.exports = { SearchIndex, textOf, isNoise, isCodexFile, codexIdOf, codexLine, CODEX_ROOT, isAgyFile, agyIdOf, agyLine, AGY_ROOT };
+module.exports = { SearchIndex, textOf, isNoise, claudeCommandNote, claudeToolResultNote, isCodexFile, codexIdOf, codexLine, CODEX_ROOT, isAgyFile, agyIdOf, agyLine, AGY_ROOT };

@@ -416,19 +416,22 @@ function projectDesign(p) {
     const tokBadge = typeof taskTokenBadgeHTML === 'function' ? taskTokenBadgeHTML(p, t, false) : '';
     const subTip = `클릭해 우측 상세 패널에서 하위 서브태스크 ${subs.length}개 확인`;
     const menuAria = `${t.title} 메뉴`;
-    return `<div class="pj-row${t.stage === 'done' ? ' is-done' : ''}" data-task-row="${esc(t.id)}">
+    return `<div class="pj-row${t.stage === 'done' ? ' is-done' : ''}${t.autoExclude ? ' is-auto-off' : ''}" data-task-row="${esc(t.id)}">
       <span class="pj-step-num ${esc(t.stage)} kind-${esc(k)}" title="${esc(projectStages.find((s) => s[0] === t.stage)?.[1] || t.stage)}">${numMark}</span>
       <div class="pj-row-main">
         <div class="pj-row-head">
           ${typeof kindBadgeHTML === 'function' ? kindBadgeHTML(t) : ''}
           <button data-plan-task="${esc(t.id)}" class="pj-title">${esc(t.title)}</button>
           ${t.stage !== 'planned' ? stageBadgeHTML(t.stage) : ''}
+          ${typeof projectReviewBadgeHTML === 'function' ? projectReviewBadgeHTML(t) : ''}
           ${subs.length ? `<span class="badge" title="${esc(subTip)}">서브 ${subDone}/${subs.length}</span>` : ''}
           ${tokBadge}
         </div>
         ${summary ? `<div class="pj-row-desc">${esc(summary)}</div>` : ''}
+        ${typeof projectReviewNoteHTML === 'function' ? projectReviewNoteHTML(t, true) : ''}
       </div>
       <div class="pj-row-acts">
+        <button type="button" class="pj-auto-sw${t.autoExclude ? ' off' : ' on'}" data-toggle-auto="${esc(t.id)}" aria-pressed="${!t.autoExclude}" title="${t.autoExclude ? '자동 진행에서 제외됨 (클릭해 포함)' : '자동 진행에 포함됨 (클릭해 제외)'}">${t.autoExclude ? '자동 OFF' : '자동 ON'}</button>
         <button class="ghost btn-sm" data-subchat-task="${esc(t.id)}" title="이 태스크 안에서 채팅 기반으로 서브 개발 진행">${ico.chat || ''} 서브 개발${chatCnt ? ` <b>${chatCnt}</b>` : ''}</button>
         ${projectCliBadgeHTML(p, t)}
         ${projectStartBtnHTML(p, t)}
@@ -452,6 +455,13 @@ function projectDesign(p) {
   </div>`;
   $('#projectEdit').onclick = () => projectForm(p);
   host.onclick = (e) => {
+    const autoSw = e.target.closest('[data-toggle-auto]');
+    if (autoSw) {
+      e.stopPropagation();
+      const tid = autoSw.dataset.toggleAuto;
+      saveProject({ ...p, tasks: p.tasks.map((t) => (t.id === tid ? { ...t, autoExclude: !t.autoExclude } : t)) }).catch((er) => toast(er.message, 5000, 'danger'));
+      return;
+    }
     const scBtn = e.target.closest('[data-subchat-task]');
     if (scBtn) {
       e.stopPropagation();

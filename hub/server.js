@@ -20,6 +20,8 @@ const { efforts, MODEL_RE } = require('./project-validation');
 const { fingerprint, projectSession, sessionId: validSessionId } = require('./project-history');
 const { createAccountPrefsStore, buildRecoveryLaunchArgs } = require('./account-prefs');
 const { createProjectHarnessStore } = require('./project-harness');
+const { createProjectRefsStore } = require('./project-refs');
+const { checkAutopilotCompletions } = require('./project-autopilot');
 const { generatePlan, generateSubtasks, cliModelEffortArgs, inspectWorkspace } = require('./project-plan');
 const { scanFloorplan } = require('./workspace-floorplan');
 const { runTaskSubChatTurn } = require('./task-subchat');
@@ -29,6 +31,7 @@ const { pickDirectory } = require('./win-folder-picker');
 const { forkClaudeJsonlAt, editClaudeJsonlAt, editCodexJsonlAt, writeBranchContextFile, createBranchStore } = require('./conversation-branches');
 const { createUnifiedVault } = require('./unified-vault');
 const { createTermManager } = require('./term-manager');
+const { createTermEventStore } = require('./term-events');
 const { createAccountSwitchService } = require('./account-switch');
 const { createProjectRoutes } = require('./routes-projects');
 const { createSessionRoutes } = require('./routes-sessions');
@@ -55,7 +58,9 @@ const TOKEN = fs.readFileSync(TOKEN_FILE, 'utf8').trim();
 
 const accountPrefs = createAccountPrefsStore({ cleanModelEffort });
 const projectHarness = createProjectHarnessStore();
+const projectRefs = createProjectRefsStore(path.join(__dirname, 'data', 'project-refs'));
 const conversationBranches = createBranchStore(BRANCH_STORE_FILE);
+const termEvents = createTermEventStore(path.join(__dirname, 'data', 'term-events.json'));
 const index = new SearchIndex(path.join(CLAUDE_DIR, 'projects'));
 const sessionDisplayTitle = (id, doc) => conversationBranches.getTitle(id) || doc?.title || null;
 const unifiedVault = createUnifiedVault({
@@ -119,11 +124,12 @@ let lastIndexAt = 0;
 const refreshIndex = () => index.refresh().then((r) => { lastIndexAt = Date.now(); return r; });
 refreshIndex().then(() => console.log('search index ready:', index.docs.size, 'sessions'));
 setInterval(() => refreshIndex(), 10000).unref?.();
+setInterval(() => { checkAutopilotCompletions(hub).catch(() => {}); }, 3500).unref?.();
 
 let consoleTitleCache = new Map();
 const hub = {
   baseDir: __dirname, port: PORT, token: TOKEN, config: CONFIG, buildId: SERVER_BUILD_ID, claudeDir: CLAUDE_DIR, I18N,
-  index, projects, accountPrefs, projectHarness, unifiedVault, conversationBranches, sessionDisplayTitle, branchBackupDir: BRANCH_BACKUP_DIR,
+  index, projects, accountPrefs, projectHarness, projectRefs, unifiedVault, conversationBranches, termEvents, sessionDisplayTitle, branchBackupDir: BRANCH_BACKUP_DIR,
   CA, codexRecoveryArgs, cliModelEffortArgs, buildRecoveryLaunchArgs, cleanModelEffort,
   fingerprint, projectSession, validSessionId, generatePlan, generateSubtasks, inspectWorkspace, scanFloorplan,
   runTaskSubChatTurn, deleteCliRecord, recordUuid, ownedRoots, verifiedRoot, probeRoot, stopTerminal, pickDirectory,
@@ -293,7 +299,7 @@ const STATIC = {
   '/dock.js': 'public/dock.js', '/preview.js': 'public/preview.js', '/vault.js': 'public/vault.js',
   '/projects.js': 'public/projects.js', '/project-forms.js': 'public/project-forms.js', '/project-plan-form.js': 'public/project-plan-form.js',
   '/project-board.js': 'public/project-board.js', '/project-task-form.js': 'public/project-task-form.js', '/project-flow.js': 'public/project-flow.js',
-  '/project-harness-ui.js': 'public/project-harness-ui.js', '/project-floorplan.js': 'public/project-floorplan.js', '/project-terminals.js': 'public/project-terminals.js', '/projects.css': 'public/projects.css',
+  '/project-harness-ui.js': 'public/project-harness-ui.js', '/project-refs-ui.js': 'public/project-refs-ui.js', '/project-floorplan.js': 'public/project-floorplan.js', '/project-terminals.js': 'public/project-terminals.js', '/projects.css': 'public/projects.css',
   '/xterm.js': 'node_modules/@xterm/xterm/lib/xterm.js', '/xterm.css': 'node_modules/@xterm/xterm/css/xterm.css',
   '/addon-fit.js': 'node_modules/@xterm/addon-fit/lib/addon-fit.js', '/mermaid.js': 'node_modules/mermaid/dist/mermaid.min.js',
   '/icon-claude.png': 'public/icon-claude.png', '/icon-openai.png': 'public/icon-openai.png',
@@ -359,7 +365,7 @@ server.on('upgrade', (req, sock, head) => {
     ws.on('message', (m) => {
       let msg; try { msg = JSON.parse(m); } catch { return; }
       if (t.exited !== null) return;
-      if (msg.type === 'input') { t.proc.write(msg.data); if (/[\r\n]/.test(String(msg.data || ''))) hub.touchUserInput(t); }
+      if (msg.type === 'input') { hub.termMonitor?.onInput(t, msg.data); t.proc.write(msg.data); if (/[\r\n]/.test(String(msg.data || ''))) hub.touchUserInput(t); }
       if (msg.type === 'resize' && msg.cols > 0 && msg.rows > 0 && hub.resizeTerm(t, msg.cols, msg.rows)) {
         for (const c of t.clients) if (c !== ws) c.send(JSON.stringify({ type: 'resize', cols: t.cols, rows: t.rows }));
       }

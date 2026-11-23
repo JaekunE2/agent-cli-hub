@@ -261,17 +261,10 @@ function fireTermDoneNotice(t, nextState) {
   }
 
   const msg = nextState === 'exited' ? `터미널 종료됨: ${label}` : `✓ 작업 완료: ${label}`;
-  if (pj && task && task.stage === 'doing' && pj.autopilot && nextState === 'idle') {
-    api('/api/projects/autopilot/complete', { method: 'POST', body: { projectId: pj.id, taskId: task.id } })
-      .then((res) => {
-        if (res?.started?.length) {
-          toast(`✓ ${task.title} 완료 → 다음 작업 ${res.started.length}개 자동 시작!`);
-        }
-        refreshOverview?.();
-        refreshProjects?.();
-        if (state.sel.kind === 'projects' && (state.sel.id === pj.id || projectId === pj.id)) openProject(pj.id);
-      })
-      .catch(() => {});
+  if (pj && task && pj.autopilot && (nextState === 'idle' || nextState === 'exited')) {
+    refreshOverview?.();
+    refreshProjects?.();
+    if (state.sel.kind === 'projects' && (state.sel.id === pj.id || projectId === pj.id)) openProject(pj.id);
   }
   const action = (pj && task && task.stage === 'doing')
     ? {
@@ -354,11 +347,13 @@ async function refreshOverview() {
 
   // Detect busy → idle / exited transitions for subtle completion indicator & notification
   const aliveIds = new Set();
+  let projTermChanged = false;
   for (const t of state.terms) {
     const id = String(t.id);
     aliveIds.add(id);
     const cur = termStateOf(t);
     const prev = prevTermStates.get(id);
+    if (t.projectTask && prev !== cur) projTermChanged = true;
     if (cur === 'busy') state.justDoneTerms.delete(id);
     if (booted && prev === 'busy' && (cur === 'idle' || cur === 'exited')) {
       fireTermDoneNotice(t, cur);
@@ -369,6 +364,9 @@ async function refreshOverview() {
   updateDocTitle();
   paintActiveTermStatus();
   renderSide();
+  if (booted && state.sel.kind === 'projects' && projTermChanged) {
+    if (typeof refreshProjects === 'function') refreshProjects().then(() => { if (state.sel.kind === 'projects' && typeof openProject === 'function') openProject(projectId || state.sel.id, projectTab); }).catch(() => {});
+  }
   if (booted && (state.sel.kind === 'home' || state.sel.kind === 'terms') && homeKeyOf() !== homeKey) select({ kind: state.sel.kind });
   else refreshHomeWidgets();
 }
@@ -406,13 +404,37 @@ function termLabel(t) {
   if (t.projectTask) return t.title;
   const session = recentSession(t.sessionId || (t.agy && state.sel.kind === 'term' && state.sel.id === t.id ? state.sel.agyResume : null));
   const con = t.pid && state.consoles.find(c => c.managed && (c.pids || []).includes(t.pid));
-  const label = cleanSideTitle(session?.title) || cleanSideTitle(session?.firstPrompt)
+  const label = cleanSideTitle(t.customTitle) || cleanSideTitle(session?.title) || cleanSideTitle(session?.firstPrompt)
     || cleanSideTitle(t.sessionName) || windowTitle(con?.title) || windowTitle(t.liveTitle);
   if (label) return label;
   const title = String(t.title || '');
   if (/^(?:powershell|pwsh)(?:\.exe)?$/i.test(title)) return 'PowerShell';
   if (/^cmd(?:\.exe)?$/i.test(title)) return 'Command Prompt';
   return (/^(?:agy |codex resume |claude resume )[\da-f-]+$/i.test(title) ? '' : windowTitle(title)) || providerName(t.agent);
+}
+async function renameSessionItem({ sessionId = '', termId = '', currentTitle = '' } = {}) {
+  const next = prompt('새 세션 명칭을 입력하세요:', currentTitle || '');
+  if (next === null) return null;
+  const trimmed = next.trim();
+  const body = {
+    ...(sessionId ? { id: sessionId } : {}),
+    ...(termId ? { termId } : {}),
+    title: trimmed,
+  };
+  const res = await api('/api/transcript/title', { method: 'POST', body });
+  if (res?.error) { toast(res.error, 4000, 'danger'); return null; }
+  const saved = res?.title || '';
+  if (termId) {
+    const t = (state.terms || []).find((x) => String(x.id) === String(termId));
+    if (t) { t.customTitle = saved; if (saved) t.title = saved; }
+  }
+  if (sessionId) {
+    const r = recentSession(sessionId);
+    if (r) r.title = saved || null;
+  }
+  await refreshOverview();
+  toast('세션 명칭을 수정했습니다');
+  return saved;
 }
 function consoleLabel(c) {
   const mt = c.managed && state.terms.find((t) => t.pid && c.pids.includes(t.pid));

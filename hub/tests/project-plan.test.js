@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { readPlan, parseProgressLine, spawnCli, cliModelEffortArgs, inspectWorkspace } = require('../project-plan');
+const { readPlan, parseProgressLine, spawnCli, cliModelEffortArgs, inspectWorkspace, buildPlanPrompt, buildSubtaskPrompt } = require('../project-plan');
 const { scanFloorplan } = require('../workspace-floorplan');
 const { validate, inferTaskKind } = require('../project-validation');
 const { parseCodexJsonl, parseClaudeJson, parseAgyJson } = require('../task-subchat');
@@ -180,4 +180,17 @@ test('listed accounts expose only labels and resolve within their CLI', () => {
   assert.deepEqual(entries.resolve('agy', 'a').env, { GEMINI_API_KEY: 'fake-key', GOOGLE_API_KEY: 'fake-key' });
   assert.throws(() => entries.resolve('codex', 'a'));
   assert.deepEqual(entries.resolve('agy', '').env, {});
+});
+
+test('buildPlanPrompt and buildSubtaskPrompt embed deepening rules automatically during initial design', () => {
+  const p = buildPlanPrompt({ name: 'Demo', goal: '인증 개선' }, { isExistingProject: true, summaryText: 'server/auth.js' });
+  assert.ok(p.includes('DO NOT DO MORE. DO IT DEEPER'));
+  assert.ok(p.includes('[Primary Sources & Assumptions]'));
+  assert.ok(p.includes('[Methods & Boundaries]'));
+  assert.ok(p.includes('[Independent Validation]'));
+  assert.ok(p.includes('server/auth.js'));
+
+  const sp = buildSubtaskPrompt({ name: 'Demo', goal: '인증 개선' }, { title: '토큰 검증', detail: 'JWT 검증' }, { isExistingProject: false });
+  assert.ok(sp.includes('DO NOT DO MORE. DO IT DEEPER'));
+  assert.ok(sp.includes('토큰 검증'));
 });

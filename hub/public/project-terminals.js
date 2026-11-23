@@ -20,9 +20,9 @@ function effectiveTaskConfig(p, task) {
 }
 
 function projectTaskTerm(p, task) {
-  const { agent, account } = effectiveTaskConfig(p, task);
-  return state.terms.find(t => t.exited === null && t.projectTask?.projectId === p.id
-    && t.projectTask.taskId === task.id && t.agent === agent && (t.account?.id || '') === (account || ''));
+  const { agent } = effectiveTaskConfig(p, task);
+  const sameTask = (state.terms || []).filter((t) => t.exited === null && t.projectTask?.projectId === p.id && t.projectTask.taskId === task.id);
+  return sameTask.find((t) => t.agent === agent) || sameTask[0] || null;
 }
 
 function projectCliBadgeHTML(p, task) {
@@ -37,10 +37,72 @@ function projectCliBadgeHTML(p, task) {
   return `<button class="pj-cli-btn" data-assign-task="${esc(task.id)}" title="${esc(tip)}">${ico}<span>${esc(label)}${cfg.effort ? ` <em class="pj-eff-tag">${esc(cfg.effort)}</em>` : ''}</span></button>`;
 }
 
+function projectReviewBadgeHTML(task) {
+  const st = task?.reviewStatus || '';
+  const wtBadge = task?.worktreePath ? `<span class="badge" title="${esc(task.worktreePath)}">🌿 격리</span>` : '';
+  if (!st && !task?.retryCount) return wtBadge;
+  const tip = task?.reviewNote ? ` title="${esc(task.reviewNote)}"` : '';
+  let rev = '';
+  if (st === 'reviewing') rev = `<span class="badge warn"${tip}>🔍 자동 검토 중</span>`;
+  else if (st === 'approved') rev = `<span class="badge ok"${tip}>✓ 검토 승인</span>`;
+  else if (st === 'rejected' && task.stage === 'doing' && task.retryCount > 0) {
+    rev = `<span class="badge warn"${tip}>↻ 반려 재시도 ${task.retryCount}회</span>`;
+  } else if (st === 'rejected') rev = `<span class="badge lim"${tip}>⚠ 검토 반려</span>`;
+  else if (st === 'error') rev = `<span class="badge lim"${tip}>⚠ 검토 오류</span>`;
+  return `${rev}${wtBadge}`;
+}
+
+function projectReviewNoteHTML(task, compact = false) {
+  if (!task) return '';
+  const st = task.reviewStatus || '';
+  let note = String(task.reviewNote || '').trim();
+  if (note.startsWith('{') && (note.includes('"conversation_id"') || note.includes('"json_schema"'))) {
+    note = '이전 검토에서 원시 CLI 메타데이터만 기록되었습니다. 재검토를 실행하면 사람이 읽을 수 있는 사유로 갱신됩니다.';
+  }
+  let tone = 'info';
+  let label = '';
+  let text = note;
+  if (st === 'reviewing') {
+    tone = 'warn';
+    label = '검토 진행';
+    if (!text) text = '교차 리뷰 에이전트가 변경 사항과 테스트를 검토 중입니다.';
+  } else if (st === 'rejected' && task.stage === 'doing') {
+    tone = 'warn';
+    label = `반려 재작업 (${task.retryCount || 1}회차)`;
+  } else if (st === 'rejected') {
+    tone = 'danger';
+    label = '검토 반려 사유';
+  } else if (st === 'error') {
+    tone = 'danger';
+    label = '검토 실행 오류';
+  } else if (st === 'approved') {
+    tone = 'ok';
+    label = '검토 완료 사유';
+  } else if (task.stage === 'review') {
+    tone = 'info';
+    label = '검토 대기';
+    if (!text) text = '완료 조건·테스트 통과 여부를 검토하는 단계입니다.';
+  }
+  if (!label || !text) return '';
+  return `<div class="pj-review-note is-${tone}${compact ? ' is-compact' : ''}" title="${esc(`${label}: ${text}`)}"><b>${esc(label)}:</b> ${esc(text)}</div>`;
+}
+
+function projectLiveStatusBadgeHTML(p, task) {
+  const term = projectTaskTerm(p, task);
+  if (!term) return '';
+  const st = typeof termStateOf === 'function' ? termStateOf(term) : 'idle';
+  return st === 'busy'
+    ? `<span class="badge warn" data-pj-live-task="${esc(task.id)}" title="에이전트가 작업 중입니다"><span class="dot busy" style="width:6px;height:6px"></span> 작업 중</span>`
+    : `<span class="badge ok" data-pj-live-task="${esc(task.id)}" title="에이전트 응답이 완료되어 대기 중입니다">응답 완료</span>`;
+}
+
 function projectStartBtnHTML(p, task) {
   const term = projectTaskTerm(p, task);
   if (!term && task.stage === 'done') return '<span class="badge st-done">✓ 완료됨</span>';
-  return `<button class="btn-sm${term ? ' primary' : ''}" data-start-task="${esc(task.id)}">${term ? '터미널 열기 ↗' : '작업 시작'}</button>`;
+  if (term) {
+    return `${projectLiveStatusBadgeHTML(p, task)}<button class="btn-sm primary" data-start-task="${esc(task.id)}">터미널 열기 ↗</button>`;
+  }
+  return `<button class="btn-sm" data-start-task="${esc(task.id)}">작업 시작</button>`;
 }
 
 async function startProjectTask(p, task, button) {
@@ -59,22 +121,12 @@ async function startProjectTask(p, task, button) {
     }
     if (!current) await refreshOverview();
     if (gen !== viewGen) return;
-    select({ kind: 'term', id: t.id, project: p.id });
-    if (!current && !t.existing) {
-      const input = $('#tin');
-      if (input) {
-        const cfg = effectiveTaskConfig(p, task);
-        const parent = cfg.parent;
-        const promptParts = parent
-          ? [`[상위 작업: ${parent.title}]`, parent.detail ? parent.detail.slice(0, 600) : '', `[서브 개발 작업: ${task.title}]`, task.detail]
-          : [task.title, task.detail];
-        const roleTpl = cfg.rolePreset?.template;
-        const adapterRules = state.projectHarness?.adapters?.[cfg.agent]?.rules;
-        if (roleTpl) promptParts.push(`[Role 하네스 · ${cfg.rolePreset?.label || cfg.roleId}]\n${roleTpl}`);
-        if (adapterRules) promptParts.push(`[CLI 어댑터 · ${cfg.agent}]\n${adapterRules}`);
-        input.value = promptParts.filter(Boolean).join('\n\n');
-        input.dispatchEvent(new Event('input'));
-      }
+    if (current) {
+      select({ kind: 'term', id: t.id, project: p.id });
+    } else {
+      if (typeof refreshProjects === 'function') await refreshProjects();
+      if (gen === viewGen && state.sel.kind === 'projects') openProject(p.id, projectTab);
+      toast(`“${task.title}” 작업을 백그라운드에서 시작했습니다`);
     }
   } catch (e) { toast(e.message, 5000, 'danger'); }
   finally { if (button) button.disabled = false; }

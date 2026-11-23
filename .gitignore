@@ -29,3 +29,6 @@ ai-usage/*.log
 research/
 projects/
 dist/
+hub/.branches.json
+hub/__pycache__/
+vault/

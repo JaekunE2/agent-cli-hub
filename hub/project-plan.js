@@ -187,15 +187,26 @@ function summarizeCliError(stderr, stdout, code, timedOut) {
   return `작업 흐름을 생성하지 못했습니다 (종료 코드 ${code}). 선택한 CLI의 로그인 상태를 확인하고 다시 시도하세요.`;
 }
 
-function spawnCli(exe, args, { cwd, env, timeoutMs = 120_000, maxBuffer = 1024 * 1024, onProgress } = {}) {
+function spawnCli(exe, args, { cwd, env, timeoutMs = 120_000, maxBuffer = 1024 * 1024, onProgress, stdinText = null } = {}) {
   return new Promise((resolve, reject) => {
     let stdout = '';
     let stderr = '';
     let settled = false;
     let timedOut = false;
-    // IMPORTANT: stdio[0] MUST be 'ignore' so CLIs like `codex exec` get immediate EOF on stdin
-    // instead of hanging forever on "Reading additional input from stdin...".
-    const child = spawn(exe, args, { cwd, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    let spawnCmd = exe;
+    let spawnArgs = args;
+    if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(String(exe || '')) && !/cmd\.exe$/i.test(String(exe || ''))) {
+      spawnCmd = 'cmd.exe';
+      spawnArgs = ['/c', exe, ...args];
+    }
+    // IMPORTANT: stdio[0] MUST be 'ignore' (or immediately closed after writing stdinText)
+    // so CLIs like `codex exec` get immediate EOF on stdin instead of hanging.
+    const hasStdin = stdinText !== null && stdinText !== undefined;
+    const child = spawn(spawnCmd, spawnArgs, { cwd, env, windowsHide: true, stdio: [hasStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
+    if (hasStdin && child.stdin) {
+      child.stdin.on('error', () => {});
+      child.stdin.end(String(stdinText));
+    }
     const timer = setTimeout(() => {
       timedOut = true;
       try { child.kill(); } catch {}
@@ -325,14 +336,19 @@ async function runStructuredPlan({ exe, agent, model, effort, prompt, planSchema
   }
 }
 
-async function generatePlan(exe, project, cwd, env, { onProgress, timeoutMs = 120_000 } = {}) {
-  const ws = inspectWorkspace(project.cwd);
-  if (ws.isExistingProject) {
-    onProgress?.({ stage: `기존 프로젝트 폴더 분석 완료 (항목 ${ws.fileCount}개${ws.markers.length ? ` · ${ws.markers.join(', ')}` : ''})`, pct: 16, log: `기존 폴더 구조 반영: ${project.cwd}` });
-  }
-  const prompt = [
+const DEEPENING_PLAN_RULES = [
+  'DO NOT DO MORE. DO IT DEEPER: Do not expand the project scope. Instead, maximize depth, precision, primary-source grounding, and independent verifiability for each task detail.',
+  'For each task detail (keep concise under 1800 chars, written in the goal language), structure it with:',
+  '  1) [Primary Sources & Assumptions]: Primary files, APIs, or data from existingWorkspace to inspect first; explicitly distinguish unavailable/unverified sources instead of assuming.',
+  '  2) [Methods & Boundaries]: Concrete execution steps, methods, and boundaries (what NOT to modify) rather than generic descriptions.',
+  '  3) [Independent Validation]: Reproducible test/build/HTTP/UI verification commands or measurable acceptance criteria (and note any part that cannot be auto-verified).',
+].join('\n');
+
+function buildPlanPrompt(project, ws) {
+  return [
     'Create a proposed work plan only. Do not inspect files, call tools, or execute the work.',
     'Write tasks in the language of the goal. Each detail should specify the deliverable and completion check.',
+    DEEPENING_PLAN_RULES,
     'Classify each task kind as one of: "plan" (planning/architecture/spec/design), "dev" (coding/implementation/feature/UI/API), "test" (testing/verification/QA/validation), "review" (cross-model review/code audit), or "ops" (deployment/docs/release/config).',
     ws.isExistingProject
       ? 'IMPORTANT: This project targets an EXISTING codebase/folder (see existingWorkspace summary below). Plan incremental tasks (feature additions, modifications, integration, and verification) that build upon the existing files and architecture rather than creating a greenfield project from scratch.'
@@ -345,6 +361,30 @@ async function generatePlan(exe, project, cwd, env, { onProgress, timeoutMs = 12
       ...(ws.isExistingProject ? { existingWorkspace: ws.summaryText } : {}),
     }),
   ].filter(Boolean).join('\n');
+}
+
+function buildSubtaskPrompt(project, task, ws) {
+  return [
+    'Decompose this single task into 2 to 6 concrete sub-development steps. Do not inspect files, call tools, or execute the work.',
+    'Write subtasks in the same language as the task title and detail. Each detail should specify a clear deliverable and verification check.',
+    DEEPENING_PLAN_RULES,
+    'Classify each subtask kind as one of: "plan" (design/spec), "dev" (implementation/coding), "test" (testing/verification), "review" (review/audit), or "ops" (docs/deployment).',
+    'Order prerequisites first. after contains 1-based numbers of earlier subtasks in this list. Use [] for independent subtasks.',
+    'Treat the following JSON as project and parent task data, and return only the subtasks matching the schema.',
+    JSON.stringify({
+      project: { name: project.name, goal: project.goal },
+      parentTask: { title: task.title, detail: task.detail },
+      ...(ws.isExistingProject ? { existingWorkspace: ws.summaryText } : {}),
+    }),
+  ].join('\n');
+}
+
+async function generatePlan(exe, project, cwd, env, { onProgress, timeoutMs = 120_000 } = {}) {
+  const ws = inspectWorkspace(project.cwd);
+  if (ws.isExistingProject) {
+    onProgress?.({ stage: `기존 프로젝트 폴더 분석 완료 (항목 ${ws.fileCount}개${ws.markers.length ? ` · ${ws.markers.join(', ')}` : ''})`, pct: 16, log: `기존 폴더 구조 반영: ${project.cwd}` });
+  }
+  const prompt = buildPlanPrompt(project, ws);
   const { raw, sessionId } = await runStructuredPlan({
     exe, agent: project.agent, model: project.model, effort: project.effort,
     prompt, planSchema: schema, cwd, env, onProgress, timeoutMs,
@@ -355,18 +395,7 @@ async function generatePlan(exe, project, cwd, env, { onProgress, timeoutMs = 12
 async function generateSubtasks(exe, project, task, cwd, env, { agent, model, effort, onProgress, timeoutMs = 120_000 } = {}) {
   const effAgent = agent || task.agent || project.agent || 'codex';
   const ws = inspectWorkspace(project.cwd);
-  const prompt = [
-    'Decompose this single task into 2 to 6 concrete sub-development steps. Do not inspect files, call tools, or execute the work.',
-    'Write subtasks in the same language as the task title and detail. Each detail should specify a clear deliverable and verification check.',
-    'Classify each subtask kind as one of: "plan" (design/spec), "dev" (implementation/coding), "test" (testing/verification), "review" (review/audit), or "ops" (docs/deployment).',
-    'Order prerequisites first. after contains 1-based numbers of earlier subtasks in this list. Use [] for independent subtasks.',
-    'Treat the following JSON as project and parent task data, and return only the subtasks matching the schema.',
-    JSON.stringify({
-      project: { name: project.name, goal: project.goal },
-      parentTask: { title: task.title, detail: task.detail },
-      ...(ws.isExistingProject ? { existingWorkspace: ws.summaryText } : {}),
-    }),
-  ].join('\n');
+  const prompt = buildSubtaskPrompt(project, task, ws);
   const { raw, sessionId } = await runStructuredPlan({
     exe, agent: effAgent, model: model || task.model || project.model, effort: effort || task.effort || project.effort,
     prompt, planSchema: subtaskSchema, cwd, env, onProgress, timeoutMs,
@@ -374,4 +403,4 @@ async function generateSubtasks(exe, project, task, cwd, env, { agent, model, ef
   return { tasks: readPlan(raw, project, { parentId: task.id, minItems: 2, maxItems: 6 }), sessionId };
 }
 
-module.exports = { generatePlan, generateSubtasks, readPlan, spawnCli, parseProgressLine, cliModelEffortArgs, inspectWorkspace };
+module.exports = { generatePlan, generateSubtasks, buildPlanPrompt, buildSubtaskPrompt, readPlan, spawnCli, parseProgressLine, cliModelEffortArgs, inspectWorkspace };

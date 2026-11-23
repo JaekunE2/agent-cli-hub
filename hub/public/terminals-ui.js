@@ -563,15 +563,24 @@ function viewTerm() {
   const back = state.sel.project || pj
     ? `<button id="btnBackProject" class="ghost btn-sm session-back" aria-label="${projectName}" data-proj-id="${esc(state.sel.project || pj.id)}">${ICO.chevLeft}<span>${projectName}</span></button>`
     : '';
-  setSessionBar(`${back}<h2 title="${title}">${ag ? agentIcon(ag) : ''}<span>${title}</span></h2>
+  setSessionBar(`${back}<h2 title="더블클릭하여 명칭 변경" style="cursor:pointer">${ag ? agentIcon(ag) : ''}<span title="${title}">${title}</span></h2>
+    <button id="btnRenameTerm" class="ghost icon-btn btn-sm" title="세션 명칭 수정" aria-label="세션 명칭 수정">${ICO.edit}</button>
     <span id="termLiveBadge" class="term-live-pill ${pillCls}">${pillText}</span>
     <div class="session-meta">${sessionOriginButton(t?.branch)}${branchTagHTML(t?.branch)}${t?.account ? `<span class="badge c">${esc(t.account.label.replace(/@.*/, ''))}</span>` : ''}${(t?.model || t?.effort) ? `<span class="badge" title="선택된 모델 · 추론 성능">${esc([t.model, t.effort].filter(Boolean).join(' · '))}</span>` : ''}</div>`,
     dockTopSegHTML({ openSet: new Set(initialPanels), isContentTab, hasTerm: true, hasChat: true, showFiles: true, curTab: state.tab }),
     `<button id="btnTermMore" class="ghost icon-btn btn-sm" aria-label="터미널 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
 
   let dock = null;
+  const doRenameTerm = async () => {
+    const curTitle = t ? termLabel(t) : '';
+    const sid = resolveTermSessionId(t) || '';
+    const saved = await renameSessionItem({ sessionId: sid, termId: id, currentTitle: curTitle });
+    if (saved !== null) return openTerm(id);
+  };
+  $('#bar h2')?.addEventListener('dblclick', doRenameTerm);
   $('#bar').onclick = async (e) => {
     if (openSessionOrigin(e.target)) return;
+    if (e.target.closest('#btnRenameTerm')) return doRenameTerm();
     const bp = e.target.closest('#btnBackProject');
     if (bp) return openProject(bp.dataset.projId || state.sel.project);
     const dt = e.target.closest('[data-dock-toggle]');
@@ -686,6 +695,7 @@ function viewTerm() {
   winCtl = window.ACH_DOCK.mountWindowsPane({
     rootEl: dock.getBody('windows'),
     termId: t?.id || state.sel.id,
+    cwd: t?.cwd || pj?.cwd || '',
     gen,
     isOpen: () => !!dock?.isOpen('windows'),
     onCount: (n) => { const c = $('#bar [data-dock-win-cnt]'); if (c) c.textContent = String(n); },

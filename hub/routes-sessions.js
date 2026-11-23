@@ -6,13 +6,15 @@ const path = require('path');
 const crypto = require('crypto');
 const { resolveTaskConfig, buildTaskHarnessPrompt } = require('./project-harness');
 const { codexHistorySearchActive } = require('./immediate-send');
+const { claudeCommandNote, claudeToolResultNote } = require('./searchindex');
+const { spawnCli } = require('./project-plan');
 
 const OV_TTL = 2500;
 
 /** Create transcript, overview, search, console/terminal interaction, and launch routes. */
 function createSessionRoutes(hub) {
   const {
-    baseDir, port, config, buildId, claudeDir, index, projects, accountPrefs, conversationBranches,
+    baseDir, port, config, buildId, claudeDir, index, projects, accountPrefs, conversationBranches, termEvents,
     sessionDisplayTitle, branchBackupDir, forkClaudeJsonlAt, editClaudeJsonlAt, editCodexJsonlAt,
     writeBranchContextFile, validSessionId, cleanModelEffort, cliModelEffortArgs, fingerprint,
     PTY_KEYS, dispatchImmediatePrompt, AGY_ALTM_RE, stripAnsi,
@@ -104,20 +106,28 @@ function createSessionRoutes(hub) {
       if (e.type === 'custom-title' || e.type === 'summary') title = e.customTitle || e.summary || title;
       if (e.type !== 'user' && e.type !== 'assistant') continue;
       if (e.isMeta || e.isSidechain) continue;
+      const ans = claudeToolResultNote(e);
+      if (ans) { msgs.push({ role: 'user', text: ans, ts: e.timestamp }); continue; }
       const text = textOf(e.message?.content);
-      if (!text || /^<(command|local-command|system-reminder)/.test(text.trim())) continue;
+      if (!text) continue;
+      if (/^<(command|local-command|system-reminder)/.test(text.trim())) {
+        const cmdNote = claudeCommandNote(text);
+        if (cmdNote) msgs.push({ role: 'assistant', text: cmdNote, ts: e.timestamp });
+        continue;
+      }
       msgs.push({ role: e.type, text: text.slice(0, 4000), ts: e.timestamp });
     }
-    const sliced = msgs.slice(-maxMsgs);
-    const base = Math.max(0, msgs.length - sliced.length);
+    const mergedMsgs = termEvents ? termEvents.mergeIntoMessages(msgs, sessionId) : msgs;
+    const sliced = mergedMsgs.slice(-maxMsgs);
+    const base = Math.max(0, mergedMsgs.length - sliced.length);
     const edits = conversationBranches.getMsgEdits(sessionId);
     const patched = sliced.map((m, i) => {
       const ov = edits[String(base + i)];
       return ov ? { ...m, text: String(ov.text || '').slice(0, 4000), edited: true } : m;
     });
     return {
-      file, title: conversationBranches.getTitle(sessionId) || title, messages: patched, total: msgs.length, base, size: fs.statSync(file).size,
-      rev: conversationBranches.rev(), lineage: conversationBranches.lineageFor(sessionId, (id) => sessionDisplayTitle(id, index.get(id))),
+      file, title: conversationBranches.getTitle(sessionId) || title, messages: patched, total: mergedMsgs.length, base, size: fs.statSync(file).size,
+      rev: conversationBranches.rev() + (termEvents ? termEvents.rev() : 0), lineage: conversationBranches.lineageFor(sessionId, (id) => sessionDisplayTitle(id, index.get(id))),
       capabilities: { canNativeFork: true, canRewindEdit: true, canEditSource: true },
     };
   }
@@ -162,14 +172,21 @@ function createSessionRoutes(hub) {
     const d = index.get(sessionId);
     if (!d) return null;
     conversationBranches.resolveLinks(hub.terms, hub.termSessionId);
-    const n = d.msgs.length;
+    if (termEvents) {
+      for (const t of hub.terms.values()) {
+        const sid = hub.termSessionId(t);
+        if (sid) termEvents.bindSession(t.id, sid);
+      }
+    }
+    const allMsgs = termEvents ? termEvents.mergeIntoMessages(d.msgs, sessionId) : d.msgs;
+    const n = allMsgs.length;
     const start = at >= 0 ? Math.max(0, at - 40) : Math.max(0, n - 80);
     const end = at >= 0 ? Math.min(n, at + 40) : n;
     const edits = conversationBranches.getMsgEdits(sessionId);
     const ag = d.agent || 'claude';
     return {
-      title: sessionDisplayTitle(sessionId, d), agent: ag, cwd: d.cwd, size: d.offset, rev: conversationBranches.rev(), total: n, base: start,
-      messages: d.msgs.slice(start, end).map((m, idx) => {
+      title: sessionDisplayTitle(sessionId, d), agent: ag, cwd: d.cwd, size: d.offset, rev: conversationBranches.rev() + (termEvents ? termEvents.rev() : 0), total: n, base: start,
+      messages: allMsgs.slice(start, end).map((m, idx) => {
         const ov = edits[String(start + idx)];
         return ov ? { ...m, text: String(ov.text || '').slice(0, 4000), edited: true } : { ...m, text: m.text.slice(0, 4000) };
       }),
@@ -236,6 +253,16 @@ function createSessionRoutes(hub) {
           if (cid) info.sessionId = cid;
         }
       }
+      if (info.sessionId && t.meta?.customTitle && !conversationBranches.getTitle(info.sessionId)) {
+        conversationBranches.setTitle(info.sessionId, t.meta.customTitle);
+      }
+      if (info.sessionId) {
+        const custom = conversationBranches.getTitle(info.sessionId);
+        if (custom) {
+          info.sessionName = custom;
+          info.customTitle = custom;
+        }
+      }
       const br = conversationBranches.branchMetaFor({ sessionId: info.sessionId || null, termId: t.id, lookupTitleFn: (id) => sessionDisplayTitle(id, index.get(id)) });
       if (br) info.branch = br;
       return info;
@@ -262,7 +289,7 @@ function createSessionRoutes(hub) {
 
   async function handleStartOrNewTerm(p, req, res, body, send) {
     let b = await body(req);
-    let projectTask, projectPrompt, launchAccount;
+    let projectTask, projectPrompt, launchAccount, projectRefsBlock = '';
     if (p === '/api/projects/start') {
       if (hub.deletingProjects.has(b.projectId)) return send(res, 409, { error: 'Project 기록을 삭제 중입니다.' });
       const project = projects.list().find((x) => x.id === b.projectId);
@@ -286,11 +313,22 @@ function createSessionRoutes(hub) {
       if (!hub.projectAgents.includes(kind)) return send(res, 400, { error: '작업 설계에서 CLI를 다시 선택하세요.' });
       hub.ensureProjectDir(project.cwd);
       if (!path.isAbsolute(project.cwd) || !fs.statSync(project.cwd, { throwIfNoEntry: false })?.isDirectory()) return send(res, 400, { error: '작업 설계에서 존재하는 작업 폴더의 전체 경로를 입력하세요.' });
-      b = { kind, cwd: project.cwd, title: parentTask ? `${parentTask.title} › ${task.title}` : task.title, skipPermissions: true, model, effort, _autoDispatch: !!b._autoDispatch, _rawPrompt: b._rawPrompt || '' };
+      const taskWorktree = task.worktreePath && path.isAbsolute(task.worktreePath) && fs.statSync(task.worktreePath, { throwIfNoEntry: false })?.isDirectory() ? task.worktreePath : '';
+      b = { kind, cwd: taskWorktree || project.cwd, title: parentTask ? `${parentTask.title} › ${task.title}` : task.title, skipPermissions: true, model, effort, resume: typeof b.resume === 'string' ? b.resume.trim() : '', _autoDispatch: b.autoDispatch !== false && b._autoDispatch !== false, _rawPrompt: b._rawPrompt || '' };
       const parts = parentTask ? [`[상위 작업: ${parentTask.title}]`, parentTask.detail ? parentTask.detail.slice(0, 600) : '', `[서브 개발 작업: ${task.title}]`, task.detail] : [task.title, task.detail];
       const harnessBlock = buildTaskHarnessPrompt(project, task, kind, harnessState);
       if (harnessBlock) parts.push(harnessBlock);
-      projectPrompt = fingerprint(parts.filter(Boolean).join('\n\n'));
+      const depNotes = (task.after || [])
+        .map((id) => project.tasks.find((x) => x.id === id))
+        .filter((d) => d && d.stage === 'done' && (d.lastOutput || d.reviewNote))
+        .map((d) => `- [${d.title}]${d.reviewNote ? ` (검토: ${d.reviewNote.slice(0, 200)})` : ''}\n  ${String(d.lastOutput || '').slice(0, 600)}`)
+        .join('\n');
+      if (depNotes) parts.push(`[선행 작업 완료 결과]\n${depNotes}`);
+      projectRefsBlock = hub.projectRefs?.promptBlock ? hub.projectRefs.promptBlock(project.id) : '';
+      if (projectRefsBlock) parts.push(projectRefsBlock);
+      const fullTaskPrompt = parts.filter(Boolean).join('\n\n');
+      if (!b._rawPrompt) b._rawPrompt = fullTaskPrompt;
+      projectPrompt = fingerprint(fullTaskPrompt);
       try { launchAccount = hub.projectAccounts.resolve(kind, accountId); } catch (e) { return send(res, 400, { error: e.message }); }
     }
     if (b.resume && !b.fork && !projectTask) {
@@ -301,7 +339,7 @@ function createSessionRoutes(hub) {
     let cmd, args = [], title;
     if (b.kind === 'claude') {
       cmd = 'claude.exe';
-      if (projectTask) args.push('--session-id', crypto.randomUUID());
+      if (projectTask && !b.resume) args.push('--session-id', crypto.randomUUID());
       if (b.resume) args.push('--resume', b.resume);
       if (b.resume && b.fork) args.push('--fork-session');
       if (yolo) args.push('--dangerously-skip-permissions');
@@ -328,9 +366,21 @@ function createSessionRoutes(hub) {
       args.push(...cliModelEffortArgs('agy', b.model, b.effort));
       title = b.resume ? `agy ${b.resume.slice(0, 8)}` : 'agy';
     } else if (b.kind === 'cmd') { cmd = 'cmd.exe'; title = 'cmd'; }
-    else { cmd = 'powershell.exe'; args = ['-NoLogo']; title = 'powershell'; }
+    else if (b.kind === 'pwsh') {
+      const pwshExe = ['C:\\Program Files\\PowerShell\\7\\pwsh.exe', 'pwsh.exe'].find((f) => f === 'pwsh.exe' || fs.existsSync(f));
+      cmd = pwshExe; args = ['-NoLogo']; title = 'pwsh';
+    } else if (b.kind === 'ubuntu') {
+      cmd = 'wsl.exe'; args = []; title = 'Ubuntu (WSL)';
+    } else if (b.kind === 'gitbash') {
+      const bashExe = ['C:\\Program Files\\Git\\bin\\bash.exe', 'C:\\Program Files (x86)\\Git\\bin\\bash.exe', 'bash.exe'].find((f) => f === 'bash.exe' || fs.existsSync(f));
+      cmd = bashExe; args = ['--login', '-i']; title = 'Git Bash';
+    } else { cmd = 'powershell.exe'; args = ['-NoLogo']; title = 'powershell'; }
 
     let cwd = b.cwd;
+    if (!projectTask && b.admin) {
+      const workCwd = cwd || os.homedir();
+      return send(res, 200, hub.launchExternalWindow({ cwd: workCwd, title, cmd, args, openMode: 'external', admin: true }));
+    }
     if ((b.kind === 'agy' || b.kind === 'codex') && b.resume) { const d = index.get(b.resume); if (d?.cwd && (b.kind !== 'agy' || d.agent === 'agy')) cwd = d.cwd; }
     if (b.kind === 'claude' && b.resume) {
       const d = index.get(b.resume);
@@ -360,27 +410,43 @@ function createSessionRoutes(hub) {
       if (b._autoDispatch && b._rawPrompt) {
         const rawPrompt = b._rawPrompt;
         (async () => {
-          const ready = await hub.waitFor(() => t.exited !== null || hub.inputReady(t), 35000, 500);
+          let trustedOnce = false;
+          const ready = await hub.waitFor(async () => {
+            if (t.exited !== null) return true;
+            const scr = hub.readTerm(t, 40).join('\n');
+            if (!trustedOnce && /trust this folder|Do you trust/i.test(scr)) {
+              trustedOnce = true;
+              await hub.ptyPost(t.id, '/write', { id: t.id, data: '\r' }).catch(() => {});
+              return false;
+            }
+            return hub.inputReady(t);
+          }, 45000, 600);
           if (!ready || t.exited !== null) return;
           const scr = hub.readTerm(t, 40).join('\n');
           if (/trust this folder|Do you trust/i.test(scr)) return;
-          const ok = await dispatchImmediatePrompt(t, rawPrompt, {
-            agent: hub.agentOf(t),
-            ptyWrite: (id, data) => hub.ptyPost(id, '/write', { id, data }),
-            readTerm: hub.readTerm,
-            wait: (ms) => new Promise((r) => setTimeout(r, ms)),
+          const cli = hub.agentOf(t) || 'claude';
+          const outcome = await dispatchImmediatePrompt({
+            cli,
+            isBusy: () => (cli === 'codex' ? hub.codexStatus(t) : cli === 'agy' ? hub.agyStatus(t) : hub.claudeStatus(t)) === 'busy',
+            readNormLines: (n) => stripAnsi(hub.readTerm(t, n).join('\n')),
+            write: (d) => hub.ptyPost(t.id, '/write', { id: t.id, data: d }),
+            sleep: hub.sleep,
+            text: rawPrompt,
+            submitDelay: hub.SUBMIT_DELAY,
           });
-          if (!ok && t.exited === null) {
+          if (!outcome?.handled && t.exited === null) {
             await hub.ptyPost(t.id, '/write', { id: t.id, data: rawPrompt }).catch(() => {});
-            setTimeout(() => { if (t.exited === null) hub.ptyPost(t.id, '/write', { id: t.id, data: '\r' }).catch(() => {}); }, 250);
+            await hub.sleep(hub.SUBMIT_DELAY + Math.min(2500, Math.floor(rawPrompt.length / 2)));
+            if (t.exited === null) await hub.ptyPost(t.id, '/write', { id: t.id, data: '\r' }).catch(() => {});
           }
+          t._projectDispatchedAt = Date.now();
         })().catch(() => {});
       }
     }
-    return send(res, 200, hub.termInfo(t));
+    return send(res, 200, projectRefsBlock ? { ...hub.termInfo(t), refsBlock: projectRefsBlock } : hub.termInfo(t));
   }
 
-  hub.startProjectTaskById = async (projectId, taskId, { autoDispatch = true } = {}) => {
+  hub.startProjectTaskById = async (projectId, taskId, { autoDispatch = true, resume = '', rawPrompt: overridePrompt = '' } = {}) => {
     let status = 200;
     let payload = null;
     const project = projects.list().find((x) => x.id === projectId);
@@ -393,13 +459,15 @@ function createSessionRoutes(hub) {
       : [];
     const harnessBlock = project && task && resolved ? buildTaskHarnessPrompt(project, task, resolved.agent, harnessState) : '';
     if (harnessBlock) rawParts.push(harnessBlock);
-    const rawPrompt = rawParts.filter(Boolean).join('\n\n');
+    const refsBlock = project && hub.projectRefs?.promptBlock ? hub.projectRefs.promptBlock(project.id) : '';
+    if (refsBlock) rawParts.push(refsBlock);
+    const rawPrompt = overridePrompt || rawParts.filter(Boolean).join('\n\n');
 
     await handleStartOrNewTerm(
       '/api/projects/start',
-      { _autoDispatch: autoDispatch, _rawPrompt: rawPrompt },
+      { _autoDispatch: autoDispatch, _rawPrompt: rawPrompt, resume },
       null,
-      async () => ({ projectId, taskId, _autoDispatch: autoDispatch, _rawPrompt: rawPrompt }),
+      async () => ({ projectId, taskId, _autoDispatch: autoDispatch, _rawPrompt: rawPrompt, resume }),
       (_res, code, data) => { status = code; payload = data; }
     );
     if (status >= 400) return { error: payload?.error || `HTTP ${status}` };
@@ -578,15 +646,30 @@ function createSessionRoutes(hub) {
     }
     if (p === '/api/transcript/title' && req.method === 'POST') {
       const b = await body(req);
-      const id = String(b.id || '').trim(), title = String(b.title || '').trim().slice(0, 140);
-      if (!validSessionId(id)) { send(res, 400, { error: '대화 ID가 올바르지 않습니다.' }); return true; }
-      const saved = conversationBranches.setTitle(id, title);
-      const d = index.get(id);
-      if (d) {
-        d.title = saved || d.title;
-        if ((d.agent || 'claude') === 'claude' && d.file && fs.existsSync(d.file) && saved) {
-          try { fs.appendFileSync(d.file, JSON.stringify({ type: 'custom-title', customTitle: saved, sessionId: id }) + '\n', 'utf8'); } catch {}
+      const id = String(b.id || '').trim();
+      const termId = b.termId != null && b.termId !== '' ? String(b.termId) : '';
+      const title = String(b.title || '').trim().slice(0, 140);
+      if (id && !validSessionId(id)) { send(res, 400, { error: '대화 ID가 올바르지 않습니다.' }); return true; }
+      if (!id && !termId) { send(res, 400, { error: '대화 ID 또는 터미널 ID가 필요합니다.' }); return true; }
+      let saved = title || null;
+      if (id) {
+        saved = conversationBranches.setTitle(id, title);
+        const d = index.get(id);
+        if (d) {
+          d.title = saved || d.title;
+          if ((d.agent || 'claude') === 'claude' && d.file && fs.existsSync(d.file) && saved) {
+            try { fs.appendFileSync(d.file, JSON.stringify({ type: 'custom-title', customTitle: saved, sessionId: id }) + '\n', 'utf8'); } catch {}
+          }
         }
+      }
+      const targets = [...hub.terms.values()].filter((t) => (termId && String(t.id) === termId) || (id && hub.termSessionId(t) === id));
+      for (const t of targets) {
+        t.meta = { ...(t.meta || {}), customTitle: saved || '' };
+        if (saved) t.title = saved;
+        if (saved) t.meta.title = saved;
+        hub.ptyPost?.(t.id, '/meta', { id: t.id, meta: { customTitle: saved || '', ...(saved ? { title: saved } : {}) } });
+        const tSid = !id ? hub.termSessionId(t) : '';
+        if (tSid) saved = conversationBranches.setTitle(tSid, title);
       }
       overviewStale();
       send(res, 200, { ok: true, title: saved });
@@ -594,6 +677,69 @@ function createSessionRoutes(hub) {
     }
     if ((p === '/api/transcript/fork' || p === '/api/transcript/edit') && req.method === 'POST') {
       await handleForkOrEdit(p, req, res, body, send);
+      return true;
+    }
+    if (p === '/api/transcript/sidechat' && req.method === 'POST') {
+      const b = await body(req);
+      const id = String(b.sessionId || '').trim();
+      const selectedText = String(b.selectedText || '').trim().slice(0, 3000);
+      const question = String(b.question || '').trim().slice(0, 2000);
+      if (!question) { send(res, 400, { error: '질문을 입력하세요.' }); return true; }
+      const d = id ? index.get(id) : null;
+      const fallback = (!d && id) ? transcript(id, 40) : null;
+      const msgs = d?.msgs || fallback?.messages || [];
+      const agent = ['claude', 'codex', 'agy'].includes(b.agent) ? b.agent : (d?.agent || 'claude');
+      const cwd = (d?.cwd && fs.existsSync(d.cwd)) ? d.cwd : os.homedir();
+      const normSel = selectedText.replace(/\s+/g, ' ').slice(0, 80);
+      let ctxMsgs = msgs.slice(-8);
+      if (normSel) {
+        const hitIdx = msgs.findIndex((m) => String(m.text || '').replace(/\s+/g, ' ').includes(normSel));
+        if (hitIdx >= 0) ctxMsgs = msgs.slice(Math.max(0, hitIdx - 2), Math.min(msgs.length, hitIdx + 3));
+      }
+      const ctxText = ctxMsgs.map((m) => `[${m.role}] ${String(m.text || '').slice(0, 900)}`).join('\n\n');
+      const histText = Array.isArray(b.history) && b.history.length
+        ? b.history.slice(-6).map((h) => `[${h.role === 'user' ? 'User' : 'Assistant'}] ${String(h.text || '').slice(0, 800)}`).join('\n')
+        : '';
+      const prompt = [
+        'Answer the user question concisely based on the selected excerpt and conversation context below. Do not modify files or run tools.',
+        ctxText ? `[기존 대화 맥락 발췌]\n${ctxText}` : '',
+        selectedText ? `[사용자가 드래그해 선택한 부분]\n${selectedText}` : '',
+        histText ? `[사이드 채팅 이전 질문/답변]\n${histText}` : '',
+        `[질문]\n${question}`,
+      ].filter(Boolean).join('\n\n');
+      try {
+        let reply = '';
+        if (agent === 'codex') {
+          const outFile = path.join(os.tmpdir(), `sidechat-${crypto.randomUUID()}.txt`);
+          try {
+            const { args, cmd } = hub.codexLaunch(['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '--ephemeral', '--color', 'never', '-o', outFile, prompt]);
+            const { stdout } = await spawnCli(cmd, args, { cwd, env: process.env, timeoutMs: 90_000 });
+            reply = fs.existsSync(outFile) ? fs.readFileSync(outFile, 'utf8').trim() : stripAnsi(stdout).trim();
+          } finally { fs.rmSync(outFile, { force: true }); }
+        } else if (agent === 'agy') {
+          const logFile = path.join(os.tmpdir(), `sidechat-agy-${crypto.randomUUID()}.log`);
+          let convId = '';
+          try {
+            const { stdout } = await spawnCli(hub.agyExe(), ['--print', prompt, '--output-format', 'json', '--log-file', logFile], { cwd, env: process.env, timeoutMs: 90_000 });
+            try {
+              const parsed = JSON.parse(stdout.slice(stdout.indexOf('{'), stdout.lastIndexOf('}') + 1));
+              convId = parsed.conversation_id || '';
+              reply = String(parsed.response || parsed.result || '').trim();
+            } catch { reply = stripAnsi(stdout).trim(); }
+          } finally {
+            fs.rmSync(logFile, { force: true });
+            if (convId && hub.deleteCliRecord) {
+              try { await hub.deleteCliRecord({ sessionId: convId, agent: 'agy' }); } catch {}
+            }
+          }
+        } else {
+          const { stdout } = await spawnCli('claude.exe', ['--print', '--no-session-persistence', '--tools', '', '--output-format', 'text', prompt], { cwd, env: process.env, timeoutMs: 90_000 });
+          reply = stripAnsi(stdout).trim();
+        }
+        send(res, 200, { ok: true, reply: reply || '(응답 없음)', agent });
+      } catch (e) {
+        send(res, 502, { ok: false, error: e.message || '사이드 채팅 응답 생성 실패' });
+      }
       return true;
     }
     if (p === '/api/search') {
@@ -684,12 +830,13 @@ function createSessionRoutes(hub) {
         });
         if (outcome.handled) { send(res, 200, outcome.result); return true; }
       }
-      if (b.text) t.proc.write(b.text);
+      if (b.text) { hub.termMonitor?.onInput(t, b.text); t.proc.write(b.text); }
       for (const k of b.keys || []) {
         if (!(k in PTY_KEYS)) { send(res, 400, { ok: false, error: `unknown key ${k}; one of ${Object.keys(PTY_KEYS)}` }); return true; }
+        hub.termMonitor?.onInput(t, PTY_KEYS[k]);
         t.proc.write(PTY_KEYS[k]);
       }
-      if (b.submit) { await hub.sleep(b.fromTerminalInput && b.text ? hub.SUBMIT_DELAY + Math.min(3000, b.text.length * 2) : hub.SUBMIT_DELAY); t.proc.write('\r'); }
+      if (b.submit) { await hub.sleep(b.fromTerminalInput && b.text ? hub.SUBMIT_DELAY + Math.min(3000, b.text.length * 2) : hub.SUBMIT_DELAY); hub.termMonitor?.onInput(t, '\r'); t.proc.write('\r'); }
       send(res, 200, { ok: true, immediate: !!b.immediate });
       return true;
     }
@@ -699,8 +846,14 @@ function createSessionRoutes(hub) {
       let cmd, args = [];
       if (kind === 'codex') ({ cmd, args } = hub.codexLaunch([...(yolo ? ['--dangerously-bypass-approvals-and-sandbox'] : []), ...cliModelEffortArgs('codex', b.model, b.effort), ...(b.resume ? ['resume', b.resume] : [])]));
       else if (kind === 'agy') { cmd = hub.agyExe(); if (b.resume) args.push('--conversation', b.resume); if (yolo) args.push('--dangerously-skip-permissions'); args.push(...cliModelEffortArgs('agy', b.model, b.effort)); }
+      else if (kind === 'cursor') { const ca = [config.cursorAgent, path.join(os.homedir(), 'AppData', 'Local', 'cursor-agent', 'cursor-agent.cmd')].find((f) => f && fs.existsSync(f)) || 'cursor-agent.cmd'; cmd = 'cmd.exe'; args = ['/c', ca, ...(b.resume ? ['--resume', b.resume] : [])]; }
+      else if (kind === 'cmd') { cmd = 'cmd.exe'; }
+      else if (kind === 'powershell') { cmd = 'powershell.exe'; args = ['-NoLogo']; }
+      else if (kind === 'pwsh') { cmd = ['C:\\Program Files\\PowerShell\\7\\pwsh.exe', 'pwsh.exe'].find((f) => f === 'pwsh.exe' || fs.existsSync(f)); args = ['-NoLogo']; }
+      else if (kind === 'ubuntu') { cmd = 'wsl.exe'; args = []; }
+      else if (kind === 'gitbash') { cmd = ['C:\\Program Files\\Git\\bin\\bash.exe', 'C:\\Program Files (x86)\\Git\\bin\\bash.exe', 'bash.exe'].find((f) => f === 'bash.exe' || fs.existsSync(f)); args = ['--login', '-i']; }
       else { cmd = 'claude.exe'; if (b.resume) args.push('--resume', b.resume); if (yolo) args.push('--dangerously-skip-permissions'); args.push(...cliModelEffortArgs('claude', b.model, b.effort)); }
-      send(res, 200, hub.launchExternalWindow({ cwd, title: `${kind} ${b.resume ? b.resume.slice(0, 8) : ''}`.trim(), cmd, args, openMode: b.openMode || 'external' }));
+      send(res, 200, hub.launchExternalWindow({ cwd, title: `${kind} ${b.resume ? b.resume.slice(0, 8) : ''}`.trim(), cmd, args, openMode: b.openMode || 'external', admin: !!b.admin }));
       return true;
     }
     if ((p === '/api/term/new' || p === '/api/projects/start') && req.method === 'POST') {

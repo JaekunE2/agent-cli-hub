@@ -50,15 +50,19 @@ function projectBoard(p) {
     const k = typeof taskKindOf === 'function' ? taskKindOf(t) : 'dev';
     const chatCnt = (p.subChats?.[t.id] || []).length;
     const menuAria = `${t.title} 메뉴`;
-    return `<article class="pj-task" draggable="true" data-task="${esc(t.id)}" data-kind="${esc(k)}">
+    return `<article class="pj-task${t.autoExclude ? ' is-auto-off' : ''}" draggable="true" data-task="${esc(t.id)}" data-kind="${esc(k)}">
       <div class="row" style="justify-content:space-between;gap:6px">
-        <div class="row" style="gap:5px;min-width:0">${typeof kindBadgeHTML === 'function' ? kindBadgeHTML(t) : ''}${subs.length ? `<span class="badge" title="클릭해 하위 서브태스크 확인">하위 ${subDone}/${subs.length}</span>` : ''}</div>
-        <button class="ghost icon-btn btn-sm" data-task-more="${esc(t.id)}" aria-label="${esc(menuAria)}" aria-haspopup="menu" aria-expanded="false">${ico.more || '⋯'}</button>
+        <div class="row" style="gap:5px;min-width:0">${typeof kindBadgeHTML === 'function' ? kindBadgeHTML(t) : ''}${typeof projectReviewBadgeHTML === 'function' ? projectReviewBadgeHTML(t) : ''}${subs.length ? `<span class="badge" title="클릭해 하위 서브태스크 확인">하위 ${subDone}/${subs.length}</span>` : ''}</div>
+        <div class="row" style="gap:4px;flex-shrink:0">
+          <button type="button" class="pj-auto-sw${t.autoExclude ? ' off' : ' on'}" data-toggle-auto="${esc(t.id)}" aria-pressed="${!t.autoExclude}" title="${t.autoExclude ? '자동 진행에서 제외됨 (클릭해 포함)' : '자동 진행에 포함됨 (클릭해 제외)'}">${t.autoExclude ? '자동 OFF' : '자동 ON'}</button>
+          <button class="ghost icon-btn btn-sm" data-task-more="${esc(t.id)}" aria-label="${esc(menuAria)}" aria-haspopup="menu" aria-expanded="false">${ico.more || '⋯'}</button>
+        </div>
       </div>
       <div class="pj-task-head">
         <button data-edit="${esc(t.id)}" class="pj-title">${esc(t.title)}</button>
       </div>
       ${t.detail ? `<p class="pj-card-desc">${esc(t.detail)}</p>` : ''}
+      ${typeof projectReviewNoteHTML === 'function' ? projectReviewNoteHTML(t, true) : ''}
       <div class="pj-task-foot">
         <button class="ghost btn-sm" data-subchat-task="${esc(t.id)}" title="서브 개발 채팅 열기" aria-label="서브 개발 채팅">${ico.chat || ''}${chatCnt ? ` ${chatCnt}` : ''}</button>
         ${projectStartBtnHTML(p, t)}
@@ -83,6 +87,13 @@ function projectBoard(p) {
     finally { saving = false; }
   };
   host.onclick = (e) => {
+    const autoSw = e.target.closest('[data-toggle-auto]');
+    if (autoSw) {
+      e.stopPropagation();
+      const tid = autoSw.dataset.toggleAuto;
+      saveProject({ ...p, tasks: p.tasks.map((t) => (t.id === tid ? { ...t, autoExclude: !t.autoExclude } : t)) }).catch((er) => toast(er.message, 5000, 'danger'));
+      return;
+    }
     const scBtn = e.target.closest('[data-subchat-task]');
     if (scBtn) { e.stopPropagation(); return openProjectTaskDrawer(p, p.tasks.find((x) => x.id === scBtn.dataset.subchatTask), true); }
     const more = e.target.closest('[data-task-more]');

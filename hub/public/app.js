@@ -301,7 +301,10 @@ function openNewTermDrawer(projectCwd = '', onCreated = null, initialKind = null
       <label title="Cursor 터미널 에이전트 (cursor-agent, 처음 한 번 cursor-agent login 필요)"><input type="radio" name="k" value="cursor" ${chk('cursor')}> Cursor</label>
       <label title="Antigravity CLI (agy)"><input type="radio" name="k" value="agy" ${chk('agy')}> agy (Antigravity)</label>
       <label><input type="radio" name="k" value="powershell" ${chk('powershell')}> PowerShell</label>
+      <label><input type="radio" name="k" value="pwsh" ${chk('pwsh')}> PowerShell 7</label>
       <label><input type="radio" name="k" value="cmd" ${chk('cmd')}> cmd</label>
+      <label><input type="radio" name="k" value="ubuntu" ${chk('ubuntu')}> Ubuntu (WSL)</label>
+      <label><input type="radio" name="k" value="gitbash" ${chk('gitbash')}> Git Bash</label>
       ${state.researchEnabled ? `<label><input type="radio" name="k" value="research" ${chk('research')}> 연구 디렉터 (자율)</label>` : ''}</div>
     <div id="nTerm" style="display:flex;flex-direction:column;gap:10px">
       <label>작업 폴더<br>
@@ -315,6 +318,7 @@ function openNewTermDrawer(projectCwd = '', onCreated = null, initialKind = null
         <div id="nMeHost" style="display:flex;flex-direction:column;gap:8px">${typeof projectModelEffortFields === 'string' ? projectModelEffortFields : ''}</div>
       </details>
       <label class="row"><input type="checkbox" id="nSkip" checked> YOLO 모드 자동 승인 (Claude · Codex · Antigravity)</label>
+      <label class="row"><input type="checkbox" id="nAdmin"> 관리자 권한으로 실행 (Windows UAC · 외부 콘솔 창)</label>
     </div>
     <div id="nRes" hidden style="display:flex;flex-direction:column;gap:10px">
       <label>프로젝트 이름<br><input id="rName" style="width:100%" placeholder="예: 조명 변화에 강한 DT 3DGS"></label>
@@ -365,6 +369,7 @@ function openNewTermDrawer(projectCwd = '', onCreated = null, initialKind = null
       kind,
       cwd: $('#nCwd', d).value,
       skipPermissions: $('#nSkip', d).checked,
+      admin: !!$('#nAdmin', d)?.checked,
       ...(me.model ? { model: me.model } : {}),
       ...(me.effort ? { effort: me.effort } : {}),
     };
@@ -373,11 +378,12 @@ function openNewTermDrawer(projectCwd = '', onCreated = null, initialKind = null
     const kind = kindOf();
     if (kind === 'research') return;
     $('#nExt', d).disabled = true;
-    const r = await api('/api/term/external', { method: 'POST', body: launchParams(kind) });
+    const p = launchParams(kind);
+    const r = await api('/api/term/external', { method: 'POST', body: p });
     $('#nExt', d).disabled = false;
     if (r.error) return toast(r.error, 6000);
     d.close();
-    toast('외부 Windows 콘솔 창에서 열었습니다');
+    toast(p.admin ? '관리자 권한 외부 Windows 콘솔 창에서 열었습니다' : '외부 Windows 콘솔 창에서 열었습니다');
     setTimeout(refreshOverview, 1200);
   };
   $('#nOk', d).onclick = async () => {
@@ -392,9 +398,15 @@ function openNewTermDrawer(projectCwd = '', onCreated = null, initialKind = null
       await Promise.all([refreshOverview(), refreshResearch()]);
       return select({ kind: 'research', id: r.slug });
     }
-    const t = await api('/api/term/new', { method: 'POST', body: launchParams(kind) });
+    const p = launchParams(kind);
+    const t = await api('/api/term/new', { method: 'POST', body: p });
     if (t.error) return toast(t.error, 6000);
     d.close();
+    if (t.external) {
+      toast(t.admin ? '관리자 권한 외부 Windows 콘솔 창에서 열었습니다' : '외부 Windows 콘솔 창에서 열었습니다');
+      setTimeout(refreshOverview, 1200);
+      return;
+    }
     await refreshOverview();
     if (onCreated) return onCreated(t);
     select({ kind: 'term', id: t.id });

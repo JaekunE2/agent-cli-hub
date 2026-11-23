@@ -7,7 +7,7 @@ const crypto = require('crypto');
 const { spawn } = require('child_process');
 
 const { resolveTaskConfig } = require('./project-harness');
-const { runProjectAutopilot } = require('./project-autopilot');
+const { runProjectAutopilot, completeAutopilotTask } = require('./project-autopilot');
 
 const projectAgents = ['codex', 'claude', 'agy', 'cursor'];
 
@@ -287,14 +287,61 @@ function createProjectRoutes(hub) {
       const project = projects.list().find((x) => x.id === b.projectId);
       const task = project?.tasks.find((x) => x.id === b.taskId);
       if (!project || !task) { send(res, 404, { error: 'Project 작업을 찾을 수 없습니다.' }); return true; }
-      if (!project.autopilot) { send(res, 200, { ok: true, skipped: true, started: [] }); return true; }
-      let updated = project;
-      if (task.stage !== 'done') {
-        const nextTasks = project.tasks.map((t) => (t.id === task.id ? { ...t, stage: 'done' } : t));
-        updated = projects.save({ ...project, tasks: nextTasks });
+      if (!project.autopilot && !b.force) { send(res, 200, { ok: true, skipped: true, started: [] }); return true; }
+      if (b.async) {
+        const reviewingTasks = project.tasks.map((t) => (t.id === task.id
+          ? { ...t, stage: 'review', reviewStatus: 'reviewing', reviewNote: '교차 리뷰 에이전트 자동 검토 중…' }
+          : t));
+        const nextP = projects.save({ ...project, tasks: reviewingTasks });
+        hub.overviewStale?.();
+        completeAutopilotTask(hub, project.id, task.id, { force: Boolean(b.force) }).catch((e) => console.error('[autopilot-rereview-manual]', project.id, task.id, e?.message || e));
+        send(res, 200, { ok: true, queued: true, project: nextP });
+        return true;
       }
-      const autoRes = await runProjectAutopilot(hub, updated.id, { autoDispatch: true });
-      send(res, 200, { ok: true, project: hub.projects.list().find((x) => x.id === updated.id) || updated, started: autoRes.started });
+      const autoRes = await completeAutopilotTask(hub, project.id, task.id, { force: Boolean(b.force) });
+      send(res, 200, { ok: true, project: hub.projects.list().find((x) => x.id === project.id) || project, ...autoRes });
+      return true;
+    }
+
+    if (p === '/api/projects/refs/file' && req.method === 'GET') {
+      const pid = url.searchParams.get('projectId') || '';
+      const name = url.searchParams.get('name') || '';
+      try {
+        const f = hub.projectRefs?.readFile(pid, name);
+        if (!f) { send(res, 404, { error: '참조 파일을 찾을 수 없습니다.' }); return true; }
+        const mime = f.mime.startsWith('text/markdown') ? 'text/plain; charset=utf-8' : f.mime;
+        res.writeHead(200, { 'content-type': mime, 'content-disposition': 'inline', 'cache-control': 'no-store', 'content-length': f.buf.length });
+        res.end(f.buf);
+      } catch (e) { send(res, 400, { error: e.message }); }
+      return true;
+    }
+
+    if (p === '/api/projects/refs') {
+      if (req.method === 'GET') {
+        const pid = url.searchParams.get('projectId') || '';
+        try {
+          const dir = hub.projectRefs.ensureDir(pid);
+          send(res, 200, { ok: true, dir, files: hub.projectRefs.list(pid) });
+        } catch (e) { send(res, 400, { error: e.message }); }
+        return true;
+      }
+      if (req.method === 'POST') {
+        const b = await body(req);
+        try {
+          const file = hub.projectRefs.saveFile(b?.projectId, { name: b?.name, text: b?.text, contentBase64: b?.contentBase64 });
+          send(res, 200, { ok: true, file, dir: hub.projectRefs.dirOf(b?.projectId), files: hub.projectRefs.list(b?.projectId) });
+        } catch (e) { send(res, 400, { error: e.message }); }
+        return true;
+      }
+      if (req.method === 'DELETE') {
+        const b = await body(req);
+        try {
+          const files = hub.projectRefs.deleteFile(b?.projectId, b?.name);
+          send(res, 200, { ok: true, files });
+        } catch (e) { send(res, 400, { error: e.message }); }
+        return true;
+      }
+      send(res, 405, { error: 'method not allowed' });
       return true;
     }
 
@@ -506,6 +553,7 @@ function createProjectRoutes(hub) {
           const resTurn = await runTaskSubChatTurn({
             exe, agent: effAgent, cwd: workCwd, env: { ...hub.cleanEnv(), ...auth.env },
             model: effModel, effort: effEffort, sessionId: chat.sessionId, prompt, project, task, harnessState,
+            refsBlock: hub.projectRefs?.promptBlock ? hub.projectRefs.promptBlock(project.id) : '',
             onProgress: (ev) => {
               if (ev?.stage) actState.stage = ev.stage;
               if (ev?.log) actState.logs = [...actState.logs, ev.log].slice(-5);

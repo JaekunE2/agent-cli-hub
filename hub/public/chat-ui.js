@@ -148,6 +148,114 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
   const liveHost = $('#chatLiveHost', box);
   const floatWrap = $('.chat-bottom-float', box);
 
+  // Ephemeral Side Chat (drag-select -> ask once without saving to session history)
+  let sideChatState = { open: false, selectedText: '', history: [], busy: false };
+  const sideFab = document.createElement('button');
+  sideFab.type = 'button';
+  sideFab.className = 'sidechat-fab';
+  sideFab.hidden = true;
+  sideFab.innerHTML = `${ICO.chat} <span>사이드 질문</span>`;
+  box.appendChild(sideFab);
+
+  const sidePop = document.createElement('section');
+  sidePop.className = 'sidechat-pop';
+  sidePop.hidden = true;
+  sidePop.setAttribute('aria-label', '사이드 채팅');
+  box.appendChild(sidePop);
+
+  const renderSideChat = () => {
+    if (!sideChatState.open) { sidePop.hidden = true; return; }
+    sidePop.hidden = false;
+    const quote = sideChatState.selectedText.length > 220
+      ? `${sideChatState.selectedText.slice(0, 220)}…`
+      : sideChatState.selectedText;
+    const msgsHtml = sideChatState.history.length
+      ? sideChatState.history.map((m) => `<div class="sidechat-msg ${m.role === 'user' ? 'u' : 'a'}">${m.role === 'user' ? esc(m.text) : md(m.text)}</div>`).join('')
+      : '<div class="ums" style="margin:6px 0">선택한 부분을 기준으로 단발성 질문을 입력하세요. (대화 기록에 저장되지 않음)</div>';
+    sidePop.innerHTML = `
+      <div class="sidechat-hd">
+        <span class="sidechat-ttl">${ICO.chat} 사이드 채팅 <span class="badge">일회성 · 미저장</span></span>
+        <button type="button" class="ghost icon-btn btn-sm" data-sc-close aria-label="사이드 채팅 닫기">${ICO.close}</button>
+      </div>
+      <blockquote class="sidechat-quote">${esc(quote)}</blockquote>
+      <div class="sidechat-msgs">${msgsHtml}${sideChatState.busy ? '<div class="ums" style="margin:4px 0">응답 생성 중…</div>' : ''}</div>
+      <div class="sidechat-bar">
+        <input type="text" data-sc-in placeholder="선택한 내용에 대해 질문…" ${sideChatState.busy ? 'disabled' : ''}>
+        <button type="button" class="primary btn-sm" data-sc-send ${sideChatState.busy ? 'disabled' : ''}>질문</button>
+      </div>`;
+    const bodyEl = $('.sidechat-msgs', sidePop);
+    if (bodyEl) bodyEl.scrollTop = bodyEl.scrollHeight;
+    $('[data-sc-close]', sidePop).onclick = () => {
+      sideChatState = { open: false, selectedText: '', history: [], busy: false };
+      renderSideChat();
+    };
+    const scIn = $('[data-sc-in]', sidePop);
+    const sendSide = async () => {
+      const q = (scIn?.value || '').trim();
+      if (!q || sideChatState.busy) return;
+      const prevHist = sideChatState.history.slice();
+      sideChatState.history.push({ role: 'user', text: q });
+      sideChatState.busy = true;
+      renderSideChat();
+      try {
+        const res = await api('/api/transcript/sidechat', {
+          method: 'POST',
+          body: {
+            sessionId: curSid || '',
+            selectedText: sideChatState.selectedText,
+            question: q,
+            history: prevHist,
+            agent: ag || 'claude',
+          },
+        });
+        if (!res?.ok) throw new Error(res?.error || '응답 생성 실패');
+        sideChatState.history.push({ role: 'assistant', text: res.reply || '' });
+      } catch (err) {
+        sideChatState.history.push({ role: 'assistant', text: `⚠ ${err.message}` });
+      } finally {
+        sideChatState.busy = false;
+        if (sideChatState.open) {
+          renderSideChat();
+          $('[data-sc-in]', sidePop)?.focus();
+        }
+      }
+    };
+    $('[data-sc-send]', sidePop).onclick = sendSide;
+    scIn?.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' && !ev.isComposing) { ev.preventDefault(); sendSide(); }
+    });
+    scIn?.focus();
+  };
+
+  let pendingSelText = '';
+  msgsHost.addEventListener('mouseup', () => {
+    setTimeout(() => {
+      if (!msgsHost.isConnected) return;
+      const sel = window.getSelection();
+      const txt = sel ? sel.toString().trim() : '';
+      if (!txt || txt.length < 2 || !sel.rangeCount || !msgsHost.contains(sel.getRangeAt(0).commonAncestorContainer)) {
+        sideFab.hidden = true;
+        pendingSelText = '';
+        return;
+      }
+      pendingSelText = txt.slice(0, 3000);
+      const rect = sel.getRangeAt(0).getBoundingClientRect();
+      const boxRect = box.getBoundingClientRect();
+      const top = Math.max(8, rect.bottom - boxRect.top + 6);
+      const left = Math.max(8, Math.min(boxRect.width - 120, rect.left - boxRect.left));
+      sideFab.style.top = `${top}px`;
+      sideFab.style.left = `${left}px`;
+      sideFab.hidden = false;
+    }, 10);
+  });
+  sideFab.onclick = () => {
+    if (!pendingSelText) return;
+    sideChatState = { open: true, selectedText: pendingSelText, history: [], busy: false };
+    sideFab.hidden = true;
+    try { window.getSelection()?.removeAllRanges(); } catch {}
+    renderSideChat();
+  };
+
   let lastSig = '';
   let lastLiveMode = '';
   let lastMessages = [];
@@ -357,7 +465,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
     if (d.hidden) { msgsHost.textContent = d.error; return; }
     const parentSig = d.lineage?.parent ? `${d.lineage.parent.parentSessionId}:${d.lineage.parent.atIndex}` : '';
     const childSig = (d.lineage?.children || []).map((c) => `${c.id || ''}:${c.childSessionId || ''}:${c.atIndex}`).join(',');
-    const sig = `${d.size || 0}:${d.rev || 0}:${d.title || ''}:${parentSig}:${childSig}`;
+    const sig = `${d.size || 0}:${d.total || 0}:${d.rev || 0}:${d.title || ''}:${parentSig}:${childSig}`;
     if (d.error && !d.messages?.length) {
       if (lastMessages.length) {
         const working = await updateLiveBubble(lastMessages);
@@ -417,7 +525,8 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
       };
       let lastDay = '';
       d.messages.forEach((m, k) => {
-        const tool = m.role === 'assistant' && m.text.startsWith('⚙');
+        const isMetaNote = m.role === 'assistant' && /^⚙ \[(?:설정|터미널)/.test(m.text);
+        const tool = m.role === 'assistant' && m.text.startsWith('⚙') && !isMetaNote;
         const gi = b + k;
         const tgt = jump && gi === at;
         if (tool && !tgt) { toolBuf.push({ m, gi }); return; }
@@ -441,7 +550,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
         const branchOriginNote = gi === 0 && d.lineage?.parent
           ? `<div class="msg-branch-origin">${ICO.branch} <span>분기 시작 · 원본 #${d.lineage.parent.atIndex + 1}${d.lineage.parent.editedText ? ` · 요청: ${esc(String(d.lineage.parent.editedText).replace(/\s+/g, ' ').trim().slice(0, 80))}` : ''}</span></div>`
           : '';
-        if (tool) {
+        if (tool || isMetaNote) {
           parts.push(`<div class="msg tool${tgt ? ' target' : ''}" data-mi="${k}">${linkPaths(hl(rawTxt, terms))}</div>${branchChipsHTML(gi)}`);
         } else if (m.role === 'user') {
           const bodyHtml = linkPaths(hl(rawTxt, terms));

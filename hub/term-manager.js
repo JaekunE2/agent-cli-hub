@@ -6,6 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn, execFile } = require('child_process');
 const { Terminal: HeadlessTerminal } = require('@xterm/headless');
+const { createTermScreenMonitor } = require('./term-events');
 
 const SESSION_ENV = /^(CLAUDECODE|CLAUDE_PID|CLAUDE_EFFORT|CLAUDE_CODE_(CHILD_SESSION|SESSION_ID|SESSION_ATTENDED|MESSAGING_SOCKET|MESSAGING_TOKEN|ENTRYPOINT|EXECPATH))$/;
 const CODEX_BUSY = /esc to interrupt|esc to cancel/i;
@@ -81,6 +82,19 @@ function createTermManager(hub) {
   const isCodexTerm = (t) => /codex(\.exe)?$/i.test(t?.meta?.cmd || '') || (/cmd(\.exe)?$/i.test(t?.meta?.cmd || '') && /codex(\.cmd)?$/i.test(t?.meta?.args?.[1] || ''));
   const isAgyTerm = (t) => /agy(\.exe)?$/i.test(t?.meta?.cmd || '');
   const agentOf = (t) => (/claude(\.exe)?$/i.test(t.meta?.cmd || '') ? 'claude' : isCodexTerm(t) ? 'codex' : isAgyTerm(t) ? 'agy' : /cursor-agent/i.test((t.meta?.args || []).join(' ')) ? 'cursor' : null);
+  const termMonitor = hub.termEvents ? createTermScreenMonitor({
+    store: hub.termEvents,
+    stripAnsi,
+    readTerm,
+    agentOf,
+    getSessionId: (t) => termSessionId(t) || t.meta?.sessionId || null,
+    onMetaChange: (t, next) => {
+      if (!t.meta) t.meta = {};
+      if (next.model) t.meta.model = next.model;
+      if (next.effort) t.meta.effort = next.effort;
+      if (next.mode) t.meta.mode = next.mode;
+    },
+  }) : null;
 
   function readTerm(t, n = 60) {
     const b = t.vt.buffer.active, lines = [];
@@ -92,8 +106,8 @@ function createTermManager(hub) {
   }
 
   const inputReady = (t) => {
-    const s = readTerm(t, 40).join('\n');
-    return !/trust this folder|Do you trust/i.test(s) && /\? for shortcuts|bypass permissions|auto mode|accept edits|^\s*[>❯]\s*$/m.test(s);
+    const s = stripAnsi(readTerm(t, 40).join('\n'));
+    return !/trust this folder|Do you trust/i.test(s) && /\? for shortcuts|bypass permissions|auto mode|accept edits|type your message|type a message|ask anything|^\s*[>›❯]/im.test(s);
   };
 
   function agySessionOf(t) {
@@ -234,9 +248,9 @@ function createTermManager(hub) {
   }
 
   const termInfo = (t) => ({
-    id: t.id, title: t.title, liveTitle: t.liveTitle, account: t.account, agent: agentOf(t), operator: !!t.meta?.operator,
+    id: t.id, title: t.title, customTitle: t.meta?.customTitle || '', liveTitle: t.liveTitle, account: t.account, agent: agentOf(t), operator: !!t.meta?.operator,
     claude: /claude(\.exe)?$/i.test(t.meta?.cmd || ''), codex: isCodexTerm(t), agy: isAgyTerm(t),
-    model: t.meta?.model || '', effort: t.meta?.effort || '',
+    model: t.meta?.model || '', effort: t.meta?.effort || '', mode: t.meta?.mode || '',
     ...(isCodexTerm(t) ? { status: codexStatus(t) } : isAgyTerm(t) ? { status: agyStatus(t) } : /claude(\.exe)?$/i.test(t.meta?.cmd || '') ? { status: claudeStatus(t) } : {}),
     ...(isAgyTerm(t) ? { sessionId: agySessionOf(t) } : {}),
     lastOutputAt: t.lastOutputAt || 0,
@@ -267,6 +281,7 @@ function createTermManager(hub) {
     t.vt.write(d);
     t.buf = (t.buf + d).slice(-400_000);
     if (stripAnsi(d).trim()) t.lastOutputAt = Date.now();
+    termMonitor?.onOutput(t);
     for (const ws of t.clients) ws.send(JSON.stringify({ type: 'data', data: d }));
   }
 
@@ -481,11 +496,13 @@ function createTermManager(hub) {
       const args = cliKind
         ? buildRecoveryLaunchArgs({ cli: cliKind, rawArgs: m.args || [], sessionId: x.sessionId, model: recModel, effort: recEffort, codexRecoveryArgs, cliModelEffortArgs })
         : (m.args || []);
+      const savedTitle = (x.sessionId && hub.conversationBranches?.getTitle(x.sessionId)) || m.customTitle || '';
       const t = createTerm({
-        cwd: m.cwd, cmd: m.cmd, args, title: m.title, env, account: m.account,
+        cwd: m.cwd, cmd: m.cmd, args, title: savedTitle || m.title, env, account: m.account,
         model: recModel, effort: recEffort, lastInputAt: m.lastInputAt || m.spawnedAt || 0,
         research: m.research, projectTask: m.projectTask, projectPrompt: m.projectPrompt,
       });
+      if (savedTitle) t.meta.customTitle = savedTitle;
       if (m.research) t.research = m.research;
       t.meta.sessionId = x.sessionId;
       if (isClaude && x.busy && !m.research) sendNoteWhenReady(t, note).catch(() => {});
@@ -720,6 +737,7 @@ function createTermManager(hub) {
     dedupeTermsBySession,
     locateFile,
     saveUpload,
+    termMonitor,
   };
 }
 

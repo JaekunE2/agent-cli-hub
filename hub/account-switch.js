@@ -271,7 +271,7 @@ function createAccountSwitchService(hub) {
     };
   }
 
-  function writeHandoffFile({ sessionId, d, t0, sourceAgent, targetAgent, cwd }) {
+  function writeHandoffFile({ sessionId, d, t0, sourceAgent, targetAgent, cwd, followUp = '', cont = false }) {
     const dir = path.join(baseDir, 'uploads');
     fs.mkdirSync(dir, { recursive: true });
     const tag = (sessionId || (t0 && `term-${t0.id}`) || String(Date.now())).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 16);
@@ -283,8 +283,9 @@ function createAccountSwitchService(hub) {
       d?.title || d?.firstPrompt ? `- 세션 제목: ${(d.title || d.firstPrompt).split('\n')[0]}` : '',
       '', '## 최근 대화 기록 (직전 맥락)',
     ].filter((x) => x !== null);
-    if (d?.msgs?.length) {
-      for (const m of d.msgs.filter((m) => !String(m.text || '').startsWith('⚙')).slice(-10)) {
+    const msgs = d?.msgs?.length ? d.msgs.filter((m) => !String(m.text || '').startsWith('⚙') || /^⚙ \[(?:설정|터미널)/.test(String(m.text || ''))).slice(-20) : [];
+    if (msgs.length) {
+      for (const m of msgs) {
         const who = m.role === 'user' ? '사용자 (User)' : `이전 에이전트 (${sourceAgent})`;
         const txt = String(m.text || '').replace(/<external_codex_apps_[^>]*>[\s\S]*?<\/external_codex_apps_[^>]*>/gi, '').trim().slice(0, 1500);
         if (txt) lines.push(`\n### [${who}]\n${txt}`);
@@ -292,12 +293,19 @@ function createAccountSwitchService(hub) {
     } else if (t0) {
       const scr = hub.readTerm(t0, 60).join('\n').trim();
       if (scr) lines.push('\n```text\n' + scr.slice(-3000) + '\n```');
+    } else {
+      lines.push('\n_(저장된 이전 대화 메시지가 없어 세션 메타데이터만 전달합니다)_');
+    }
+    if (followUp && String(followUp).trim()) {
+      lines.push('', '## [이관 후 즉시 실행할 요청]', String(followUp).trim());
+    } else if (!cont) {
+      lines.push('', '## 안내', '위 맥락을 파악해 둔 뒤, 준비 완료를 짧게 알리고 다음 지시를 기다려 주세요.');
     }
     fs.writeFileSync(file, lines.join('\n') + '\n', 'utf8');
     return file;
   }
 
-  function launchExternalWindow({ cwd, title, cmd, args = [], env = {}, openMode = 'external' }) {
+  function launchExternalWindow({ cwd, title, cmd, args = [], env = {}, openMode = 'external', admin = false }) {
     const workCwd = (cwd && fs.existsSync(cwd)) ? cwd : os.homedir();
     if (openMode === 'ide') {
       const ideExe = [
@@ -309,13 +317,27 @@ function createAccountSwitchService(hub) {
     }
     const q = (s) => (/\s|[&()^|<>"]/.test(String(s)) ? `"${String(s).replace(/"/g, '\\"')}"` : String(s));
     const safeTitle = String(title || 'Agent CLI').replace(/["^&|<>]/g, '');
-    spawn('cmd.exe', ['/c', 'start', `"${safeTitle}"`, '/d', workCwd, 'cmd.exe', '/k', [q(cmd), ...args.map(q)].join(' ')], {
+    const cmdLine = [q(cmd), ...args.map(q)].join(' ');
+    if (admin) {
+      const psEsc = (s) => String(s).replace(/'/g, "''");
+      const inner = args.length || !/^(?:cmd|powershell|pwsh)(?:\.exe)?$/i.test(path.basename(cmd))
+        ? `/k ${cmdLine}`
+        : '';
+      const argExpr = inner ? `-ArgumentList '${psEsc(inner)}'` : '';
+      const fileToRun = /^(?:powershell|pwsh)(?:\.exe)?$/i.test(path.basename(cmd)) && !args.length ? cmd : 'cmd.exe';
+      const psCmd = `Start-Process -FilePath '${psEsc(fileToRun)}' ${argExpr} -WorkingDirectory '${psEsc(workCwd)}' -Verb RunAs`;
+      spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCmd], {
+        cwd: workCwd, env: { ...process.env, ...env }, detached: true, stdio: 'ignore', windowsHide: true,
+      }).unref();
+      return { ok: true, external: true, openMode: 'external', admin: true };
+    }
+    spawn('cmd.exe', ['/c', 'start', `"${safeTitle}"`, '/d', workCwd, 'cmd.exe', '/k', cmdLine], {
       cwd: workCwd, env: { ...process.env, ...env }, detached: true, stdio: 'ignore', windowsHide: false,
     }).unref();
     return { ok: true, external: true, openMode: 'external' };
   }
 
-  async function switchAccount({ sessionId, termId, account = 'auto', model = '', effort = '', cont = false, skip = true, interrupt = false, force = false, openMode = 'dashboard' }) {
+  async function switchAccount({ sessionId, termId, account = 'auto', model = '', effort = '', cont = false, followUp = '', skip = true, interrupt = false, force = false, openMode = 'dashboard' }) {
     let t0 = termId != null && termId !== '' ? [...hub.terms.values()].find((x) => String(x.id) === String(termId)) : null;
     let sid = sessionId || (t0 && hub.termSessionId(t0)) || '';
     if (!t0 && sid) t0 = [...hub.terms.values()].find((x) => x.exited === null && hub.termSessionId(x) === sid) || null;
@@ -341,10 +363,17 @@ function createAccountSwitchService(hub) {
     if (model !== undefined || effort !== undefined) accountPrefs.save({ account: pick.id, agent: targetAgent, model: useME.model, effort: useME.effort });
     const cwd = d?.cwd || t0?.cwd || loc.s?.cwd || os.homedir();
 
+    let handoffFile = null;
     let handoffPrompt = null;
-    if (!samePlatform && cont && (d?.msgs?.length || t0)) {
-      const hf = writeHandoffFile({ sessionId: sid, d, t0, sourceAgent, targetAgent, cwd });
-      handoffPrompt = `이전 ${sourceAgent.toUpperCase()} 세션의 작업을 이어받았습니다. "${hf}" 파일에 정리된 직전 대화 맥락을 먼저 읽고, 마지막으로 논의하던 작업을 바로 이어서 진행해 주세요.`;
+    if (!samePlatform && (d?.msgs?.length || t0 || sid)) {
+      handoffFile = writeHandoffFile({ sessionId: sid, d, t0, sourceAgent, targetAgent, cwd, followUp, cont });
+      if (followUp && String(followUp).trim()) {
+        handoffPrompt = `이전 ${sourceAgent.toUpperCase()} 세션의 작업을 이어받았습니다. "${handoffFile}" 파일에 정리된 직전 대화 맥락과 마지막의 [이관 후 즉시 실행할 요청]을 먼저 읽고 바로 실행해 주세요.`;
+      } else if (cont) {
+        handoffPrompt = `이전 ${sourceAgent.toUpperCase()} 세션의 작업을 이어받았습니다. "${handoffFile}" 파일에 정리된 직전 대화 맥락을 먼저 읽고, 마지막으로 논의하던 작업을 바로 이어서 진행해 주세요.`;
+      } else {
+        handoffPrompt = `이전 ${sourceAgent.toUpperCase()} 세션에서 작업을 넘겨받았습니다. "${handoffFile}" 파일에 정리된 직전 대화 맥락을 먼저 읽고, 현재까지의 진행 상황을 간단히 파악한 뒤 다음 지시를 기다려 주세요.`;
+      }
     }
 
     const inheritedProjectTask = t0?.meta?.projectTask || null;
@@ -426,14 +455,15 @@ function createAccountSwitchService(hub) {
     }
 
     const short = (pick.email || pick.label || targetAgent).replace(/@.*/, '');
+    const originShort = (d?.title || d?.firstPrompt?.split('\n')[0].slice(0, 24) || '').trim();
     const baseTitle = !samePlatform
-      ? targetAgent
+      ? (originShort ? `${targetAgent} ⇐ ${originShort}` : targetAgent)
       : (d?.title || d?.firstPrompt?.split('\n')[0].slice(0, 36) || (t0 ? String(t0.title || targetAgent).replace(/ [⇄·] .*$/, '') : sid ? sid.slice(0, 8) : targetAgent));
     const title = `${baseTitle} ⇄ ${short}`;
 
     if (openMode === 'external' || openMode === 'ide') {
       launchExternalWindow({ cwd, title, cmd, args, env, openMode });
-      return { ok: true, external: true, openMode, account: { id: pick.id, label: pick.label, agent: targetAgent, fiveH: pick.fiveH, weekly: pick.weekly } };
+      return { ok: true, external: true, openMode, ...(handoffFile ? { handoffFile } : {}), account: { id: pick.id, label: pick.label, agent: targetAgent, fiveH: pick.fiveH, weekly: pick.weekly } };
     }
 
     let project = null;
@@ -461,6 +491,23 @@ function createAccountSwitchService(hub) {
       });
     }
 
+    if (!samePlatform && sid && hub.conversationBranches?.addBranch) {
+      const originTitle = (d?.title || d?.firstPrompt?.split('\n')[0] || '').trim();
+      hub.conversationBranches.addBranch({
+        parentSessionId: sid,
+        childSessionId: null,
+        termId: t.id,
+        sourceAgent,
+        targetAgent,
+        mode: 'handoff',
+        atIndex: Math.max(0, (d?.msgs?.length || 1) - 1),
+        branchTitle: originTitle ? `(이관) ${originTitle.slice(0, 40)}` : `${sourceAgent} → ${targetAgent}`,
+        anchorText: handoffFile ? path.basename(handoffFile) : '',
+        editedText: followUp ? String(followUp).slice(0, 500) : '',
+        native: false,
+      });
+    }
+
     const promptToSend = targetAgent === 'claude' ? (!samePlatform && handoffPrompt ? handoffPrompt : (cont && samePlatform && sid ? '계속 진행해' : null)) : null;
     if (promptToSend) (async () => {
       if (await hub.waitFor(() => t.exited === null && hub.inputReady(t), 45000, 700)) {
@@ -473,6 +520,7 @@ function createAccountSwitchService(hub) {
       ok: true, term: hub.termInfo(t),
       account: { id: pick.id, label: pick.label, agent: targetAgent, fiveH: pick.fiveH, weekly: pick.weekly },
       crossPlatform: !samePlatform,
+      ...(handoffFile ? { handoffFile } : {}),
       stopped: t0 ? `t:${t0.id}` : loc.live ? (loc.term ? `t:${loc.term.id}` : `c:${loc.console?.id}`) : null,
     };
   }

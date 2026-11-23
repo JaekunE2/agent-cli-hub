@@ -69,7 +69,7 @@
     if (valid.length) saveJson(key, valid);
   }
 
-  function mountWindowsPane({ rootEl, termId = null, consolePid = null, gen, isOpen = () => true, onCount = null }) {
+  function mountWindowsPane({ rootEl, termId = null, consolePid = null, cwd = '', gen, isOpen = () => true, onCount = null }) {
     if (!rootEl) return;
     let winList = [];
     let selectedHwnd = 'all';
@@ -81,6 +81,7 @@
     rootEl.innerHTML = `<div class="win-bar">
         <div class="win-tabs" data-w-tabs></div>
         <div class="row" style="gap:6px;flex:none">
+          <button type="button" class="btn-sm primary" data-w-new title="새 창 · 터미널 · PowerShell · cmd · Ubuntu 열기">${UI_ICO.plus}<span>새 창 열기</span></button>
           <label class="win-auto-lbl"><input type="checkbox" data-w-auto checked> 자동 갱신</label>
           <button type="button" class="btn-sm" data-w-refresh title="창 목록 · 스냅샷 새로고침">${UI_ICO.refresh}<span>새로고침</span></button>
         </div>
@@ -195,6 +196,7 @@
       }
     });
 
+    $('[data-w-new]', rootEl).onclick = () => { if (typeof openNewTermDrawer === 'function') openNewTermDrawer(cwd || ''); };
     $('[data-w-refresh]', rootEl).onclick = () => refreshWindows(true);
     $('[data-w-auto]', rootEl).onchange = (e) => { winAuto = !!e.target.checked; };
 

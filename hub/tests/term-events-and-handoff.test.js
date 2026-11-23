@@ -1,0 +1,227 @@
+'use strict';
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const { SearchIndex, claudeCommandNote, claudeToolResultNote, codexLine, agyLine } = require('../searchindex');
+const { createTermEventStore, parseTerminalScreenState, createTermScreenMonitor } = require('../term-events');
+const { createAccountSwitchService } = require('../account-switch');
+const { createBranchStore } = require('../conversation-branches');
+
+test('searchindex extracts Claude AskUserQuestion, answers, and /model or /plan commands', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ach-claude-events-'));
+  try {
+    const projDir = path.join(dir, 'proj');
+    fs.mkdirSync(projDir, { recursive: true });
+    const file = path.join(projDir, '11111111-2222-3333-4444-555555555555.jsonl');
+    const lines = [
+      JSON.stringify({ type: 'user', cwd: dir, timestamp: '2026-11-23T01:00:00Z', message: { content: '기능 구현해줘' } }),
+      JSON.stringify({ type: 'user', cwd: dir, timestamp: '2026-11-23T01:00:05Z', message: { content: '<command-name>/model</command-name>\n<command-args>opus</command-args>' } }),
+      JSON.stringify({ type: 'user', cwd: dir, timestamp: '2026-11-23T01:00:06Z', message: { content: '<local-command-stdout>Set model to claude-opus-4-6</local-command-stdout>' } }),
+      JSON.stringify({
+        type: 'assistant', cwd: dir, timestamp: '2026-11-23T01:00:10Z',
+        message: {
+          content: [{
+            type: 'tool_use', id: 'tu1', name: 'AskUserQuestion',
+            input: { questions: [{ question: '어떤 방식을 사용할까요?', options: [{ label: '방식 A' }, { label: '방식 B' }] }] },
+          }],
+        },
+      }),
+      JSON.stringify({
+        type: 'user', cwd: dir, timestamp: '2026-11-23T01:00:20Z',
+        toolUseResult: { answers: { '어떤 방식을 사용할까요?': '방식 A' } },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'User has answered your questions: ...' }] },
+      }),
+    ];
+    fs.writeFileSync(file, lines.join('\n') + '\n', 'utf8');
+
+    const idx = new SearchIndex(dir, null, []);
+    idx.docs.clear();
+    await idx.updateFile(file);
+    const doc = idx.get('11111111-2222-3333-4444-555555555555');
+    assert.ok(doc);
+    assert.equal(doc.firstPrompt, '기능 구현해줘');
+    assert.ok(doc.msgs.some((m) => m.text.includes('[터미널 명령] /model opus')));
+    assert.ok(doc.msgs.some((m) => m.text.includes('[터미널 상태] Set model to claude-opus-4-6')));
+    assert.ok(doc.msgs.some((m) => m.text.includes('❓ 어떤 방식을 사용할까요? [방식 A / 방식 B]')));
+    assert.ok(doc.msgs.some((m) => m.role === 'user' && m.text.includes('✓ 선택/응답: 어떤 방식을 사용할까요?: 방식 A')));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('searchindex tracks Codex turn_context changes, request_user_input, and AGY USER_SETTINGS_CHANGE', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ach-codex-agy-events-'));
+  try {
+    const codexFile = path.join(dir, 'rollout-2026-11-23T10-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl');
+    const codexLines = [
+      JSON.stringify({ type: 'session_meta', timestamp: '2026-11-23T02:00:00Z', payload: { cwd: dir } }),
+      JSON.stringify({ type: 'turn_context', timestamp: '2026-11-23T02:00:01Z', payload: { cwd: dir, model: 'gpt-5.4', effort: 'medium', collaboration_mode: 'default' } }),
+      JSON.stringify({ type: 'response_item', timestamp: '2026-11-23T02:00:02Z', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '분석해줘' }] } }),
+      JSON.stringify({ type: 'turn_context', timestamp: '2026-11-23T02:00:05Z', payload: { cwd: dir, model: 'gpt-5.4', effort: 'high', collaboration_mode: 'plan' } }),
+      JSON.stringify({ type: 'response_item', timestamp: '2026-11-23T02:00:06Z', payload: { type: 'function_call', name: 'request_user_input', arguments: JSON.stringify({ questions: [{ question: '진행할까요?', options: [{ label: '예' }, { label: '아니오' }] }] }) } }),
+      JSON.stringify({ type: 'response_item', timestamp: '2026-11-23T02:00:12Z', payload: { type: 'function_call_output', call_id: 'c1', output: JSON.stringify({ answers: { '진행할까요?': { answers: ['예'] } } }) } }),
+    ];
+    fs.writeFileSync(codexFile, codexLines.join('\n') + '\n', 'utf8');
+
+    const idx = new SearchIndex(path.join(dir, 'no-claude'), dir, []);
+    idx.docs.clear();
+    await idx.updateFile(codexFile);
+    const cdoc = idx.get('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+    assert.ok(cdoc);
+    assert.ok(cdoc.msgs.some((m) => m.text.includes('[설정 변경] 추론: high · 모드: plan')));
+    assert.ok(cdoc.msgs.some((m) => m.text.includes('❓ 진행할까요? [예 / 아니오]')));
+    assert.ok(cdoc.msgs.some((m) => m.role === 'user' && m.text.includes('✓ 선택/응답: 진행할까요?: 예')));
+
+    const agyRes = agyLine({
+      type: 'USER_INPUT',
+      created_at: '2026-11-23T03:00:00Z',
+      content: '<USER_REQUEST>\n계속해줘\n</USER_REQUEST>\n<USER_SETTINGS_CHANGE>\nThe user changed setting `Model Selection` from None to Gemini 4 Hydrogen (Medium).\n</USER_SETTINGS_CHANGE>',
+    });
+    assert.equal(agyRes.msg.text, '계속해줘');
+    assert.ok(agyRes.settingsNote.includes('[설정 변경] Model Selection: None → Gemini 4 Hydrogen (Medium)'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('term-events store & screen monitor capture terminal mode changes and interactive selections', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ach-term-ev-'));
+  try {
+    const store = createTermEventStore(path.join(dir, 'term-events.json'));
+    let screen = '⏸ plan mode on (shift+tab to cycle)\n❯ ';
+    const term = {
+      id: '7',
+      exited: null,
+      meta: { spawnedAt: Date.now() - 10000, sessionId: 'sid-123' },
+    };
+    const metaUpdates = [];
+    const mon = createTermScreenMonitor({
+      store,
+      stripAnsi: (x) => x,
+      readTerm: () => screen.split('\n'),
+      agentOf: () => 'claude',
+      getSessionId: (t) => t.meta.sessionId,
+      onMetaChange: (_t, m) => metaUpdates.push(m),
+    });
+
+    // Initial baseline
+    mon.inspect(term);
+    assert.equal(store.forSession('sid-123').length, 0);
+
+    // Mode change + interactive prompt
+    screen = [
+      '⏵⏵ accept edits on (shift+tab to cycle)',
+      '어떤 테스트를 실행할까요?',
+      '❯ 1. 전체 테스트',
+      '  2. 단위 테스트만',
+      'Enter to select · Esc to cancel',
+    ].join('\n');
+    mon.inspect(term);
+    assert.equal(metaUpdates.at(-1).mode, 'accept-edits');
+
+    // User presses Enter to choose option 1
+    mon.onInput(term, '\r');
+    const evs = store.forSession('sid-123');
+    assert.ok(evs.some((e) => e.text.includes('[터미널 변경] 모드: accept-edits')));
+    assert.ok(evs.some((e) => e.text.includes('❓ 어떤 테스트를 실행할까요?')));
+    assert.ok(evs.some((e) => e.role === 'user' && e.text.includes('✓ [터미널 선택] 1. 전체 테스트')));
+
+    const parsed = parseTerminalScreenState('gpt-5.4 xhigh · full access', 'codex');
+    assert.equal(parsed.model, 'gpt-5.4');
+    assert.equal(parsed.effort, 'xhigh');
+    assert.equal(parsed.mode, 'full-access');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('cross-platform switchAlways writes handoff.md and records branch lineage even when cont is false', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ach-handoff-'));
+  try {
+    const branchStore = createBranchStore(path.join(dir, '.branches.json'));
+    const createdTerms = [];
+    const mockDoc = {
+      id: '11111111-1111-1111-1111-111111111111',
+      agent: 'claude',
+      cwd: dir,
+      title: 'Auth refactor',
+      firstPrompt: '리팩토링 해줘',
+      msgs: [
+        { role: 'user', text: '리팩토링 해줘', ts: '2026-11-23T01:00:00Z' },
+        { role: 'assistant', text: '네, 진행했습니다.', ts: '2026-11-23T01:00:05Z' },
+      ],
+    };
+    const fakeHub = {
+      baseDir: dir,
+      config: {},
+      claudeDir: path.join(dir, 'claude'),
+      USAGE_DIR: path.join(dir, 'usage'),
+      terms: new Map(),
+      index: { get: (id) => (id === mockDoc.id ? mockDoc : null), updateFile: async () => {} },
+      accountPrefs: { getForAccount: () => ({ model: '', effort: '' }), save: () => {} },
+      conversationBranches: branchStore,
+      helperCall: async () => ({ consoles: [] }),
+      liveSessions: () => [],
+      codexAccounts: { accounts: () => [], envFor: () => ({}) },
+      CA: { accounts: () => [], envFor: () => ({}), usage: async () => ({}), rank: () => [], codexExe: () => 'codex' },
+      agyQuota: { getFast: () => ({}), noteAccount: () => {}, refresh: async () => {} },
+      agySwap: { available: () => false, getFast: () => ({ accounts: [] }) },
+      claudeUsage: async () => ({ available: false }),
+      tokenAccounts: () => [],
+      geminiAccounts: () => [],
+      codexLaunch: (args) => ({ cmd: 'codex', args }),
+      agyExe: () => 'agy.exe',
+      cliModelEffortArgs: () => [],
+      cleanModelEffort: (m, e) => ({ model: m || '', effort: e || '' }),
+      termSessionId: () => null,
+      termDocOf: () => null,
+      isCodexTerm: () => false,
+      isAgyTerm: () => false,
+      readTerm: () => [],
+      loadFavs: () => [],
+      FAV_FILE: path.join(dir, 'favs.json'),
+      sleep: async () => {},
+      waitFor: async () => true,
+      inputReady: () => true,
+      SUBMIT_DELAY: 10,
+      createTerm: (opts) => {
+        const t = { id: '99', meta: { ...opts }, exited: null, proc: { write: () => {} } };
+        createdTerms.push(t);
+        return t;
+      },
+      termInfo: (t) => ({ id: t.id, title: t.meta.title, agent: 'codex' }),
+      overviewStale: () => {},
+    };
+
+    const svc = createAccountSwitchService(fakeHub);
+    const res = await svc.switchAccount({
+      sessionId: mockDoc.id,
+      account: '__cli__:codex',
+      cont: false,
+      followUp: '테스트도 추가해줘',
+      openMode: 'dashboard',
+    });
+
+    assert.equal(res.ok, true);
+    assert.equal(res.crossPlatform, true);
+    assert.ok(res.handoffFile && fs.existsSync(res.handoffFile));
+    const md = fs.readFileSync(res.handoffFile, 'utf8');
+    assert.ok(md.includes('CLAUDE → CODEX'));
+    assert.ok(md.includes('리팩토링 해줘'));
+    assert.ok(md.includes('테스트도 추가해줘'));
+
+    // Codex launch args received the handoff prompt referencing the md file
+    assert.ok(createdTerms[0].meta.args.some((a) => String(a).includes(res.handoffFile)));
+
+    // Lineage recorded so "원본 열기" works from the new terminal/session
+    const meta = branchStore.branchMetaFor({ termId: '99' });
+    assert.ok(meta?.isBranch);
+    assert.equal(meta.parentSessionId, mockDoc.id);
+    assert.equal(meta.mode, 'handoff');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

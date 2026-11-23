@@ -12,7 +12,7 @@ const stripAnsi = (s) => String(s || '').replace(ANSI_RE, '');
 
 const KIND_LABELS = { plan: '설계·기획', dev: '개발·구현', test: '테스트·검증', review: '교차 리뷰·감사', ops: '배포·문서' };
 
-function buildFirstTurnPrompt(project, task, userPrompt, agent = '', harnessState = null) {
+function buildFirstTurnPrompt(project, task, userPrompt, agent = '', harnessState = null, refsBlock = '') {
   const kindLbl = KIND_LABELS[task.kind] || '개발·구현';
   const harnessBlock = buildTaskHarnessPrompt(project, task, agent || task.agent || project.agent || 'codex', harnessState);
   return [
@@ -21,6 +21,7 @@ function buildFirstTurnPrompt(project, task, userPrompt, agent = '', harnessStat
     `[현재 태스크 (${kindLbl}): ${task.title}]`,
     task.detail ? `태스크 지시 및 완료 기준:\n${task.detail.slice(0, 1500)}` : '',
     harnessBlock,
+    refsBlock,
     `[서브 개발 요청]`,
     userPrompt,
   ].filter(Boolean).join('\n\n');
@@ -114,9 +115,9 @@ function parseAgyJson(stdout, logFile) {
 }
 
 async function runTaskSubChatTurn({
-  exe, agent, cwd, env, model = '', effort = '', sessionId = '', prompt, project, task, harnessState = null, onProgress, timeoutMs = 180_000,
+  exe, agent, cwd, env, model = '', effort = '', sessionId = '', prompt, project, task, harnessState = null, refsBlock = '', onProgress, timeoutMs = 180_000,
 }) {
-  const fullPrompt = sessionId ? prompt : buildFirstTurnPrompt(project, task, prompt, agent, harnessState);
+  const fullPrompt = sessionId ? prompt : buildFirstTurnPrompt(project, task, prompt, agent, harnessState, refsBlock);
   const meArgs = cliModelEffortArgs(agent, model, effort);
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-subchat-'));
   const outFile = path.join(tmpDir, 'last.txt');

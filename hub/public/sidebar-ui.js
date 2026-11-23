@@ -452,3 +452,27 @@ $('#side')?.addEventListener('click', async (e) => {
   const i = k.indexOf(':');
   if (i > 0) select({ kind: k.slice(0, i), id: k.slice(i + 1) });
 });
+
+$('#side')?.addEventListener('dblclick', async (e) => {
+  if (e.target.closest('button, [data-fav], [data-hide-record]')) return;
+  const it = e.target.closest('[data-key]');
+  if (!it) return;
+  const k = it.dataset.key || '';
+  if (k.startsWith('term:')) {
+    e.preventDefault();
+    const tid = k.slice(5);
+    const t = (state.terms || []).find((x) => String(x.id) === tid);
+    if (!t) return;
+    const sid = typeof resolveTermSessionId === 'function' ? (resolveTermSessionId(t) || '') : (t.sessionId || '');
+    const saved = await renameSessionItem({ sessionId: sid, termId: tid, currentTitle: termLabel(t) });
+    if (saved !== null && state.sel.kind === 'term' && String(state.sel.id) === tid) openTerm(tid);
+  } else if (k.startsWith('recent:')) {
+    e.preventDefault();
+    const sid = k.slice(7);
+    const r = recentSession(sid);
+    const lt = (state.terms || []).find((x) => x.sessionId === sid);
+    const cur = r ? sessionLabel(r) : (lt ? termLabel(lt) : sid.slice(0, 8));
+    const saved = await renameSessionItem({ sessionId: sid, termId: lt?.id || '', currentTitle: cur });
+    if (saved !== null && state.sel.kind === 'recent' && state.sel.id === sid) viewTranscript();
+  }
+});
