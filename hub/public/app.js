@@ -2024,9 +2024,11 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
   const ltInit = findLiveTerm();
   const savedPref = prefKey ? chatLaunchPrefs.get(prefKey) : null;
   const initAgent = ltInit?.agent || savedPref?.agent || baseAgent;
-  const initAccount = ltInit?.account?.id || savedPref?.account || `__cli__:${initAgent}`;
-  const initModel = ltInit?.model ?? savedPref?.model ?? '';
-  const initEffort = ltInit?.effort ?? savedPref?.effort ?? '';
+  const savedCliDef = (!ltInit && typeof readSavedCliDefaults === 'function')
+    ? readSavedCliDefaults(initAgent)
+    : { account: '', model: '', effort: '' };
+  const initModel = ltInit ? (ltInit.model || '') : (savedPref ? (savedPref.model ?? '') : (savedCliDef.model || ''));
+  const initEffort = ltInit ? (ltInit.effort || '') : (savedPref ? (savedPref.effort ?? '') : (savedCliDef.effort || ''));
 
   barHost.innerHTML = `<div class="chat-reply-bar${compact ? ' compact' : ''}">
     <div class="chat-conn-bar">
@@ -2103,12 +2105,15 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       initialKind: initAgent,
       initialModel: initModel,
       initialEffort: initEffort,
+      useSavedDefaults: !ltInit,
+      persistDefaults: true,
       onChange: syncApplyBtn,
     });
   }
 
   accSel.onchange = () => {
     const nextAg = getSelectedAgent();
+    if (typeof saveCliDefaults === 'function') saveCliDefaults(nextAg, { account: accSel.value });
     meCtl?.setCli(nextAg);
     syncApplyBtn();
   };
@@ -2143,14 +2148,22 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       }
       accSel.replaceChildren(frag);
 
+      const savedDefForInit = (!lt && typeof readSavedCliDefaults === 'function') ? readSavedCliDefaults(initAgent) : { account: '' };
+      const savedAccOpt = savedDefForInit.account
+        ? [...accSel.options].find((o) => o.value === savedDefForInit.account && o.dataset.agent === initAgent)
+        : null;
       const wantAcc = (savedPref?.account && [...accSel.options].some((o) => o.value === savedPref.account))
         ? savedPref.account
         : (curAccFromResp?.id && [...accSel.options].some((o) => o.value === curAccFromResp.id))
           ? curAccFromResp.id
-          : ([...accSel.options].find((o) => o.dataset.agent === initAgent)?.value || accSel.options[0]?.value || '');
+          : (savedAccOpt?.value || [...accSel.options].find((o) => o.dataset.agent === initAgent)?.value || accSel.options[0]?.value || '');
       baselineAccId = curAccFromResp?.id || [...accSel.options].find((o) => o.dataset.agent === baseAgent)?.value || baselineAccId;
       if (wantAcc) accSel.value = wantAcc;
-      meCtl?.setCli(getSelectedAgent(), initModel, initEffort);
+      const curSelectedAg = getSelectedAgent();
+      const postDef = (!lt && typeof readSavedCliDefaults === 'function') ? readSavedCliDefaults(curSelectedAg) : { model: '', effort: '' };
+      const postModel = lt ? initModel : (savedPref ? initModel : postDef.model);
+      const postEffort = lt ? initEffort : (savedPref ? initEffort : postDef.effort);
+      meCtl?.setCli(curSelectedAg, postModel, postEffort);
       syncApplyBtn();
     } catch {}
   };
@@ -2206,6 +2219,9 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
 
   const launchWithConfig = async ({ openTerm = false, pendingText = '' } = {}) => {
     const cfg = getConfig();
+    if (typeof saveCliDefaults === 'function') {
+      saveCliDefaults(cfg.agent, { account: cfg.account, model: cfg.model, effort: cfg.effort });
+    }
     const lt = findLiveTerm();
     const needsSwitch = !!lt || cfg.agent !== baseAgent || (!!cfg.account && !cfg.account.startsWith('__cli__:'));
     if (needsSwitch) {
@@ -2419,9 +2435,12 @@ async function openBranchDialog({ sid, atIndex = null, message = null, agent = '
   const loadAccounts = async () => {
     updateModeHint();
     try {
-      const r = await api(`/api/projects/accounts?agent=${encodeURIComponent(agSel.value)}`);
+      const tAg = agSel.value;
+      const r = await api(`/api/projects/accounts?agent=${encodeURIComponent(tAg)}`);
       const list = r.accounts || [];
       accSel.innerHTML = `<option value="">기본 / 현재 활성 계정</option>` + list.map((a) => `<option value="${esc(a.id)}">${esc(a.label)}</option>`).join('');
+      const savedDef = typeof readSavedCliDefaults === 'function' ? readSavedCliDefaults(tAg) : { account: '' };
+      if (savedDef.account && list.some((a) => a.id === savedDef.account)) accSel.value = savedDef.account;
     } catch {}
   };
   agSel.onchange = loadAccounts;
@@ -4269,6 +4288,8 @@ async function openSwitch(sid, termId = '') {
     if (!acc) return;
     const openMode = $('input[name=swMode]:checked', d)?.value || 'dashboard';
     const meVals = swMeCtl ? swMeCtl.getValues() : { model: '', effort: '' };
+    const targetAg = $('input[name=acc]:checked', d)?.dataset.agent || srcAgent;
+    if (typeof saveCliDefaults === 'function') saveCliDefaults(targetAg, { account: acc, model: meVals.model, effort: meVals.effort });
     const go = $('#swGo', d); go.disabled = true; go.textContent = '전환 중…';
     const payload = {
       sessionId: sid || undefined,
@@ -5097,9 +5118,12 @@ function whenShown(fn) { return () => { if (!document.hidden) fn(); }; }
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { refreshOverview(); refreshGpu(); refreshResearch(); } });
 
 // ---------- new terminal drawer ----------
-function openNewTermDrawer(projectCwd = '', onCreated = null, initialKind = 'claude') {
+function openNewTermDrawer(projectCwd = '', onCreated = null, initialKind = null) {
+  let savedKind = 'claude';
+  try { savedKind = localStorage.getItem('ach.lastNewTermKind') || 'claude'; } catch {}
+  const resolvedKind = initialKind || savedKind || 'claude';
   const cwds = [...new Set([...state.live.map((s) => s.cwd), ...state.recent.map((r) => r.cwd)].filter(Boolean))].slice(0, 15);
-  const chk = (v) => (initialKind === v ? 'checked' : '');
+  const chk = (v) => (resolvedKind === v ? 'checked' : '');
   const body = `
     <div class="row"><label><input type="radio" name="k" value="claude" ${chk('claude')}> claude</label>
       <label title="ChatGPT 계정(Codex 앱 로그인)으로 GPT 대화형 세션"><input type="radio" name="k" value="codex" ${chk('codex')}> GPT (Codex)</label>
@@ -5115,6 +5139,7 @@ function openNewTermDrawer(projectCwd = '', onCreated = null, initialKind = 'cla
           <button type="button" class="btn-sm" id="nPickDir" title="호스트 컴퓨터 경로 탐색기 열기">${ICO.folder || ''} 폴더 선택</button>
         </div>
         <datalist id="cwdl">${cwds.map((c) => `<option value="${esc(c)}">`).join('')}</datalist></label>
+      <div id="nMeHost" style="display:flex;flex-direction:column;gap:8px">${typeof projectModelEffortFields === 'string' ? projectModelEffortFields : ''}</div>
       <label class="row"><input type="checkbox" id="nSkip" checked> YOLO 모드 자동 승인 (Claude · Codex · Antigravity)</label>
     </div>
     <div id="nRes" hidden style="display:flex;flex-direction:column;gap:10px">
@@ -5126,15 +5151,31 @@ function openNewTermDrawer(projectCwd = '', onCreated = null, initialKind = 'cla
     </div>`;
   const d = openDrawer({ title: '새로 열기', bodyHTML: body, footerHTML: '<button data-drw-close>취소</button><button id="nExt" title="이 PC의 새 Windows 콘솔 창(외부 터미널)에서 엽니다">외부 창으로 열기</button><button class="primary" id="nOk">대시보드에서 열기</button>', width: 480 });
   const kindOf = () => $('input[name=k]:checked', d).value;
-  d.querySelectorAll('input[name=k]').forEach((r) => (r.onchange = () => {
-    const isRes = kindOf() === 'research';
+  const supportsME = (k) => k === 'claude' || k === 'codex' || k === 'agy';
+  const nMeCtl = typeof createCliModelEffortController === 'function'
+    ? createCliModelEffortController({
+      modelPick: d.querySelector('[name=modelPick]'),
+      modelIn: d.querySelector('[name=model]'),
+      effortSel: d.querySelector('[name=effort]'),
+      hintEl: d.querySelector('[data-cli-opt-hint]'),
+      initialKind: supportsME(resolvedKind) ? resolvedKind : 'claude',
+      useSavedDefaults: true,
+      persistDefaults: true,
+    })
+    : null;
+  const syncKindUI = () => {
+    const k = kindOf();
+    const isRes = k === 'research';
     $('#nTerm', d).style.display = isRes ? 'none' : 'flex';
     $('#nRes', d).style.display = isRes ? 'flex' : 'none';
+    const meHost = $('#nMeHost', d);
+    if (meHost) meHost.style.display = supportsME(k) ? 'flex' : 'none';
+    if (supportsME(k)) nMeCtl?.setCli(k);
     const extBtn = $('#nExt', d);
     if (extBtn) extBtn.style.display = isRes ? 'none' : '';
-  }));
-  $('#nRes', d).style.display = initialKind === 'research' ? 'flex' : 'none';
-  $('#nTerm', d).style.display = initialKind === 'research' ? 'none' : 'flex';
+  };
+  d.querySelectorAll('input[name=k]').forEach((r) => (r.onchange = syncKindUI));
+  syncKindUI();
   const nPickDir = $('#nPickDir', d);
   if (nPickDir) {
     nPickDir.onclick = () => {
@@ -5143,11 +5184,22 @@ function openNewTermDrawer(projectCwd = '', onCreated = null, initialKind = 'cla
       }
     };
   }
+  const launchParams = (kind) => {
+    try { localStorage.setItem('ach.lastNewTermKind', kind); } catch {}
+    const me = supportsME(kind) && nMeCtl ? nMeCtl.getValues() : { model: '', effort: '' };
+    return {
+      kind,
+      cwd: $('#nCwd', d).value,
+      skipPermissions: $('#nSkip', d).checked,
+      ...(me.model ? { model: me.model } : {}),
+      ...(me.effort ? { effort: me.effort } : {}),
+    };
+  };
   $('#nExt', d).onclick = async () => {
     const kind = kindOf();
     if (kind === 'research') return;
     $('#nExt', d).disabled = true;
-    const r = await api('/api/term/external', { method: 'POST', body: { kind, cwd: $('#nCwd', d).value, skipPermissions: $('#nSkip', d).checked } });
+    const r = await api('/api/term/external', { method: 'POST', body: launchParams(kind) });
     $('#nExt', d).disabled = false;
     if (r.error) return toast(r.error, 6000);
     d.close();
@@ -5166,7 +5218,7 @@ function openNewTermDrawer(projectCwd = '', onCreated = null, initialKind = 'cla
       await Promise.all([refreshOverview(), refreshResearch()]);
       return select({ kind: 'research', id: r.slug });
     }
-    const t = await api('/api/term/new', { method: 'POST', body: { kind, cwd: $('#nCwd', d).value, skipPermissions: $('#nSkip', d).checked } });
+    const t = await api('/api/term/new', { method: 'POST', body: launchParams(kind) });
     if (t.error) return toast(t.error, 6000);
     d.close();
     await refreshOverview();

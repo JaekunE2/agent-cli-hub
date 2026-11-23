@@ -73,6 +73,35 @@ async function loadCliOptions() {
   return FALLBACK_CLI_OPTIONS;
 }
 
+const CLI_DEFAULTS_STORAGE_KEY = 'ach.cliDefaults.v1';
+
+function readCliDefaultsMap() {
+  try {
+    const o = JSON.parse(localStorage.getItem(CLI_DEFAULTS_STORAGE_KEY) || '{}');
+    return o && typeof o === 'object' ? o : {};
+  } catch { return {}; }
+}
+
+function readSavedCliDefaults(cli) {
+  const map = readCliDefaultsMap();
+  const d = cli ? map[cli] : null;
+  return d && typeof d === 'object'
+    ? { account: String(d.account || ''), model: String(d.model || ''), effort: String(d.effort || '') }
+    : { account: '', model: '', effort: '' };
+}
+
+function saveCliDefaults(cli, patch = {}) {
+  if (!['claude', 'codex', 'agy'].includes(cli)) return;
+  const map = readCliDefaultsMap();
+  const cur = map[cli] && typeof map[cli] === 'object' ? map[cli] : {};
+  map[cli] = {
+    account: patch.account !== undefined ? String(patch.account || '') : String(cur.account || ''),
+    model: patch.model !== undefined ? String(patch.model || '') : String(cur.model || ''),
+    effort: patch.effort !== undefined ? String(patch.effort || '') : String(cur.effort || ''),
+  };
+  try { localStorage.setItem(CLI_DEFAULTS_STORAGE_KEY, JSON.stringify(map)); } catch {}
+}
+
 function createCliModelEffortController({
   modelPick,
   modelIn,
@@ -82,6 +111,8 @@ function createCliModelEffortController({
   initialKind = 'claude',
   initialModel = '',
   initialEffort = '',
+  useSavedDefaults = !project,
+  persistDefaults = !project,
   inheritProjectAgent = null,
   onChange = null,
 } = {}) {
@@ -89,8 +120,11 @@ function createCliModelEffortController({
   const effortByCli = new Map();
   let curKind = initialKind || 'claude';
   let cliOpts = (typeof state !== 'undefined' && state?.cliOptions) || FALLBACK_CLI_OPTIONS;
-  modelByCli.set(curKind, initialModel || '');
-  effortByCli.set(curKind, initialEffort || '');
+  const initSaved = useSavedDefaults ? readSavedCliDefaults(curKind) : { model: '', effort: '' };
+  const startModel = initialModel !== '' ? initialModel : initSaved.model;
+  const startEffort = initialEffort !== '' ? initialEffort : initSaved.effort;
+  modelByCli.set(curKind, startModel || '');
+  effortByCli.set(curKind, startEffort || '');
 
   const currentModel = () => (modelIn && modelPick?.value === '__custom__' ? modelIn.value.trim() : (modelPick?.value || modelIn?.value || '').trim());
   const currentEffort = () => (effortSel?.value || '');
@@ -146,9 +180,12 @@ function createCliModelEffortController({
   };
 
   const emit = () => {
-    modelByCli.set(curKind, currentModel());
-    effortByCli.set(curKind, currentEffort());
-    onChange?.({ kind: curKind, model: currentModel(), effort: currentEffort() });
+    const m = currentModel();
+    const ef = currentEffort();
+    modelByCli.set(curKind, m);
+    effortByCli.set(curKind, ef);
+    if (persistDefaults) saveCliDefaults(curKind, { model: m, effort: ef });
+    onChange?.({ kind: curKind, model: m, effort: ef });
   };
 
   if (modelPick) {
@@ -168,7 +205,7 @@ function createCliModelEffortController({
   if (modelIn) modelIn.addEventListener('input', emit);
   if (effortSel) effortSel.addEventListener('change', emit);
 
-  paint(curKind, initialModel, initialEffort);
+  paint(curKind, startModel, startEffort);
   loadCliOptions().then((opts) => {
     if (!opts) return;
     cliOpts = opts;
@@ -181,8 +218,9 @@ function createCliModelEffortController({
       const k = nextKind || 'claude';
       modelByCli.set(curKind, currentModel());
       effortByCli.set(curKind, currentEffort());
-      const wm = nextModel !== undefined ? nextModel : (modelByCli.get(k) || '');
-      const we = nextEffort !== undefined ? nextEffort : (effortByCli.get(k) || '');
+      const savedNext = useSavedDefaults ? readSavedCliDefaults(k) : { model: '', effort: '' };
+      const wm = nextModel !== undefined ? nextModel : (modelByCli.has(k) ? modelByCli.get(k) : savedNext.model);
+      const we = nextEffort !== undefined ? nextEffort : (effortByCli.has(k) ? effortByCli.get(k) : savedNext.effort);
       modelByCli.set(k, wm);
       effortByCli.set(k, we);
       paint(k, wm, we);
@@ -209,23 +247,32 @@ function bindProjectAccounts(dialog, selected, project, initModel = '', initEffo
     initialKind: agent.value || project?.agent || 'codex',
     initialModel: initModel || '',
     initialEffort: initEffort || '',
+    useSavedDefaults: !project && !initModel && !initEffort,
+    persistDefaults: !project,
     inheritProjectAgent: () => agent.value,
   });
 
   let version = 0;
   const selectedByCli = new Map();
   let activeCli;
+  if (!project && account) {
+    account.addEventListener('change', () => {
+      saveCliDefaults(agent.value || 'codex', { account: account.value });
+    });
+  }
 
   const refresh = async () => {
     const load = ++version;
     const kind = agent.value || project?.agent || 'codex';
     if (!activeCli) {
-      selectedByCli.set(kind, selected);
+      selectedByCli.set(kind, selected || (!project ? readSavedCliDefaults(kind).account : ''));
     } else {
       selectedByCli.set(activeCli, account.value);
     }
     activeCli = kind;
-    const preferred = selectedByCli.get(kind);
+    const preferred = selectedByCli.has(kind)
+      ? selectedByCli.get(kind)
+      : (!project ? readSavedCliDefaults(kind).account : '');
     const inherited = project && kind === (project.agent || 'codex');
     const options = inherited ? [['inherit', 'Project 기본 계정'], ['', '이 PC의 CLI 로그인']] : [['', '이 PC의 CLI 로그인']];
     const paint = (value = preferred) => {
