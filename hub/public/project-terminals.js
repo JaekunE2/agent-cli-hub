@@ -24,14 +24,21 @@ function projectTaskTerm(p, task) {
   const workspace = p.scope?.version?.workspace;
   const sameTask = (state.terms || []).filter((t) => t.exited === null && t.projectTask?.projectId === p.id && t.projectTask.taskId === task.id
     && (!workspace || sameProjectFolder(t.cwd, workspace)));
-  return sameTask.findLast((t) => t.agent === agent) || (task.stage !== 'planned' ? sameTask.at(-1) : null) || null;
+  const fallback = task.lastRun?.mcpFallback?.from === agent && task.lastRun.agent === p.mcpFallbackAgent
+    && sameTask.find((t) => t.id === task.lastRun.termId && t.agent === task.lastRun.agent);
+  return fallback
+    || sameTask.findLast((t) => t.agent === agent) || (task.stage !== 'planned' ? sameTask.at(-1) : null) || null;
 }
 
 function projectLastRunHTML(task) {
   const run = task.lastRun;
-  if (!run) return '';
-  const source = { task: '작업별 지정', project: '프로젝트 기본값', parent: '상위 작업 지정', role: '역할 프리셋' }[run.source];
-  return `<span class="badge">실제 실행 CLI ${esc(providerName(run.agent))}</span> <span class="badge">선택 근거 ${esc(source)}</span>`;
+  const block = task.launchBlock;
+  const sources = { task: '작업별 지정', project: '프로젝트 기본값', parent: '상위 작업 지정', role: '역할 프리셋' };
+  return [
+    run && `<span class="badge">실제 실행 CLI ${esc(providerName(run.agent))}</span> <span class="badge">선택 근거 ${esc(sources[run.source])}</span>`,
+    run?.mcpFallback && `<span class="badge">MCP 대체 CLI · ${esc(providerName(run.mcpFallback.from))} → ${esc(providerName(run.agent))} · ${esc(run.mcpFallback.reason)}</span>`,
+    block && `<span role="status">${esc(providerName(block.mcpFallback?.from || block.agent))} · ${esc(sources[block.source])}${block.mcpFallback ? ` → ${esc(providerName(block.agent))}` : ''} · ${esc(block.message)}</span>`,
+  ].filter(Boolean).join(' ');
 }
 
 function sameProjectFolder(a, b) {
@@ -51,10 +58,17 @@ function projectCliBadgeHTML(p, task) {
   return `<button class="pj-cli-btn" data-assign-task="${esc(task.id)}" title="${esc(tip)}">${ico}<span>${esc(label)}${cfg.effort ? ` <em class="pj-eff-tag">${esc(cfg.effort)}</em>` : ''}</span></button>`;
 }
 
-function projectReviewBadgeHTML(task) {
+function projectHandoffBadgeHTML(task) {
+  const phase = task?.handoff?.history?.at(-1)?.phase;
+  const label = { waiting: '대기', delivered: '전달', confirmed: '실행 확인', received: '결과 수신' }[phase];
+  return label ? `<span class="badge">자동 진행 · ${label}</span>` : '';
+}
+
+function projectReviewBadgeHTML(task, showHandoff = true) {
   const st = task?.reviewStatus || '';
   const wtBadge = task?.worktreePath ? `<span class="badge" title="${esc(task.worktreePath)}">🌿 격리</span>` : '';
-  const versionBadge = task?.version ? `<span class="badge">v${esc(task.version)}</span>` : '';
+  const versionBadge = (task?.version ? `<span class="badge">v${esc(task.version)}</span>` : '')
+    + (showHandoff ? projectHandoffBadgeHTML(task) : '');
   if (!st && !task?.retryCount && !task?.reviewPaused) return versionBadge + wtBadge;
   const tip = task?.reviewNote ? ` title="${esc(task.reviewNote)}"` : '';
   let rev = '';
@@ -234,7 +248,13 @@ async function startProjectTask(p, task, button, { retry = false } = {}) {
       if (gen === viewGen && state.sel.kind === 'projects') openProject(p.id, projectTab);
       toast(`“${task.title}” 작업을 백그라운드에서 시작했습니다`);
     }
-  } catch (e) { toast(e.message, 5000, 'danger'); }
+  } catch (e) {
+    toast(e.message, 5000, 'danger');
+    if (typeof refreshProjects === 'function' && gen === viewGen) {
+      await refreshProjects();
+      if (gen === viewGen && state.sel.kind === 'projects') openProject(p.id, projectTab);
+    }
+  }
   finally { if (button) button.disabled = false; }
 }
 

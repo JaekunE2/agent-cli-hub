@@ -171,6 +171,7 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
         enabled: m.enabled !== false,
         targets: Array.isArray(m.targets) ? m.targets.filter((x) => ALL_CLIS.includes(x)) : [...ALL_CLIS],
         sources: Array.isArray(m.sources) ? m.sources : [],
+        requiredMcps: Array.isArray(m.requiredMcps) ? m.requiredMcps : [],
         path: skillPath,
       });
     }
@@ -203,6 +204,7 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
       targets: Array.isArray(cfg.targets) ? cfg.targets.filter((x) => ALL_CLIS.includes(x)) : [...ALL_CLIS],
       source: cfg.source || 'vault',
       cliOnly: !!cfg.cliOnly,
+      autoEnable: cfg.autoEnable === true,
     })).sort((a, b) => a.name.localeCompare(b.name));
   };
 
@@ -223,20 +225,29 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
     };
   };
 
-  const saveSkill = ({ name, content, enabled = true, targets = ALL_CLIS }) => {
+  const saveSkill = ({ name, content, enabled = true, targets = ALL_CLIS, requiredMcps }) => {
     const clean = safeName(name);
     if (!clean) throw new Error('스킬 이름을 입력하세요.');
+    const manifest = readManifest();
+    if (requiredMcps !== undefined) {
+      const registered = readMcps();
+      const prior = manifest.skills[clean]?.requiredMcps || [];
+      if (!Array.isArray(requiredMcps) || requiredMcps.some((id) => typeof id !== 'string'
+        || (!Object.hasOwn(registered, id) && !prior.includes(id)))) {
+        throw new Error('Vault에 등록된 필수 MCP를 선택하세요.');
+      }
+    }
     const dir = path.join(ensureVaultDirs().skillsDir, clean);
     fs.mkdirSync(dir, { recursive: true });
     if (content !== undefined) fs.writeFileSync(path.join(dir, 'SKILL.md'), String(content), 'utf8');
     else if (!fs.existsSync(path.join(dir, 'SKILL.md'))) {
       fs.writeFileSync(path.join(dir, 'SKILL.md'), `---\nname: ${clean}\ndescription: Shared skill in Agent CLI Hub Vault\n---\n\n# ${clean}\n`, 'utf8');
     }
-    const manifest = readManifest();
     manifest.skills[clean] = {
       ...(manifest.skills[clean] || {}),
       enabled: enabled !== false,
       targets: Array.isArray(targets) ? targets.filter((x) => ALL_CLIS.includes(x)) : [...ALL_CLIS],
+      ...(requiredMcps === undefined ? {} : { requiredMcps: [...new Set(requiredMcps)] }),
     };
     writeManifest(manifest);
     return getState();
@@ -260,7 +271,7 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
     return getState();
   };
 
-  const saveMcp = ({ name, command = '', args = [], url = '', env = null, headers = null, bearer_token = '', enabled = true, targets = ALL_CLIS }) => {
+  const saveMcp = ({ name, command = '', args = [], url = '', env = null, headers = null, bearer_token = '', enabled = true, targets = ALL_CLIS, autoEnable }) => {
     const clean = String(name || '').trim().slice(0, 80);
     if (!clean) throw new Error('MCP 서버 이름을 입력하세요.');
     if (!String(command || '').trim() && !String(url || '').trim()) {
@@ -286,6 +297,7 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
         ? { url: String(url).trim(), ...(nextHeaders ? { headers: nextHeaders } : {}), ...(bearer_token ? { bearer_token: String(bearer_token) } : (prev.bearer_token ? { bearer_token: prev.bearer_token } : {})) }
         : { command: String(command).trim(), args: Array.isArray(args) ? args.map(String) : String(args || '').split(/\s+/).filter(Boolean), ...(nextEnv ? { env: nextEnv } : {}) }),
       enabled: enabled !== false,
+      autoEnable: (autoEnable ?? prev.autoEnable) === true,
       targets: Array.isArray(targets) ? targets.filter((x) => ALL_CLIS.includes(x)) : [...ALL_CLIS],
       source: prev.source || 'vault',
       managed: true,

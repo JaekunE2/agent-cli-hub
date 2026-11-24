@@ -10,6 +10,7 @@ const { createTermScreenMonitor } = require('./term-events');
 const { codexHistorySearchActive, flushNewAgyQueue } = require('./immediate-send');
 const { hasCodexPasteDraft, submitPrompt } = require('./prompt-submission');
 const { agyStatusFromScreen: explicitAgyStatus } = require('./agy-session');
+const { requiredMcpMessage } = require('./vault-cli-ops');
 
 const SESSION_ENV = /^(CLAUDECODE|CLAUDE_PID|CLAUDE_EFFORT|CLAUDE_CODE_(CHILD_SESSION|SESSION_ID|SESSION_ATTENDED|MESSAGING_SOCKET|MESSAGING_TOKEN|ENTRYPOINT|EXECPATH))$/;
 const CODEX_BUSY = /esc to interrupt|esc to cancel/i;
@@ -412,24 +413,25 @@ function createTermManager(hub) {
     for (const ws of t.clients) ws.send(JSON.stringify({ type: 'data', data: d }));
   }
 
-  function launchSpecWithShared(cmd, args, env, agent) {
+  function launchSpecWithShared(cmd, args, env, agent, preparedVault) {
     const wrapper = path.basename(String(cmd || '')).toLowerCase();
     const base = wrapper === 'cmd.exe' && args[0] === '/c' ? path.basename(String(args[1] || '')).toLowerCase() : wrapper;
     const kind = agent || (/^(claude|codex|agy|cursor-agent)(?:\.(?:exe|cmd))?$/.exec(base)?.[1]?.replace('cursor-agent', 'cursor'))
       || (wrapper === 'wsl.exe' && args.includes('codex') ? 'codex' : '');
-    const prep = kind && unifiedVault?.prepareLaunch(kind, {
+    const prep = preparedVault || (kind && unifiedVault?.prepareLaunch(kind, {
       env: { ...cleanEnv(), ...env },
       native: wrapper !== 'wsl.exe',
       resume: kind === 'claude' && (args.includes('--resume') || args.includes('--continue')),
-    });
-    return { kind, args: [...args, ...(prep?.extraArgs || [])], env: { ...env, ...prep?.env }, vault: prep?.vault };
+    }));
+    return { kind, args: [...args, ...(prep?.extraArgs || [])], env: { ...env, ...prep?.env }, vault: prep?.vault, blocked: prep?.blocked };
   }
 
-  function createTerm({ cwd, cmd, args = [], title, env = {}, account = null, model = '', effort = '', lastInputAt = 0, research = null, operator = false, projectTask, projectPrompt, agent }) {
+  function createTerm({ cwd, cmd, args = [], title, env = {}, account = null, model = '', effort = '', lastInputAt = 0, research = null, operator = false, projectTask, projectPrompt, agent, preparedVault }) {
     const id = String(++termSeq);
     if (!cwd || !fs.existsSync(cwd)) cwd = os.homedir();
     const me = cleanModelEffort(model, effort);
-    const shared = launchSpecWithShared(cmd, args, env, agent);
+    const shared = launchSpecWithShared(cmd, args, env, agent, preparedVault);
+    if (shared.blocked) throw new Error(`필수 MCP 준비 실패 · ${requiredMcpMessage(shared.blocked)}`);
     args = shared.args;
     env = shared.env;
     if (projectTask) projects?.recordVaultRun?.(projectTask.projectId, [projectTask.taskId], 'terminal', shared.kind, shared.vault);

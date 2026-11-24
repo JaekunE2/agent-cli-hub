@@ -53,7 +53,7 @@ function projectBoard(p) {
     const collapsed = typeof isTaskCollapsed === 'function' && isTaskCollapsed(p.id, t.id);
     return `<article class="pj-task${t.autoExclude ? ' is-auto-off' : ''}${collapsed ? ' is-collapsed' : ''}" draggable="true" data-task="${esc(t.id)}" data-kind="${esc(k)}">
       <div class="row" style="justify-content:space-between;gap:6px">
-        <div class="row" style="gap:5px;min-width:0">${typeof collapseBtnHTML === 'function' ? collapseBtnHTML(collapsed, t.id) : ''}${typeof kindBadgeHTML === 'function' ? kindBadgeHTML(t) : ''}${typeof projectReviewBadgeHTML === 'function' ? projectReviewBadgeHTML(t) : ''}${subs.length ? `<span class="badge" title="클릭해 하위 서브태스크 확인">하위 ${subDone}/${subs.length}</span>` : ''}</div>
+        <div class="row" style="gap:5px;min-width:0;flex-wrap:wrap">${typeof collapseBtnHTML === 'function' ? collapseBtnHTML(collapsed, t.id) : ''}${typeof kindBadgeHTML === 'function' ? kindBadgeHTML(t) : ''}${typeof projectReviewBadgeHTML === 'function' ? projectReviewBadgeHTML(t) : ''}${subs.length ? `<span class="badge" title="클릭해 하위 서브태스크 확인">하위 ${subDone}/${subs.length}</span>` : ''}</div>
         <div class="row" style="gap:4px;flex-shrink:0">
           <button type="button" class="pj-auto-sw${t.autoExclude ? ' off' : ' on'}" data-toggle-auto="${esc(t.id)}" aria-pressed="${!t.autoExclude}" title="${t.autoExclude ? '자동 진행에서 제외됨 (클릭해 포함)' : '자동 진행에 포함됨 (클릭해 제외)'}">${t.autoExclude ? '자동 OFF' : '자동 ON'}</button>
           <button class="ghost icon-btn btn-sm" data-task-more="${esc(t.id)}" aria-label="${esc(menuAria)}" aria-haspopup="menu" aria-expanded="false">${ico.more || '⋯'}</button>
@@ -63,7 +63,7 @@ function projectBoard(p) {
         <button data-edit="${esc(t.id)}" class="pj-title">${esc(t.title)}</button>
       </div>
       ${t.detail ? `<p class="pj-card-desc">${esc(t.detail)}</p>` : ''}
-      ${t.lastRun ? `<div class="row">${projectLastRunHTML(t)}</div>` : ''}
+      ${t.lastRun || t.launchBlock ? `<div class="row">${projectLastRunHTML(t)}</div>` : ''}
       ${typeof projectReviewNoteHTML === 'function' ? projectReviewNoteHTML(t, true) : ''}
       <div class="pj-task-foot">
         <button class="ghost btn-sm" data-subchat-task="${esc(t.id)}" title="서브 개발 채팅 열기" aria-label="서브 개발 채팅">${ico.chat || ''}${chatCnt ? ` ${chatCnt}` : ''}</button>

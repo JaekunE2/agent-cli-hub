@@ -70,9 +70,14 @@
     const initMd = existing
       ? null
       : `---\nname: my-shared-skill\ndescription: Describe when and how Claude, Codex, and AGY should use this skill.\n---\n\n# Instructions\n`;
+    const required = new Set(existing?.requiredMcps || []);
+    const mcpNames = [...new Set([...(vaultState?.mcps || []).map((mcp) => mcp.name), ...required])];
     d.innerHTML = `<form style="display:flex;flex-direction:column;gap:11px">
       <div class="dlg-head"><h3>${existing ? `스킬 수정 · ${esc(existing.name)}` : '새 공통 스킬 추가'}</h3><button type="button" class="ghost icon-btn btn-sm" data-v-close aria-label="닫기">${UI_ICO.close}</button></div>
       <label>스킬 폴더 이름<input name="name" value="${esc(existing?.name || '')}" ${existing ? 'readonly' : ''} placeholder="my-shared-skill" required></label>
+      ${mcpNames.length ? `<label>필수 MCP<select multiple name="requiredMcps">
+        ${mcpNames.map((name) => `<option value="${esc(name)}" ${required.has(name) ? 'selected' : ''}>${esc(name)}</option>`).join('')}
+      </select></label>` : ''}
       <label>SKILL.md 내용<textarea name="content" rows="12" class="mono" style="font-size:12.5px" required>${esc(existing ? '' : initMd)}</textarea></label>
       <p role="alert" class="pj-error"></p>
       <div class="dlg-foot">
@@ -104,6 +109,7 @@
             action: 'save',
             name: String(fd.get('name') || '').trim(),
             content: String(fd.get('content') || ''),
+            requiredMcps: fd.getAll('requiredMcps'),
             enabled: existing ? existing.enabled : true,
             targets: existing ? existing.targets : ['claude', 'codex', 'agy'],
             sync: vaultState?.autoLoad !== false,
@@ -132,6 +138,7 @@
     d.innerHTML = `<form style="display:flex;flex-direction:column;gap:10px">
       <div class="dlg-head"><h3>${existing ? `MCP 수정 · ${esc(existing.name)}` : '새 공통 MCP 서버 추가'}</h3><button type="button" class="ghost icon-btn btn-sm" data-m-close aria-label="닫기">${UI_ICO.close}</button></div>
       <label>MCP 이름<input name="name" value="${esc(existing?.name || '')}" ${existing ? 'readonly' : ''} placeholder="예: context7, sequential-thinking" required></label>
+      <label><input type="checkbox" name="autoEnable" ${existing?.autoEnable ? 'checked' : ''}> 필요한 작업이 시작될 때 자동 활성화 허용</label>
       <label>전송 방식
         <select name="transport" id="vMcpTransport">
           <option value="stdio"${!isHttp ? ' selected' : ''}>Stdio (로컬 실행 명령)</option>
@@ -185,6 +192,7 @@
             url: isH ? String(fd.get('url') || '').trim() : '',
             env: isH ? null : parseKv(fd.get('env')),
             headers: isH ? parseKv(fd.get('headers')) : null,
+            autoEnable: fd.has('autoEnable'),
             enabled: existing ? existing.enabled : true,
             targets: existing ? existing.targets : ['claude', 'codex', 'agy'],
             sync: vaultState?.autoLoad !== false,
