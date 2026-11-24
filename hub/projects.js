@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto');
 const { validate } = require('./project-validation');
+const handoffPhases = ['waiting', 'delivered', 'confirmed', 'received'];
 
 const emptyTok = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 });
 function addTok(dst, src) {
@@ -285,6 +286,25 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
       write(data);
       return link.ids.length;
     },
+    advanceHandoff({ projectId, taskId }, termId, dispatchAt, phase) {
+      const data = read();
+      const project = data.projects.find((p) => p.id === projectId);
+      const task = project?.tasks.find((t) => t.id === taskId);
+      const handoff = task?.handoff;
+      const next = handoffPhases.indexOf(phase);
+      if (!project?.autopilot || !handoff || task.stage !== 'doing' || task.autoExclude || task.reviewPaused
+        || task.lastRun?.termId !== termId || next < 1 || handoff.history.length !== next) return false;
+      if (next === 1) {
+        const done = new Set(project.tasks.filter((t) => t.stage === 'done').map((t) => t.id));
+        if (handoff.termId || dispatchAt < handoff.history[0].at || !task.after.every((id) => done.has(id))) return false;
+      } else if (handoff.termId !== termId || handoff.history[1].at !== dispatchAt) return false;
+      handoff.termId = termId;
+      handoff.history.push({ phase, at: next === 1 ? dispatchAt : Date.now() });
+      project.revision++;
+      project.updatedAt = Date.now();
+      write(data);
+      return true;
+    },
     save(input, { taskRun } = {}) {
       const clean = validate(input), data = read(), all = data.projects;
       const old = input.id && all.find(p => p.id === input.id);
@@ -299,8 +319,18 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
       if (old && !old.agent && !input.agent) delete project.agent;
       const priorTasks = new Map(old?.tasks?.map((task) => [task.id, task]));
       for (const task of project.tasks) {
-        const lastRun = task.id === taskRun?.taskId ? taskRun.run : priorTasks.get(task.id)?.lastRun;
+        const prior = priorTasks.get(task.id);
+        const newRun = task.id === taskRun?.taskId;
+        const lastRun = newRun ? taskRun.run : prior?.lastRun;
         if (lastRun) task.lastRun = lastRun;
+        if (task.stage === 'planned' || (task.stage === 'doing' && prior?.stage === 'planned' && !newRun)) {
+          if (project.autopilot && !task.autoExclude && task.after.length) {
+            task.handoff = prior?.stage === 'planned' && prior.handoff
+              ? prior.handoff : { history: [{ phase: 'waiting', at: Date.now() }] };
+          }
+        } else if (prior?.handoff && (!newRun || taskRun.trackHandoff || prior.handoff.termId)) {
+          task.handoff = prior.handoff;
+        }
       }
       if (old) all[all.indexOf(old)] = project; else all.push(project);
       write(data);

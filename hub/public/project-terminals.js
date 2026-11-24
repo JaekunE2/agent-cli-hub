@@ -51,10 +51,17 @@ function projectCliBadgeHTML(p, task) {
   return `<button class="pj-cli-btn" data-assign-task="${esc(task.id)}" title="${esc(tip)}">${ico}<span>${esc(label)}${cfg.effort ? ` <em class="pj-eff-tag">${esc(cfg.effort)}</em>` : ''}</span></button>`;
 }
 
-function projectReviewBadgeHTML(task) {
+function projectHandoffBadgeHTML(task) {
+  const phase = task?.handoff?.history?.at(-1)?.phase;
+  const label = { waiting: '대기', delivered: '전달', confirmed: '실행 확인', received: '결과 수신' }[phase];
+  return label ? `<span class="badge">자동 진행 · ${label}</span>` : '';
+}
+
+function projectReviewBadgeHTML(task, showHandoff = true) {
   const st = task?.reviewStatus || '';
   const wtBadge = task?.worktreePath ? `<span class="badge" title="${esc(task.worktreePath)}">🌿 격리</span>` : '';
-  const versionBadge = task?.version ? `<span class="badge">v${esc(task.version)}</span>` : '';
+  const versionBadge = (task?.version ? `<span class="badge">v${esc(task.version)}</span>` : '')
+    + (showHandoff ? projectHandoffBadgeHTML(task) : '');
   if (!st && !task?.retryCount && !task?.reviewPaused) return versionBadge + wtBadge;
   const tip = task?.reviewNote ? ` title="${esc(task.reviewNote)}"` : '';
   let rev = '';

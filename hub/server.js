@@ -124,7 +124,7 @@ let lastIndexAt = 0;
 const refreshIndex = () => index.refresh().then((r) => { lastIndexAt = Date.now(); return r; });
 refreshIndex().then(() => console.log('search index ready:', index.docs.size, 'sessions'));
 setInterval(() => refreshIndex(), 10000).unref?.();
-setInterval(() => { checkAutopilotCompletions(hub).catch(() => {}); }, 3500).unref?.();
+setInterval(() => { checkAutopilotCompletions(hub).catch((e) => console.error('[autopilot-watch]', e?.message || e)); }, 3500).unref?.();
 
 let consoleTitleCache = new Map();
 const hub = {

@@ -1,4 +1,10 @@
 {
+  "전달": "Delivered",
+  "실행 확인": "Execution confirmed",
+  "결과 수신": "Result received",
+  "자동 진행 ·": "Autopilot ·",
+  "후속 작업 전달 중 프로젝트의 실행 상태가 바뀌었습니다.": "The project run changed while the follow-up was being delivered.",
+  "후속 작업의 실행은 확인됐지만 결과를 받지 못했습니다.": "The follow-up started, but no result was received.",
   "Vault 적용 기록": "Vault application history",
   "적용 기록을 불러오는 중…": "Loading application history…",
   "Vault 적용 기록을 불러오지 못했습니다.": "Could not load Vault application history.",

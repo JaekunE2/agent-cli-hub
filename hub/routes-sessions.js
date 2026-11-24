@@ -294,7 +294,7 @@ function createSessionRoutes(hub) {
     return ovBuilding;
   }
 
-  async function handleStartOrNewTerm(p, req, res, body, send) {
+  async function handleStartOrNewTerm(p, req, res, body, send, { trackHandoff = false } = {}) {
     let b = await body(req);
     const retry = p === '/api/projects/start' && b.retry === true;
     const submitDraft = retry && b.submitDraft === true;
@@ -446,7 +446,7 @@ function createSessionRoutes(hub) {
           stage: x.stage === 'planned' ? 'doing' : x.stage,
           ...(retry ? { reviewPaused: false, reviewStatus: '', reviewNote: '', retryCount: 0 } : {}),
         } : x),
-      }, { taskRun: { taskId: projectTask.taskId, run } });
+      }, { taskRun: { taskId: projectTask.taskId, run, trackHandoff } });
       if (retry) {
         for (const prior of hub.terms.values()) {
           if (prior.meta?.projectTask?.projectId !== projectTask.projectId || prior.meta.projectTask.taskId !== projectTask.taskId) continue;
@@ -493,11 +493,18 @@ function createSessionRoutes(hub) {
           t._projectHookEscapeSent = false;
           const cli = hub.agentOf(t) || 'claude';
           const dispatchedAt = Date.now();
+          if (trackHandoff && !latestTask.handoff?.termId) {
+            if (!projects.advanceHandoff?.(projectTask, t.id, dispatchedAt, 'delivered')) {
+              throw new Error('후속 작업 전달 중 프로젝트의 실행 상태가 바뀌었습니다.');
+            }
+            overviewStale();
+          }
           t._projectBusySeen = await dispatchTerminalPrompt(hub, t, rawPrompt, { cli, submitDraft });
           t._projectDispatchedAt = dispatchedAt;
+          if (trackHandoff && projects.advanceHandoff?.(projectTask, t.id, dispatchedAt, 'confirmed')) overviewStale();
         })().catch((e) => {
           const latest = projects.list().find((p) => p.id === projectTask.projectId);
-          if (hub.terms.has(t.id) && latest?.tasks.some((x) => x.id === projectTask.taskId && x.stage === 'doing')) {
+          if (hub.terms.has(t.id) && latest?.tasks.some((x) => x.id === projectTask.taskId && x.stage === 'doing' && x.lastRun?.termId === t.id)) {
             projects.save({ ...latest, tasks: latest.tasks.map((x) => x.id === projectTask.taskId
               ? { ...x, stage: 'doing', reviewPaused: true, reviewStatus: 'error', reviewNote: [e.message, x.reviewNote].filter(Boolean).join('\n\n') } : x) });
             overviewStale();
@@ -512,29 +519,16 @@ function createSessionRoutes(hub) {
     return send(res, 200, { ...hub.termInfo(t), ...(projectRefsBlock ? { refsBlock: projectRefsBlock } : {}), ...(retry ? { restarted: true } : {}) });
   }
 
-  hub.startProjectTaskById = async (projectId, taskId, { autoDispatch = true, resume = '', rawPrompt: overridePrompt = '' } = {}) => {
+  hub.startProjectTaskById = async (projectId, taskId, { autoDispatch = true, resume = '', rawPrompt: overridePrompt = '', trackHandoff = false } = {}) => {
     let status = 200;
     let payload = null;
-    const project = projects.list().find((x) => x.id === projectId);
-    const task = project?.tasks.find((x) => x.id === taskId);
-    const harnessState = hub.projectHarness?.get ? hub.projectHarness.get() : null;
-    const resolved = project && task ? resolveTaskConfig(project, task, harnessState) : null;
-    const parentTask = resolved?.parent;
-    const rawParts = task
-      ? (parentTask ? [`[상위 작업: ${parentTask.title}]`, parentTask.detail ? parentTask.detail.slice(0, 600) : '', `[서브 개발 작업: ${task.title}]`, task.detail] : [task.title, task.detail])
-      : [];
-    const harnessBlock = project && task && resolved ? buildTaskHarnessPrompt(project, task, resolved.agent, harnessState) : '';
-    if (harnessBlock) rawParts.push(harnessBlock);
-    const refsBlock = project && hub.projectRefs?.promptBlock ? hub.projectRefs.promptBlock(project.id, task?.version) : '';
-    if (refsBlock) rawParts.push(refsBlock);
-    const rawPrompt = overridePrompt || rawParts.filter(Boolean).join('\n\n');
-
     await handleStartOrNewTerm(
       '/api/projects/start',
-      { _autoDispatch: autoDispatch, _rawPrompt: rawPrompt, resume },
       null,
-      async () => ({ projectId, taskId, _autoDispatch: autoDispatch, _rawPrompt: rawPrompt, resume }),
-      (_res, code, data) => { status = code; payload = data; }
+      null,
+      async () => ({ projectId, taskId, _autoDispatch: autoDispatch, _rawPrompt: overridePrompt, resume }),
+      (_res, code, data) => { status = code; payload = data; },
+      { trackHandoff }
     );
     if (status >= 400) return { error: payload?.error || `HTTP ${status}` };
     if (autoDispatch && overridePrompt && payload?.id) {
