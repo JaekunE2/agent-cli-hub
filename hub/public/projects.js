@@ -196,6 +196,17 @@ function openProjectTokensDrawer(p) {
   openDrawer({ title: `${p.name}${scope} · 누적 토큰`, bodyHTML: body, footerHTML: '<button data-drw-close>닫기</button>', width: 500 });
 }
 
+function projectFileRunLinksHTML(p, taskId) {
+  const runs = (p.fileRuns || []).filter((run) => run.taskId === taskId && run.startedAt).reverse();
+  if (!runs.length) return '';
+  return `<div class="drw-sec"><div class="drw-lbl">파일 스냅샷</div>${runs.map((run) => `<div class="row">
+    <button type="button" class="btn-sm" data-drw-file-run="${esc(run.id)}" data-phase="start">시작 스냅샷</button>
+    ${run.finishedAt ? `<button type="button" class="btn-sm" data-drw-file-run="${esc(run.id)}" data-phase="finish">완료 스냅샷</button>` : ''}
+    <span class="ums">${new Date(run.startedAt).toLocaleString()}</span>
+    ${run.error ? `<span class="ums">${esc(run.error)}</span>` : ''}
+  </div>`).join('')}</div>`;
+}
+
 // Unified Right Detail Drawer for any Project Task (includes embedded Chat-Based Sub-Development Workspace!)
 function openProjectTaskDrawer(p, task, focusSubChat = false) {
   if (!task) return;
@@ -227,6 +238,7 @@ function openProjectTaskDrawer(p, task, focusSubChat = false) {
   const cliLine = [providerName(ag), term?.account?.label || (cfg.account || ''), cfg.model || '', cfg.effort ? `추론 ${cfg.effort}` : ''].filter(Boolean).join(' · ');
   const body = `
     ${task.lastRun || task.launchBlock ? `<div class="drw-sec"><div class="row">${projectLastRunHTML(task)}</div></div>` : ''}
+    <div data-drw-file-runs>${projectFileRunLinksHTML(p, task.id)}</div>
     ${parent ? `<div class="drw-sec"><div class="drw-lbl">상위 작업</div><button type="button" class="ghost btn-sm" data-drw-open-sub="${esc(parent.id)}">↳ ${esc(parent.title)}</button></div>` : ''}
     <div class="drw-sec">
       <div class="row" style="justify-content:space-between">
@@ -308,6 +320,15 @@ function openProjectTaskDrawer(p, task, focusSubChat = false) {
   const d = openDrawer({ title: task.title, bodyHTML: body, footerHTML: foot, width: 600 });
 
   d.addEventListener('click', async (e) => {
+    const snapshot = e.target.closest('[data-drw-file-run]');
+    if (snapshot) {
+      d.close();
+      await openProject(p.id, 'versions', '');
+      const row = document.querySelector(`[data-file-run="${snapshot.dataset.drwFileRun}"] [data-file-run-phase="${snapshot.dataset.phase}"]`);
+      row?.scrollIntoView({ block: 'center' });
+      row?.querySelector('[data-file-run-view]')?.focus({ preventScroll: true });
+      return;
+    }
     const action = e.target.closest('[data-start-task]');
     if (action) {
       if (task.stage === 'review') return requestProjectReview(p, task, action, d);

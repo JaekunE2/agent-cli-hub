@@ -66,4 +66,4 @@ function versionWorkspace(project, number) {
   return version?.snapshotId ? version.workspace || '' : project.cwd;
 }
 
-module.exports = { versionFolder, copyVersion, versionWorkspace };
+module.exports = { versionFolder, copyVersion, versionWorkspace, scanVersion: scan };

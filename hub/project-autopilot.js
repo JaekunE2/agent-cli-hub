@@ -8,6 +8,7 @@ const { spawnCli, cliModelEffortArgs } = require('./project-plan');
 const { parseAgyJson, parseClaudeJson, parseCodexJsonl } = require('./task-subchat');
 const { resolveTaskConfig, buildTaskHarnessPrompt } = require('./project-harness');
 const { versionWorkspace } = require('./version-files');
+const { isGit } = require('./project-file-runs');
 const { integrateBatch } = require('./project-integration');
 const { runReview, hasReviewClaim } = require('./project-review-run');
 const { requiredMcpMessage } = require('./vault-cli-ops');
@@ -154,7 +155,8 @@ async function finishApprovedTask(hub, project, task, reason, taskOut, sessionId
   const tasks = project.tasks.map((item) => item.id === taskId
     ? { ...item, stage: 'done', reviewStatus: 'approved', reviewPaused: false, reviewNote: reason, mergeApprovalNote: '', retryCount: 0, worktreePath: '',
       ...(taskOut ? { lastOutput: taskOut } : {}), ...(sessionId ? { lastSessionId: sessionId } : {}) } : item);
-  hub.projects.save({ ...project, tasks });
+  const saved = hub.projects.save({ ...project, tasks });
+  await finishFileRun(hub, saved, taskId);
   hub.overviewStale?.();
   if (hub.projectRefs?.saveFile) {
     const gitSummary = await readGitSummary(versionWorkspace(project, task.version), 3500).catch(() => '');
@@ -162,6 +164,11 @@ async function finishApprovedTask(hub, project, task, reason, taskOut, sessionId
   }
   const autoRes = await runProjectAutopilot(hub, projectId, { autoDispatch: true });
   return { approved: true, reason, started: autoRes.started };
+}
+
+async function finishFileRun(hub, project, taskId) {
+  const id = project?.tasks.find((task) => task.id === taskId)?.lastRun?.fileRunId;
+  if (id) await hub.fileRuns.finish(project.id, id);
 }
 
 async function runProjectIntegration(hub, project, retry) {
@@ -269,7 +276,9 @@ async function runProjectAutopilot(hub, projectId, { autoDispatch = true, maxCon
     const slots = Math.max(0, cap - activeDoing);
     if (slots <= 0) return { started };
 
-    const ready = findReadyTasks(cur, [...hub.terms.values()]);
+    const activeRuns = new Set(cur.tasks.map((task) => task.lastRun?.fileRunId));
+    const completing = new Set((cur.fileRuns || []).filter((run) => activeRuns.has(run.id) && run.completingAt && !run.finishedAt).map((run) => run.cwd));
+    const ready = findReadyTasks(cur, [...hub.terms.values()]).filter((task) => !completing.has(versionWorkspace(cur, task.version)));
     if (!ready.length) return { started };
 
     const occupied = new Set(cur.tasks.filter((t) => t.stage === 'doing' || t.stage === 'review').map((t) => versionWorkspace(cur, t.version)));
@@ -281,7 +290,8 @@ async function runProjectAutopilot(hub, projectId, { autoDispatch = true, maxCon
     });
     const workingMain = cur.tasks.some((t) => t.stage === 'doing' && !t.autoExclude && !t.reviewPaused && versionWorkspace(cur, t.version) === cur.cwd);
     const regular = ready.filter((t) => versionWorkspace(cur, t.version) === cur.cwd);
-    const projectGit = regular.length && cur.cwd && await execGit(cur.cwd, ['rev-parse', '--verify', 'HEAD']);
+    const projectGit = regular.length && cur.cwd && fs.existsSync(cur.cwd) && await isGit(cur.cwd)
+      && await execGit(cur.cwd, ['rev-parse', '--verify', 'HEAD']);
     const regularEligible = cur.worktreeIsolation !== false && cur.cwd && fs.existsSync(cur.cwd) && !projectGit?.ok
       ? regular.slice(0, workingMain ? 0 : 1) : regular;
     const eligible = new Set([...regularEligible, ...isolated]);
@@ -663,6 +673,14 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
   const initialProject = hub.projects.list().find((x) => x.id === projectId);
   const initialTask = initialProject?.tasks?.find((x) => x.id === taskId);
   if (!initialProject || !initialTask) return { started: [] };
+  if (terminal && initialTask.lastRun && terminal.id !== initialTask.lastRun.termId) return { skipped: true, started: [] };
+  const fileRun = initialProject.fileRuns?.find((run) => run.id === initialTask.lastRun?.fileRunId);
+  if (fileRun?.completingAt && !fileRun.finishedAt) {
+    await finishFileRun(hub, initialProject, taskId);
+    const { started } = await runProjectAutopilot(hub, projectId);
+    return { approved: true, started };
+  }
+  if (initialTask.stage === 'done' && fileRun?.finishedAt) return { skipped: true, started: [] };
   if (initialTask.reviewPaused && !force) return { skipped: true, started: [] };
 
   const taskOut = extractTaskOutput(hub, initialProject, initialTask, terminal, dispatchedAt);
@@ -674,7 +692,8 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
       const nextTasks = initialProject.tasks.map((t) => (t.id === initialTask.id
         ? { ...t, stage: 'done', reviewStatus: 'approved', ...(taskOut ? { lastOutput: taskOut } : {}), ...(priorSessionId ? { lastSessionId: priorSessionId } : {}) }
         : t));
-      hub.projects.save({ ...initialProject, tasks: nextTasks });
+      const saved = hub.projects.save({ ...initialProject, tasks: nextTasks });
+      await finishFileRun(hub, saved, taskId);
       hub.overviewStale?.();
     }
     const autoRes = initialProject.autopilot ? await runProjectAutopilot(hub, projectId, { autoDispatch: true }) : { started: [] };
@@ -866,9 +885,18 @@ async function checkAutopilotCompletions(hub) {
         .catch((error) => console.error('[autopilot-orphan-review]', project.id, task.id, error));
       scheduled.push({ projectId: project.id, completedTaskId: task.id, recoveredReview: true, promise });
     }
+    for (const project of hub.projects.list()) {
+      for (const task of project.tasks) {
+        const run = project.fileRuns?.find((item) => item.id === task.lastRun?.fileRunId);
+        if (run?.completingAt && !run.finishedAt && !run.error) {
+          await finishFileRun(hub, project, task.id).catch((error) => console.error('[project-file-run]', project.id, task.id, error.message));
+        }
+      }
+    }
     for (const t of hub.terms.values()) {
       const pt = t.meta?.projectTask;
       if (!pt?.projectId || !pt?.taskId || t._projectDispatchPending) continue;
+      if (t.exited === null && t.pid) hub.fileRuns?.recoverStart(t);
       const cli = hub.agentOf?.(t);
       const screen = t.exited === null ? hub.readTerm?.(t, 40).join('\n') || '' : '';
       const startup = sessionStartupBlock(hub.stripAnsi?.(screen) || screen);

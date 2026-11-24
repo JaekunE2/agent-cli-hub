@@ -295,7 +295,7 @@ function createSessionRoutes(hub) {
     return ovBuilding;
   }
 
-  async function handleStartOrNewTerm(p, req, res, body, send, { trackHandoff = false } = {}) {
+  async function handleStartOrNewTerm(p, req, res, body, send, { trackHandoff = false, continueFileRun = false } = {}) {
     let b = await body(req);
     const retry = p === '/api/projects/start' && b.retry === true;
     const submitDraft = retry && b.submitDraft === true;
@@ -337,6 +337,7 @@ function createSessionRoutes(hub) {
         const result = await existing.spawnResult;
         if (result?.error) return send(res, 502, { error: 'CLI를 시작하지 못했습니다. 설치 경로를 확인하세요.' });
         const info = hub.termInfo(existing);
+        if (result || existing.pid) hub.fileRuns?.recoverStart(existing);
         if (!retry || existing._projectDispatchPending) return send(res, 200, { ...info, existing: true });
         if (info.status === 'busy') {
           if (!info.startupBlock && !submitDraft && task.reviewPaused && ['error', 'rejected'].includes(task.reviewStatus)) {
@@ -492,6 +493,22 @@ function createSessionRoutes(hub) {
       const activeSwap = (hub.agySwap.getFast().accounts || []).find((a) => a.active);
       if (activeSwap) launchAccount = { ...launchAccount, account: { id: activeSwap.id, label: activeSwap.name ? `${activeSwap.name} (${activeSwap.email})` : activeSwap.email, kind: 'agy', email: activeSwap.email } };
     }
+    let fileRun;
+    if (projectTask && hub.fileRuns) {
+      try {
+        fileRun = await hub.fileRuns.prepare(projectTask.projectId, projectTask.taskId, cwd, continueFileRun);
+      } catch (error) {
+        const message = `시작 스냅샷 저장 실패: ${error.message}`;
+        const latest = projects.list().find((p) => p.id === projectTask.projectId);
+        if (latest?.tasks.some((task) => task.id === projectTask.taskId && task.stage !== 'done')) {
+          const block = { agent: b.kind, source: agentSource, message };
+          projects.save(latest, { taskLaunchBlock: { taskId: projectTask.taskId, block } });
+          overviewStale();
+        }
+        return send(res, 409, { error: message });
+      }
+      if (fileRun) Object.assign(projectTask, { fileRunId: fileRun.id, agentSource, trackHandoff });
+    }
     const t = reuseTerm || hub.createTerm({ cwd, cmd, args, title: b.title || title, ...launchAccount, model: b.model || '', effort: b.effort || '', projectTask, projectPrompt, agent: projectTask ? b.kind : undefined, preparedVault });
     if (!projectTask && ['claude', 'codex', 'agy'].includes(b.kind) && (b.model !== undefined || b.effort !== undefined || launchAccount?.account?.id)) {
       accountPrefs.save({ account: launchAccount?.account?.id || b.account || '', agent: b.kind, model: b.model || '', effort: b.effort || '' });
@@ -505,6 +522,7 @@ function createSessionRoutes(hub) {
       if (!latestTask) return send(res, 404, { error: 'Project 작업을 찾을 수 없습니다.' });
       if (retry && latestTask.stage !== 'doing') return send(res, 409, { error: '진행 단계의 작업만 다시 시작할 수 있습니다.' });
       const run = { agent: hub.agentOf(t) || b.kind, source: agentSource, termId: t.id, ...(mcpFallback ? { mcpFallback } : {}) };
+      if (fileRun) run.fileRunId = fileRun.id;
       projects.save({
         ...latest,
         tasks: latest.tasks.map((x) => x.id === projectTask.taskId ? {
@@ -512,7 +530,8 @@ function createSessionRoutes(hub) {
           stage: x.stage === 'planned' ? 'doing' : x.stage,
           ...(retry ? retryReset : {}),
         } : x),
-      }, { taskRun: { taskId: projectTask.taskId, run, trackHandoff } });
+      }, { taskRun: { taskId: projectTask.taskId, run, trackHandoff },
+        ...(fileRun ? { fileRun: { ...fileRun, startedAt: fileRun.startedAt || Date.now() } } : {}) });
       if (retry) {
         for (const prior of hub.terms.values()) {
           if (prior.meta?.projectTask?.projectId !== projectTask.projectId || prior.meta.projectTask.taskId !== projectTask.taskId) continue;
@@ -598,7 +617,7 @@ function createSessionRoutes(hub) {
     let payload = null;
     await startProjectTask(null, null, { projectId, taskId, _autoDispatch: autoDispatch, _rawPrompt: overridePrompt, resume },
       (_res, code, data) => { status = code; payload = data; },
-      { trackHandoff }
+      { trackHandoff, continueFileRun: Boolean(overridePrompt) }
     );
     if (status >= 400) return { error: payload?.error || `HTTP ${status}` };
     if (autoDispatch && overridePrompt && payload?.id) {
