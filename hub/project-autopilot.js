@@ -82,28 +82,49 @@ async function ensureTaskWorktree(projectCwd, taskId) {
   const wtRoot = path.join(projectCwd, '.hub-worktrees');
   const wtPath = path.join(wtRoot, `task-${id8}`);
   const branch = `hub-task/${id8}`;
-  if (fs.existsSync(wtPath)) return wtPath;
+  if (fs.existsSync(wtPath)) {
+    const source = await execGit(wtPath, ['symbolic-ref', '--short', 'HEAD']);
+    return source.ok && source.stdout.trim() === branch ? wtPath : '';
+  }
   fs.mkdirSync(wtRoot, { recursive: true });
-  const added = await execGit(projectCwd, ['worktree', 'add', '-B', branch, wtPath, 'HEAD'], 15_000);
+  const existing = await execGit(projectCwd, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]);
+  const added = await execGit(projectCwd, ['worktree', 'add', ...(existing.ok ? [wtPath, branch] : ['-b', branch, wtPath, 'HEAD'])], 15_000);
   return added.ok && fs.existsSync(wtPath) ? wtPath : '';
 }
 
-async function mergeAndCleanupWorktree(projectCwd, taskId, worktreePath) {
-  if (!projectCwd || !worktreePath || !fs.existsSync(worktreePath)) return { ok: true, skipped: true };
+async function mergeAndCleanupWorktree(projectCwd, taskId, worktreePath, { keepWorktree = false } = {}) {
+  if (!projectCwd || !worktreePath || !fs.existsSync(worktreePath)) return { ok: false, error: '격리 작업 폴더를 찾을 수 없습니다.' };
   const id8 = String(taskId).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 8) || 'task';
   const branch = `hub-task/${id8}`;
+  const source = await execGit(worktreePath, ['symbolic-ref', '--short', 'HEAD']);
+  if (!source.ok || source.stdout.trim() !== branch) return { ok: false, error: '격리 작업 브랜치가 일치하지 않습니다.' };
+  const sourceHead = await execGit(worktreePath, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+  const targetHead = await execGit(projectCwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+  if (!sourceHead.ok || !targetHead.ok || sourceHead.stdout.trim() !== targetHead.stdout.trim()) {
+    return { ok: false, error: '격리 작업 브랜치가 일치하지 않습니다.' };
+  }
   const st = await execGit(worktreePath, ['status', '--short'], 5000);
-  if (st.ok && st.stdout.trim()) {
-    await execGit(worktreePath, ['add', '-A'], 8000);
-    await execGit(worktreePath, ['commit', '-m', `hub: task ${id8}`], 10_000);
+  if (!st.ok) return { ok: false, error: st.stderr.trim() };
+  if (st.stdout.trim()) {
+    const added = await execGit(worktreePath, ['add', '-A'], 8000);
+    if (!added.ok) return { ok: false, error: added.stderr.trim() };
+    const committed = await execGit(worktreePath, ['commit', '-m', `hub: task ${id8}`], 10_000);
+    if (!committed.ok) return { ok: false, error: (committed.stderr || committed.stdout).trim() };
   }
-  const merged = await execGit(projectCwd, ['merge', '--no-ff', branch, '-m', `hub: merge task ${id8}`], 15_000);
+  const inProgress = await execGit(projectCwd, ['rev-parse', '--verify', 'MERGE_HEAD']);
+  if (inProgress.ok) return { ok: false, error: '프로젝트 폴더에 진행 중인 Git 병합이 있습니다.' };
+  const merged = await execGit(projectCwd, ['merge', '--no-ff', `refs/heads/${branch}`, '-m', `hub: merge task ${id8}`], 15_000);
   if (!merged.ok) {
-    await execGit(projectCwd, ['merge', '--abort'], 5000);
-    return { ok: false, error: (merged.stderr || merged.stdout || 'worktree merge conflict').trim().slice(0, 500) };
+    const conflicts = await execGit(projectCwd, ['diff', '--name-only', '--diff-filter=U']);
+    const mergeHead = await execGit(projectCwd, ['rev-parse', '--verify', 'MERGE_HEAD']);
+    if (mergeHead.ok) await execGit(projectCwd, ['merge', '--abort'], 5000);
+    const files = conflicts.stdout.trim().split(/\r?\n/).filter(Boolean);
+    return { ok: false, error: files.length ? files.map((file) => `- ${file}`).join('\n') : (merged.stderr || merged.stdout || 'Git merge failed').trim().slice(0, 500) };
   }
-  await execGit(projectCwd, ['worktree', 'remove', '--force', worktreePath], 10_000);
-  await execGit(projectCwd, ['branch', '-D', branch], 5000);
+  if (!keepWorktree) {
+    const removed = await execGit(projectCwd, ['worktree', 'remove', worktreePath], 10_000);
+    if (removed.ok) await execGit(projectCwd, ['branch', '-d', branch], 5000);
+  }
   return { ok: true };
 }
 
@@ -122,22 +143,26 @@ async function runProjectAutopilot(hub, projectId, { autoDispatch = true, maxCon
     const ready = findReadyTasks(cur, [...hub.terms.values()]).slice(0, slots);
     if (!ready.length) return { started };
 
-    const useWorktrees = cur.worktreeIsolation !== false && (activeDoing > 0 || ready.length > 1);
+    const projectGit = cur.cwd && await execGit(cur.cwd, ['rev-parse', '--verify', 'HEAD']);
+    const useWorktrees = cur.worktreeIsolation !== false && projectGit?.ok && (activeDoing > 0 || ready.length > 1 || ready.some((t) => t.worktreePath));
     const worktreeByTask = new Map();
     if (useWorktrees && cur.cwd) {
       for (const t of ready) {
-        const wt = t.worktreePath || await ensureTaskWorktree(cur.cwd, t.id);
+        const wt = await ensureTaskWorktree(cur.cwd, t.id);
         if (wt) worktreeByTask.set(t.id, wt);
       }
     }
+    const launchable = useWorktrees ? ready.filter((task) => worktreeByTask.has(task.id))
+      : cur.worktreeIsolation !== false && cur.cwd && fs.existsSync(cur.cwd) && !projectGit?.ok ? ready.slice(0, activeDoing ? 0 : 1) : ready;
+    if (!launchable.length) return { started };
 
-    const readyIds = new Set(ready.map((t) => t.id));
+    const readyIds = new Set(launchable.map((t) => t.id));
     const nextTasks = cur.tasks.map((t) => (readyIds.has(t.id)
       ? { ...t, stage: 'doing', ...(worktreeByTask.has(t.id) ? { worktreePath: worktreeByTask.get(t.id) } : {}) }
       : t));
     hub.projects.save({ ...cur, tasks: nextTasks });
 
-    for (const task of ready) {
+    for (const task of launchable) {
       let ok = false;
       try {
         const res = await hub.startProjectTaskById(cur.id, task.id, { autoDispatch });
@@ -366,7 +391,8 @@ async function defaultReviewTask(hub, project, task, onPhase) {
   const harnessState = hub.projectHarness?.get ? hub.projectHarness.get() : null;
   const revCfg = resolveTaskConfig(project, { kind: 'review', role: 'review' }, harnessState);
   const agent = ['claude', 'codex', 'agy'].includes(revCfg.agent) ? revCfg.agent : 'claude';
-  const taskCwd = task.worktreePath && fs.existsSync(task.worktreePath) ? task.worktreePath : project.cwd;
+  if (task.worktreePath && !fs.existsSync(task.worktreePath)) throw new Error('격리 작업 폴더를 찾을 수 없습니다.');
+  const taskCwd = task.worktreePath || project.cwd;
   const workCwd = (taskCwd && fs.existsSync(taskCwd)) ? taskCwd : process.cwd();
   const [gitSummary, testCheck] = await Promise.all([readGitSummary(workCwd), runPreReviewChecks(workCwd)]);
   onPhase(`${agent} 교차 검토 중 (최대 ${REVIEW_TIMEOUT_MS / 1000}초)`);
@@ -594,13 +620,15 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
 
       if (verdict?.verdict === 'APPROVE') {
         if (curTask.worktreePath) {
-          const mergeRes = await mergeAndCleanupWorktree(curP.cwd, curTask.id, curTask.worktreePath);
+          const keepWorktree = [...(hub.terms?.values() || [])].some((term) => term.exited === null
+            && term.meta?.projectTask?.projectId === projectId && term.meta.projectTask.taskId === taskId);
+          const mergeRes = await mergeAndCleanupWorktree(curP.cwd, curTask.id, curTask.worktreePath, { keepWorktree });
           curP = hub.projects.list().find((x) => x.id === projectId);
           if (!isReviewing(curP)) return { skipped: true, started: [] };
           if (!mergeRes.ok) {
-            const conflictReason = `병렬 워크트리 병합 충돌: ${mergeRes.error}`;
+            const conflictReason = mergeRes.error;
             const conflictTasks = curP.tasks.map((t) => (t.id === task.id
-              ? { ...t, stage: 'doing', reviewPaused: true, reviewStatus: 'rejected', reviewNote: conflictReason }
+              ? { ...t, stage: 'review', reviewPaused: true, reviewStatus: 'merge-blocked', reviewNote: conflictReason }
               : t));
             hub.projects.save({ ...curP, tasks: conflictTasks });
             hub.overviewStale?.();

@@ -86,7 +86,7 @@ function validate(p) {
       effort: String(t.effort || ''),
       parentId: t.parentId ? String(t.parentId) : '',
       autoExclude: !!t.autoExclude,
-      reviewStatus: ['reviewing', 'approved', 'rejected', 'error'].includes(t.reviewStatus) ? t.reviewStatus : '',
+      reviewStatus: ['reviewing', 'approved', 'rejected', 'error', 'merge-blocked'].includes(t.reviewStatus) ? t.reviewStatus : '',
       reviewPaused: t.reviewPaused === true,
       reviewNote: typeof t.reviewNote === 'string' ? t.reviewNote.slice(0, 2000) : '',
       lastOutput: typeof t.lastOutput === 'string' ? t.lastOutput.slice(0, 2000) : '',

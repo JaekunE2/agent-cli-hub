@@ -2836,5 +2836,11 @@
   "Role · 에이전트 하네스를 불러오지 못했습니다.": "Could not load the role and agent harness.",
   "Role · 에이전트 하네스를 복원하지 못했습니다.": "Could not reset the role and agent harness.",
   "Role · 에이전트 하네스를 저장하지 못했습니다.": "Could not save the role and agent harness.",
-  "미리보기를 불러오지 못했습니다. (": "Could not load the preview. ("
+  "미리보기를 불러오지 못했습니다. (": "Could not load the preview. (",
+  "격리 작업 폴더를 찾을 수 없습니다.": "The isolated task folder could not be found.",
+  "격리 작업 브랜치가 일치하지 않습니다.": "The isolated task branch does not match.",
+  "프로젝트 폴더에 진행 중인 Git 병합이 있습니다.": "A Git merge is already in progress in the project folder.",
+  "터미널 입력을 전송 중입니다.": "Terminal input is being submitted.",
+  "병합 대기": "Awaiting merge",
+  "검토 통과 · 병합 대기": "Review passed · awaiting merge"
 }

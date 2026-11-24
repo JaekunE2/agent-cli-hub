@@ -6,6 +6,23 @@ const { sessionStartupBlock } = require('../term-manager');
 
 const noopSleep = () => Promise.resolve();
 
+test('chat submission sends multiline Codex text once and retries only Enter', async () => {
+  const input = 'first line\nsecond line';
+  const term = { id: '1', exited: null };
+  const writes = [];
+  const hub = {
+    terms: new Map([[term.id, term]]), isCodexTerm: () => true, touchUserInput() {},
+    readTerm: () => [writes.length && writes.length < 3 ? '› [Pasted Content 22 chars]' : '› Ask Codex to do anything'],
+    codexStatus: () => writes.length === 3 ? 'busy' : 'idle',
+    waitFor: async (check) => check(), sleep: noopSleep,
+    ptyPost: async (_id, _path, body) => { writes.push(body.data); return { ok: true }; },
+  };
+  const { handleSessionRoutes } = createSessionRoutes(hub);
+  await handleSessionRoutes('/api/term/send', null, { method: 'POST' }, null, async () => ({ id: term.id, text: input, submit: true }),
+    (_res, status, payload) => { assert.equal(status, 200); assert.equal(payload.ok, true); }, () => true);
+  assert.deepEqual(writes, [`\x1b[200~${input}\x1b[201~`, '\r', '\r']);
+});
+
 test('project restart waits for explicit CLI confirmation and resumes the same task', async () => {
   const prompts = {
     codex: ['Do you trust the files in this folder?'],

@@ -513,10 +513,11 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       if (pendingText && res.term?.id) {
         if (!isCrossPlatform) {
           setTimeout(() => {
-            api('/api/term/send', { method: 'POST', body: { id: res.term.id, text: pendingText, submit: true } }).catch(() => {});
+            api('/api/term/send', { method: 'POST', body: { id: res.term.id, text: pendingText, submit: true } })
+              .then((sent) => { if (!sent.ok) throw new Error(sent.error); notifySent(res.term.id, pendingText); })
+              .catch((er) => toast(er.message, 6000, 'danger'));
           }, 2600);
-        }
-        notifySent(res.term.id, pendingText);
+        } else notifySent(res.term.id, pendingText);
       }
       if (res.term) {
         if (openTerm || state.sel.kind === 'term') {
@@ -547,9 +548,10 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
     if (prefKey) chatLaunchPrefs.set(prefKey, cfg);
     await refreshOverview();
     if (pendingText) {
-      notifySent(t.id, pendingText);
       setTimeout(() => {
-        api('/api/term/send', { method: 'POST', body: { id: t.id, text: pendingText, submit: true } }).catch(() => {});
+        api('/api/term/send', { method: 'POST', body: { id: t.id, text: pendingText, submit: true } })
+          .then((sent) => { if (!sent.ok) throw new Error(sent.error); notifySent(t.id, pendingText); })
+          .catch((er) => toast(er.message, 6000, 'danger'));
       }, 2400);
     }
     if (openTerm) {

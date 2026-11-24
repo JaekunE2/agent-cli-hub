@@ -44,6 +44,7 @@ function projectReviewBadgeHTML(task) {
   const tip = task?.reviewNote ? ` title="${esc(task.reviewNote)}"` : '';
   let rev = '';
   if (st === 'reviewing') rev = `<span class="badge warn"${tip}>🔍 자동 검토 중</span>`;
+  else if (st === 'merge-blocked') rev = `<span class="badge warn"${tip}>병합 대기</span>`;
   else if (st === 'approved') rev = `<span class="badge ok"${tip}>✓ 검토 승인</span>`;
   else if (st === 'rejected' && task.stage === 'doing' && !task.reviewPaused && task.retryCount > 0) {
     rev = `<span class="badge warn"${tip}>↻ 반려 재시도 ${task.retryCount}회</span>`;
@@ -79,6 +80,9 @@ function projectReviewNoteHTML(task, compact = false) {
   } else if (st === 'rejected') {
     tone = 'danger';
     label = '마지막 검토 반려 사유';
+  } else if (st === 'merge-blocked') {
+    tone = 'warn';
+    label = '검토 통과 · 병합 대기';
   } else if (st === 'error') {
     tone = 'danger';
     label = '검토 실행 오류';

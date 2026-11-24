@@ -328,6 +328,7 @@ function createSessionRoutes(hub) {
       hub.ensureProjectDir(project.cwd);
       if (!path.isAbsolute(project.cwd) || !fs.statSync(project.cwd, { throwIfNoEntry: false })?.isDirectory()) return send(res, 400, { error: '작업 설계에서 존재하는 작업 폴더의 전체 경로를 입력하세요.' });
       const taskWorktree = task.worktreePath && path.isAbsolute(task.worktreePath) && fs.statSync(task.worktreePath, { throwIfNoEntry: false })?.isDirectory() ? task.worktreePath : '';
+      if (task.worktreePath && !taskWorktree) return send(res, 409, { error: '격리 작업 폴더를 찾을 수 없습니다.' });
       b = { kind, cwd: taskWorktree || project.cwd, title: parentTask ? `${parentTask.title} › ${task.title}` : task.title, skipPermissions: true, model, effort, resume: typeof b.resume === 'string' ? b.resume.trim() : '', _autoDispatch: b.autoDispatch !== false && b._autoDispatch !== false, _rawPrompt: b._rawPrompt || '' };
       const parts = parentTask ? [`[상위 작업: ${parentTask.title}]`, parentTask.detail ? parentTask.detail.slice(0, 600) : '', `[서브 개발 작업: ${task.title}]`, task.detail] : [task.title, task.detail];
       const harnessBlock = buildTaskHarnessPrompt(project, task, kind, harnessState);
@@ -896,6 +897,9 @@ function createSessionRoutes(hub) {
     if (p === '/api/term/send' && req.method === 'POST') {
       const b = await body(req); const t = hub.terms.get(String(b.id));
       if (!t || t.exited !== null) { send(res, 404, { ok: false, error: 'no such running terminal' }); return true; }
+      if (t._chatSubmitPending || t._projectDispatchPending && (b.text || b.immediate)) {
+        send(res, 409, { ok: false, error: '터미널 입력을 전송 중입니다.' }); return true;
+      }
       if (b.submit || b.immediate || b.text) {
         const screen = hub.readTerm(t, 12).join('\n');
         const confirmation = terminalConfirmationMessage(sessionStartupBlock(stripAnsi?.(screen) || screen));
@@ -910,6 +914,17 @@ function createSessionRoutes(hub) {
         await t.proc.write(PTY_KEYS.esc);
         await hub.sleep(hub.SUBMIT_DELAY);
       }
+      if (b.submit && !b.resendIfMissing && typeof b.text === 'string' && b.text.trim() && !b.keys?.length
+        && hub.isCodexTerm(t) && hub.codexStatus?.(t) === 'idle') {
+        t._chatSubmitPending = true;
+        try {
+          await dispatchCodexProjectPrompt(hub, t, b.text.replace(/\r\n/g, '\n'));
+          send(res, 200, { ok: true, immediate: !!b.immediate });
+        } catch (e) {
+          send(res, 409, { ok: false, error: e.message });
+        } finally { t._chatSubmitPending = false; }
+        return true;
+      }
       if (b.immediate && !inHistorySearch) {
         const cli = hub.isCodexTerm(t) ? 'codex' : hub.isAgyTerm(t) ? 'agy' : 'claude';
         const outcome = await dispatchImmediatePrompt({
@@ -919,13 +934,21 @@ function createSessionRoutes(hub) {
         });
         if (outcome.handled) { send(res, 200, outcome.result); return true; }
       }
-      if (b.text) { hub.termMonitor?.onInput(t, b.text); t.proc.write(b.text); }
+      if (b.text) {
+        hub.termMonitor?.onInput(t, b.text);
+        const text = b.submit && /[\r\n]/.test(b.text) ? `\x1b[200~${b.text.replace(/\r\n/g, '\n')}\x1b[201~` : b.text;
+        await t.proc.write(text);
+      }
       for (const k of b.keys || []) {
         if (!(k in PTY_KEYS)) { send(res, 400, { ok: false, error: `unknown key ${k}; one of ${Object.keys(PTY_KEYS)}` }); return true; }
         hub.termMonitor?.onInput(t, PTY_KEYS[k]);
         t.proc.write(PTY_KEYS[k]);
       }
-      if (b.submit) { await hub.sleep(b.fromTerminalInput && b.text ? hub.SUBMIT_DELAY + Math.min(3000, b.text.length * 2) : hub.SUBMIT_DELAY); hub.termMonitor?.onInput(t, '\r'); t.proc.write('\r'); }
+      if (b.submit) {
+        await hub.sleep(hub.SUBMIT_DELAY + Math.min(3000, (b.text?.length || 0) * 2));
+        hub.termMonitor?.onInput(t, '\r');
+        await t.proc.write('\r');
+      }
       send(res, 200, { ok: true, immediate: !!b.immediate });
       return true;
     }

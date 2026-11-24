@@ -397,6 +397,16 @@ test('ensureTaskWorktree and mergeAndCleanupWorktree isolate parallel task chang
     assert.equal(merged.ok, true);
     assert.equal(fs.existsSync(path.join(tmp, 'feature.txt')), true);
     assert.equal(fs.existsSync(wt), false);
+
+    const conflicting = await ensureTaskWorktree(tmp, 'conflict-test');
+    fs.writeFileSync(path.join(conflicting, 'base.txt'), 'task version\n');
+    fs.writeFileSync(path.join(tmp, 'base.txt'), 'project version\n');
+    execFileSync('git', ['commit', '-am', 'Change project base'], { cwd: tmp, stdio: 'ignore' });
+    const blocked = await mergeAndCleanupWorktree(tmp, 'conflict-test', conflicting);
+    assert.deepEqual(blocked, { ok: false, error: '- base.txt' });
+    assert.equal(fs.readFileSync(path.join(tmp, 'base.txt'), 'utf8').trim(), 'project version');
+    assert.equal(fs.readFileSync(path.join(conflicting, 'base.txt'), 'utf8').trim(), 'task version');
+    assert.equal(execFileSync('git', ['diff', '--name-only', '--diff-filter=U'], { cwd: tmp, encoding: 'utf8' }).trim(), '');
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
