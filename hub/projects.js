@@ -305,7 +305,7 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
       write(data);
       return true;
     },
-    save(input, { taskRun, taskLaunchBlock } = {}) {
+    save(input, { taskRun, taskLaunchBlock, reviewRun } = {}) {
       const clean = validate(input), data = read(), all = data.projects;
       const old = input.id && all.find(p => p.id === input.id);
       if (input.id && !old) throw new Error('프로젝트를 찾을 수 없습니다.');
@@ -321,6 +321,10 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
       const priorTasks = new Map(old?.tasks?.map((task) => [task.id, task]));
       for (const task of project.tasks) {
         const prior = priorTasks.get(task.id);
+        if (task.stage === 'review' && task.reviewStatus === 'reviewing') {
+          const run = task.id === reviewRun?.taskId ? reviewRun.run : prior?.reviewRun;
+          if (run) task.reviewRun = run;
+        }
         const newRun = task.id === taskRun?.taskId;
         const lastRun = newRun ? taskRun.run : prior?.lastRun;
         if (lastRun) task.lastRun = lastRun;

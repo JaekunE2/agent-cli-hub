@@ -2991,5 +2991,11 @@
   "콘솔 기록 검색을 닫지 못했습니다.": "Could not close console history search.",
   "CLI 시작 훅이 실행 중입니다.": "CLI startup hooks are running.",
   "전송 중 터미널 입력 상태가 바뀌었습니다.": "Terminal input state changed during submission.",
-  "여러 줄 또는 탭이 포함된 메시지는 Hub 관리 터미널에서 보내세요.": "Send messages containing newlines or tabs through a Hub-managed terminal."
+  "여러 줄 또는 탭이 포함된 메시지는 Hub 관리 터미널에서 보내세요.": "Send messages containing newlines or tabs through a Hub-managed terminal.",
+  "이전 검토의 제출 기록이 없어 중복 검토를 방지하기 위해 중단했습니다.": "Review paused because the previous submission could not be verified.",
+  "검토 대기 중…": "Waiting for review…",
+  "검토 중 작업 폴더가 변경됐습니다.": "The working folder changed during the review.",
+  "검토 요청이 취소됐습니다.": "The review request was canceled.",
+  "검토 프로세스가 결과 저장 전에 종료되어 제출 여부를 확인할 수 없습니다.": "The review process exited before saving a result. Submission could not be verified.",
+  "검토 프로세스가 제출 전에 종료됐습니다.": "The review process exited before submission."
 }

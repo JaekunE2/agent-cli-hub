@@ -124,7 +124,7 @@ let lastIndexAt = 0;
 const refreshIndex = () => index.refresh().then((r) => { lastIndexAt = Date.now(); return r; });
 refreshIndex().then(() => console.log('search index ready:', index.docs.size, 'sessions'));
 setInterval(() => refreshIndex(), 10000).unref?.();
-setInterval(() => { checkAutopilotCompletions(hub).catch((e) => console.error('[autopilot-watch]', e?.message || e)); }, 3500).unref?.();
+const watchAutopilot = () => checkAutopilotCompletions(hub).catch((e) => console.error('[autopilot-watch]', e));
 
 let consoleTitleCache = new Map();
 const hub = {
@@ -432,6 +432,8 @@ server.listen(PORT, HOST, () => {
   const u = `http://${HOST}:${PORT}/?t=${TOKEN}`;
   fs.writeFileSync(path.join(__dirname, 'url.txt'), u + '\n');
   console.log('Agent CLI Hub:', u);
+  watchAutopilot();
+  setInterval(watchAutopilot, 3500).unref?.();
 });
 syncRemoteListeners();
 setInterval(syncRemoteListeners, 15000).unref?.();
