@@ -240,12 +240,15 @@ function parseTerminalScreenState(screenText, agent = '') {
   const effort = norm.effort;
   const modelReset = norm.resetDefault;
 
-  // Detect interactive question / selection prompt
+  // Detect interactive question / selection prompt (must have an explicit CLI selection/confirmation hint, never plain numbered lists)
   let prompt = null;
-  const hasMenuHint = /Enter to select|Esc to cancel|Use arrow keys|Type something\.|Do you want to proceed\?/i.test(tail);
-  const optionLines = lines.slice(-16).filter((l) => /^[>❯›●]?\s*\d+[.)]\s+\S/.test(l));
-  if (hasMenuHint || optionLines.length >= 2) {
-    const selected = optionLines.find((l) => /^[>❯›●]/.test(l)) || optionLines[0] || '';
+  const lastLine = lines[lines.length - 1] || '';
+  const hasMenuHint = /Enter to (?:select|confirm)|Use arrow keys|arrow keys to select|Type something\.|Do you want to (?:proceed|make this edit|create|allow|run)\?/i.test(tail)
+    || (/Esc to (?:cancel|deny|reject)/i.test(lastLine) && /Enter\b/i.test(lastLine));
+  const optionLines = lines.slice(-14).filter((l) => /^[>❯›●]?\s*\d+[.)]\s+\S/.test(l));
+  const hasMarkedOption = optionLines.some((l) => /^[❯›●]\s*\d+[.)]\s+\S/.test(l));
+  if (hasMenuHint && (optionLines.length >= 2 || /Do you want to proceed\?/i.test(tail)) && (hasMarkedOption || /Enter to (?:select|confirm)|Do you want to proceed\?/i.test(tail))) {
+    const selected = optionLines.find((l) => /^[❯›●]/.test(l)) || optionLines[0] || '';
     const firstOptIdx = optionLines.length ? lines.lastIndexOf(optionLines[0]) : -1;
     const questionLine = firstOptIdx > 0
       ? lines.slice(Math.max(0, firstOptIdx - 4), firstOptIdx).reverse().find((l) => /\?|:$|Select|Choose|선택|질문|진행/i.test(l) && !/^[─━═╭╰│]/.test(l)) || ''

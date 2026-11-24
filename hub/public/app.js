@@ -584,15 +584,19 @@ $('#btnSideMore').onclick = (e) => {
   e.stopPropagation();
   openMoreMenu(e.currentTarget, [
     {
-      label: state.notifyEnabled ? '✓ 작업 완료 데스크톱 알림 켜짐' : '작업 완료 데스크톱 알림 켜기',
+      label: desktopInvoke
+        ? (state.notifyEnabled ? '✓ 작업 완료·확인 필요 알림 켜짐' : '작업 완료·확인 필요 알림 켜기')
+        : (state.notifyEnabled ? '✓ 작업 완료 데스크톱 알림 켜짐' : '작업 완료 데스크톱 알림 켜기'),
       icon: ICO.bell,
       onClick: async () => {
-        if (!state.notifyEnabled && typeof Notification !== 'undefined' && Notification.permission === 'default') {
+        if (!desktopInvoke && !state.notifyEnabled && typeof Notification !== 'undefined' && Notification.permission === 'default') {
           await Notification.requestPermission().catch(() => {});
         }
         state.notifyEnabled = !state.notifyEnabled;
         try { localStorage.setItem('ach-notify', state.notifyEnabled ? '1' : '0'); } catch {}
-        toast(state.notifyEnabled ? '작업 완료 알림을 켰습니다' : '작업 완료 알림을 껐습니다');
+        toast(desktopInvoke
+          ? (state.notifyEnabled ? '작업 완료·확인 필요 알림을 켰습니다' : '작업 완료·확인 필요 알림을 껐습니다')
+          : (state.notifyEnabled ? '작업 완료 알림을 켰습니다' : '작업 완료 알림을 껐습니다'));
       },
     },
     { divider: true },
@@ -610,6 +614,22 @@ $('#btnSideMore').onclick = (e) => {
 };
 
 // ---------- boot ----------
+function selectionFromHash() {
+  const hm = /^#([a-z]+)(?::([^:]+)(?::([a-z]+)(?::(\d+\.\d+\.\d+))?)?)?$/.exec(location.hash || '');
+  const version = hm?.[1] === 'projects' && hm[4];
+  return hm ? { sel: { kind: hm[1], ...(hm[2] ? { id: hm[2] } : {}), ...(version ? { version } : {}) }, tab: hm[3] || undefined } : null;
+}
+
+function terminalExists(id) {
+  return state.terms.some((t) => String(t.id) === String(id));
+}
+
+if (desktopInvoke) window.addEventListener('hashchange', () => {
+  if (!booted || !/^#term:[1-9][0-9]{0,15}$/.test(location.hash)) return;
+  const { sel } = selectionFromHash();
+  select(terminalExists(sel.id) ? sel : { kind: 'home' });
+});
+
 (async () => {
   await Promise.all([refreshOverview(), refreshRecent(), refreshProjects(), refreshUsage(), refreshResearch(), typeof loadCalendar === 'function' ? loadCalendar() : Promise.resolve()]);
   setInterval(whenShown(() => typeof loadCalendar === 'function' && loadCalendar()), 300000);
@@ -631,9 +651,7 @@ $('#btnSideMore').onclick = (e) => {
   else {
     let restored = null;
     try {
-      const hm = /^#([a-z]+)(?::([^:]+)(?::([a-z]+)(?::(\d+\.\d+\.\d+))?)?)?$/.exec(location.hash || '');
-      const version = hm?.[1] === 'projects' && hm[4];
-      const fromHash = hm ? { sel: { kind: hm[1], ...(hm[2] ? { id: hm[2] } : {}), ...(version ? { version } : {}) }, tab: hm[3] || undefined } : null;
+      const fromHash = selectionFromHash();
       const previous = JSON.parse(localStorage.getItem('ach-last-sel') || 'null');
       if (fromHash?.sel.kind === 'term' && previous?.sel?.kind === 'term' && previous.sel.id === fromHash.sel.id) {
         fromHash.sel = { ...previous.sel, ...fromHash.sel };
@@ -641,12 +659,14 @@ $('#btnSideMore').onclick = (e) => {
       const saved = fromHash || previous;
       const s = saved?.sel;
       if (s && ['home', 'terms', 'projects', 'usage', 'calendar', 'gpu', 'vault', 'recent', 'research'].includes(s.kind)) restored = saved;
-      else if (s?.kind === 'term' && state.terms.some((t) => String(t.id) === String(s.id))) restored = saved;
+      else if (s?.kind === 'term' && terminalExists(s.id)) restored = saved;
       else if (s?.kind === 'console' && state.consoles.some((c) => String(c.id) === String(s.id))) restored = saved;
     } catch {}
     if (restored) select(restored.sel, restored.tab);
     else select({ kind: 'home' });
   }
-  setInterval(whenShown(refreshOverview), 4000);
+  setInterval(() => {
+    if (!document.hidden || (desktopInvoke && state.notifyEnabled)) refreshOverview();
+  }, 4000);
   setInterval(whenShown(refreshRecent), 10000);
 })();

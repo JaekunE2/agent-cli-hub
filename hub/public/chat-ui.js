@@ -428,7 +428,9 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
 
     const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
     const lastUser = [...(messages || [])].reverse().find((m) => m.role === 'user');
-    const showPendingUser = !!(hint?.pendingText && (!lastUser || !norm(lastUser.text).includes(norm(hint.pendingText).slice(0, 60))));
+    const expectedUser = hint?.submittedText && hint.submittedText !== hint.pendingText
+      ? norm(hint.submittedText) : norm(hint?.pendingText || '').slice(0, 60);
+    const showPendingUser = !!(hint?.pendingText && (!lastUser || !norm(lastUser.text).includes(expectedUser)));
     const canImmediate = !!(showPendingUser && (lt || conPid));
     const hasScreen = !!(showLiveScreen && preview);
     const hasToggle = !!preview;

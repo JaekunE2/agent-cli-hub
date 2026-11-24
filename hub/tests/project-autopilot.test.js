@@ -422,8 +422,11 @@ test('reviewed worktrees are integrated in dependency order and published only a
     ] };
     let attempts = 0;
     let resolverRuns = 0;
+    let reviewCount = 0;
+    let activeChecks = 0;
+    let maxActiveChecks = 0;
     let integrationPath;
-    const hub = { terms: new Map(), projects: { list: () => [project], save: (value) => (project = value) },
+    const hub = { mergeRetryDelayMs: 0, terms: new Map(), projects: { list: () => [project], save: (value) => (project = value) },
       resolveIntegrationConflict: async (root, entry, files) => {
         resolverRuns++;
         assert.equal(entry.id, 'wait-second');
@@ -431,36 +434,63 @@ test('reviewed worktrees are integrated in dependency order and published only a
         if (resolverRuns > 1) fs.writeFileSync(path.join(root, file), 'first and second\n');
       },
       validateIntegration: async (root) => {
+        maxActiveChecks = Math.max(maxActiveChecks, ++activeChecks);
         integrationPath = root;
         assert.notEqual(root, cwd);
         assert.equal(git(cwd, 'rev-parse', 'HEAD'), base);
         assert.equal(fs.readFileSync(path.join(root, file), 'utf8').trim(), 'first and second');
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        activeChecks--;
         if (++attempts === 1) throw new Error('combined test failed');
       },
-      reviewTask: () => { throw new Error('Approved work must not be reviewed again'); } };
+      reviewTask: async (_project, task) => {
+        assert.equal(task.id, 'wait-second');
+        if (++reviewCount === 1) return { verdict: 'REJECT', reason: 'Add the correction' };
+        assert.equal(fs.readFileSync(path.join(second, 'correction.txt'), 'utf8'), 'corrected');
+        return { verdict: 'APPROVE' };
+      },
+      startProjectTaskById: async (projectId, taskId, { rawPrompt }) => {
+        assert.match(rawPrompt, /Add the correction/);
+        assert.equal(project.tasks[0].retryCount, 1);
+        fs.writeFileSync(path.join(second, 'correction.txt'), 'corrected');
+        hub.terms.set('repair', { id: 'repair', exited: 0, _projectBusySeen: true, meta: { projectTask: { projectId, taskId } } });
+        return { id: 'repair' };
+      } };
     const tick = async () => Promise.all((await checkAutopilotCompletions(hub)).map((item) => item.promise));
     await tick();
     assert.equal(attempts, 0);
-    project.tasks[0] = { ...project.tasks[0], stage: 'review', reviewStatus: 'merge-pending', after: ['wait-first'] };
+    project.tasks[0] = { ...project.tasks[0], after: ['wait-first'] };
+    assert.equal((await completeAutopilotTask(hub, project.id, 'wait-second')).retried, true);
     await tick();
-    assert.ok(project.tasks.every((task) => task.reviewStatus === 'merge-blocked' && /leftover conflict marker/.test(task.reviewNote)));
+    assert.equal(reviewCount, 2);
+    assert.equal(project.tasks[0].reviewStatus, 'merge-pending');
+    await tick();
+    assert.ok(project.tasks.every((task) => task.reviewStatus === 'merge-pending' && /leftover conflict marker/.test(task.reviewNote)));
     assert.equal(attempts, 0);
-    const retry = () => completeAutopilotTask(hub, project.id, 'wait-first', { force: true, retryMerge: true });
-    await retry();
-    assert.ok(project.tasks.every((task) => task.reviewStatus === 'merge-blocked' && /combined test failed/.test(task.reviewNote)));
+    await tick();
+    assert.ok(project.tasks.every((task) => task.reviewStatus === 'merge-pending' && /combined test failed/.test(task.reviewNote)));
     assert.equal(fs.existsSync(integrationPath), true);
     assert.equal(git(cwd, 'rev-parse', 'HEAD'), base);
     fs.writeFileSync(path.join(cwd, file), 'local edit\n');
-    assert.match((await retry()).reason, /대상 브랜치 반영 실패:[\s\S]*base\.txt/);
+    await tick();
+    assert.ok(project.tasks.every((task) => task.reviewStatus === 'merge-blocked' && /대상 브랜치 반영 실패:[\s\S]*base\.txt/.test(task.reviewNote)));
+    assert.equal(project.tasks.find((task) => task.mergeRun?.ids).mergeRun.diagnostics.length, 3);
+    assert.equal(fs.existsSync(integrationPath), true);
     assert.equal(git(cwd, 'rev-parse', 'HEAD'), base);
     assert.equal(fs.readFileSync(path.join(cwd, file), 'utf8').trim(), 'local edit');
     fs.writeFileSync(path.join(cwd, file), 'base\n');
     fs.writeFileSync(path.join(cwd, 'other.txt'), 'unrelated local edit\n');
-    assert.equal((await retry()).approved, true);
+    const results = await Promise.all(['wait-first', 'wait-second'].map((id) =>
+      completeAutopilotTask(hub, project.id, id, { force: true, retryMerge: true })));
+    assert.equal(results.filter((result) => result.approved).length, 1);
+    assert.equal(results.filter((result) => result.skipped).length, 1);
+    assert.equal(maxActiveChecks, 1);
     assert.equal(git(cwd, 'status', '--porcelain', '-uno'), 'M other.txt');
     assert.equal(fs.readFileSync(path.join(cwd, 'other.txt'), 'utf8').trim(), 'unrelated local edit');
     assert.equal(resolverRuns, 2);
     assert.deepEqual(project.tasks.map((task) => task.stage), ['done', 'done']);
+    assert.match(project.tasks[0].reviewNote, /수정 재시도 \(1\)/);
+    assert.equal(git(cwd, 'log', '--first-parent', '--reverse', '--format=%s', `${base}..HEAD`), 'hub: integrate wait-fir\nhub: integrate wait-sec');
     assert.equal(fs.readFileSync(path.join(cwd, file), 'utf8').trim(), 'first and second');
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });

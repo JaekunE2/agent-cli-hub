@@ -7,6 +7,7 @@ if (window.LOCAL_TOKEN && TOKEN !== window.LOCAL_TOKEN) { TOKEN = window.LOCAL_T
 if (qs.get('t')) { qs.delete('t'); history.replaceState(null, '', '/' + (qs.toString() ? '?' + qs : '') + location.hash); }
 
 const $ = (s, el = document) => el.querySelector(s);
+const desktopInvoke = window.__TAURI_INTERNALS__?.invoke?.bind(window.__TAURI_INTERNALS__);
 const uiLocale = () => (document.documentElement.lang === 'en' ? 'en-US' : 'ko-KR');
 const isEnUI = () => document.documentElement.lang === 'en';
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -290,7 +291,17 @@ function fireTermDoneNotice(t, nextState) {
     : (!viewing ? { label: '열기', onClick: () => select({ kind: 'term', id }), onBodyClick: () => select({ kind: 'term', id }) } : null);
   toast(msg, 6500, 'default', action);
 
-  if (!viewing && state.notifyEnabled && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+  notifyTerminal(id, msg, viewing);
+}
+
+async function notifyTerminal(id, msg, viewing) {
+  if (!state.notifyEnabled) return;
+  if (desktopInvoke) {
+    try {
+      if (await desktopInvoke('notify_terminal', { id, body: msg, viewing })) return;
+    } catch (error) { console.warn('Windows terminal notification failed', error); }
+  }
+  if (!viewing && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
     try {
       const n = new Notification('Agent CLI Hub', { body: msg, tag: `term-${id}` });
       n.onclick = () => { window.focus(); select({ kind: 'term', id }); n.close(); };
@@ -333,7 +344,7 @@ function paintActiveTermStatus() {
 // ---------- data ----------
 async function refreshOverview() {
   let projectRevisions;
-  const previousBlocks = new Map(state.terms.map((t) => [t.id, terminalStartupLabel(t)]));
+  let previousTerms = state.terms;
   try {
     const o = await api('/api/overview');
     projectRevisions = o.projectRevisions;
@@ -357,6 +368,7 @@ async function refreshOverview() {
       }
       activeBuildId = o.buildId;
     }
+    previousTerms = state.terms;
     Object.assign(state, { live: o.live || [], consoles: o.consoles || [], terms: o.terms || [], err: o.consoleError || null, services: o.services || state.services, hubDown: false });
     if (o.accountPrefs && typeof syncServerAccountPrefs === 'function') syncServerAccountPrefs(o.accountPrefs);
     if (Array.isArray(o.favs)) state.favs = new Set(o.favs);
@@ -369,15 +381,22 @@ async function refreshOverview() {
 
   // Detect busy → idle / exited transitions for subtle completion indicator & notification
   const aliveIds = new Set();
+  const previousById = new Map(previousTerms.map((t) => [String(t.id), t]));
   let projTermChanged = false;
   for (const t of state.terms) {
     const id = String(t.id);
     aliveIds.add(id);
     const cur = termStateOf(t);
     const prev = prevTermStates.get(id);
-    if (t.projectTask && (prev !== cur || previousBlocks.get(t.id) !== terminalStartupLabel(t))) projTermChanged = true;
+    const previous = previousById.get(id);
+    const startup = terminalStartupLabel(t);
+    if (t.projectTask && (prev !== cur || terminalStartupLabel(previous) !== startup)) projTermChanged = true;
+    if (desktopInvoke && booted && previous?.startupBlock !== t.startupBlock &&
+        ['folder-trust', 'permission', 'confirmation'].includes(t.startupBlock)) {
+      notifyTerminal(id, `${startup}: ${termLabel(t)}`, state.sel.kind === 'term' && String(state.sel.id) === id);
+    }
     if (cur === 'busy') state.justDoneTerms.delete(id);
-    if (booted && prev === 'busy' && (cur === 'idle' || cur === 'exited') && !terminalStartupLabel(t)) {
+    if (booted && prev === 'busy' && (cur === 'idle' || cur === 'exited') && !startup) {
       fireTermDoneNotice(t, cur);
     }
     prevTermStates.set(id, cur);

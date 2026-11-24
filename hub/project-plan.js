@@ -186,8 +186,9 @@ function summarizeCliError(stderr, stdout, code) {
   return `작업 흐름을 생성하지 못했습니다 (종료 코드 ${code}). 선택한 CLI의 로그인 상태를 확인하고 다시 시도하세요.`;
 }
 
-function spawnCli(exe, args, { cwd, env, timeoutMs = 120_000, maxBuffer = 1024 * 1024, onProgress, stdinText = null } = {}) {
+function spawnCli(exe, args, { cwd, env, timeoutMs = 120_000, maxBuffer = 1024 * 1024, onProgress, stdinText = null, signal = null } = {}) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error('작업 흐름 생성이 취소되었습니다.'));
     let stdout = '';
     let stderr = '';
     let settled = false;
@@ -201,12 +202,21 @@ function spawnCli(exe, args, { cwd, env, timeoutMs = 120_000, maxBuffer = 1024 *
     // so CLIs like `codex exec` get immediate EOF on stdin instead of hanging.
     const hasStdin = stdinText !== null && stdinText !== undefined;
     const child = spawn(spawnCmd, spawnArgs, { cwd, env, windowsHide: true, stdio: [hasStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { child.kill(); } catch {}
+      reject(new Error('작업 흐름 생성이 취소되었습니다.'));
+    };
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
     if (hasStdin && child.stdin) {
       child.stdin.on('error', () => {});
       child.stdin.end(String(stdinText));
     }
     const timer = setTimeout(() => {
       settled = true;
+      if (signal) signal.removeEventListener('abort', onAbort);
       try { child.kill(); } catch {}
       const error = new Error(`CLI 실행 제한 시간(${Math.ceil(timeoutMs / 1000)}초)을 초과했습니다.`);
       error.code = 'CLI_TIMEOUT';
@@ -240,12 +250,14 @@ function spawnCli(exe, args, { cwd, env, timeoutMs = 120_000, maxBuffer = 1024 *
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
       reject(new Error(`CLI를 실행하지 못했습니다 (${exe}): ${err.message}`));
     });
     child.on('close', (code) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
       if (code === 0) return resolve({ stdout, stderr });
       reject(new Error(summarizeCliError(stderr, stdout, code)));
     });
@@ -304,8 +316,8 @@ function cliModelEffortArgs(agent, model, effort) {
   return out;
 }
 
-async function runStructuredPlan({ exe, agent, model, effort, prompt, planSchema, cwd, env, launchArgs = [], onProgress, timeoutMs = 120_000 }) {
-  const run = (args) => spawnCli(exe, args, { cwd, env, timeoutMs, onProgress });
+async function runStructuredPlan({ exe, agent, model, effort, prompt, planSchema, cwd, env, launchArgs = [], onProgress, timeoutMs = 120_000, signal }) {
+  const run = (args) => spawnCli(exe, args, { cwd, env, timeoutMs, onProgress, signal });
   const extraME = cliModelEffortArgs(agent, model, effort);
   const metaHint = [model, effort].filter(Boolean).join(' · ');
   onProgress?.({ stage: `${agent.toUpperCase()} CLI 실행 중${metaHint ? ` (${metaHint})` : ''}…`, pct: 12 });
@@ -383,7 +395,7 @@ function buildSubtaskPrompt(project, task, ws) {
   ].join('\n');
 }
 
-async function generatePlan(exe, project, cwd, env, { launchArgs, onProgress, timeoutMs = 120_000 } = {}) {
+async function generatePlan(exe, project, cwd, env, { launchArgs, onProgress, timeoutMs = 120_000, signal } = {}) {
   const ws = inspectWorkspace(project.cwd);
   if (ws.isExistingProject) {
     onProgress?.({ stage: `기존 프로젝트 폴더 분석 완료 (항목 ${ws.fileCount}개${ws.markers.length ? ` · ${ws.markers.join(', ')}` : ''})`, pct: 16, log: `기존 폴더 구조 반영: ${project.cwd}` });
@@ -391,18 +403,18 @@ async function generatePlan(exe, project, cwd, env, { launchArgs, onProgress, ti
   const prompt = buildPlanPrompt(project, ws);
   const { raw, sessionId } = await runStructuredPlan({
     exe, agent: project.agent, model: project.model, effort: project.effort,
-    prompt, planSchema: schema, cwd, env, launchArgs, onProgress, timeoutMs,
+    prompt, planSchema: schema, cwd, env, launchArgs, onProgress, timeoutMs, signal,
   });
   return { tasks: readPlan(raw, project), sessionId };
 }
 
-async function generateSubtasks(exe, project, task, cwd, env, { agent, model, effort, launchArgs, onProgress, timeoutMs = 120_000 } = {}) {
+async function generateSubtasks(exe, project, task, cwd, env, { agent, model, effort, launchArgs, onProgress, timeoutMs = 120_000, signal } = {}) {
   const effAgent = agent || task.agent || project.agent || 'codex';
   const ws = inspectWorkspace(project.cwd);
   const prompt = buildSubtaskPrompt(project, task, ws);
   const { raw, sessionId } = await runStructuredPlan({
     exe, agent: effAgent, model: model || task.model || project.model, effort: effort || task.effort || project.effort,
-    prompt, planSchema: subtaskSchema, cwd, env, launchArgs, onProgress, timeoutMs,
+    prompt, planSchema: subtaskSchema, cwd, env, launchArgs, onProgress, timeoutMs, signal,
   });
   return { tasks: readPlan(raw, project, { parentId: task.id, minItems: 2, maxItems: 6 }), sessionId };
 }

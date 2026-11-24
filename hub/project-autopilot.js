@@ -11,6 +11,8 @@ const { versionWorkspace } = require('./version-files');
 const { isGit } = require('./project-file-runs');
 const { integrateBatch } = require('./project-integration');
 const { runReview, hasReviewClaim } = require('./project-review-run');
+const { prepareProjectPrompt } = require('./project-prompt');
+const { projectDeliveryResult, deliveryError } = require('./project-history');
 const { requiredMcpMessage } = require('./vault-cli-ops');
 const { sessionStartupBlock, dismissProjectHookMenu, dispatchTerminalPrompt, terminalConfirmationMessage, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE } = require('./term-manager');
 
@@ -71,7 +73,6 @@ const reviewInFlight = new Set();
 const pendingReReview = new Map();
 const orphanDoingTicks = new Map();
 const operationLocks = new Map();
-const mergeRetryAt = new Map();
 let watcherBusy = false;
 
 function withOperationLock(lockKey, fn) {
@@ -124,6 +125,10 @@ async function ensureTaskWorktree(projectCwd, taskId) {
 async function prepareTaskMerge(projectCwd, taskId, worktreePath, { commitChanges = true } = {}) {
   if (!projectCwd || !worktreePath || !fs.existsSync(worktreePath)) return { ok: false, error: '격리 작업 폴더를 찾을 수 없습니다.' };
   const id8 = String(taskId).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 8) || 'task';
+  const workspace = folderKey(worktreePath);
+  if (workspace === folderKey(projectCwd) || workspace !== folderKey(path.join(projectCwd, '.hub-worktrees', `task-${id8}`))) {
+    return { ok: false, error: '격리 작업 브랜치가 일치하지 않습니다.' };
+  }
   const branch = `hub-task/${id8}`;
   const source = await execGit(worktreePath, ['symbolic-ref', '--short', 'HEAD']);
   if (!source.ok || source.stdout.trim() !== branch) return { ok: false, error: '격리 작업 브랜치가 일치하지 않습니다.' };
@@ -146,7 +151,12 @@ async function prepareTaskMerge(projectCwd, taskId, worktreePath, { commitChange
 }
 
 function approvedMerge(task) {
-  return task.stage === 'review' && ['merge-pending', 'merge-integrating', 'merge-blocked'].includes(task.reviewStatus);
+  return (task.stage === 'merge' || task.stage === 'review') && ['merge-pending', 'merge-integrating', 'merge-blocked'].includes(task.reviewStatus);
+}
+
+function mergeQueue(project) {
+  return project.tasks.filter((task) => task.worktreePath && approvedMerge(task)).sort((a, b) =>
+    Number(!!b.mergeRun?.ids) - Number(!!a.mergeRun?.ids) || (a.mergeRun?.queuedAt || 0) - (b.mergeRun?.queuedAt || 0));
 }
 
 async function finishApprovedTask(hub, project, task, reason, taskOut, sessionId) {
@@ -171,22 +181,38 @@ async function finishFileRun(hub, project, taskId) {
   if (id) await hub.fileRuns.finish(project.id, id);
 }
 
-async function runProjectIntegration(hub, project, retry) {
+async function runProjectIntegration(hub, project, retry, maxRetries) {
   const cwd = project.cwd;
-  const queue = project.tasks.filter((task) => task.worktreePath && approvedMerge(task));
-  if (!queue.length || (!retry && queue.some((task) => task.reviewStatus === 'merge-blocked'))) return { skipped: true, started: [] };
+  const waiting = mergeQueue(project);
+  const leader = waiting[0];
+  if (!leader || (!retry && (leader.reviewPaused || Date.now() < (leader.mergeRun?.retryAt || 0)))) return { skipped: true, started: [] };
+  let run = leader.mergeRun;
+  const queue = run?.ids ? waiting.filter((task) => run.ids.includes(task.id)) : waiting;
+  if (run?.ids && queue.length !== run.ids.length) {
+    const reason = '통합 대기열의 작업이 변경되었습니다.';
+    hub.projects.save({ ...project, tasks: project.tasks.map((task) => task.id === leader.id
+      ? { ...task, reviewStatus: 'merge-blocked', reviewPaused: true, reviewNote: reason } : task) });
+    hub.overviewStale?.();
+    return { reason, started: [] };
+  }
+  if (!retry && queue.some((task) => task.reviewStatus === 'merge-blocked')) return { skipped: true, started: [] };
   const byId = new Map(queue.map((task) => [task.id, task]));
-  if (project.tasks.some((task) => task.worktreePath && !task.reviewPaused && !task.autoExclude
+  if (!run?.ids && project.tasks.some((task) => task.worktreePath && !task.reviewPaused && !task.autoExclude
     && !task.after?.some((id) => byId.has(id)) && !queue.some((item) => item.parentId === task.id)
     && (task.stage === 'doing' || task.stage === 'review' && !approvedMerge(task)))) return { mergePending: true, started: [] };
   const waitingMessage = '통합 중 대상 브랜치가 이동했습니다. 새 커밋 기준으로 다시 통합합니다.';
   const order = new Map();
+  const seen = new Set();
   const visit = (task) => {
-    if (order.has(task.id)) return;
+    if (seen.has(task.id)) return;
+    seen.add(task.id);
     for (const id of task.after || []) if (byId.has(id)) visit(byId.get(id));
     order.set(task.id, task);
   };
-  queue.forEach(visit);
+  if (run?.ids) run.ids.forEach((id) => order.set(id, byId.get(id)));
+  else queue.forEach(visit);
+  if (!run?.ids) run = { id: randomUUID(), queuedAt: run?.queuedAt || Date.now(), ids: [...order.keys()], attempt: 0, failures: 0, maxRetries };
+  if (retry && leader.reviewPaused) run = { ...run, failures: 0, retryAt: 0 };
   const latest = () => hub.projects.list().find((item) => item.id === project.id);
   const stillQueued = (task) => approvedMerge(task) && byId.get(task.id)?.worktreePath === task.worktreePath
     && byId.get(task.id)?.mergeCommit === task.mergeCommit;
@@ -194,13 +220,13 @@ async function runProjectIntegration(hub, project, retry) {
     const p = latest();
     return p?.cwd === cwd && p.tasks.filter(stillQueued).length === queue.length;
   };
-  const update = (reviewStatus, reviewNote) => {
+  const update = (reviewStatus, reviewNote, state = run) => {
     const p = latest();
-    if (!p || !current()) return;
-    const changed = p.tasks.some((task) => stillQueued(task) && (task.reviewStatus !== reviewStatus || task.reviewNote !== reviewNote));
-    if (!changed) return;
+    if (!p || !current()) throw new Error('통합 대기열의 작업이 변경되었습니다.');
+    run = state;
     hub.projects.save({ ...p, tasks: p.tasks.map((task) => stillQueued(task)
-      ? { ...task, reviewStatus, reviewNote, reviewPaused: reviewStatus === 'merge-blocked' } : task) });
+      ? { ...task, stage: 'merge', ...(task.id === leader.id ? { mergeRun: run } : {}), reviewStatus, reviewNote, reviewPaused: reviewStatus === 'merge-blocked' } : task) },
+    { mergeRun: { taskId: leader.id, run } });
     hub.overviewStale?.();
   };
   let result;
@@ -218,19 +244,25 @@ async function runProjectIntegration(hub, project, retry) {
     update('merge-integrating', '통합 진행 중');
     try {
       result = await integrateBatch({
-        cwd, entries, git: execGit, current,
-        progress: (phase, worktree) => update('merge-integrating', `${phase}\n${worktree}`),
-        resolve: hub.resolveIntegrationConflict || (async (worktree, entry, files) => {
+        cwd, entries, git: execGit, current, runId: run.id, target: run.target, conflict: run.conflict,
+        saveTarget: (target) => update('merge-integrating', '통합 진행 중', { ...run, target }),
+        saveConflict: (conflict) => update('merge-integrating', '통합 충돌 확인', { ...run, conflict }),
+        progress: (phase, worktree) => update('merge-integrating', `${phase} · 재시도 ${run.failures}/${run.maxRetries}\n${worktree}`, { ...run, worktree }),
+        resolve: async (worktree, entry, files) => {
+          if (hub.resolveIntegrationConflict) return hub.resolveIntegrationConflict(worktree, entry, files);
+          const dir = path.join(hub.baseDir || __dirname, 'data', 'merge-runs', run.id, `${run.attempt}-${run.ids.indexOf(entry.id)}`);
           const prompt = ['Resolve this Git merge in the current integration worktree.', 'Edit only the listed conflict files. Preserve both changes where compatible. Do not stage, commit, use the network, or change other worktrees.',
             'Inspect and edit the working files even if Git already shows them as staged. Remove all conflict markers and verify the resolutions before returning.',
             JSON.stringify({ task: entry.title, review: entry.reason, conflicts: files })].join('\n');
-          const { cmd, args } = hub.codexLaunch(['exec', '--sandbox', 'workspace-write', '-']);
           try {
-            await spawnCli(cmd, args, { cwd: worktree, env: hub.cleanEnv(), stdinText: prompt, timeoutMs: MERGE_CONFLICT_TIMEOUT_MS });
+            await runReview(dir, async () => ({
+              ...hub.codexLaunch(['-a', 'never', 'exec', '--sandbox', 'workspace-write', '-']), conflictResolution: true,
+              options: { cwd: worktree, env: hub.cleanEnv(), stdinText: prompt, timeoutMs: MERGE_CONFLICT_TIMEOUT_MS },
+            }));
           } catch (error) {
-            throw new Error(`통합 충돌 해결 실패: ${error.message}`);
+            throw Object.assign(new Error(`통합 충돌 해결 실패: ${error.message}`), { code: error.code });
           }
-        }),
+        },
         check: hub.validateIntegration || (async (worktree) => {
           const relative = detectTestCommand(worktree) ? '' : 'hub';
           const result = await runPreReviewChecks(path.join(worktree, relative), {
@@ -244,16 +276,45 @@ async function runProjectIntegration(hub, project, retry) {
   }
   if (result.skipped || !current()) return { skipped: true, started: [] };
   if (!result.ok) {
-    const reason = [result.error || waitingMessage, result.worktree].filter(Boolean).join('\n');
-    if (result.pending) mergeRetryAt.set(project.id, Date.now() + 30_000);
-    update(result.pending ? 'merge-pending' : 'merge-blocked', reason);
-    return { approved: false, mergePending: !!result.pending, reason, started: [] };
+    const failures = run.failures + 1;
+    const pending = !!project.autopilot && failures <= run.maxRetries && result.code !== 'REVIEW_UNCERTAIN';
+    const reason = [result.error || waitingMessage, result.worktree || run.worktree].filter(Boolean).join('\n');
+    update(pending ? 'merge-pending' : 'merge-blocked', `통합 실패 및 재시도 한도 (${failures}/${run.maxRetries + 1})\n${reason}`, {
+      ...run, failures, attempt: run.attempt + 1, retryAt: pending ? Date.now() + (hub.mergeRetryDelayMs ?? 1000) : 0,
+      ...(result.pending ? { target: { ref: run.target.ref }, conflict: null } : {}),
+      diagnostics: [...(run.diagnostics || []), { attempt: run.attempt, reason }].slice(-10),
+    });
+    return { approved: false, mergePending: pending, reason, started: [] };
   }
-  mergeRetryAt.delete(project.id);
   const p = latest();
+  if (hub.startProjectMergeSession) {
+    const tipShort = result.tip.slice(0, 8);
+    hub.projects.save({ ...p, tasks: p.tasks.map((task) => stillQueued(task) ? {
+      ...task, stage: 'merge', reviewStatus: 'merge-session', reviewPaused: false, mergeTip: result.tip,
+      reviewNote: [task.mergeApprovalNote, `1차 자동 병합 완료 (${tipShort}) · 병합 세션에서 최종 확인 중`].filter(Boolean).join('\n'),
+    } : task) });
+    hub.overviewStale?.();
+    const session = await hub.startProjectMergeSession(p, queue, result);
+    if (session?.error) {
+      const curP = latest();
+      hub.projects.save({ ...curP, tasks: curP.tasks.map((task) => task.stage === 'merge' && task.reviewStatus === 'merge-session' && queue.some((q) => q.id === task.id) ? {
+        ...task, reviewStatus: 'merge-blocked', reviewPaused: true, reviewNote: `병합 세션 시작 실패: ${session.error}`,
+      } : task) });
+      hub.overviewStale?.();
+      return { approved: false, mergePending: false, reason: session.error, started: [] };
+    }
+    const curP = latest();
+    hub.projects.save({ ...curP, tasks: curP.tasks.map((task) => task.stage === 'merge' && task.reviewStatus === 'merge-session' && queue.some((q) => q.id === task.id) ? {
+      ...task, mergeTermId: session.id,
+    } : task) });
+    hub.overviewStale?.();
+    return { approved: false, mergeSession: true, termId: session.id, started: [] };
+  }
   hub.projects.save({ ...p, tasks: p.tasks.map((task) => stillQueued(task) ? {
     ...task, stage: 'done', reviewStatus: 'approved', reviewPaused: false, retryCount: 0,
-    reviewNote: [task.mergeApprovalNote, `대상 브랜치 반영 완료 (${result.tip.slice(0, 8)})`].filter(Boolean).join('\n'),
+    reviewNote: [task.mergeApprovalNote, `대상 브랜치 반영 완료 (${result.tip.slice(0, 8)})`,
+      task.retryCount ? `수정 재시도 (${task.retryCount})` : '', run.diagnostics?.length ? `통합 재시도 (${run.diagnostics.length})` : '',
+    ].filter(Boolean).join('\n'),
     mergeApprovalNote: '', mergeCommit: '', worktreePath: '',
   } : task) });
   hub.overviewStale?.();
@@ -646,7 +707,8 @@ async function dispatchRetryFeedback(hub, projectId, task, reason, retryNum, pri
     const dispatchedAt = Date.now();
     liveTerm._projectDispatchPending = true;
     try {
-      liveTerm._projectBusySeen = await dispatchTerminalPrompt(hub, liveTerm, retryPrompt);
+      const prompt = prepareProjectPrompt(hub.baseDir, retryPrompt, liveTerm.meta?.cmd);
+      liveTerm._projectBusySeen = await dispatchTerminalPrompt(hub, liveTerm, prompt);
       liveTerm._idleStreak = 0;
       liveTerm._projectDispatchedAt = dispatchedAt;
       return;
@@ -663,7 +725,7 @@ async function dispatchRetryFeedback(hub, projectId, task, reason, retryNum, pri
   throw new Error('수정 작업을 시작하지 못했습니다.');
 }
 
-async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_AUTO_RETRIES, force = false, retryMerge = false, autoMerge = false, terminal, dispatchedAt } = {}) {
+async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_AUTO_RETRIES, force = false, retryMerge = false, autoMerge = false, terminal, dispatchedAt, recoveredDelivery = false } = {}) {
   const key = `${projectId}:${taskId}`;
   if (reviewInFlight.has(key)) return { skipped: true, started: [] };
   if (force) {
@@ -681,7 +743,7 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
     return { approved: true, started };
   }
   if (initialTask.stage === 'done' && fileRun?.finishedAt) return { skipped: true, started: [] };
-  if (initialTask.reviewPaused && !force) return { skipped: true, started: [] };
+  if (initialTask.reviewPaused && !force && !recoveredDelivery) return { skipped: true, started: [] };
 
   const taskOut = extractTaskOutput(hub, initialProject, initialTask, terminal, dispatchedAt);
   const priorSessionId = extractTaskSessionId(hub, initialProject, initialTask, terminal);
@@ -690,7 +752,8 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
   if (!interrupted && !approvedMerge(initialTask) && (!initialProject.autopilot || initialTask.kind === 'review') && !force && !initialTask.worktreePath) {
     if (initialTask.stage !== 'done') {
       const nextTasks = initialProject.tasks.map((t) => (t.id === initialTask.id
-        ? { ...t, stage: 'done', reviewStatus: 'approved', ...(taskOut ? { lastOutput: taskOut } : {}), ...(priorSessionId ? { lastSessionId: priorSessionId } : {}) }
+        ? { ...t, stage: 'done', reviewStatus: 'approved', ...(recoveredDelivery ? { reviewPaused: false, reviewNote: '' } : {}),
+          ...(taskOut ? { lastOutput: taskOut } : {}), ...(priorSessionId ? { lastSessionId: priorSessionId } : {}) }
         : t));
       const saved = hub.projects.save({ ...initialProject, tasks: nextTasks });
       await finishFileRun(hub, saved, taskId);
@@ -707,7 +770,7 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
       return await withOperationLock(`merge:${folderKey(initialProject.cwd)}`, () => {
         const project = getProject();
         if (project?.cwd !== initialProject.cwd || !project?.tasks.some((task) => task.id === taskId && approvedMerge(task))) return { skipped: true, started: [] };
-        return runProjectIntegration(hub, project, force && !autoMerge);
+        return runProjectIntegration(hub, project, force && !autoMerge, maxRetries);
       });
     }
     if (retryMerge) return { skipped: true, started: [] };
@@ -819,9 +882,11 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
           curP = hub.projects.list().find((x) => x.id === projectId);
           if (!isReviewing(curP)) return { skipped: true, started: [] };
           hub.projects.save({ ...curP, tasks: curP.tasks.map((item) => item.id === taskId ? {
-            ...item, reviewStatus: prepared.ok ? 'merge-pending' : 'merge-blocked', reviewPaused: !prepared.ok,
+            ...item, stage: 'merge', reviewStatus: prepared.ok ? 'merge-pending' : 'merge-blocked', reviewPaused: !prepared.ok,
             reviewNote: prepared.ok ? '' : prepared.error, mergeApprovalNote: reason, mergeCommit: prepared.commit || '',
-          } : item) });
+          } : item) }, { mergeRun: { taskId, run: {
+            queuedAt: Math.max(Date.now(), ...curP.tasks.map((item) => (item.mergeRun?.queuedAt || 0) + 1)),
+          } } });
           hub.overviewStale?.();
           return { approved: false, mergePending: prepared.ok, reason: prepared.error, started: [] };
         }
@@ -832,7 +897,7 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
       if (curP.autopilot && retries < maxRetries) {
         const nextRetry = retries + 1;
         const retryTasks = curP.tasks.map((t) => (t.id === task.id
-          ? { ...t, stage: 'doing', reviewStatus: 'rejected', reviewNote: reason, ...(priorSessionId ? { lastSessionId: priorSessionId } : {}) }
+          ? { ...t, stage: 'doing', reviewStatus: 'rejected', reviewNote: reason, retryCount: nextRetry, ...(priorSessionId ? { lastSessionId: priorSessionId } : {}) }
           : t));
         hub.projects.save({ ...curP, tasks: retryTasks });
         hub.overviewStale?.();
@@ -842,14 +907,10 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
           const latest = hub.projects.list().find((x) => x.id === projectId);
           const error = `수정 지시 전달 실패: ${e.message || e}`;
           if (latest) hub.projects.save({ ...latest, tasks: latest.tasks.map((t) => t.id === taskId && (t.stage === 'doing' || t.reviewStatus === 'error')
-            ? { ...t, stage: 'doing', reviewPaused: true, reviewStatus: 'error', reviewNote: `${error}\n\n${reason}` } : t) });
+            ? { ...t, stage: 'doing', reviewPaused: true, reviewStatus: 'error', reviewNote: `${error}\n\n${reason}`, retryCount: retries } : t) });
           hub.overviewStale?.();
           return { approved: false, retried: false, error, started: [] };
         }
-        const latest = hub.projects.list().find((x) => x.id === projectId);
-        if (latest) hub.projects.save({ ...latest, tasks: latest.tasks.map((t) => t.id === taskId && t.stage === 'doing'
-          ? { ...t, retryCount: nextRetry } : t) });
-        hub.overviewStale?.();
         return { approved: false, retried: true, retryCount: nextRetry, reason, started: [] };
       }
 
@@ -894,6 +955,77 @@ async function checkAutopilotCompletions(hub) {
       }
     }
     for (const t of hub.terms.values()) {
+      const ptm = t.meta?.projectMerge;
+      if (ptm?.projectId && Array.isArray(ptm.taskIds) && !t._projectDispatchPending) {
+        const cli = hub.agentOf?.(t);
+        const screen = t.exited === null ? hub.readTerm?.(t, 40).join('\n') || '' : '';
+        const startup = sessionStartupBlock(hub.stripAnsi?.(screen) || screen);
+        if (!terminalConfirmationMessage(startup)) {
+          const dispatchedAt = t._projectDispatchedAt || (t._projectDispatchedAt = Number(t.meta?.projectDelivery?.at || t.meta?.spawnedAt) || 0);
+          const status = t.exited !== null ? 'exited'
+            : cli === 'codex' ? hub.codexStatus?.(t)
+              : cli === 'agy' ? hub.agyStatus?.(t)
+                : hub.claudeStatus?.(t);
+          if (status === 'busy' && !startup) {
+            t._projectBusySeen = true;
+            t._idleStreak = 0;
+          } else {
+            const recentOutput = !!(t.lastOutputAt && now - t.lastOutputAt < OUTPUT_QUIET_MS);
+            if (status === 'idle' && recentOutput) {
+              t._idleStreak = 0;
+            } else {
+              t._idleStreak = (t._idleStreak || 0) + 1;
+              const stalled = dispatchedAt && (status === 'exited' || now - dispatchedAt >= DISPATCH_IDLE_LIMIT_MS);
+              const settled = status === 'exited' || (status === 'idle' && t._idleStreak >= IDLE_STREAK_REQUIRED) || (startup && stalled);
+              if (settled && (dispatchedAt || t._projectBusySeen)) {
+                const project = hub.projects.list().find((x) => x.id === ptm.projectId);
+                const targets = project?.tasks?.filter((x) => ptm.taskIds.includes(x.id) && x.stage === 'merge' && x.reviewStatus === 'merge-session') || [];
+                if (targets.length) {
+                  const sid = dispatchedAt && (hub.termSessionId?.(t) || t.meta?.sessionId);
+                  const reply = sid && hub.index?.get?.(sid)?.msgs?.findLast((m) => isTaskReply(m, dispatchedAt));
+                  const terminalResult = t._projectBusySeen && (!sid && t.lastOutputAt >= dispatchedAt && (status === 'idle' || t.exited === 0));
+                  const doneNow = !startup && (reply || terminalResult || (t._projectBusySeen && status === 'exited' && t.exited === 0));
+                  if (doneNow || stalled) {
+                    t._projectBusySeen = false;
+                    t._idleStreak = 0;
+                    t._projectDispatchedAt = 0;
+                    const targetSet = new Set(targets.map((x) => x.id));
+                    if (doneNow) {
+                      const tipShort = (ptm.tip || '').slice(0, 8);
+                      const saved = hub.projects.save({
+                        ...project,
+                        tasks: project.tasks.map((task) => targetSet.has(task.id) ? {
+                          ...task, stage: 'done', reviewStatus: 'approved', reviewPaused: false, retryCount: 0,
+                          reviewNote: [task.mergeApprovalNote, tipShort ? `대상 브랜치 반영 완료 (${tipShort}) · 병합 세션 검증 완료` : '병합 세션 검증 완료'].filter(Boolean).join('\n'),
+                          mergeApprovalNote: '', mergeCommit: '', mergeTip: '', mergeTermId: '', worktreePath: '',
+                        } : task),
+                      });
+                      hub.overviewStale?.();
+                      for (const task of targets) saveTaskHandoffRef(hub, saved, task, { reason: task.mergeApprovalNote, taskOut: task.lastOutput });
+                      if (saved.autopilot) {
+                        const pAuto = runProjectAutopilot(hub, saved.id, { autoDispatch: true }).catch((e) => console.error('[autopilot-merge-done]', saved.id, e?.message || e));
+                        scheduled.push({ projectId: saved.id, promise: pAuto });
+                      }
+                    } else {
+                      hub.projects.save({
+                        ...project,
+                        tasks: project.tasks.map((task) => targetSet.has(task.id) ? {
+                          ...task, reviewStatus: 'merge-blocked', reviewPaused: true,
+                          reviewNote: '병합 세션이 완료 신호 없이 종료되었습니다. 터미널을 확인 후 통합 재시도하세요.',
+                        } : task),
+                      });
+                      hub.overviewStale?.();
+                    }
+                  }
+                }
+              }
+            }
+          }
+        } else {
+          t._idleStreak = 0;
+        }
+        continue;
+      }
       const pt = t.meta?.projectTask;
       if (!pt?.projectId || !pt?.taskId || t._projectDispatchPending) continue;
       if (t.exited === null && t.pid) hub.fileRuns?.recoverStart(t);
@@ -901,7 +1033,7 @@ async function checkAutopilotCompletions(hub) {
       const screen = t.exited === null ? hub.readTerm?.(t, 40).join('\n') || '' : '';
       const startup = sessionStartupBlock(hub.stripAnsi?.(screen) || screen);
       if (terminalConfirmationMessage(startup)) { t._idleStreak = 0; continue; }
-      const dispatchedAt = t._projectDispatchedAt;
+      const dispatchedAt = t._projectDispatchedAt || (t._projectDispatchedAt = Number(t.meta?.projectDelivery?.at || t.meta?.spawnedAt) || 0);
       if (startup === 'hooks-menu' && cli === 'codex' && dispatchedAt && !t._projectHookEscapeSent) {
         const project = hub.projects.list().find((p) => p.id === pt.projectId && p.autopilot);
         if (project?.tasks.some((task) => task.id === pt.taskId && task.stage === 'doing' && !task.autoExclude && !task.reviewPaused)) {
@@ -929,6 +1061,18 @@ async function checkAutopilotCompletions(hub) {
         t._idleStreak = 0;
         continue;
       }
+      if (status === 'idle' || t.exited === 0) {
+        const p = hub.projects.list().find(x => x.id === pt.projectId);
+        const task = p?.tasks.find(x => x.id === pt.taskId);
+        const evidence = task?.stage === 'doing' && task.lastRun?.termId === t.id && !task.autoExclude
+          && task.reviewPaused && task.reviewStatus === 'error' && deliveryError(task.reviewNote) && projectDeliveryResult(hub, t);
+        if (evidence) {
+          const promise = completeAutopilotTask(hub, p.id, task.id, { terminal: t, dispatchedAt: evidence.at, recoveredDelivery: true })
+            .catch(e => console.error('[autopilot-review]', p.id, task.id, e.message));
+          scheduled.push({ projectId: p.id, completedTaskId: task.id, promise });
+          continue;
+        }
+      }
       t._idleStreak = (t._idleStreak || 0) + 1;
       const stalled = dispatchedAt && (status === 'exited' || now - dispatchedAt >= DISPATCH_IDLE_LIMIT_MS);
       const settled = status === 'exited' || (status === 'idle' && t._idleStreak >= IDLE_STREAK_REQUIRED) || (startup && stalled);
@@ -936,9 +1080,11 @@ async function checkAutopilotCompletions(hub) {
       const project = hub.projects.list().find((x) => x.id === pt.projectId);
       const task = project?.tasks?.find((x) => x.id === pt.taskId);
       if (!project || !project.autopilot || !task || task.stage !== 'doing' || task.autoExclude || task.reviewPaused) continue;
+      if (reviewInFlight.has(`${pt.projectId}:${pt.taskId}`)) continue;
       if (task.lastRun && task.lastRun.termId !== t.id) continue;
       const handoff = task.handoff;
-      const deliveredAt = handoff?.termId === t.id ? handoff.history[1].at : 0;
+      const handoffReceived = handoff?.history?.at(-1)?.phase === 'received';
+      const deliveredAt = handoff?.termId === t.id && !handoffReceived ? handoff.history[1].at : 0;
       const tracked = deliveredAt && deliveredAt === dispatchedAt;
       if (tracked && handoff.history.at(-1).phase !== 'confirmed') continue;
       if (deliveredAt && (!dispatchedAt || dispatchedAt < deliveredAt)) continue;
@@ -977,11 +1123,39 @@ async function checkAutopilotCompletions(hub) {
         .filter((t) => t.meta?.projectTask?.projectId && t.meta?.projectTask?.taskId)
         .map((t) => `${t.meta.projectTask.projectId}:${t.meta.projectTask.taskId}`)
     );
+    const activeMergeKeys = new Set(
+      terms
+        .filter((t) => t.meta?.projectMerge?.projectId)
+        .map((t) => `${t.meta.projectMerge.projectId}:${t.id}`)
+    );
     for (const project of hub.projects.list()) {
       if (!Array.isArray(project.tasks)) continue;
-      const merge = project.tasks.find((task) => approvedMerge(task) && task.worktreePath && task.reviewStatus !== 'merge-blocked');
-      if (merge && !project.tasks.some((task) => task.reviewStatus === 'merge-blocked' || reviewInFlight.has(`${project.id}:${task.id}`))
-        && now >= (mergeRetryAt.get(project.id) || 0)) {
+      let recoveredMergeSession = false;
+      const checkedMergeTasks = project.tasks.map((tk) => {
+        if (tk.stage === 'merge' && tk.reviewStatus === 'merge-session' && !tk.reviewPaused) {
+          const mKey = `${project.id}:${tk.mergeTermId || ''}`;
+          if (tk.mergeTermId && activeMergeKeys.has(mKey)) {
+            orphanDoingTicks.delete(`merge:${project.id}:${tk.id}`);
+          } else {
+            const oKey = `merge:${project.id}:${tk.id}`;
+            const ticks = (orphanDoingTicks.get(oKey) || 0) + 1;
+            orphanDoingTicks.set(oKey, ticks);
+            if (ticks >= 4) {
+              orphanDoingTicks.delete(oKey);
+              recoveredMergeSession = true;
+              return { ...tk, reviewStatus: 'merge-blocked', reviewPaused: true, reviewNote: '병합 세션 터미널이 종료되어 일시 정지되었습니다.' };
+            }
+          }
+        }
+        return tk;
+      });
+      if (recoveredMergeSession) {
+        hub.projects.save({ ...project, tasks: checkedMergeTasks });
+        hub.overviewStale?.();
+      }
+      const merge = mergeQueue(project)[0];
+      if (merge && merge.reviewStatus !== 'merge-blocked' && !project.tasks.some((task) => reviewInFlight.has(`${project.id}:${task.id}`))
+        && now >= (merge.mergeRun?.retryAt || 0)) {
         const promise = completeAutopilotTask(hub, project.id, merge.id, { retryMerge: true, autoMerge: true })
           .catch((e) => console.error('[autopilot-merge]', project.id, e?.message || e));
         scheduled.push({ projectId: project.id, completedTaskId: merge.id, promise });
@@ -1014,7 +1188,7 @@ async function checkAutopilotCompletions(hub) {
       }
       for (const [parentId, subs] of byParent) {
         const parent = project.tasks.find((x) => x.id === parentId);
-        if (!parent || parent.stage === 'done' || parent.stage === 'review' || parent.autoExclude || parent.reviewPaused) continue;
+        if (!parent || parent.stage === 'done' || parent.stage === 'review' || parent.stage === 'merge' || parent.autoExclude || parent.reviewPaused) continue;
         const activeSubs = subs.filter((s) => !s.autoExclude);
         if (activeSubs.length && activeSubs.every((s) => s.stage === 'done')) {
           const pRun = completeAutopilotTask(hub, project.id, parent.id).catch((e) => console.error('[autopilot-rollup]', project.id, parent.id, e?.message || e));

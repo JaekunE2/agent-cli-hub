@@ -129,6 +129,42 @@ test('a web resend does not paste a message already confirmed', async () => {
   }
 });
 
+test('manual terminal Enter reports failed PTY delivery', async () => {
+  const term = { exited: null, proc: { write: async (key) => {
+    assert.equal(key, PTY_KEYS.enter);
+    return { ok: false, error: 'PTY disconnected' };
+  } } };
+  const { handleSessionRoutes } = createSessionRoutes({ PTY_KEYS, terms: new Map([['1', term]]), isCodexTerm: () => false });
+  await handleSessionRoutes('/api/term/send', null, { method: 'POST' }, null,
+    async () => ({ id: '1', keys: ['enter'] }),
+    (_res, status, result) => {
+      assert.equal(status, 409);
+      assert.deepEqual(result, { ok: false, error: 'PTY disconnected' });
+    }, () => true);
+});
+
+test('leaving a project terminal discards only unsubmitted input without any manual activity', async () => {
+  const term = { id: '1', exited: null, lastInputAt: 100, meta: { spawnedAt: 100, projectAutoClose: true } };
+  let screen = '› unrecognized draft';
+  const gone = [];
+  const { handleSessionRoutes } = createSessionRoutes({
+    terms: new Map([[term.id, term]]), readTerm: () => [screen], isCodexTerm: () => true,
+    codexStatus: () => 'idle', forgetTerm: (t) => gone.push(t.id),
+  });
+  const discard = async (removed) => handleSessionRoutes('/api/term/discard-unused', null, { method: 'POST' }, null,
+    async () => ({ id: term.id }), (_res, _code, payload) => assert.equal(payload.removed, removed), () => true);
+  await discard(false);
+  screen = '› Ask Codex to do anything';
+  term.meta.projectSubmitted = true;
+  await discard(false);
+  term.meta.projectSubmitted = false;
+  term.lastInputAt++;
+  await discard(false);
+  term.lastInputAt--;
+  await discard(true);
+  assert.deepEqual(gone, ['1']);
+});
+
 test('Claude multiline paste is confirmed from the current paste badge', async () => {
   const text = 'First line.\nSecond line.\nThird line.\nFourth line.\n' + 'x'.repeat(900);
   const badge = ['❯ [Pasted text #1 +4 lines]', '─────────────', 'paste again to expand'];
@@ -149,6 +185,29 @@ test('a long Codex draft still submits after its beginning scrolls off after pas
   }
 });
 
+test('Codex submits a freshly pasted instruction whose file path wraps mid-token', async () => {
+  const text = 'Read "D:\\hub\\data\\project-prompts\\abc.md" and execute the task.';
+  const wrapped = ['› Read "D:\\hub\\data\\project-', '  prompts\\abc.md" and execute the task.'];
+  for (const target of ['term', 'automatic', 'console']) {
+    assert.deepEqual(await replay(target, [ready, wrapped, running], { text }), { ok: true, writes: [text, PTY_KEYS.enter] }, target);
+    assert.deepEqual(await replay(target, [wrapped, running], { text }), { ok: false, writes: [] }, target);
+  }
+});
+
+test('explicit chat retry submits a matching wrapped draft without pasting again', async () => {
+  const { submitPrompt } = require('../prompt-submission');
+  const writes = [];
+  await submitPrompt({
+    text: 'Read "D:\\project-prompts\\abc.md" first.',
+    pasteMarker: 'codex', resend: true,
+    read: () => writes.length ? { screen: 'Working', busy: true }
+      : { screen: '› Read "D:\\project-\n  prompts\\abc.md" first.', busy: false },
+    guard() {}, waitFor: fn => fn(), started: view => view.busy,
+    write: data => writes.push(data),
+  });
+  assert.deepEqual(writes, [PTY_KEYS.enter]);
+});
+
 test('a matching paste badge followed by other pasted content never triggers Enter', async () => {
   const mixed = [`› [Pasted Content ${message.length} chars]`, '  [Pasted Content 3875 chars]'];
   for (const target of ['term', 'automatic', 'console']) {
@@ -163,4 +222,34 @@ test('the Codex navigation and warning footer is not mistaken for an input draft
     assert.deepEqual(await replay(target, frames), { ok: true, writes: [message, PTY_KEYS.enter] }, target);
     assert.deepEqual(await replay(target, [[...draft.map((line) => line + ' changed'), footer]]), { ok: false, writes: [] }, target);
   }
+});
+
+test('AGY submits a long multiline pasted message even when wrapped or scrolled in the composer', async () => {
+  const longText = '첫 번째 줄 긴 설명입니다.\n두 번째 줄에 이어지는 내용으로 ' + '가나다라마바사 '.repeat(12) + '마지막 핵심 문장 확인 부탁합니다.';
+  const agyReady = ['────────────────────────', '>', '────────────────────────', '? for shortcuts'];
+  const agyWrappedTail = ['────────────────────────', '> ' + '가나다라마바사 '.repeat(5) + '마지막 핵심 문장 확인 부탁합니다.', '────────────────────────'];
+  const agyRunning = ['esc to cancel                                  Gemini 4 Hydrogen · medium'];
+  assert.deepEqual(await replay('term', [agyReady, agyWrappedTail, agyRunning], { cli: 'agy', text: longText }), { ok: true, writes: [longText, PTY_KEYS.enter] });
+});
+
+test('AGY submits a medium Korean pasted message with short visible tail or transient redraw', async () => {
+  const { submitPrompt } = require('../prompt-submission');
+  const text = '채팅창에서 치면 터미널로 넘어가기만 하고 전송 확인이 안되는 문제 수정';
+  const ready = '────────────────────────\n>\n────────────────────────\n? for shortcuts';
+  const shortTail = '────────────────────────\n> 넘어가기만 하고 전송 확인이 안되는 문제 수정\n────────────────────────';
+  const running = 'esc to cancel                                  Gemini 4 Hydrogen · medium';
+  const screens = [ready, shortTail, 'Redrawing...', shortTail, running];
+  let idx = 0;
+  const writes = [];
+  await submitPrompt({
+    text, pasteMarker: 'agy',
+    read: () => ({ screen: screens[Math.min(idx++, screens.length - 1)], busy: idx >= screens.length }),
+    guard() {}, waitFor: async (fn) => {
+      for (let i = 0; i < 6; i++) { if (await fn()) return true; }
+      return false;
+    },
+    sleep: async () => {}, started: (view) => view.busy,
+    write: (data) => writes.push(data),
+  });
+  assert.deepEqual(writes, [text, PTY_KEYS.enter]);
 });

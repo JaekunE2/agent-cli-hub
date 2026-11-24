@@ -41,6 +41,17 @@ module.exports = async function fixture(store, handleRoute) {
       terms.push(t);
       return json(t);
     }
+    if (url.pathname === '/api/term/send') {
+      let body = ''; for await (const chunk of req) body += chunk;
+      const { id, text, submit } = JSON.parse(body);
+      return json({ ok: terms.some((t) => t.id === String(id)) && Boolean(text && submit) });
+    }
+    if (url.pathname === '/api/projects/autopilot/complete') {
+      let body = ''; for await (const chunk of req) body += chunk;
+      const { projectId, taskId, force, async } = JSON.parse(body);
+      const task = store.list().find((project) => project.id === projectId)?.tasks.find((item) => item.id === taskId);
+      return json({ ok: true, queued: Boolean(force && async && task?.stage === 'review') });
+    }
     if (url.pathname === '/api/projects/start' && req.method === 'POST') {
       let body = ''; for await (const chunk of req) body += chunk;
       const { projectId, taskId, resume } = JSON.parse(body);

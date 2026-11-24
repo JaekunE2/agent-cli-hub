@@ -46,8 +46,15 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
   return {
     list: () => read().projects.map((project) => ({
       ...project,
-      tasks: (project.tasks || []).map((task) => task.stage === 'review' && task.reviewPaused === undefined && ['rejected', 'error'].includes(task.reviewStatus)
-        ? { ...task, stage: 'doing', reviewPaused: true } : task),
+      tasks: (project.tasks || []).map((task) => {
+        if (task.stage === 'review' && task.reviewPaused === undefined && ['rejected', 'error'].includes(task.reviewStatus)) {
+          return { ...task, stage: 'doing', reviewPaused: true };
+        }
+        if (task.stage === 'review' && ['merge-pending', 'merge-integrating', 'merge-session', 'merge-blocked'].includes(task.reviewStatus)) {
+          return { ...task, stage: 'merge' };
+        }
+        return task;
+      }),
     })),
     hidden: () => new Set(read().hidden),
     records: id => read().links[id]?.ids || [],
@@ -305,7 +312,7 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
       write(data);
       return true;
     },
-    save(input, { taskRun, taskLaunchBlock, reviewRun, fileRun } = {}) {
+    save(input, { taskRun, taskLaunchBlock, reviewRun, mergeRun, fileRun } = {}) {
       const clean = validate(input), data = read(), all = data.projects;
       const old = input.id && all.find(p => p.id === input.id);
       if (input.id && !old) throw new Error('프로젝트를 찾을 수 없습니다.');
@@ -326,6 +333,10 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
         if (task.stage === 'review' && task.reviewStatus === 'reviewing') {
           const run = task.id === reviewRun?.taskId ? reviewRun.run : prior?.reviewRun;
           if (run) task.reviewRun = run;
+        }
+        if (((task.stage === 'merge' || task.stage === 'review') && task.reviewStatus.startsWith('merge-')) || (task.stage === 'done' && task.reviewStatus === 'approved')) {
+          const run = task.id === mergeRun?.taskId ? mergeRun.run : prior?.mergeRun;
+          if (run) task.mergeRun = run;
         }
         const newRun = task.id === taskRun?.taskId;
         const lastRun = newRun ? taskRun.run : prior?.lastRun;

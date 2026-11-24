@@ -82,6 +82,10 @@ test('searchindex tracks Codex turn_context changes, request_user_input, and AGY
     });
     assert.equal(agyRes.msg.text, '계속해줘');
     assert.ok(agyRes.settingsNote.includes('[설정 변경] Model Selection: None → Gemini 4 Hydrogen (Medium)'));
+
+    const { isAgyFile, agyIdOf } = require('../searchindex');
+    assert.equal(isAgyFile('C:\\Users\\x\\.gemini\\antigravity-cli\\brain\\11111111-1111-1111-1111-111111111111\\.system_generated\\logs\\transcript_full.jsonl'), true);
+    assert.equal(agyIdOf('C:\\Users\\x\\.gemini\\antigravity-cli\\brain\\11111111-1111-1111-1111-111111111111\\.system_generated\\logs\\transcript_full.jsonl'), '11111111-1111-1111-1111-111111111111');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -133,6 +137,16 @@ test('term-events store & screen monitor capture terminal mode changes and inter
     assert.equal(parsed.model, 'gpt-5.4');
     assert.equal(parsed.effort, 'xhigh');
     assert.equal(parsed.mode, 'full-access');
+
+    // Plain numbered lists in assistant/user text (even with AGY 'esc to cancel' footer) must NOT be misclassified as selection prompts
+    const plainList = parseTerminalScreenState([
+      '혹시 말씀하신 문제가:',
+      '1. 첫 번째 경우인지',
+      '2. 두 번째 경우인지',
+      '> 2',
+      'esc to cancel   Gemini 4 Hydrogen · medium',
+    ].join('\n'), 'agy');
+    assert.equal(plainList.prompt, null);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

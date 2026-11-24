@@ -1,4 +1,4 @@
-const stages = ['planned', 'doing', 'review', 'done'];
+const stages = ['planned', 'doing', 'review', 'merge', 'done'];
 const agents = ['claude', 'codex', 'agy', 'cursor'];
 const kinds = ['plan', 'dev', 'test', 'review', 'ops'];
 const efforts = ['', 'minimal', 'low', 'medium', 'high', 'xhigh', 'ultra', 'max'];
@@ -106,8 +106,10 @@ function validate(p) {
       parentId: t.parentId ? String(t.parentId) : '',
       version: versionOf(t),
       autoExclude: !!t.autoExclude,
-      reviewStatus: ['reviewing', 'approved', 'rejected', 'error', 'merge-pending', 'merge-integrating', 'merge-blocked'].includes(t.reviewStatus) ? t.reviewStatus : '',
+      reviewStatus: ['reviewing', 'approved', 'rejected', 'error', 'merge-pending', 'merge-integrating', 'merge-session', 'merge-blocked'].includes(t.reviewStatus) ? t.reviewStatus : '',
       mergeCommit: commit(t.mergeCommit),
+      ...(t.mergeTip ? { mergeTip: commit(t.mergeTip) } : {}),
+      ...(typeof t.mergeTermId === 'string' && t.mergeTermId ? { mergeTermId: t.mergeTermId.slice(0, 80) } : {}),
       mergeApprovalNote: typeof t.mergeApprovalNote === 'string' ? t.mergeApprovalNote.slice(0, 2000) : '',
       reviewPaused: t.reviewPaused === true,
       reviewNote: typeof t.reviewNote === 'string' ? t.reviewNote.slice(0, 2000) : '',

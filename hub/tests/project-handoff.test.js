@@ -40,7 +40,13 @@ test('both prerequisites trigger one confirmed handoff and only its result advan
       this.terms.set(term.id, term);
       return term;
     },
-    ptyPost: async (_id, _op, { data }) => {
+    ptyPost: async (id, op, { data, meta }) => {
+      if (op === '/meta') {
+        assert.deepEqual(phases(), ['waiting']);
+        assert.deepEqual(meta.projectDelivery, hub.terms.get(id).meta.projectDelivery);
+        return { ok: true };
+      }
+      assert.equal(op, '/write');
       assert.deepEqual(phases(), ['waiting', 'delivered']);
       writes.push(data);
       screen = data === '\r' ? ['Running'] : `› ${data.slice(6, -6)}`.split('\n');

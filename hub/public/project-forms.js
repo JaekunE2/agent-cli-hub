@@ -432,7 +432,11 @@ function projectFollowupForm(p, versionMode = false, existingVersion = '') {
     if (!generated || planKey !== key) {
       generated = await previewProjectPlan(dialog, draft, true);
       planKey = key;
-      $('.dlg-foot .primary', dialog).textContent = number ? '버전 작업 등록' : '후속 작업 추가';
+      const btn = $('.dlg-foot .primary', dialog);
+      btn.textContent = number ? '버전 작업 등록' : '후속 작업 추가';
+      const pv = dialog.querySelector('[data-plan-preview]');
+      if (pv) pv.insertAdjacentHTML('afterbegin', '<p class="ums" style="margin:0 0 8px;color:var(--accent);font-weight:600">초안 생성 완료 — 아래 버튼을 한 번 더 눌러 저장하세요.</p>');
+      btn.focus();
       return false;
     }
     const r = await api('/api/projects');
@@ -452,6 +456,11 @@ function projectFollowupForm(p, versionMode = false, existingVersion = '') {
     input.required = version;
     input.disabled = !version;
     $('.dlg-foot .primary', dialog).textContent = '작업 흐름 생성';
+  });
+  dialog.addEventListener('close', () => {
+    if (dialog.querySelector('.pj-plan-prog:not(.done)')) {
+      api('/api/projects/plan/cancel', { method: 'POST', body: { projectId: p.id, name: p.name } }).catch(() => {});
+    }
   });
   bindProjectAccounts(dialog, agent === p.agent ? p.account || '' : '', p,
     agent === p.agent ? p.model || '' : '', agent === p.agent ? p.effort || '' : '');

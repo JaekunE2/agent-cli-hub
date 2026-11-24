@@ -29,7 +29,14 @@ function createProjectRoutes(hub) {
   const VERSION_DIR = path.resolve(config.versionStorageDir || path.join(baseDir, '..', '..', 'agent-cli-hub-versions'));
   hub.fileRuns = createFileRuns(hub, VERSION_DIR);
   const copyingVersions = new Set();
-  let projectPlanning = false;
+  const planningLocks = new Map(); // lockKey -> startedAt
+  const activePlanRuns = new Map(); // lockKey -> { sig, promise, controller }
+  const isPlanningLocked = (key) => {
+    const at = planningLocks.get(key);
+    if (!at) return false;
+    if (Date.now() - at > 150_000) { planningLocks.delete(key); return false; }
+    return true;
+  };
   let projectPlanState = { active: false, agent: '', name: '', startedAt: 0, stage: '', pct: 0, logs: [] };
   const taskChatActive = new Map();
   const pendingPlanRecords = new Map();
@@ -517,7 +524,8 @@ function createProjectRoutes(hub) {
 
     if (p === '/api/projects/subtasks' && req.method === 'POST') {
       const b = await body(req);
-      if (projectPlanning) { send(res, 409, { error: '작업 흐름을 생성 중입니다. 잠시 기다려 주세요.' }); return true; }
+      const lockKey = `subtask:${b.projectId || ''}:${b.taskId || ''}`;
+      if (isPlanningLocked(lockKey)) { send(res, 409, { error: '작업 흐름을 생성 중입니다. 잠시 기다려 주세요.' }); return true; }
       const project = projects.list().find((x) => x.id === b.projectId);
       const task = project?.tasks.find((x) => x.id === b.taskId);
       if (!project || !task) { send(res, 404, { error: 'Project 작업을 찾을 수 없습니다.' }); return true; }
@@ -528,7 +536,7 @@ function createProjectRoutes(hub) {
       const effEffort = b.effort ?? (task.effort || (effAgent === (project.agent || 'codex') ? project.effort : ''));
       let auth;
       try { auth = hub.projectAccounts.resolve(effAgent, effAccount); } catch (e) { send(res, 400, { error: e.message }); return true; }
-      projectPlanning = true;
+      planningLocks.set(lockKey, Date.now());
       projectPlanState = { active: true, agent: effAgent, name: task.title, startedAt: Date.now(), stage: '서브 작업 분해 준비 중…', pct: 8, logs: [] };
       const onProgress = (ev) => {
         if (!ev) return;
@@ -556,9 +564,9 @@ function createProjectRoutes(hub) {
         console.error('[project-subtasks]', effAgent, e.message);
         send(res, 502, { error: e.message || '서브 작업을 생성하지 못했습니다.' });
       } finally {
-        projectPlanning = false;
-        projectPlanState.active = false;
-        if (dir) try { fs.rmdirSync(dir); } catch {}
+        planningLocks.delete(lockKey);
+        projectPlanState.active = planningLocks.size > 0;
+        if (dir) try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
       }
       return true;
     }
@@ -569,9 +577,26 @@ function createProjectRoutes(hub) {
       return true;
     }
 
+    if (p === '/api/projects/plan/cancel' && req.method === 'POST') {
+      const b = await body(req);
+      const lockKey = b.projectId ? `plan:${b.projectId}` : (b.name ? `plan:${String(b.name).trim()}` : '');
+      let cancelled = 0;
+      for (const [k, run] of activePlanRuns.entries()) {
+        if (!lockKey || k === lockKey) {
+          run.controller?.abort();
+          activePlanRuns.delete(k);
+          planningLocks.delete(k);
+          cancelled++;
+        }
+      }
+      projectPlanState.active = planningLocks.size > 0;
+      send(res, 200, { ok: true, cancelled });
+      return true;
+    }
+
     if (p === '/api/projects/plan' && req.method === 'POST') {
       const b = await body(req);
-      if (projectPlanning) { send(res, 409, { error: '작업 흐름을 생성 중입니다. 잠시 기다려 주세요.' }); return true; }
+      const lockKey = `plan:${b.projectId || (typeof b.name === 'string' ? b.name.trim() : '')}`;
       if (!['agy', 'claude', 'codex'].includes(b.agent) || typeof b.goal !== 'string' || !b.goal.trim() || b.goal.length > 6000
         || typeof b.name !== 'string' || !b.name.trim() || b.name.length > 120 || typeof b.cwd !== 'string' || !b.cwd.trim() || b.cwd.length > 1000) {
         send(res, 400, { error: 'Project 이름, 작업 폴더, 목표 및 설계에 사용할 CLI를 확인하세요.' });
@@ -593,16 +618,35 @@ function createProjectRoutes(hub) {
       } } : b;
       let auth;
       try { auth = hub.projectAccounts.resolve(b.agent, b.account); } catch (e) { send(res, 400, { error: e.message }); return true; }
-      projectPlanning = true;
+
+      const sig = JSON.stringify([b.projectId || '', b.name.trim(), cwd, b.goal.trim(), b.agent, b.account || '', b.model || '', b.effort || '', b.projectVersion || '']);
+      const priorRun = activePlanRuns.get(lockKey);
+      if (priorRun) {
+        if (priorRun.sig === sig) {
+          try {
+            const tasks = await priorRun.promise;
+            send(res, 200, { tasks });
+          } catch (e) {
+            send(res, 502, { error: e.message || '작업 흐름을 생성하지 못했습니다.' });
+          }
+          return true;
+        }
+        priorRun.controller.abort();
+        activePlanRuns.delete(lockKey);
+        planningLocks.delete(lockKey);
+      }
+
+      const controller = new AbortController();
+      planningLocks.set(lockKey, Date.now());
       projectPlanState = { active: true, agent: b.agent, name: b.name.trim(), startedAt: Date.now(), stage: 'CLI 준비 중…', pct: 8, logs: [] };
       const onProgress = (ev) => {
-        if (!ev) return;
+        if (!ev || controller.signal.aborted) return;
         if (ev.stage) projectPlanState.stage = ev.stage;
         if (typeof ev.pct === 'number') projectPlanState.pct = Math.max(projectPlanState.pct, Math.min(98, ev.pct));
         if (ev.log) projectPlanState.logs = [...projectPlanState.logs, ev.log].slice(-6);
       };
       let dir;
-      try {
+      const runPromise = (async () => {
         await hub.ensureAgySwap(auth);
         dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-project-plan-'));
         const exe = b.agent === 'agy' ? hub.agyExe() : b.agent === 'claude' ? 'claude.exe' : hub.codexExe();
@@ -610,21 +654,30 @@ function createProjectRoutes(hub) {
         const prep = await unifiedVault.prepareLaunch(b.agent, { env, cwd: fs.existsSync(cwd) ? cwd : undefined });
         if (prep.blocked) throw new Error(`필수 MCP 준비 실패 · ${requiredMcpMessage(prep.blocked)}`);
         const at = Date.now();
-        const { tasks, sessionId } = await generatePlan(exe, draft, dir, { ...env, ...prep.env }, { launchArgs: prep.extraArgs, onProgress });
+        const { tasks, sessionId } = await generatePlan(exe, draft, dir, { ...env, ...prep.env }, { launchArgs: prep.extraArgs, onProgress, signal: controller.signal });
         projectPlanState.stage = `작업 ${tasks.length}개 생성 완료`;
         projectPlanState.pct = 100;
         const now = Date.now();
         for (const [key, record] of pendingPlanRecords) if (record.expires <= now) pendingPlanRecords.delete(key);
         const record = { sessionId: recordUuid(sessionId) ? sessionId : '', agent: b.agent, vault: prep.vault, at, expires: now + 60 * 60_000 };
         for (const task of tasks) pendingPlanRecords.set(task.id, record);
+        return tasks;
+      })();
+      activePlanRuns.set(lockKey, { sig, promise: runPromise, controller });
+
+      try {
+        const tasks = await runPromise;
         send(res, 200, { tasks });
       } catch (e) {
         console.error('[project-plan]', b.agent, e.message);
         send(res, 502, { error: e.message || '작업 흐름을 생성하지 못했습니다. 선택한 CLI의 로그인 상태를 확인하고 다시 시도하세요.' });
       } finally {
-        projectPlanning = false;
-        projectPlanState.active = false;
-        if (dir) try { fs.rmdirSync(dir); } catch {}
+        if (activePlanRuns.get(lockKey)?.controller === controller) {
+          activePlanRuns.delete(lockKey);
+          planningLocks.delete(lockKey);
+        }
+        projectPlanState.active = planningLocks.size > 0;
+        if (dir) try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
       }
       return true;
     }

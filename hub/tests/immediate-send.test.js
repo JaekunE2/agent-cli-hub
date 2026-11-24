@@ -3,8 +3,24 @@ const assert = require('node:assert/strict');
 const { PTY_KEYS, dispatchImmediatePrompt } = require('../immediate-send');
 const { createSessionRoutes } = require('../routes-sessions');
 const { sessionStartupBlock } = require('../term-manager');
+const { prepareProjectPrompt } = require('../project-prompt');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
 
 const noopSleep = () => Promise.resolve();
+
+test('long Windows project instructions keep the original UTF-8 text behind a short input', { skip: process.platform !== 'win32' }, (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-project-prompt-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const text = '## 작업 기준\n' + '한글과 줄바꿈을 유지해야 합니다.\n'.repeat(300);
+  const input = prepareProjectPrompt(dir, text, 'codex.exe');
+  const file = input.match(/"([^"]+)"/)[1];
+  assert.equal(fs.readFileSync(file, 'utf8'), text);
+  assert.ok(Buffer.byteLength(input) < 1000);
+  assert.equal(prepareProjectPrompt(dir, text, 'codex.exe'), input);
+  assert.equal(prepareProjectPrompt(dir, 'short prompt', 'codex.exe'), 'short prompt');
+});
 
 test('remote console resubmits an unchanged Codex draft without pasting it twice', async () => {
   const text = 'Check the project';
@@ -44,6 +60,39 @@ test('chat submission sends multiline Codex text once and retries only Enter', a
   assert.deepEqual(writes, [`\x1b[200~${input}\x1b[201~`, '\r', '\r']);
 });
 
+test('chat from history waits for the resumed CLI before writing and leaves login untouched', async () => {
+  const text = 'from history';
+  const term = { id: '1', exited: null };
+  const writes = [];
+  let lines = ['Starting Codex'];
+  const hub = {
+    terms: new Map([[term.id, term]]), isCodexTerm: () => true, touchUserInput() {},
+    readTerm: () => lines, inputReady: () => lines[0].startsWith('›'), sleep: noopSleep,
+    codexStatus: () => writes.length === 2 ? 'busy' : 'idle',
+    waitFor: async (check, timeout) => {
+      if (timeout === 45000 && !(await check())) {
+        assert.deepEqual(writes, []);
+        lines = ['› Ask Codex to do anything'];
+      }
+      return check();
+    },
+    ptyPost: async (_id, _path, { data }) => {
+      writes.push(data);
+      lines = data === '\r' ? ['Esc to interrupt'] : ['› ' + text];
+      return { ok: true };
+    },
+  };
+  const { handleSessionRoutes } = createSessionRoutes(hub);
+  const send = async (expected) => handleSessionRoutes('/api/term/send', null, { method: 'POST' }, null,
+    async () => ({ id: term.id, text, submit: true, waitForReady: true }),
+    (_res, status, payload) => assert.equal(status, expected, payload.error), () => true);
+  await send(200);
+  assert.deepEqual(writes, [`\x1b[200~${text}\x1b[201~`, '\r']);
+  lines = ['Sign in with ChatGPT'];
+  await send(409);
+  assert.equal(writes.length, 2);
+});
+
 test('project restart waits for explicit CLI confirmation and resumes the same task', async () => {
   const prompts = {
     codex: ['Do you trust the files in this folder?'],
@@ -70,7 +119,8 @@ test('project restart waits for explicit CLI confirmation and resumes the same t
       codexStatus: () => busy ? 'busy' : 'idle', claudeStatus: () => busy ? 'busy' : 'idle',
       sleep: noopSleep,
       waitFor: async (check, timeout) => { if (timeout === 300000) await confirmation; return check(); },
-      ptyPost: async (_id, _path, { data }) => {
+      ptyPost: async (_id, endpoint, { data }) => {
+        if (endpoint === '/meta') return { ok: true };
         writes.push(data);
         if (data === '\r') { busy = true; lines = ['Thinking...', 'Esc to cancel']; }
         else lines = ['› ' + data.replace(/^\x1b\[200~|\x1b\[201~$/g, '')];
@@ -108,9 +158,30 @@ test('restarting a task already running clears the stale error without sending i
     agentOf: () => 'codex', termInfo: () => ({ id: term.id, status: 'busy' }),
   });
   await handleSessionRoutes('/api/projects/start', null, { method: 'POST' }, null, async () => ({ ...projectTask, retry: true }),
-    (_res, status, payload) => { assert.equal(status, 200); assert.equal(payload.existing, true); }, () => true);
+    (_res, status, payload) => { assert.equal(status, 200); assert.equal(payload.alreadyRunning, true); }, () => true);
   assert.deepEqual(project.tasks[0], { id: 't', stage: 'doing', title: 'Work', reviewPaused: false, reviewStatus: '', reviewNote: '', retryCount: 0 });
   assert.equal(term._projectBusySeen, true);
+});
+
+test('project restart opens a clean terminal and preserves an unrelated draft', async () => {
+  const projectTask = { projectId: 'p', taskId: 't' };
+  const existing = { id: '1', exited: null, meta: { projectTask } };
+  const fresh = { id: '2', exited: null, spawnResult: Promise.resolve({ ok: true }) };
+  const terms = new Map([[existing.id, existing]]);
+  const project = { id: 'p', cwd: process.cwd(), agent: 'codex', tasks: [{ id: 't', title: 'Work', stage: 'doing' }] };
+  const { handleSessionRoutes } = createSessionRoutes({
+    terms, deletingProjects: new Set(), projectAgents: ['codex'],
+    projects: { list: () => [project], save() {} },
+    agentOf: () => 'codex', termInfo: (t) => ({ id: t.id, status: 'idle' }),
+    readTerm: () => ['› An unrelated draft'], ensureProjectDir() {},
+    projectAccounts: { resolve: () => ({}) }, agySwap: { available: () => false },
+    cliModelEffortArgs: () => [], codexLaunch: () => ({ cmd: 'codex.exe', args: [] }), fingerprint: (x) => x,
+    createTerm: () => { terms.set(fresh.id, fresh); return fresh; },
+  });
+  await handleSessionRoutes('/api/projects/start', null, { method: 'POST' }, null,
+    async () => ({ ...projectTask, retry: true, autoDispatch: false }),
+    (_res, status, payload) => { assert.equal(status, 200, payload.error); assert.equal(payload.id, fresh.id); }, () => true);
+  assert.equal(terms.get(existing.id), existing);
 });
 
 test('sending from the Hub exits Codex history search before typing, once', async () => {

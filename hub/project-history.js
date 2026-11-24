@@ -24,4 +24,20 @@ function projectSession(term, agent, docs, agySessionId) {
   });
   return matches.length === 1 ? sessionId(matches[0].id) : null;
 }
-module.exports = { fingerprint, projectSession, sessionId };
+function projectDeliveryResult(hub, term) {
+  const at = term.meta?.projectDelivery?.at || term.meta?.spawnedAt;
+  const digest = term.meta?.projectDelivery?.digest || term.meta?.projectPrompt;
+  const sid = hub.termSessionId?.(term);
+  const messages = sid && hub.index?.get?.(sid)?.msgs;
+  if (!at || !digest || !messages?.length) return null;
+  const lastUser = messages.findLastIndex(m => m.role === 'user');
+  const user = messages[lastUser];
+  if (!user?.text || !(Date.parse(user.ts) >= at) || fingerprint(user.text) !== digest) return null;
+  const reply = messages.slice(lastUser + 1).findLast(m => m.role === 'assistant'
+    && String(m.text || '').trim() && !/^[⚙❓]/u.test(m.text) && Date.parse(m.ts) >= Date.parse(user.ts));
+  return reply ? { at } : null;
+}
+
+const deliveryError = note => /^(?:전송 중 터미널 입력 상태가 바뀌었습니다\.|CLI 입력창을 확인하지 못했습니다\.|CLI 입력창에서 전송한 내용을 확인하지 못했습니다\.|작업 지시를 제출했지만 CLI가 실행을 시작했다는 신호가 없습니다\.)/.test(note || '');
+
+module.exports = { fingerprint, projectSession, sessionId, projectDeliveryResult, deliveryError };

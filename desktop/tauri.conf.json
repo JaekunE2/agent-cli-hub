@@ -6,6 +6,11 @@
   "build": {
     "frontendDist": "shell"
   },
+  "plugins": {
+    "deep-link": {
+      "desktop": { "schemes": ["ai.surromind.agent-cli-hub"] }
+    }
+  },
   "app": {
     "security": {
       "capabilities": [

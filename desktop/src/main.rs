@@ -3,6 +3,7 @@
 mod backend;
 mod bridge;
 mod hub;
+mod notifications;
 mod overview;
 mod service;
 mod tray;
@@ -25,17 +26,25 @@ async fn connect_hub(
 
 fn main() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            tray::restore(app)
+        .plugin(tauri_plugin_single_instance::init(|app, args, _| {
+            notifications::activate(app, &args);
+            tray::restore(app);
         }))
         .plugin(tauri_plugin_dialog::init())
         .manage(Server::default())
+        .manage(notifications::Pending::default())
         .setup(|app| {
+            notifications::activate(app.handle(), &std::env::args().collect::<Vec<_>>());
             if let Ok(port) = hub::port() {
                 bridge::grant(app, port)?;
             }
             tray::install(app.handle())?;
             Ok(())
+        })
+        .on_page_load(|webview, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                notifications::deliver(webview, payload.url());
+            }
         })
         .on_webview_event(bridge::on_drag_drop)
         .on_window_event(|window, event| {
@@ -48,7 +57,11 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![connect_hub, bridge::pick_folder])
+        .invoke_handler(tauri::generate_handler![
+            connect_hub,
+            bridge::pick_folder,
+            notifications::notify_terminal
+        ])
         .run(tauri::generate_context!())
         .expect("Could not run Agent CLI Hub");
 }

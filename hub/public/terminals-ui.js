@@ -144,8 +144,9 @@ function mountConsoleScreen(hostEl, { pid, gen, s, chatHost = null }) {
     if (!r.ok) alertBar(r.error);
     setTimeout(tick, 150);
   };
+  if (typeof window.bindEnterSubmit === 'function') window.bindEnterSubmit(inp, sendText);
   inp.onkeydown = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendText(); return; }
+    if (e.key === 'Enter' && !e.shiftKey) return;
     if (e.key === 'Escape') { e.preventDefault(); sendKey('esc'); return; }
     if (!inp.value && (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'Tab')) {
       e.preventDefault();
@@ -612,8 +613,9 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
   };
   $('#tsend', fullEl).onclick = submit;
   $('#tArt', fullEl).onclick = () => pickArtifact((abs) => insert(quotePath(abs)));
+  if (typeof window.bindEnterSubmit === 'function') window.bindEnterSubmit(tin, submit);
   tin.onkeydown = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); return; }
+    if (e.key === 'Enter' && !e.shiftKey) return;
     if (e.key === 'Escape') { e.preventDefault(); send(PTY_KEYS.esc); if (!IS_MOBILE) xterm?.focus(); return; }
     if (!tin.value) {
       if (e.key === 'ArrowUp' && !e.altKey) { e.preventDefault(); send(PTY_KEYS.up); return; }

@@ -13,7 +13,7 @@ function openProjectTaskMenu(p, task, anchor, onMove) {
     }));
   openMoreMenu(anchor, [
     running ? { label: '터미널 열기', icon: ico.play || '', onClick: () => startProjectTask(p, task, null, { openTerminal: true }) } : null,
-    task.stage !== 'done' ? { label: task.stage === 'review' ? (task.reviewStatus?.startsWith('merge-') ? '통합 재시도' : '재검토') : task.stage === 'doing' ? '작업 다시 진행' : '작업 시작',
+    task.stage !== 'done' ? { label: task.stage === 'merge' ? (task.reviewStatus === 'merge-session' ? '병합 세션 진행 중' : '통합 재시도') : task.stage === 'review' ? (task.reviewStatus?.startsWith('merge-') ? '통합 재시도' : '재검토') : task.stage === 'doing' ? '작업 다시 진행' : '작업 시작',
       icon: ico.play || '', onClick: () => runProjectCardAction(p, task) } : null,
     ...moveItems,
     { divider: true },

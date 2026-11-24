@@ -74,7 +74,8 @@ function projectReviewBadgeHTML(task, showHandoff = true) {
   let rev = '';
   if (st === 'reviewing') rev = `<span class="badge warn"${tip}>🔍 자동 검토 중</span>`;
   else if (st === 'merge-pending') rev = `<span class="badge warn"${tip}>병합 대기</span>`;
-  else if (st === 'merge-integrating') rev = `<span class="badge warn"${tip}>통합 진행 중</span>`;
+  else if (st === 'merge-integrating') rev = `<span class="badge warn"${tip}>1차 통합 중</span>`;
+  else if (st === 'merge-session') rev = `<span class="badge st-merge"${tip}>병합 세션 실행 중</span>`;
   else if (st === 'merge-blocked') rev = `<span class="badge lim"${tip}>병합 차단</span>`;
   else if (st === 'approved') rev = `<span class="badge ok"${tip}>✓ 검토 승인</span>`;
   else if (st === 'rejected' && task.stage === 'doing' && !task.reviewPaused && task.retryCount > 0) {
@@ -116,7 +117,10 @@ function projectReviewNoteHTML(task, compact = false) {
     label = '검토 통과 · 병합 대기';
   } else if (st === 'merge-integrating') {
     tone = 'warn';
-    label = '통합 진행 중';
+    label = '1차 자동 병합 진행 중';
+  } else if (st === 'merge-session') {
+    tone = 'info';
+    label = '병합 세션 최종 확인 중';
   } else if (st === 'merge-blocked') {
     tone = 'danger';
     label = '검토 통과 · 병합 차단';
@@ -157,7 +161,7 @@ function projectStartBtnHTML(p, task) {
   if (action) return projectLiveStatusBadgeHTML(p, task) + action;
   if (!term && task.stage === 'done') return '';
   if (term) {
-    return `${projectLiveStatusBadgeHTML(p, task)}<button class="btn-sm primary" data-start-task="${esc(task.id)}">터미널 열기 ↗</button>`;
+    return `${projectLiveStatusBadgeHTML(p, task)}<button class="btn-sm primary" data-start-task="${esc(task.id)}" data-open-task-terminal>터미널 열기 ↗</button>`;
   }
   return `<button class="btn-sm" data-start-task="${esc(task.id)}">작업 시작</button>`;
 }
@@ -166,36 +170,39 @@ function projectStageActionHTML(task, p) {
   if (p?.scope?.version?.snapshotId && !p.scope.version.workspace) return '';
   const id = esc(task.id);
   if (task.stage === 'doing') return `<button type="button" class="btn-sm primary" data-start-task="${id}">작업 다시 진행</button>`;
-  if (task.stage === 'review' && task.reviewStatus === 'merge-integrating') return `<button type="button" class="btn-sm" disabled>통합 진행 중</button>`;
-  if (task.stage === 'review' && task.reviewStatus?.startsWith('merge-')) return `<button type="button" class="btn-sm" data-start-task="${id}">통합 재시도</button>`;
+  if ((task.stage === 'merge' || task.stage === 'review') && task.reviewStatus === 'merge-integrating') return `<button type="button" class="btn-sm" disabled>1차 통합 중</button>`;
+  if ((task.stage === 'merge' || task.stage === 'review') && task.reviewStatus === 'merge-session') return `<button type="button" class="btn-sm" disabled>병합 세션 중</button>`;
+  if (task.stage === 'merge' || (task.stage === 'review' && task.reviewStatus?.startsWith('merge-'))) return `<button type="button" class="btn-sm" data-start-task="${id}">통합 재시도</button>`;
   if (task.stage === 'review') return `<button type="button" class="btn-sm primary" data-start-task="${id}"${task.reviewStatus === 'reviewing' ? ' disabled' : ''}>${task.reviewStatus === 'reviewing' ? '검토 중…' : '재검토'}</button>`;
   return '';
 }
 
 async function requestProjectReview(p, task, button, drawer) {
-  if (button.disabled) return;
-  const label = button.textContent;
-  button.disabled = true;
+  if (button?.disabled) return;
+  const label = button?.textContent;
+  if (button) button.disabled = true;
   const retryMerge = task.reviewStatus?.startsWith('merge-');
-  button.textContent = retryMerge ? '병합 요청 중…' : '검토 요청 중…';
+  if (button) button.textContent = retryMerge ? '병합 요청 중…' : '검토 요청 중…';
   try {
     const result = await api('/api/projects/autopilot/complete', { method: 'POST', body: { projectId: p.id, taskId: task.id, force: true, async: true, retryMerge } });
-    if (result.error) throw new Error(result.error);
+    if (!result.queued) throw new Error(result.error || '검토 요청을 시작하지 못했습니다.');
     drawer?.close();
     toast(retryMerge ? '통합을 요청했습니다.' : '자동 재검토를 시작했습니다');
     await refreshProjects();
     if (state.sel.kind === 'projects' && state.sel.id === p.id) openProject(p.id, projectTab);
   } catch (error) {
     toast(error.message, 5000, 'danger');
-    button.textContent = label;
-    button.disabled = false;
+    if (button) {
+      button.textContent = label;
+      button.disabled = false;
+    }
   }
 }
 
 function runProjectCardAction(p, task, button) {
   if (p.scope?.version?.snapshotId && !p.scope.version.workspace) return toast('이 버전에서 이어 작업을 먼저 시작하세요.', 5000, 'danger');
-  if (task.stage === 'review') return requestProjectReview(p, task, button);
-  return startProjectTask(p, task, button, { retry: task.stage === 'doing' });
+  if (task.stage === 'review' || task.stage === 'merge') return requestProjectReview(p, task, button);
+  return startProjectTask(p, task, button, { retry: task.stage === 'doing', openTerminal: !!button?.hasAttribute('data-open-task-terminal') });
 }
 
 const PJ_COLLAPSE_KEY = 'ach.pjCollapse.v1';
@@ -229,25 +236,29 @@ function collapseBtnHTML(collapsed, taskId) {
   return `<button type="button" class="ghost icon-btn btn-sm pj-col-btn" data-toggle-collapse="${esc(taskId)}" title="${collapsed ? '펼치기' : '접기'}" aria-expanded="${!collapsed}">${collapsed ? '▸' : '▾'}</button>`;
 }
 
-async function startProjectTask(p, task, button, { retry = false } = {}) {
+async function startProjectTask(p, task, button, { retry = false, openTerminal = false } = {}) {
   if (p.scope?.version?.snapshotId && !p.scope.version.workspace) return toast('이 버전에서 이어 작업을 먼저 시작하세요.', 5000, 'danger');
   const gen = viewGen;
+  if (button?.disabled) return;
   if (button) button.disabled = true;
   try {
     const current = retry ? null : projectTaskTerm(p, task);
     const t = current || await api('/api/projects/start', { method: 'POST', body: { projectId: p.id, taskId: task.id, ...(retry ? { retry: true } : {}) } });
     if (t.error || !t.id) throw new Error(t.error || '터미널을 열 수 없습니다.');
-    if (!current) await refreshOverview();
+    if (t.alreadyRunning) toast('작업이 이미 실행 중입니다.');
     if (gen !== viewGen) return;
-    if (current || retry) {
-      if (retry) await refreshProjects();
-      if (gen !== viewGen) return;
-      select({ kind: 'term', id: t.id, project: p.id, projectVersion: task.version || '', projectTab });
-    } else {
-      if (typeof refreshProjects === 'function') await refreshProjects();
-      if (gen === viewGen && state.sel.kind === 'projects') openProject(p.id, projectTab);
-      toast(`“${task.title}” 작업을 백그라운드에서 시작했습니다`);
+    if (!state.terms.some((term) => term.id === t.id)) state.terms = [t, ...state.terms];
+    if (!openTerminal) {
+      if (t.resultReceived) toast('완료된 응답을 확인했습니다. 검토 상태를 갱신합니다.');
+      else if (!t.alreadyRunning) toast(retry ? '작업 재실행을 요청했습니다.' : '작업 시작을 요청했습니다.');
+      await refreshOverview();
+      await refreshProjects();
+      return;
     }
+    const tab = getSavedTermTab();
+    const terminalTab = tab === 'split' || tab === 'screen' ? tab : 'screen';
+    select({ kind: 'term', id: t.id, project: p.id, projectVersion: task.version || '', projectTab }, terminalTab);
+    await refreshOverview();
   } catch (e) {
     toast(e.message, 5000, 'danger');
     if (typeof refreshProjects === 'function' && gen === viewGen) {

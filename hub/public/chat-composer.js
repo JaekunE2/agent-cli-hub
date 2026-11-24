@@ -664,7 +664,8 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
     }
   };
   repBtn.onclick = () => sendReply();
-  repIn.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendReply(); } };
+  if (typeof window.bindEnterSubmit === 'function') window.bindEnterSubmit(repIn, () => sendReply());
+  else repIn.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendReply(); } };
 }
 
 function openResumedTerm(t, request, tab) {

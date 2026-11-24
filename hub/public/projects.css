@@ -158,6 +158,7 @@
 .pj-board h2.pj-lane-hd::before, .pj-board h4::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
 .pj-board [data-drop=doing] h2.pj-lane-hd::before, .pj-board [data-drop=doing] h4::before { background: var(--accent); }
 .pj-board [data-drop=review] h2.pj-lane-hd::before, .pj-board [data-drop=review] h4::before { background: var(--warn); }
+.pj-board [data-drop=merge] h2.pj-lane-hd::before, .pj-board [data-drop=merge] h4::before { background: #8b5cf6; }
 .pj-board [data-drop=done] h2.pj-lane-hd::before, .pj-board [data-drop=done] h4::before { background: var(--ok); }
 .pj-lane-empty { padding: 20px 8px; text-align: center; color: var(--muted); font-size: 12px; }
 

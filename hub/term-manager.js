@@ -132,7 +132,7 @@ async function dispatchTerminalPrompt(hub, term, text, { submitDraft = false, cl
     await submitPrompt({
       text, read, guard, explicitDraft: submitDraft, resend, waitFor: hub.waitFor || waitFor, sleep: hub.sleep || sleep,
       previousDraft, onDraft: (draft) => { term._pendingPromptDraft = { text, inputSeq, draft }; },
-      paste: cli === 'codex' || /[\n\t]/.test(text) ? `\x1b[200~${text}\x1b[201~` : text,
+      paste: cli === 'codex' || (cli === 'agy' && text.length > 80) || /[\n\t]/.test(text) ? `\x1b[200~${text}\x1b[201~` : text,
       pasteMarker: cli,
       write: (data) => {
         guard(read());

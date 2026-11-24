@@ -8,10 +8,12 @@ const { resolveTaskConfig, buildTaskHarnessPrompt } = require('./project-harness
 const { versionWorkspace } = require('./version-files');
 const { requiredMcpMessage } = require('./vault-cli-ops');
 const { AGY_ALTM_RE, codexHistorySearchActive, dispatchImmediatePrompt, flushNewAgyQueue } = require('./immediate-send');
-const { composerText, submitPrompt } = require('./prompt-submission');
+const { composerText, isPlaceholder, submitPrompt } = require('./prompt-submission');
+const { prepareProjectPrompt } = require('./project-prompt');
+const { projectDeliveryResult, deliveryError } = require('./project-history');
 const { claudeCommandNote, claudeToolResultNote } = require('./searchindex');
 const { spawnCli } = require('./project-plan');
-const { sessionStartupBlock, dismissProjectHookMenu, dispatchTerminalPrompt, submissionBlockMessage, terminalConfirmationMessage, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE } = require('./term-manager');
+const { sessionStartupBlock, waitForTerminalInput, dismissProjectHookMenu, dispatchTerminalPrompt, submissionBlockMessage, terminalConfirmationMessage, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE } = require('./term-manager');
 
 const OV_TTL = 2500;
 
@@ -26,6 +28,24 @@ function createSessionRoutes(hub) {
 
   const transcriptIndex = new Map();
   const startingTasks = new Set();
+  function discardUnusedProjectTerm(t) {
+    if (!t?.meta?.projectAutoClose || t.exited !== null || t.clients?.size || Date.now() - (t.lastHttpViewerAt || 0) < 1500 || t.meta.projectSubmitted
+      || t.lastInputAt !== t.meta.spawnedAt || t._interactiveInputSeq || t._promptSubmission || t._projectDispatchPending
+      || t._projectDispatchedAt || t._projectBusySeen) return false;
+    const agent = hub.agentOf?.(t) || (hub.isCodexTerm?.(t) ? 'codex' : '');
+    const status = { codex: hub.codexStatus, claude: hub.claudeStatus, agy: hub.agyStatus }[agent];
+    const sid = hub.termSessionId?.(t);
+    if (status?.(t) !== 'idle' || (sid && (agent !== 'claude' || hub.index?.get?.(sid)?.msgs?.length))) return false;
+    const rows = Math.max(40, t.rows || 0);
+    const raw = hub.readTerm(t, rows).join('\n');
+    const screen = stripAnsi?.(raw) || raw;
+    if (sessionStartupBlock(screen)) return false;
+    const draft = composerText(screen, agent === 'codex' ? hub.termCursorLine?.(t, rows) : undefined);
+    if (draft == null || (draft && !isPlaceholder(draft) && draft !== t._pendingPromptDraft?.draft)) return false;
+    hub.forgetTerm(t);
+    overviewStale();
+    return true;
+  }
   let ovSnap = null, ovAt = 0, ovBuilding = null;
   let diskLow = null;
 
@@ -120,7 +140,7 @@ function createSessionRoutes(hub) {
         if (cmdNote) msgs.push({ role: 'assistant', text: cmdNote, ts: e.timestamp });
         continue;
       }
-      msgs.push({ role: e.type, text: text.slice(0, 4000), ts: e.timestamp });
+      msgs.push({ role: e.type, text: text.slice(0, 24000), ts: e.timestamp });
     }
     const mergedMsgs = termEvents ? termEvents.mergeIntoMessages(msgs, sessionId) : msgs;
     const sliced = mergedMsgs.slice(-maxMsgs);
@@ -128,7 +148,7 @@ function createSessionRoutes(hub) {
     const edits = conversationBranches.getMsgEdits(sessionId);
     const patched = sliced.map((m, i) => {
       const ov = edits[String(base + i)];
-      return ov ? { ...m, text: String(ov.text || '').slice(0, 4000), edited: true } : m;
+      return ov ? { ...m, text: String(ov.text || '').slice(0, 24000), edited: true } : m;
     });
     return {
       file, title: conversationBranches.getTitle(sessionId) || title, messages: patched, total: mergedMsgs.length, base, size: fs.statSync(file).size,
@@ -193,7 +213,7 @@ function createSessionRoutes(hub) {
       title: sessionDisplayTitle(sessionId, d), agent: ag, cwd: d.cwd, size: d.offset, rev: conversationBranches.rev() + (termEvents ? termEvents.rev() : 0), total: n, base: start,
       messages: allMsgs.slice(start, end).map((m, idx) => {
         const ov = edits[String(start + idx)];
-        return ov ? { ...m, text: String(ov.text || '').slice(0, 4000), edited: true } : { ...m, text: m.text.slice(0, 4000) };
+        return ov ? { ...m, text: String(ov.text || '').slice(0, 24000), edited: true } : { ...m, text: m.text.slice(0, 24000) };
       }),
       lineage: conversationBranches.lineageFor(sessionId, (id) => sessionDisplayTitle(id, index.get(id))),
       capabilities: { canNativeFork: ag === 'claude', canRewindEdit: ag === 'claude', canEditSource: ag === 'claude' || ag === 'codex' },
@@ -333,6 +353,10 @@ function createSessionRoutes(hub) {
         return t.exited === null && t.meta.projectTask?.projectId === project.id && t.meta.projectTask.taskId === task.id
           && (sameCli || sameFallback) && (!isolated || (t.cwd && path.relative(workspace, t.cwd) === ''));
       });
+      const last = hub.terms.get(task.lastRun?.termId);
+      if (retry && last && task.reviewPaused && deliveryError(task.reviewNote) && projectDeliveryResult(hub, last)) {
+        return send(res, 200, { ...hub.termInfo(last), existing: true, resultReceived: true });
+      }
       if (existing) {
         const result = await existing.spawnResult;
         if (result?.error) return send(res, 502, { error: 'CLI를 시작하지 못했습니다. 설치 경로를 확인하세요.' });
@@ -351,9 +375,21 @@ function createSessionRoutes(hub) {
               overviewStale();
             }
           }
-          return send(res, 200, { ...info, existing: true });
+          return send(res, 200, { ...info, existing: true, alreadyRunning: true });
         }
-        if (info.startupBlock !== 'term-dumb') {
+        const rows = Math.max(40, existing.rows || 0);
+        const raw = hub.readTerm(existing, rows).join('\n');
+        const cursor = hub.isCodexTerm?.(existing) ? hub.termCursorLine?.(existing, rows) : undefined;
+        const draft = composerText(stripAnsi?.(raw) || raw, cursor);
+        const pending = existing._pendingPromptDraft;
+        const knownDraft = pending?.draft === draft && pending?.inputSeq === existing._interactiveInputSeq;
+        const automaticDraft = existing.meta.projectDelivery && !existing._interactiveInputSeq
+          && existing.lastInputAt === existing.meta.spawnedAt;
+        const preserveDraft = !info.startupBlock && !submitDraft && !automaticDraft && (
+          (draft && !isPlaceholder(draft) && !knownDraft) ||
+          (draft == null && task.reviewPaused && task.reviewStatus === 'error')
+        );
+        if (info.startupBlock !== 'term-dumb' && !preserveDraft) {
           reuseTerm = existing;
           kind = hub.agentOf(existing);
           mcpFallback = task.lastRun?.mcpFallback;
@@ -424,7 +460,6 @@ function createSessionRoutes(hub) {
       if (!b._rawPrompt) b._rawPrompt = fullTaskPrompt;
       const version = project.versions?.find((item) => item.number === task.version);
       if (version) b._rawPrompt = `[Project version: v${version.number}]\n${version.goal}\n\n${b._rawPrompt}`;
-      projectPrompt = fingerprint(b._rawPrompt);
     }
     if (b.resume && !b.fork && !projectTask) {
       const existingTerm = [...hub.terms.values()].find((x) => x.exited === null && hub.termSessionId(x) === b.resume);
@@ -509,14 +544,26 @@ function createSessionRoutes(hub) {
       }
       if (fileRun) Object.assign(projectTask, { fileRunId: fileRun.id, agentSource, trackHandoff });
     }
+    if (projectTask) {
+      if (b._autoDispatch && !submitDraft) b._rawPrompt = prepareProjectPrompt(baseDir, b._rawPrompt, reuseTerm?.meta?.cmd || cmd);
+      if (b._autoDispatch) projectPrompt = fingerprint(b._rawPrompt);
+    }
     const t = reuseTerm || hub.createTerm({ cwd, cmd, args, title: b.title || title, ...launchAccount, model: b.model || '', effort: b.effort || '', projectTask, projectPrompt, agent: projectTask ? b.kind : undefined, preparedVault });
+    const result = await t.spawnResult;
+    if (result?.error || (!result && !reuseTerm)) {
+      if (!reuseTerm) hub.terms.delete(t.id);
+      return send(res, result?.error ? 502 : 503, { error: result?.error
+        ? 'CLI를 시작하지 못했습니다. 설치 경로를 확인하세요.'
+        : '터미널 호스트의 응답이 없습니다. 상태를 확인하세요.' });
+    }
     if (!projectTask && ['claude', 'codex', 'agy'].includes(b.kind) && (b.model !== undefined || b.effort !== undefined || launchAccount?.account?.id)) {
       accountPrefs.save({ account: launchAccount?.account?.id || b.account || '', agent: b.kind, model: b.model || '', effort: b.effort || '' });
     }
     if (projectTask) {
-      const result = await t.spawnResult;
-      if (result?.error) { hub.terms.delete(t.id); return send(res, 502, { error: 'CLI를 시작하지 못했습니다. 설치 경로를 확인하세요.' }); }
-      if (!result && !reuseTerm) return send(res, 503, { error: '터미널 호스트의 응답이 없습니다. 상태를 확인하세요.' });
+      if (reuseTerm && projectPrompt && !t.meta.projectPrompt && !hub.termSessionId?.(t)) {
+        t.meta.projectPrompt = projectPrompt;
+        await hub.ptyPost?.(t.id, '/meta', { id: t.id, meta: { projectPrompt } });
+      }
       const latest = projects.list().find((p) => p.id === projectTask.projectId);
       const latestTask = latest?.tasks.find((x) => x.id === projectTask.taskId);
       if (!latestTask) return send(res, 404, { error: 'Project 작업을 찾을 수 없습니다.' });
@@ -578,16 +625,24 @@ function createSessionRoutes(hub) {
           t._projectHookEscapeSent = false;
           const cli = hub.agentOf(t) || 'claude';
           const dispatchedAt = Date.now();
+          const delivery = { at: dispatchedAt, digest: fingerprint(rawPrompt) };
+          t.meta.projectDelivery = delivery;
+          await hub.ptyPost?.(t.id, '/meta', { id: t.id, meta: { projectDelivery: delivery } });
           if (trackHandoff && !latestTask.handoff?.termId) {
             if (!projects.advanceHandoff?.(projectTask, t.id, dispatchedAt, 'delivered')) {
               throw new Error('후속 작업 전달 중 프로젝트의 실행 상태가 바뀌었습니다.');
             }
             overviewStale();
           }
-          t._projectBusySeen = await dispatchTerminalPrompt(hub, t, rawPrompt, { cli, submitDraft });
+          t._projectBusySeen = await dispatchTerminalPrompt(hub, t, rawPrompt, { cli, submitDraft, resend: retry });
           t._projectDispatchedAt = dispatchedAt;
           if (trackHandoff && projects.advanceHandoff?.(projectTask, t.id, dispatchedAt, 'confirmed')) overviewStale();
         })().catch((e) => {
+          if (deliveryError(e.message) && projectDeliveryResult(hub, t)) {
+            t._projectBusySeen = true;
+            t._projectDispatchedAt = t.meta.projectDelivery.at;
+            return;
+          }
           const latest = projects.list().find((p) => p.id === projectTask.projectId);
           if (hub.terms.has(t.id) && latest?.tasks.some((x) => x.id === projectTask.taskId && x.stage === 'doing' && x.lastRun?.termId === t.id)) {
             projects.save({ ...latest, tasks: latest.tasks.map((x) => x.id === projectTask.taskId
@@ -626,6 +681,123 @@ function createSessionRoutes(hub) {
       if (error) return { error };
     }
     return payload;
+  };
+
+  hub.startProjectMergeSession = async (project, queue, result) => {
+    const agent = ['claude', 'codex', 'agy', 'cursor'].includes(project?.agent) ? project.agent : 'codex';
+    const model = String(project?.model || '').trim();
+    const effort = String(project?.effort || '').trim();
+    let launchAccount = null;
+    if (project?.account && !/^(__cli__:|default$|agy-cli$)/.test(String(project.account))) {
+      try { launchAccount = hub.projectAccounts.resolve(agent, String(project.account)); }
+      catch (e) { if (String(project.account) !== 'auto-codex') return { error: e.message }; }
+    }
+    if (launchAccount?.switchAgySwap) {
+      try { await hub.ensureAgySwap(launchAccount); }
+      catch (e) { return { error: `Antigravity 계정 전환 실패: ${e.message}` }; }
+    } else if (agent === 'agy' && !launchAccount?.account && hub.agySwap.available()) {
+      const activeSwap = (hub.agySwap.getFast().accounts || []).find((a) => a.active);
+      if (activeSwap) {
+        launchAccount = { ...launchAccount, account: { id: activeSwap.id, label: activeSwap.name ? `${activeSwap.name} (${activeSwap.email})` : activeSwap.email, kind: 'agy', email: activeSwap.email } };
+      }
+    }
+    let cmd, args = [];
+    if (agent === 'claude') {
+      cmd = 'claude.exe';
+      args = ['--dangerously-skip-permissions', ...cliModelEffortArgs('claude', model, effort)];
+    } else if (agent === 'codex') {
+      ({ cmd, args } = hub.codexLaunch(['-c', `shell_environment_policy.set.HUB_PROJECT_RUN_ID="${crypto.randomUUID()}"`, '--dangerously-bypass-approvals-and-sandbox', ...cliModelEffortArgs('codex', model, effort)]));
+    } else if (agent === 'agy') {
+      cmd = hub.agyExe();
+      args = ['--dangerously-skip-permissions', ...cliModelEffortArgs('agy', model, effort)];
+    } else {
+      const ca = [config.cursorAgent, path.join(os.homedir(), 'AppData', 'Local', 'cursor-agent', 'cursor-agent.cmd')].find((f) => f && fs.existsSync(f)) || 'cursor-agent.cmd';
+      cmd = 'cmd.exe';
+      args = ['/c', ca];
+    }
+    const taskIds = queue.map((t) => t.id);
+    const projectMerge = { projectId: project.id, runId: queue[0]?.mergeRun?.id || result.tip, taskIds, tip: result.tip };
+    const t = hub.createTerm({
+      cwd: project.cwd, cmd, args, title: `[병합] ${project.name}`, ...launchAccount, model, effort, agent, projectMerge,
+    });
+    const spawn = await t.spawnResult;
+    if (spawn?.error || !spawn) {
+      hub.terms.delete(t.id);
+      return { error: spawn?.error ? '병합 세션 CLI를 시작하지 못했습니다.' : '터미널 호스트의 응답이 없습니다.' };
+    }
+    const latest = projects.list().find((p) => p.id === project.id);
+    if (latest && !latest.termIds.includes(t.id)) {
+      projects.save({ ...latest, termIds: [...latest.termIds, t.id] });
+    }
+    overviewStale();
+
+    const taskLines = queue.map((item) => `- ${item.title} (${item.id.slice(0, 8)})`).join('\n');
+    const rawPrompt = [
+      `[프로젝트 병합 최종 검증 세션] ${project.name}`,
+      `대상 브랜치(${project.cwd})에 1차 자동 병합(${result.tip.slice(0, 8)})이 반영되었습니다.`,
+      '포함된 작업:',
+      taskLines,
+      '',
+      '현재 폴더에서 아래 사항을 확인하고 마무리하세요:',
+      '1. `git status` 및 `git log -n 3 --oneline`으로 병합 커밋이 대상 브랜치에 정상 반영되었는지 확인합니다.',
+      '2. 만약 `hub: auto-stash before target merge` 스태시가 남아 있다면(`git stash list`), 충돌 여부를 확인해 안전하게 복원·정리합니다.',
+      '3. 프로젝트의 핵심 테스트/빌드 검증을 실행해 최종 병합 상태에 이상이 없는지 확인합니다.',
+      '4. 확인이 끝나면 검증 결과를 간략히 요약하고 작업을 마칩니다.',
+    ].join('\n');
+
+    t._projectDispatchPending = true;
+    (async () => {
+      let confirmationSeen = false;
+      const readyOrBlocked = async () => {
+        if (t.exited !== null || !hub.terms.has(t.id)) return true;
+        const scr = stripAnsi(hub.readTerm(t, 40).join('\n'));
+        const block = sessionStartupBlock(scr);
+        if (block === 'hooks-menu') { await dismissProjectHookMenu(hub, t, scr); return false; }
+        if (terminalConfirmationMessage(block)) confirmationSeen = true;
+        if (block === 'term-dumb' || confirmationSeen) return true;
+        return hub.inputReady(t);
+      };
+      let ready = await hub.waitFor(readyOrBlocked, 45000, 600);
+      if (confirmationSeen) {
+        confirmationSeen = false;
+        ready = await hub.waitFor(async () => {
+          const scr = stripAnsi(hub.readTerm(t, 40).join('\n'));
+          if (terminalConfirmationMessage(sessionStartupBlock(scr))) return t.exited !== null || !hub.terms.has(t.id);
+          return readyOrBlocked();
+        }, 300000, 600);
+      }
+      if (!hub.terms.has(t.id)) return;
+      const scr = stripAnsi(hub.readTerm(t, 40).join('\n'));
+      const block = sessionStartupBlock(scr);
+      if (block === 'hooks-menu') throw new Error(HOOK_MENU_MESSAGE);
+      const confirmation = terminalConfirmationMessage(block);
+      if (confirmation) throw new Error(confirmation);
+      if (block === 'term-dumb') throw new Error(DUMB_TERMINAL_MESSAGE);
+      if (!ready || t.exited !== null || block) throw new Error('병합 세션 CLI가 입력을 받을 준비가 되지 않았습니다.');
+      const cli = hub.agentOf(t) || agent;
+      const dispatchedAt = Date.now();
+      t.meta.projectDelivery = { at: dispatchedAt, digest: fingerprint(rawPrompt) };
+      await hub.ptyPost?.(t.id, '/meta', { id: t.id, meta: { projectDelivery: t.meta.projectDelivery } });
+      t._projectBusySeen = await dispatchTerminalPrompt(hub, t, rawPrompt, { cli });
+      t._projectDispatchedAt = dispatchedAt;
+    })().catch((e) => {
+      if (deliveryError(e.message) && projectDeliveryResult(hub, t)) {
+        t._projectBusySeen = true;
+        t._projectDispatchedAt = t.meta.projectDelivery.at;
+        return;
+      }
+      const curP = projects.list().find((p) => p.id === project.id);
+      if (curP) {
+        projects.save({
+          ...curP,
+          tasks: curP.tasks.map((x) => taskIds.includes(x.id) && x.stage === 'merge' && x.reviewStatus === 'merge-session'
+            ? { ...x, reviewStatus: 'merge-blocked', reviewPaused: true, reviewNote: `병합 세션 전달 실패: ${e.message || String(e)}` } : x),
+        });
+        overviewStale();
+      }
+    }).finally(() => { t._projectDispatchPending = false; });
+
+    return { id: t.id };
   };
 
   async function handleForkOrEdit(p, req, res, body, send) {
@@ -1022,6 +1194,31 @@ function createSessionRoutes(hub) {
       send(res, t ? 200 : 404, t ? { ok: true, ...hub.termInfo(t), lines: hub.readTerm(t, Number(url.searchParams.get('lines') || 60)) } : { ok: false, error: 'no such terminal' });
       return true;
     }
+    if (p === '/api/term/stream' && req.method === 'GET') {
+      const t = hub.terms.get(url.searchParams.get('id') || '');
+      if (!t) { send(res, 404, { ok: false, error: 'no such terminal' }); return true; }
+      t.lastHttpViewerAt = Date.now();
+      const end = t.outputEnd ?? t.buf.length;
+      const start = end - t.buf.length;
+      const [generation, savedOffset] = (url.searchParams.get('cursor') || '').split(':');
+      const offset = Number(savedOffset);
+      const reset = generation !== buildId || !Number.isSafeInteger(offset) || offset < start || offset > end;
+      send(res, 200, { ok: true, data: t.buf.slice(reset ? 0 : offset - start),
+        cursor: `${buildId}:${end}`, reset, exited: t.exited });
+      return true;
+    }
+    if (p === '/api/term/stream' && req.method === 'POST') {
+      const b = await body(req), t = hub.terms.get(String(b.id));
+      if (!t || t.exited !== null) { send(res, 404, { ok: false, error: 'no such running terminal' }); return true; }
+      if (Number.isInteger(b.cols) && Number.isInteger(b.rows) && b.cols > 0 && b.cols <= 1000 && b.rows > 0 && b.rows <= 1000) {
+        hub.resizeTerm(t, b.cols, b.rows);
+        send(res, 200, { ok: true });
+      } else {
+        const ok = await hub.writeInteractiveTerm(t, b.data);
+        send(res, ok ? 200 : 409, ok ? { ok: true } : { ok: false, error: '터미널에 키 입력을 전달하지 못했습니다.' });
+      }
+      return true;
+    }
     if (p === '/api/term/windows') {
       const id = url.searchParams.get('id') || '', pidParam = Number(url.searchParams.get('pid') || 0);
       const t = id ? hub.terms.get(id) : null;
@@ -1051,6 +1248,10 @@ function createSessionRoutes(hub) {
       if ((t._promptSubmission || t._projectDispatchPending) && (b.text || b.immediate || b.submit)) {
         send(res, 409, { ok: false, error: '터미널 입력을 전송 중입니다.' }); return true;
       }
+      if (b.waitForReady === true && b.submit && typeof b.text === 'string' && b.text.trim()) {
+        try { await waitForTerminalInput(hub, t); }
+        catch (error) { send(res, 409, { ok: false, error: error.message }); return true; }
+      }
       if (b.submit || b.immediate || b.text) {
         const screen = hub.readTerm(t, 12).join('\n');
         const confirmation = terminalConfirmationMessage(sessionStartupBlock(stripAnsi?.(screen) || screen));
@@ -1058,7 +1259,10 @@ function createSessionRoutes(hub) {
           send(res, 409, { ok: false, error: confirmation }); return true;
         }
       }
-      if (b.keys?.length) t._interactiveInputSeq = (t._interactiveInputSeq || 0) + 1;
+      if (b.keys?.length) {
+        t._interactiveInputSeq = (t._interactiveInputSeq || 0) + 1;
+        if (t.meta?.projectAutoClose) hub.touchUserInput(t);
+      }
       if (b.submit || b.immediate || b.text) hub.touchUserInput(t);
       const inHistorySearch = (b.immediate || (b.submit && b.text)) && hub.isCodexTerm(t)
         && codexHistorySearchActive(hub.readTerm(t, 5));
@@ -1067,6 +1271,11 @@ function createSessionRoutes(hub) {
         await hub.sleep(hub.SUBMIT_DELAY);
       }
       const agent = hub.agentOf?.(t) || (hub.isCodexTerm(t) ? 'codex' : hub.isAgyTerm?.(t) ? 'agy' : null);
+      const originalText = b.text;
+      if (agent === 'codex' && b.submit && typeof b.text === 'string') {
+        b.text = prepareProjectPrompt(baseDir, b.text, t.meta?.cmd, true);
+      }
+      const delivery = b.text !== originalText ? { submittedText: b.text } : {};
       if (b.immediate && !inHistorySearch && agent) {
         const inputSeq = t._interactiveInputSeq;
         const read = (n) => {
@@ -1090,7 +1299,7 @@ function createSessionRoutes(hub) {
             },
             sleep: hub.sleep, text: b.text, resendIfMissing: b.resendIfMissing,
           });
-          if (outcome.handled) { send(res, 200, outcome.result); return true; }
+          if (outcome.handled) { send(res, 200, { ...outcome.result, ...delivery }); return true; }
         } catch (e) {
           send(res, 409, { ok: false, error: e.message });
           return true;
@@ -1101,28 +1310,32 @@ function createSessionRoutes(hub) {
       if (b.submit && typeof b.text === 'string' && b.text.trim() && !b.keys?.length && agent) {
         try {
           await dispatchTerminalPrompt(hub, t, b.text, { cli: agent, immediate: b.immediate, resend: b.resendIfMissing });
-          send(res, 200, { ok: true, immediate: !!b.immediate });
+          send(res, 200, { ok: true, immediate: !!b.immediate, ...delivery });
         } catch (e) {
           send(res, 409, { ok: false, error: e.message });
         }
         return true;
       }
-      if (b.text) {
-        t._pendingPromptDraft = undefined;
-        hub.termMonitor?.onInput(t, b.text);
-        const text = b.submit && /[\r\n]/.test(b.text) ? `\x1b[200~${b.text.replace(/\r\n/g, '\n')}\x1b[201~` : b.text;
-        await t.proc.write(text);
-      }
-      for (const k of b.keys || []) {
-        if (!(k in PTY_KEYS)) { send(res, 400, { ok: false, error: `unknown key ${k}; one of ${Object.keys(PTY_KEYS)}` }); return true; }
-        hub.termMonitor?.onInput(t, PTY_KEYS[k]);
-        t.proc.write(PTY_KEYS[k]);
-      }
-      if (b.submit) {
-        await hub.sleep(hub.SUBMIT_DELAY + Math.min(3000, (b.text?.length || 0) * 2));
-        hub.termMonitor?.onInput(t, '\r');
-        await t.proc.write('\r');
-      }
+      const writeInput = async (input) => {
+        hub.termMonitor?.onInput(t, input);
+        const result = await t.proc.write(input);
+        if (!result?.ok) throw new Error(result?.error || '터미널 입력을 확인하지 못했습니다.');
+      };
+      try {
+        if (b.text) {
+          t._pendingPromptDraft = undefined;
+          const text = b.submit && /[\r\n]/.test(b.text) ? `\x1b[200~${b.text.replace(/\r\n/g, '\n')}\x1b[201~` : b.text;
+          await writeInput(text);
+        }
+        for (const k of b.keys || []) {
+          if (!(k in PTY_KEYS)) { send(res, 400, { ok: false, error: `unknown key ${k}; one of ${Object.keys(PTY_KEYS)}` }); return true; }
+          await writeInput(PTY_KEYS[k]);
+        }
+        if (b.submit) {
+          await hub.sleep(hub.SUBMIT_DELAY + Math.min(3000, (b.text?.length || 0) * 2));
+          await writeInput('\r');
+        }
+      } catch (e) { send(res, 409, { ok: false, error: e.message }); return true; }
       send(res, 200, { ok: true, immediate: !!b.immediate });
       return true;
     }
@@ -1152,6 +1365,11 @@ function createSessionRoutes(hub) {
       const removed = hub.dedupeTermsBySession();
       await hub.saveTermsState(); overviewStale();
       send(res, 200, { ok: true, removed });
+      return true;
+    }
+    if (p === '/api/term/discard-unused' && req.method === 'POST') {
+      const b = await body(req);
+      send(res, 200, { ok: true, removed: discardUnusedProjectTerm(hub.terms.get(String(b.id))) });
       return true;
     }
     if (p === '/api/term/close' && req.method === 'POST') {

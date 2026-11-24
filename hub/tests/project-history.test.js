@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs'), path = require('path'), os = require('os');
-const { fingerprint, projectSession } = require('../project-history');
+const { fingerprint, projectSession, projectDeliveryResult } = require('../project-history');
 const { SearchIndex } = require('../searchindex');
 
 test('removing a Project hides linked records only, including late session discovery', () => {
@@ -44,4 +44,17 @@ test('linked review sessions stay visible without listing unrelated automatic se
   const owners = new Map([['review-id', { projectId: 'p', taskId: 't' }]]);
   assert.deepEqual(index.recent(10, false, 'agy', new Set(), owners).map((d) => d.sessionId), ['review-id']);
   assert.deepEqual(index.recent(10, false, 'agy', new Set(['review-id']), owners), []);
+});
+
+test('a delivery error can recover only the response to its submitted prompt', () => {
+  const at = Date.now();
+  const term = { meta: { projectDelivery: { at, digest: fingerprint('Run checks') } } };
+  const messages = [{ role: 'user', text: 'Run checks', ts: new Date(at).toISOString() }];
+  const hub = { termSessionId: () => 'record', index: { get: () => ({ msgs: messages }) } };
+  messages.push({ role: 'assistant', text: '⚙ Running tests', ts: new Date(at + 1).toISOString() });
+  assert.equal(projectDeliveryResult(hub, term), null);
+  messages.push({ role: 'assistant', text: 'Checks finished.', ts: new Date(at + 2).toISOString() });
+  assert.deepEqual(projectDeliveryResult(hub, term), { at });
+  messages.push({ role: 'user', text: 'Unrelated follow-up', ts: new Date(at + 3).toISOString() });
+  assert.equal(projectDeliveryResult(hub, term), null);
 });

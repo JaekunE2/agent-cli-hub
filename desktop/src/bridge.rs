@@ -9,7 +9,8 @@ pub fn grant(app: &tauri::App, port: u16) -> tauri::Result<()> {
             .webview("main")
             .local(false)
             .remote(format!("http://127.0.0.1:{port}/"))
-            .permission("allow-pick-folder"),
+            .permission("allow-pick-folder")
+            .permission("allow-notify-terminal"),
     )
 }
 

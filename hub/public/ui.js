@@ -258,4 +258,46 @@
     });
   }
   window.bindSplitResizer = bindSplitResizer;
+
+  // ---------- Korean/CJK IME-safe single-Enter submit ----------
+  function bindEnterSubmit(el, onSubmit) {
+    if (!el || typeof onSubmit !== 'function') return;
+    let pendingEnter = false;
+    let compTimer = null;
+    let lastFireAt = 0;
+    const fire = () => {
+      const now = Date.now();
+      if (now - lastFireAt < 80) return;
+      lastFireAt = now;
+      onSubmit();
+    };
+    const flush = () => {
+      if (!pendingEnter) return;
+      pendingEnter = false;
+      clearTimeout(compTimer);
+      compTimer = null;
+      setTimeout(fire, 0);
+    };
+    el.addEventListener('compositionend', flush);
+    el.addEventListener('keydown', (e) => {
+      const isEnter = e.key === 'Enter' || e.code === 'Enter' || e.code === 'NumpadEnter';
+      if (!isEnter || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) {
+        if (e.key !== 'Process') {
+          pendingEnter = false;
+          clearTimeout(compTimer);
+        }
+        return;
+      }
+      e.preventDefault();
+      if (e.isComposing || e.keyCode === 229 || e.key === 'Process') {
+        pendingEnter = true;
+        clearTimeout(compTimer);
+        compTimer = setTimeout(flush, 60);
+        return;
+      }
+      pendingEnter = false;
+      fire();
+    });
+  }
+  window.bindEnterSubmit = bindEnterSubmit;
 })();

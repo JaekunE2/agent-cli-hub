@@ -5,21 +5,35 @@ const path = require('node:path');
 const { createHash } = require('node:crypto');
 
 const names = (result) => result.stdout.split('\0').filter(Boolean);
+const digest = (value) => createHash('sha256').update(value).digest('hex');
 
-async function integrateBatch({ cwd, entries, git, resolve, check, progress, current }) {
-  const call = async (dir, args) => {
+async function integrateBatch({ cwd, entries, git, resolve, check, progress, current, runId, target, saveTarget, conflict, saveConflict }) {
+  const call = async (dir, args, raw = false) => {
     const r = await git(dir, args, 30_000);
     if (!r.ok) throw new Error((r.stderr || r.stdout || args.join(' ')).trim().slice(-1300));
-    return r.stdout.trim();
+    return raw ? r.stdout : r.stdout.trim();
   };
-  const base = await call(cwd, ['rev-parse', 'HEAD']);
-  const ref = await call(cwd, ['symbolic-ref', 'HEAD']);
+  const headAtStart = await call(cwd, ['rev-parse', 'HEAD']);
+  const refAtStart = await call(cwd, ['symbolic-ref', 'HEAD']);
+  const base = target?.base || headAtStart;
+  const ref = target?.ref || refAtStart;
+  const branchChanged = '대상 브랜치가 변경되었습니다.';
+  if (ref !== refAtStart) return { error: `${branchChanged} (${ref} → ${refAtStart})` };
   const ancestor = async (dir, commit) => (await git(dir, ['merge-base', '--is-ancestor', commit, 'HEAD'])).ok;
-  if ((await Promise.all(entries.map(({ commit }) => ancestor(cwd, commit)))).every(Boolean)) return { ok: true, tip: base };
-  const key = createHash('sha256').update(JSON.stringify([ref, base, entries.map(({ commit }) => commit)])).digest('hex').slice(0, 20);
+  const key = digest(JSON.stringify([runId, ref, base, entries.map(({ commit }) => commit)])).slice(0, 20);
   const root = path.join(cwd, '.hub-worktrees');
   const worktree = path.join(root, `integrate-${key}`);
+  const cleanup = async () => {
+    if (!fs.existsSync(worktree)) return;
+    const removed = await git(cwd, ['worktree', 'remove', worktree], 15_000);
+    if (!removed.ok) console.error('[project-integration-cleanup]', worktree, removed.stderr || removed.stdout);
+  };
   try {
+    if ((await Promise.all(entries.map(({ commit }) => ancestor(cwd, commit)))).every(Boolean)) {
+      if (target?.base) await cleanup();
+      return { ok: true, tip: headAtStart };
+    }
+    if (!target?.base) saveTarget({ base, ref });
     if (!fs.existsSync(worktree)) {
       fs.mkdirSync(root, { recursive: true });
       await call(cwd, ['worktree', 'add', '--detach', worktree, base]);
@@ -43,23 +57,26 @@ async function integrateBatch({ cwd, entries, git, resolve, check, progress, cur
           throw new Error(merged.stderr.trim() || merged.stdout.trim() || 'Git merge failed');
         }
       }
-      const conflicts = names(await git(worktree, ['diff', '--name-only', '--diff-filter=U', '-z']));
+      const previous = conflict?.entryId === entry.id ? conflict : null;
+      const conflicts = previous?.files || (await call(worktree, ['diff', '--name-only', '--diff-filter=U', '-z'], true)).split('\0').filter(Boolean);
       if (!conflicts.length && active.ok && !(await git(worktree, ['diff', '--cached', '--check', 'HEAD'])).ok) {
         // A prior attempt may have staged incomplete resolutions. Git retains their original conflict entries.
         const stagedConflicts = await git(worktree, ['ls-files', '--resolve-undo', '-z']);
         conflicts.push(...new Set(names(stagedConflicts).map((line) => line.slice(line.indexOf('\t') + 1))));
       }
       if (conflicts.length) {
+        const index = async () => digest((await call(worktree, ['ls-files', '-s', '-z'], true)).split('\0')
+          .filter((line) => !conflicts.includes(line.slice(line.indexOf('\t') + 1))).join('\0'));
+        const untracked = async () => digest(await call(worktree, ['ls-files', '--others', '--exclude-standard', '-z'], true));
+        const state = previous || { entryId: entry.id, files: conflicts, head, index: await index(), untracked: await untracked() };
+        if (!previous) saveConflict(state);
         progress('통합 충돌 해결 중', worktree);
-        const index = await call(worktree, ['ls-files', '-s', '-z']);
-        const untracked = await call(worktree, ['ls-files', '--others', '--exclude-standard', '-z']);
         await resolve(worktree, entry, conflicts);
-        if (await call(worktree, ['rev-parse', 'HEAD']) !== head || await call(worktree, ['rev-parse', 'MERGE_HEAD']) !== entry.commit) {
+        if (await call(worktree, ['rev-parse', 'HEAD']) !== state.head || await call(worktree, ['rev-parse', 'MERGE_HEAD']) !== entry.commit) {
           throw new Error('통합 작업 폴더의 병합 대상이 변경되었습니다.');
         }
-        if (await call(worktree, ['ls-files', '-s', '-z']) !== index) throw new Error('충돌 해결 중 Git 스테이징 상태가 변경되었습니다.');
         const extra = names(await git(worktree, ['diff', '--name-only', '-z'])).filter((name) => !conflicts.includes(name));
-        if (extra.length || await call(worktree, ['ls-files', '--others', '--exclude-standard', '-z']) !== untracked) {
+        if (extra.length || await index() !== state.index || await untracked() !== state.untracked) {
           throw new Error('충돌 파일 외에 수정된 파일이 있습니다.');
         }
         await call(worktree, ['--literal-pathspecs', 'add', '--', ...conflicts]);
@@ -75,17 +92,20 @@ async function integrateBatch({ cwd, entries, git, resolve, check, progress, cur
       throw new Error('통합 테스트 중 작업 폴더가 변경되었습니다.');
     }
     if (!current()) return { skipped: true };
-    if (await call(cwd, ['rev-parse', 'HEAD']) !== base || await call(cwd, ['symbolic-ref', 'HEAD']) !== ref)
+    if (await call(cwd, ['symbolic-ref', 'HEAD']) !== ref) throw new Error(branchChanged);
+    if (await call(cwd, ['rev-parse', 'HEAD']) !== base) {
+      await cleanup();
       return { pending: true, worktree };
+    }
     if ((await git(cwd, ['rev-parse', '-q', '--verify', 'MERGE_HEAD'])).ok)
       throw new Error('대상 브랜치에 진행 중인 Git 병합이 있습니다.');
     if (!current()) return { skipped: true };
     progress('대상 브랜치 반영 중', worktree);
     const publish = await git(cwd, ['merge', '--ff-only', '--no-overwrite-ignore', tip], 30_000);
     if (!publish.ok) throw new Error(`대상 브랜치 반영 실패: ${(publish.stderr || publish.stdout).trim().slice(-1300)}`);
-    await git(cwd, ['worktree', 'remove', worktree], 15_000);
+    await cleanup();
     return { ok: true, tip };
-  } catch (error) { return { error: error.message, worktree }; }
+  } catch (error) { return { error: error.message, code: error.code, worktree }; }
 }
 
 module.exports = { integrateBatch };

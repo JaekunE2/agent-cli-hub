@@ -1,5 +1,5 @@
 let projectId = '', projectTab = 'board';
-const projectStages = [['planned', '대기'], ['doing', '진행'], ['review', '검토'], ['done', '완료']];
+const projectStages = [['planned', '대기'], ['doing', '진행'], ['review', '검토'], ['merge', '병합'], ['done', '완료']];
 const projectTaskKinds = [['plan', '설계·기획'], ['dev', '개발·구현'], ['test', '테스트·검증'], ['review', '교차 리뷰·감사'], ['ops', '배포·문서']];
 const projectViews = [
   ['design', '작업 설계', '목표와 작업을 정의하고 편집합니다.'],
@@ -331,7 +331,7 @@ function openProjectTaskDrawer(p, task, focusSubChat = false) {
     }
     const action = e.target.closest('[data-start-task]');
     if (action) {
-      if (task.stage === 'review') return requestProjectReview(p, task, action, d);
+      if (task.stage === 'review' || task.stage === 'merge') return requestProjectReview(p, task, action, d);
       d.close();
       return startProjectTask(p, task, action, { retry: true });
     }
@@ -352,7 +352,7 @@ function openProjectTaskDrawer(p, task, focusSubChat = false) {
     const startSub = e.target.closest('[data-drw-start-sub]');
     if (startSub) {
       const target = p.tasks.find((x) => x.id === startSub.dataset.drwStartSub);
-      if (target) { d.close(); startProjectTask(p, target, startSub); }
+      if (target) { d.close(); runProjectCardAction(p, target, startSub); }
       return;
     }
     if (e.target.closest('[data-drw-add-sub]')) { d.close(); return taskForm(p, null, false, task.id); }
@@ -406,7 +406,7 @@ function openProjectTaskDrawer(p, task, focusSubChat = false) {
     const startBtn = e.target.closest('[data-drw-start]');
     if (startBtn) {
       d.close();
-      startProjectTask(p, task, startBtn);
+      startProjectTask(p, task, startBtn, { openTerminal: true });
     }
   });
   mountTaskSubChat(d, p, task, cfg, focusSubChat);
@@ -717,15 +717,16 @@ async function viewProjects() {
           return tm && typeof termStateOf === 'function' && termStateOf(tm) === 'busy';
         }).length;
         const revN = p.tasks.filter((t) => t.reviewStatus === 'reviewing' || t.stage === 'review').length;
-        const reviewNote = p.tasks.find((t) => t.stage === 'review' && t.reviewNote)?.reviewNote;
+        const mergeN = p.tasks.filter((t) => t.stage === 'merge').length;
+        const reviewNote = p.tasks.find((t) => (t.stage === 'merge' || t.stage === 'review') && t.reviewNote)?.reviewNote;
         const retryN = p.tasks.reduce((a, t) => a + (Number(t.retryCount) || 0), 0);
         const readyN = current ? 0 : p.tasks.filter((t) => t.stage === 'planned' && !t.autoExclude && (t.after || []).every((id) => fullProject.tasks.find((x) => x.id === id)?.stage === 'done')).length;
-        const active = !!(p.autopilot || busyN || revN);
+        const active = !!(p.autopilot || busyN || revN || mergeN);
         if (!active && !readyN) return '';
         return `<div class="pj-convoy${p.autopilot ? ' on' : ''}">
           <div class="row" style="gap:8px;flex-wrap:wrap">
             <span class="pj-convoy-pill">${p.autopilot ? '<span class="dot busy" style="width:6px;height:6px"></span> 오케스트레이션 가동 중' : '수동 모드'}</span>
-            <span class="ums" style="margin:0">실행 중 <b>${busyN}</b> · 검토 <b>${revN}</b> · 수정 재시도 <b>${retryN}</b> · 대기 준비 <b>${readyN}</b> · 완료 <b>${cnt.done}/${total}</b></span>
+            <span class="ums" style="margin:0">실행 중 <b>${busyN}</b> · 검토 <b>${revN}</b> · 병합 <b>${mergeN}</b> · 수정 재시도 <b>${retryN}</b> · 대기 준비 <b>${readyN}</b> · 완료 <b>${cnt.done}/${total}</b></span>
             ${reviewNote ? `<span class="ums" style="margin:0;overflow-wrap:anywhere">${esc(reviewNote)}</span>` : ''}
           </div>
           ${readyN > 0 ? `<button type="button" class="btn-sm primary" id="projectKickoff">${p.autopilot ? `준비된 작업 ${readyN}개 즉시 실행` : `전체 자동 실행 시작 (${readyN}개)`}</button>` : ''}

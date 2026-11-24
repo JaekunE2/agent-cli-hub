@@ -199,7 +199,7 @@ function codexLine(e) {
 const AGY_ROOT = path.join(require('os').homedir(), '.gemini', 'antigravity', 'brain');
 const AGY_ROOTS = ['antigravity', 'antigravity-cli', 'antigravity-ide']
   .map(name => path.join(require('os').homedir(), '.gemini', name, 'brain'));
-const isAgyFile = (f) => /[\\/]\.system_generated[\\/]logs[\\/]transcript\.jsonl$/i.test(f);
+const isAgyFile = (f) => /[\\/]\.system_generated[\\/]logs[\\/]transcript(?:_full)?\.jsonl$/i.test(f);
 const agyIdOf = (f) => path.basename(path.resolve(path.dirname(f), '..', '..'));
 function agyUserText(raw) {
   let s = String(raw || '');
@@ -296,7 +296,10 @@ class SearchIndex {
       let adirs; try { adirs = await fs.promises.readdir(root, { withFileTypes: true }); } catch { adirs = []; }
       for (const e of adirs) {
         if (!e.isDirectory() || !/^[0-9a-f-]{16,}$/i.test(e.name)) continue;
-        const tf = path.join(root, e.name, '.system_generated', 'logs', 'transcript.jsonl');
+        const logsDir = path.join(root, e.name, '.system_generated', 'logs');
+        const fullTf = path.join(logsDir, 'transcript_full.jsonl');
+        const tf = path.join(logsDir, 'transcript.jsonl');
+        try { await fs.promises.access(fullTf); out.push(fullTf); continue; } catch {}
         try { await fs.promises.access(tf); out.push(tf); } catch {}
       }
     }
@@ -354,7 +357,7 @@ class SearchIndex {
       const stream = fs.createReadStream(file, { start: doc.offset, end: end - 1 });
       let rest = Buffer.alloc(0), consumed = doc.offset;
       const pushMsg = (msg) => {
-        const text = String(msg.text || '').slice(0, 6000);
+        const text = String(msg.text || '').slice(0, 24000);
         const last = doc.msgs[doc.msgs.length - 1];
         if (last && last.role === 'assistant' && msg.role === 'assistant' && last.text === text) return;
         doc.msgs.push({ ...msg, text });

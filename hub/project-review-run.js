@@ -57,7 +57,7 @@ async function runReview(dir, prepare) {
     const claim = read(claimFile);
     if (claim && !running(claim.pid)) {
       if (read(resultFile)) continue;
-      throw Object.assign(new Error('검토 프로세스가 결과 저장 전에 종료되어 제출 여부를 확인할 수 없습니다.'), { code: 'REVIEW_UNCERTAIN' });
+      throw Object.assign(new Error('작업 프로세스가 결과 저장 전에 종료되어 제출 여부를 확인할 수 없습니다.'), { code: 'REVIEW_UNCERTAIN' });
     }
     if (!claim && (launchError || exited)) throw launchError || new Error('검토 프로세스가 제출 전에 종료됐습니다.');
     await delay(250);
@@ -76,7 +76,9 @@ async function worker(dir) {
   let result;
   try {
     const { stdout } = await require('./project-plan').spawnCli(spec.cmd, spec.args, spec.options);
-    result = { ...require('./project-autopilot').readReviewResult(spec, stdout), agent: spec.agent, account: spec.account };
+    result = spec.conflictResolution ? {} : {
+      ...require('./project-autopilot').readReviewResult(spec, stdout), agent: spec.agent, account: spec.account,
+    };
   } catch (error) {
     result = { error: error.message, code: error.code };
   }
