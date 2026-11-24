@@ -63,6 +63,7 @@ function projectBoard(p) {
         <button data-edit="${esc(t.id)}" class="pj-title">${esc(t.title)}</button>
       </div>
       ${t.detail ? `<p class="pj-card-desc">${esc(t.detail)}</p>` : ''}
+      ${t.lastRun ? `<div class="row">${projectLastRunHTML(t)}</div>` : ''}
       ${typeof projectReviewNoteHTML === 'function' ? projectReviewNoteHTML(t, true) : ''}
       <div class="pj-task-foot">
         <button class="ghost btn-sm" data-subchat-task="${esc(t.id)}" title="서브 개발 채팅 열기" aria-label="서브 개발 채팅">${ico.chat || ''}${chatCnt ? ` ${chatCnt}` : ''}</button>

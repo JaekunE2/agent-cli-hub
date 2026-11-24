@@ -54,6 +54,8 @@ module.exports = async function fixture(store, handleRoute) {
       const t = { ...terms[1], id: String(terms.length + 1), title: task.title, agent, agy: agent === 'agy',
         account: account ? { id: account, label: account === 'agy-b' ? 'AGY B' : 'AGY A' } : null, projectTask: { projectId, taskId } };
       terms.push(t);
+      store.save({ ...p, tasks: p.tasks.map(x => x.id === taskId && x.stage === 'planned' ? { ...x, stage: 'doing' } : x) },
+        { taskRun: { taskId, run: { agent, source: task.agent ? 'task' : 'project', termId: t.id } } });
       if (t.agy) setTimeout(() => { t.sessionId = 'aaaaaaaa-bbbb-cccc-dddd-000000000002'; }, 300);
       return json(t);
     }

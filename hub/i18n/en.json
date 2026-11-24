@@ -2842,5 +2842,12 @@
   "프로젝트 폴더에 진행 중인 Git 병합이 있습니다.": "A Git merge is already in progress in the project folder.",
   "터미널 입력을 전송 중입니다.": "Terminal input is being submitted.",
   "병합 대기": "Awaiting merge",
-  "검토 통과 · 병합 대기": "Review passed · awaiting merge"
+  "검토 통과 · 병합 대기": "Review passed · awaiting merge",
+  "자동 배정": "Automatic assignment",
+  "실제 실행 CLI": "CLI used",
+  "선택 근거": "Selection reason",
+  "작업별 지정": "Task override",
+  "프로젝트 기본값": "Project default",
+  "상위 작업 지정": "Parent task assignment",
+  "역할 프리셋": "Role preset"
 }

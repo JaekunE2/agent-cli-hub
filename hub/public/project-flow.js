@@ -202,6 +202,7 @@ function projectFlow(p) {
         <button data-edit="${esc(t.id)}" class="pj-title">${esc(t.title)}</button>
       </div>
       ${typeof projectReviewNoteHTML === 'function' ? projectReviewNoteHTML(t, true) : ''}
+      ${t.lastRun ? `<div class="row">${projectLastRunHTML(t)}</div>` : ''}
       ${projectStageActionHTML(t)}
     </article>`;
   };

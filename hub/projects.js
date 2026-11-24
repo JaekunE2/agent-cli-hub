@@ -252,12 +252,18 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
       write(data);
       return link.ids.length;
     },
-    save(input) {
+    save(input, { taskRun } = {}) {
       const clean = validate(input), data = read(), all = data.projects;
       const old = input.id && all.find(p => p.id === input.id);
       if (input.id && !old) throw new Error('프로젝트를 찾을 수 없습니다.');
       if (old && input.revision !== old.revision) throw new Error('다른 화면에서 변경했습니다. 새로고침 후 다시 저장하세요.');
       const project = { ...clean, id: old?.id || randomUUID(), revision: (old?.revision || 0) + 1, updatedAt: Date.now() };
+      if (old && !old.agent && !input.agent) delete project.agent;
+      const priorTasks = new Map(old?.tasks?.map((task) => [task.id, task]));
+      for (const task of project.tasks) {
+        const lastRun = task.id === taskRun?.taskId ? taskRun.run : priorTasks.get(task.id)?.lastRun;
+        if (lastRun) task.lastRun = lastRun;
+      }
       if (old) all[all.indexOf(old)] = project; else all.push(project);
       write(data);
       return project;

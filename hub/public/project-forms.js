@@ -464,6 +464,7 @@ function projectDesign(p) {
         </div>
         ${showSummary ? `<div class="pj-row-desc">${esc(summary)}</div>` : ''}
         ${typeof projectReviewNoteHTML === 'function' ? projectReviewNoteHTML(t, true) : ''}
+        ${t.lastRun ? `<div class="row">${projectLastRunHTML(t)}</div>` : ''}
       </div>
       <div class="pj-row-acts">
         <button type="button" class="pj-auto-sw${t.autoExclude ? ' off' : ' on'}" data-toggle-auto="${esc(t.id)}" aria-pressed="${!t.autoExclude}" title="${t.autoExclude ? '자동 진행에서 제외됨 (클릭해 포함)' : '자동 진행에 포함됨 (클릭해 제외)'}">${t.autoExclude ? '자동 OFF' : '자동 ON'}</button>

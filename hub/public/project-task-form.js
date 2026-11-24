@@ -34,7 +34,7 @@ function taskForm(p, task, focusAgent = false, defaultParentId = '') {
     `<label>작업 제목<input name="title" maxlength="240" value="${esc(task?.title || '')}" required></label>
     <div class="pj-me-grid">${kindField}${parentField}</div>
     <label>작업 지시·완료 기준<textarea name="detail" rows="4" maxlength="6000">${esc(task?.detail || '')}</textarea></label>
-    ${projectAgentField('작업 CLI', task?.agent || '', p.agent || 'codex')}${projectAccountField}${projectModelEffortFields}
+    ${projectAgentField('작업 CLI', task?.agent || '', p.agent || '')}${projectAccountField}${projectModelEffortFields}
     <fieldset class="pj-choices"><legend>선행 작업</legend>${p.tasks.filter(t => t.id !== task?.id).map(t => `<label><input type="checkbox" name="after" value="${esc(t.id)}" ${task?.after.includes(t.id) ? 'checked' : ''}><span>${t.parentId ? '↳ ' : ''}${esc(t.title)}</span></label>`).join('') || '<p>선택할 다른 작업이 없습니다.</p>'}</fieldset>`,
     (f, button) => {
       if (button?.value === 'delete') {
