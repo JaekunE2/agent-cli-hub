@@ -60,6 +60,7 @@ function projectReviewBadgeHTML(task) {
   let rev = '';
   if (st === 'reviewing') rev = `<span class="badge warn"${tip}>🔍 자동 검토 중</span>`;
   else if (st === 'merge-pending') rev = `<span class="badge warn"${tip}>병합 대기</span>`;
+  else if (st === 'merge-integrating') rev = `<span class="badge warn"${tip}>통합 진행 중</span>`;
   else if (st === 'merge-blocked') rev = `<span class="badge lim"${tip}>병합 차단</span>`;
   else if (st === 'approved') rev = `<span class="badge ok"${tip}>✓ 검토 승인</span>`;
   else if (st === 'rejected' && task.stage === 'doing' && !task.reviewPaused && task.retryCount > 0) {
@@ -99,6 +100,9 @@ function projectReviewNoteHTML(task, compact = false) {
   } else if (st === 'merge-pending') {
     tone = 'warn';
     label = '검토 통과 · 병합 대기';
+  } else if (st === 'merge-integrating') {
+    tone = 'warn';
+    label = '통합 진행 중';
   } else if (st === 'merge-blocked') {
     tone = 'danger';
     label = '검토 통과 · 병합 차단';
@@ -148,7 +152,8 @@ function projectStageActionHTML(task, p) {
   if (p?.scope?.version?.snapshotId && !p.scope.version.workspace) return '';
   const id = esc(task.id);
   if (task.stage === 'doing') return `<button type="button" class="btn-sm primary" data-start-task="${id}">작업 다시 진행</button>`;
-  if (task.stage === 'review' && task.reviewStatus?.startsWith('merge-')) return `<button type="button" class="btn-sm" data-start-task="${id}">병합 재시도</button>`;
+  if (task.stage === 'review' && task.reviewStatus === 'merge-integrating') return `<button type="button" class="btn-sm" disabled>통합 진행 중</button>`;
+  if (task.stage === 'review' && task.reviewStatus?.startsWith('merge-')) return `<button type="button" class="btn-sm" data-start-task="${id}">통합 재시도</button>`;
   if (task.stage === 'review') return `<button type="button" class="btn-sm primary" data-start-task="${id}"${task.reviewStatus === 'reviewing' ? ' disabled' : ''}>${task.reviewStatus === 'reviewing' ? '검토 중…' : '재검토'}</button>`;
   return '';
 }
@@ -160,13 +165,10 @@ async function requestProjectReview(p, task, button, drawer) {
   const retryMerge = task.reviewStatus?.startsWith('merge-');
   button.textContent = retryMerge ? '병합 요청 중…' : '검토 요청 중…';
   try {
-    const result = await api('/api/projects/autopilot/complete', { method: 'POST', body: { projectId: p.id, taskId: task.id, force: true, async: !retryMerge, retryMerge } });
+    const result = await api('/api/projects/autopilot/complete', { method: 'POST', body: { projectId: p.id, taskId: task.id, force: true, async: true, retryMerge } });
     if (result.error) throw new Error(result.error);
     drawer?.close();
-    if (retryMerge) {
-      if (result.approved) toast('병합을 완료했습니다.');
-      else if (result.reason) toast(result.reason, 5000, 'danger');
-    } else toast('자동 재검토를 시작했습니다');
+    toast(retryMerge ? '통합을 요청했습니다.' : '자동 재검토를 시작했습니다');
     await refreshProjects();
     if (state.sel.kind === 'projects' && state.sel.id === p.id) openProject(p.id, projectTab);
   } catch (error) {

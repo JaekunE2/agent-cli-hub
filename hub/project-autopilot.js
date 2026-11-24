@@ -7,6 +7,7 @@ const { spawnCli, cliModelEffortArgs } = require('./project-plan');
 const { parseAgyJson, parseClaudeJson, parseCodexJsonl } = require('./task-subchat');
 const { resolveTaskConfig, buildTaskHarnessPrompt } = require('./project-harness');
 const { versionWorkspace } = require('./version-files');
+const { integrateBatch } = require('./project-integration');
 const { sessionStartupBlock, dismissProjectHookMenu, dispatchTerminalPrompt, terminalConfirmationMessage, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE } = require('./term-manager');
 
 const MAX_AUTO_RETRIES = 2;
@@ -16,7 +17,9 @@ const DEFAULT_MAX_CONCURRENT = 2;
 const IDLE_STREAK_REQUIRED = 2;
 const OUTPUT_QUIET_MS = 4500;
 const DISPATCH_IDLE_LIMIT_MS = 90_000;
-const REVIEW_TIMEOUT_MS = 180_000;
+const REVIEW_TIMEOUT_MS = 10 * 60_000;
+const MERGE_CONFLICT_TIMEOUT_MS = 15 * 60_000;
+const PROJECT_TEST_TIMEOUT_MS = 5 * 60_000;
 
 function execGit(cwd, args, timeout = 8000) {
   return new Promise((resolve) => {
@@ -95,7 +98,7 @@ async function ensureTaskWorktree(projectCwd, taskId) {
   return added.ok && fs.existsSync(wtPath) ? wtPath : '';
 }
 
-async function mergeAndCleanupWorktree(projectCwd, taskId, worktreePath, { keepWorktree = false, commitChanges = true } = {}) {
+async function prepareTaskMerge(projectCwd, taskId, worktreePath, { commitChanges = true } = {}) {
   if (!projectCwd || !worktreePath || !fs.existsSync(worktreePath)) return { ok: false, error: '격리 작업 폴더를 찾을 수 없습니다.' };
   const id8 = String(taskId).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 8) || 'task';
   const branch = `hub-task/${id8}`;
@@ -115,63 +118,17 @@ async function mergeAndCleanupWorktree(projectCwd, taskId, worktreePath, { keepW
     const committed = await execGit(worktreePath, ['commit', '-m', `hub: task ${id8}`], 10_000);
     if (!committed.ok) return { ok: false, error: (committed.stderr || committed.stdout).trim() };
   }
-  const inProgress = await execGit(projectCwd, ['rev-parse', '--verify', 'MERGE_HEAD']);
-  if (inProgress.ok) return { ok: false, pending: true, error: '프로젝트 폴더에 진행 중인 Git 병합이 있습니다.' };
-  const branchRef = `refs/heads/${branch}`;
-  const integrated = await execGit(projectCwd, ['merge-base', '--is-ancestor', branchRef, 'HEAD']);
-  const merged = integrated.ok ? integrated : await execGit(projectCwd, ['merge', '--no-ff', branchRef, '-m', `hub: merge task ${id8}`], 15_000);
-  if (!merged.ok) {
-    const conflicts = await execGit(projectCwd, ['diff', '--name-only', '--diff-filter=U']);
-    const mergeHead = await execGit(projectCwd, ['rev-parse', '--verify', 'MERGE_HEAD']);
-    if (mergeHead.ok) {
-      const abort = await execGit(projectCwd, ['merge', '--abort'], 5000);
-      if (!abort.ok) return { ok: false, error: '프로젝트 폴더에 진행 중인 Git 병합이 있습니다.' };
-    }
-    const files = conflicts.stdout.trim().split(/\r?\n/).filter(Boolean);
-    const details = `${merged.stderr}\n${merged.stdout}`.split(/\r?\n/).filter((line) => !/^warning:/i.test(line)).join('\n').trim();
-    const pending = !files.length && /would be overwritten by merge|index\.lock|index contains uncommitted changes/i.test(details);
-    const pendingFiles = pending ? details.split(/\r?\n/).filter((line) => /^\t/.test(line)).map((line) => line.trim()) : [];
-    const message = pendingFiles.length
-      ? ['병합 대상과 겹치는 로컬 변경이 있습니다.', ...pendingFiles.map((file) => `- ${file}`)].join('\n')
-      : details || 'Git merge failed';
-    return { ok: false, pending, error: files.length ? files.map((file) => `- ${file}`).join('\n') : message.slice(0, 1800) };
-  }
-  if (!keepWorktree) {
-    const removed = await execGit(projectCwd, ['worktree', 'remove', worktreePath], 10_000);
-    if (removed.ok) await execGit(projectCwd, ['branch', '-d', branch], 5000);
-  }
-  return { ok: true };
+  const head = await execGit(worktreePath, ['rev-parse', 'HEAD']);
+  return head.ok ? { ok: true, branch, commit: head.stdout.trim() } : { ok: false, error: head.stderr.trim() };
 }
 
 function approvedMerge(task) {
-  return task.stage === 'review' && ['merge-pending', 'merge-blocked'].includes(task.reviewStatus);
+  return task.stage === 'review' && ['merge-pending', 'merge-integrating', 'merge-blocked'].includes(task.reviewStatus);
 }
 
-async function finishApprovedTask(hub, project, task, reason, taskOut, sessionId, commitChanges = false) {
+async function finishApprovedTask(hub, project, task, reason, taskOut, sessionId) {
   const { id: projectId } = project;
   const { id: taskId } = task;
-  const key = `${projectId}:${taskId}`;
-  if (task.worktreePath) {
-    const keepWorktree = [...(hub.terms?.values() || [])].some((term) => term.exited === null
-      && term.meta?.projectTask?.projectId === projectId && term.meta.projectTask.taskId === taskId);
-    const result = await mergeAndCleanupWorktree(project.cwd, taskId, task.worktreePath, { keepWorktree, commitChanges });
-    const latest = hub.projects.list().find((p) => p.id === projectId);
-    const current = latest?.tasks.find((item) => item.id === taskId);
-    if (!current || !approvedMerge(current) || current.worktreePath !== task.worktreePath) return { skipped: true, started: [] };
-    project = latest;
-    if (!result.ok) {
-      const reviewStatus = result.pending ? 'merge-pending' : 'merge-blocked';
-      if (result.pending) mergeRetryAt.set(key, Date.now() + 30_000);
-      else mergeRetryAt.delete(key);
-      if (current.reviewStatus !== reviewStatus || current.reviewNote !== result.error) {
-        hub.projects.save({ ...project, tasks: project.tasks.map((item) => item.id === taskId
-          ? { ...item, reviewStatus, reviewPaused: !result.pending, reviewNote: result.error } : item) });
-        hub.overviewStale?.();
-      }
-      return { approved: false, mergePending: !!result.pending, mergeConflict: !result.pending, reason: result.error, started: [] };
-    }
-  }
-  mergeRetryAt.delete(key);
   const tasks = project.tasks.map((item) => item.id === taskId
     ? { ...item, stage: 'done', reviewStatus: 'approved', reviewPaused: false, reviewNote: reason, mergeApprovalNote: '', retryCount: 0, worktreePath: '',
       ...(taskOut ? { lastOutput: taskOut } : {}), ...(sessionId ? { lastSessionId: sessionId } : {}) } : item);
@@ -183,6 +140,99 @@ async function finishApprovedTask(hub, project, task, reason, taskOut, sessionId
   }
   const autoRes = await runProjectAutopilot(hub, projectId, { autoDispatch: true });
   return { approved: true, reason, started: autoRes.started };
+}
+
+async function runProjectIntegration(hub, project, retry) {
+  const cwd = project.cwd;
+  const queue = project.tasks.filter((task) => task.worktreePath && approvedMerge(task));
+  if (!queue.length || (!retry && queue.some((task) => task.reviewStatus === 'merge-blocked'))) return { skipped: true, started: [] };
+  const byId = new Map(queue.map((task) => [task.id, task]));
+  if (project.tasks.some((task) => task.worktreePath && !task.reviewPaused && !task.autoExclude
+    && !task.after?.some((id) => byId.has(id)) && !queue.some((item) => item.parentId === task.id)
+    && (task.stage === 'doing' || task.stage === 'review' && !approvedMerge(task)))) return { mergePending: true, started: [] };
+  const waitingMessage = '통합 중 대상 브랜치가 이동했습니다. 새 커밋 기준으로 다시 통합합니다.';
+  const order = new Map();
+  const visit = (task) => {
+    if (order.has(task.id)) return;
+    for (const id of task.after || []) if (byId.has(id)) visit(byId.get(id));
+    order.set(task.id, task);
+  };
+  queue.forEach(visit);
+  const latest = () => hub.projects.list().find((item) => item.id === project.id);
+  const stillQueued = (task) => approvedMerge(task) && byId.get(task.id)?.worktreePath === task.worktreePath
+    && byId.get(task.id)?.mergeCommit === task.mergeCommit;
+  const current = () => {
+    const p = latest();
+    return p?.cwd === cwd && p.tasks.filter(stillQueued).length === queue.length;
+  };
+  const update = (reviewStatus, reviewNote) => {
+    const p = latest();
+    if (!p || !current()) return;
+    const changed = p.tasks.some((task) => stillQueued(task) && (task.reviewStatus !== reviewStatus || task.reviewNote !== reviewNote));
+    if (!changed) return;
+    hub.projects.save({ ...p, tasks: p.tasks.map((task) => stillQueued(task)
+      ? { ...task, reviewStatus, reviewNote, reviewPaused: reviewStatus === 'merge-blocked' } : task) });
+    hub.overviewStale?.();
+  };
+  let result;
+  const entries = [];
+  for (const task of order.values()) {
+    const prepared = await prepareTaskMerge(cwd, task.id, task.worktreePath, { commitChanges: false });
+    if (!prepared.ok) { result = { error: prepared.error }; break; }
+    if (task.mergeCommit && task.mergeCommit !== prepared.commit) {
+      result = { error: '격리 폴더에 검토 이후 변경된 파일이 있습니다. 다시 검토하세요.' };
+      break;
+    }
+    entries.push({ id: task.id, title: task.title, commit: prepared.commit, reason: task.mergeApprovalNote });
+  }
+  if (!result) {
+    update('merge-integrating', '통합 진행 중');
+    try {
+      result = await integrateBatch({
+        cwd, entries, git: execGit, current,
+        progress: (phase, worktree) => update('merge-integrating', `${phase}\n${worktree}`),
+        resolve: hub.resolveIntegrationConflict || (async (worktree, entry, files) => {
+          const prompt = ['Resolve this Git merge in the current integration worktree.', 'Edit only the listed conflict files. Preserve both changes where compatible. Do not stage, commit, use the network, or change other worktrees.',
+            'Inspect and edit the working files even if Git already shows them as staged. Remove all conflict markers and verify the resolutions before returning.',
+            JSON.stringify({ task: entry.title, review: entry.reason, conflicts: files })].join('\n');
+          const { cmd, args } = hub.codexLaunch(['exec', '--sandbox', 'workspace-write', '-']);
+          try {
+            await spawnCli(cmd, args, { cwd: worktree, env: hub.cleanEnv(), stdinText: prompt, timeoutMs: MERGE_CONFLICT_TIMEOUT_MS });
+          } catch (error) {
+            throw new Error(`통합 충돌 해결 실패: ${error.message}`);
+          }
+        }),
+        check: hub.validateIntegration || (async (worktree) => {
+          const relative = detectTestCommand(worktree) ? '' : 'hub';
+          const result = await runPreReviewChecks(path.join(worktree, relative), {
+            NODE_PATH: [path.join(cwd, relative, 'node_modules'), process.env.NODE_PATH].filter(Boolean).join(path.delimiter),
+          });
+          if (!result.ran) throw new Error('통합 테스트 명령을 찾을 수 없습니다.');
+          if (!result.ok) throw new Error([result.command, result.output].filter(Boolean).join('\n'));
+        }),
+      });
+    } catch (error) { result = { error: error.message }; }
+  }
+  if (result.skipped || !current()) return { skipped: true, started: [] };
+  if (!result.ok) {
+    const reason = [result.error || waitingMessage, result.worktree].filter(Boolean).join('\n');
+    if (result.pending) mergeRetryAt.set(project.id, Date.now() + 30_000);
+    update(result.pending ? 'merge-pending' : 'merge-blocked', reason);
+    return { approved: false, mergePending: !!result.pending, reason, started: [] };
+  }
+  mergeRetryAt.delete(project.id);
+  const p = latest();
+  hub.projects.save({ ...p, tasks: p.tasks.map((task) => stillQueued(task) ? {
+    ...task, stage: 'done', reviewStatus: 'approved', reviewPaused: false, retryCount: 0,
+    reviewNote: [task.mergeApprovalNote, `대상 브랜치 반영 완료 (${result.tip.slice(0, 8)})`].filter(Boolean).join('\n'),
+    mergeApprovalNote: '', mergeCommit: '', worktreePath: '',
+  } : task) });
+  hub.overviewStale?.();
+  for (const task of queue) {
+    saveTaskHandoffRef(hub, p, task, { reason: task.mergeApprovalNote, taskOut: task.lastOutput });
+  }
+  const { started } = await runProjectAutopilot(hub, p.id);
+  return { approved: true, started };
 }
 
 async function runProjectAutopilot(hub, projectId, { autoDispatch = true, maxConcurrent = DEFAULT_MAX_CONCURRENT } = {}) {
@@ -324,7 +374,7 @@ function detectTestCommand(cwd) {
   return null;
 }
 
-function runPreReviewChecks(cwd) {
+function runPreReviewChecks(cwd, envOverrides = {}) {
   return new Promise((resolve) => {
     if (!cwd || !fs.existsSync(cwd)) return resolve({ ran: false });
     const detected = detectTestCommand(cwd);
@@ -336,14 +386,16 @@ function runPreReviewChecks(cwd) {
       cmd = 'cmd.exe';
     }
     try {
-      execFile(cmd, args, { cwd, timeout: 90_000, maxBuffer: 512 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+      execFile(cmd, args, { cwd, timeout: PROJECT_TEST_TIMEOUT_MS, maxBuffer: 512 * 1024, windowsHide: true, env: { ...process.env, ...envOverrides } }, (err, stdout, stderr) => {
         const combined = `${stdout || ''}\n${stderr || ''}`.trim();
+        const output = err?.killed && err.signal ? `테스트 제한 시간(${PROJECT_TEST_TIMEOUT_MS / 1000}초)을 초과했습니다.\n${combined.slice(-2200)}`
+          : combined || err?.message || '';
         resolve({
           ran: true,
           command: detected.label,
           ok: !err,
           exitCode: err ? (err.code ?? 1) : 0,
-          output: combined.slice(-2500),
+          output: output.slice(-2500),
         });
       });
     } catch (err) {
@@ -576,7 +628,7 @@ async function dispatchRetryFeedback(hub, projectId, task, reason, retryNum, pri
   throw new Error('수정 작업을 시작하지 못했습니다.');
 }
 
-async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_AUTO_RETRIES, force = false, retryMerge = false } = {}) {
+async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_AUTO_RETRIES, force = false, retryMerge = false, autoMerge = false } = {}) {
   const key = `${projectId}:${taskId}`;
   if (reviewInFlight.has(key)) return { skipped: true, started: [] };
   if (force) {
@@ -609,14 +661,12 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
     return await withProjectLock(initialProject.cwd || projectId, async () => {
       const project = hub.projects.list().find((x) => x.id === projectId) || initialProject;
       const task = project.tasks.find((x) => x.id === taskId) || initialTask;
-      if (approvedMerge(task) && (!force || retryMerge)) {
-        return finishApprovedTask(hub, project, task, task.mergeApprovalNote || '검증 기준 통과', task.lastOutput, task.lastSessionId);
-      }
+      if (approvedMerge(task) && (!force || retryMerge)) return runProjectIntegration(hub, project, force && !autoMerge);
       if (retryMerge) return { skipped: true, started: [] };
       if (task.reviewPaused && !force) return { skipped: true, started: [] };
       if (task.stage !== initialTask.stage || task.reviewPaused !== initialTask.reviewPaused) return { skipped: true, started: [] };
       const isReviewing = (p) => p?.tasks.some((x) => x.id === taskId && x.stage === 'review' && x.reviewStatus === 'reviewing');
-      const priorReview = ['rejected', 'error'].includes(task.reviewStatus) ? task.reviewNote : '';
+      const priorReview = !force && ['rejected', 'error'].includes(task.reviewStatus) ? task.reviewNote : '';
       const phaseNote = (phase) => priorReview ? `${phase} · 이전 반려: ${priorReview}` : phase;
       const reviewingTasks = project.tasks.map((t) => (t.id === task.id
         ? { ...t, stage: 'review', reviewStatus: 'reviewing', reviewPaused: false, reviewNote: phaseNote('사전 테스트 및 변경 내역 확인 중…'), ...(force ? { retryCount: 0 } : {}), ...(taskOut ? { lastOutput: taskOut } : {}), ...(priorSessionId ? { lastSessionId: priorSessionId } : {}) }
@@ -638,7 +688,7 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
         if (!isReviewing(curP)) return { skipped: true, started: [] };
         const errCount = (reviewErrorCounts.get(key) || 0) + 1;
         const errMsg = String(e?.message || e).slice(0, 400);
-        if (curP.autopilot && errCount <= MAX_REVIEW_ERROR_RETRIES) {
+        if (curP.autopilot && e?.code !== 'CLI_TIMEOUT' && errCount <= MAX_REVIEW_ERROR_RETRIES) {
           reviewErrorCounts.set(key, errCount);
           const delayMs = hub.reviewRetryDelayMs ?? (DEFAULT_REVIEW_ERROR_BACKOFF_MS * errCount);
           const waitTasks = curP.tasks.map((t) => (t.id === task.id
@@ -676,11 +726,17 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
 
       if (verdict?.verdict === 'APPROVE') {
         if (curTask.worktreePath) {
-          curP = hub.projects.save({ ...curP, tasks: curP.tasks.map((item) => item.id === taskId
-            ? { ...item, reviewStatus: 'merge-pending', reviewNote: '', mergeApprovalNote: reason } : item) });
+          const prepared = await prepareTaskMerge(curP.cwd, curTask.id, curTask.worktreePath);
+          curP = hub.projects.list().find((x) => x.id === projectId);
+          if (!isReviewing(curP)) return { skipped: true, started: [] };
+          hub.projects.save({ ...curP, tasks: curP.tasks.map((item) => item.id === taskId ? {
+            ...item, reviewStatus: prepared.ok ? 'merge-pending' : 'merge-blocked', reviewPaused: !prepared.ok,
+            reviewNote: prepared.ok ? '' : prepared.error, mergeApprovalNote: reason, mergeCommit: prepared.commit || '',
+          } : item) });
           hub.overviewStale?.();
+          return { approved: false, mergePending: prepared.ok, reason: prepared.error, started: [] };
         }
-        return finishApprovedTask(hub, curP, curTask, reason, taskOut, priorSessionId, true);
+        return finishApprovedTask(hub, curP, curTask, reason, taskOut, priorSessionId);
       }
 
       const retries = Number(curTask.retryCount || 0);
@@ -797,19 +853,20 @@ async function checkAutopilotCompletions(hub) {
         .map((t) => `${t.meta.projectTask.projectId}:${t.meta.projectTask.taskId}`)
     );
     for (const project of hub.projects.list()) {
-      if (!project.autopilot || !Array.isArray(project.tasks)) continue;
+      if (!Array.isArray(project.tasks)) continue;
+      const merge = project.tasks.find((task) => approvedMerge(task) && task.worktreePath && task.reviewStatus !== 'merge-blocked');
+      if (merge && !project.tasks.some((task) => task.reviewStatus === 'merge-blocked' || reviewInFlight.has(`${project.id}:${task.id}`))
+        && now >= (mergeRetryAt.get(project.id) || 0)) {
+        const promise = completeAutopilotTask(hub, project.id, merge.id, { retryMerge: true, autoMerge: true })
+          .catch((e) => console.error('[autopilot-merge]', project.id, e?.message || e));
+        scheduled.push({ projectId: project.id, completedTaskId: merge.id, promise });
+      }
+      if (!project.autopilot) continue;
       const byParent = new Map();
       let recoveredDoing = false;
       const recoveredTasks = project.tasks.map((tk) => {
         if (tk.parentId) (byParent.get(tk.parentId) || byParent.set(tk.parentId, []).get(tk.parentId)).push(tk);
         const tkKey = `${project.id}:${tk.id}`;
-        const legacyWait = tk.reviewStatus === 'merge-blocked' && /^warning:.*LF will be replaced by CRLF/m.test(tk.reviewNote || '');
-        if (approvedMerge(tk) && (tk.reviewStatus === 'merge-pending' || legacyWait) &&
-            !reviewInFlight.has(tkKey) && now >= (mergeRetryAt.get(tkKey) || 0)) {
-          const promise = completeAutopilotTask(hub, project.id, tk.id, { force: true, retryMerge: true })
-            .catch((e) => console.error('[autopilot-merge]', project.id, tk.id, e?.message || e));
-          scheduled.push({ projectId: project.id, completedTaskId: tk.id, promise });
-        }
         if (tk.stage === 'review' && tk.reviewStatus === 'reviewing' && !reviewInFlight.has(tkKey) && !pendingReReview.has(tkKey)) {
           const pRun = completeAutopilotTask(hub, project.id, tk.id).catch((e) => console.error('[autopilot-orphan-review]', project.id, tk.id, e?.message || e));
           scheduled.push({ projectId: project.id, completedTaskId: tk.id, recoveredReview: true, promise: pRun });
@@ -860,5 +917,4 @@ module.exports = {
   readGitSummary,
   detectTestCommand,
   ensureTaskWorktree,
-  mergeAndCleanupWorktree,
 };

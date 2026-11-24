@@ -208,7 +208,9 @@ function spawnCli(exe, args, { cwd, env, timeoutMs = 120_000, maxBuffer = 1024 *
     const timer = setTimeout(() => {
       settled = true;
       try { child.kill(); } catch {}
-      reject(new Error(`CLI 실행 제한 시간(${Math.ceil(timeoutMs / 1000)}초)을 초과했습니다.`));
+      const error = new Error(`CLI 실행 제한 시간(${Math.ceil(timeoutMs / 1000)}초)을 초과했습니다.`);
+      error.code = 'CLI_TIMEOUT';
+      reject(error);
     }, timeoutMs);
 
     const emitLines = (bufObj, chunk) => {

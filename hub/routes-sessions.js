@@ -300,6 +300,7 @@ function createSessionRoutes(hub) {
     const submitDraft = retry && b.submitDraft === true;
     let projectTask, projectPrompt, launchAccount, projectRefsBlock = '';
     let reuseTerm, agentSource;
+    const retryReset = { reviewPaused: false, reviewStatus: '', reviewNote: '', retryCount: 0 };
     if (p === '/api/projects/start') {
       if (hub.deletingProjects.has(b.projectId)) return send(res, 409, { error: 'Project 기록을 삭제 중입니다.' });
       const project = projects.list().find((x) => x.id === b.projectId);
@@ -329,7 +330,21 @@ function createSessionRoutes(hub) {
         const result = await existing.spawnResult;
         if (result?.error) return send(res, 502, { error: 'CLI를 시작하지 못했습니다. 설치 경로를 확인하세요.' });
         const info = hub.termInfo(existing);
-        if (!retry || existing._projectDispatchPending || info.status === 'busy') return send(res, 200, { ...info, existing: true });
+        if (!retry || existing._projectDispatchPending) return send(res, 200, { ...info, existing: true });
+        if (info.status === 'busy') {
+          if (!info.startupBlock && !submitDraft && task.reviewPaused && ['error', 'rejected'].includes(task.reviewStatus)) {
+            const current = projects.list().find((item) => item.id === project.id);
+            if (current?.tasks.some((item) => item.id === task.id && item.stage === 'doing' && item.reviewPaused
+              && ['error', 'rejected'].includes(item.reviewStatus))) {
+              projects.save({ ...current, tasks: current.tasks.map((item) => item.id === task.id ? { ...item, ...retryReset } : item) });
+              existing._projectBusySeen = true;
+              existing._idleStreak = 0;
+              existing._projectDispatchedAt = Date.now();
+              overviewStale();
+            }
+          }
+          return send(res, 200, { ...info, existing: true });
+        }
         if (info.startupBlock !== 'term-dumb') reuseTerm = existing;
       }
       if (submitDraft && (kind !== 'codex' || String(b.termId || '') !== reuseTerm?.id)) {
@@ -444,7 +459,7 @@ function createSessionRoutes(hub) {
         tasks: latest.tasks.map((x) => x.id === projectTask.taskId ? {
           ...x,
           stage: x.stage === 'planned' ? 'doing' : x.stage,
-          ...(retry ? { reviewPaused: false, reviewStatus: '', reviewNote: '', retryCount: 0 } : {}),
+          ...(retry ? retryReset : {}),
         } : x),
       }, { taskRun: { taskId: projectTask.taskId, run } });
       if (retry) {
@@ -499,7 +514,7 @@ function createSessionRoutes(hub) {
           const latest = projects.list().find((p) => p.id === projectTask.projectId);
           if (hub.terms.has(t.id) && latest?.tasks.some((x) => x.id === projectTask.taskId && x.stage === 'doing')) {
             projects.save({ ...latest, tasks: latest.tasks.map((x) => x.id === projectTask.taskId
-              ? { ...x, stage: 'doing', reviewPaused: true, reviewStatus: 'error', reviewNote: [e.message, x.reviewNote].filter(Boolean).join('\n\n') } : x) });
+              ? { ...x, stage: 'doing', reviewPaused: true, reviewStatus: 'error', reviewNote: e.message || String(e) } : x) });
             overviewStale();
           }
           return e.message || String(e);
@@ -515,25 +530,12 @@ function createSessionRoutes(hub) {
   hub.startProjectTaskById = async (projectId, taskId, { autoDispatch = true, resume = '', rawPrompt: overridePrompt = '' } = {}) => {
     let status = 200;
     let payload = null;
-    const project = projects.list().find((x) => x.id === projectId);
-    const task = project?.tasks.find((x) => x.id === taskId);
-    const harnessState = hub.projectHarness?.get ? hub.projectHarness.get() : null;
-    const resolved = project && task ? resolveTaskConfig(project, task, harnessState) : null;
-    const parentTask = resolved?.parent;
-    const rawParts = task
-      ? (parentTask ? [`[상위 작업: ${parentTask.title}]`, parentTask.detail ? parentTask.detail.slice(0, 600) : '', `[서브 개발 작업: ${task.title}]`, task.detail] : [task.title, task.detail])
-      : [];
-    const harnessBlock = project && task && resolved ? buildTaskHarnessPrompt(project, task, resolved.agent, harnessState) : '';
-    if (harnessBlock) rawParts.push(harnessBlock);
-    const refsBlock = project && hub.projectRefs?.promptBlock ? hub.projectRefs.promptBlock(project.id, task?.version) : '';
-    if (refsBlock) rawParts.push(refsBlock);
-    const rawPrompt = overridePrompt || rawParts.filter(Boolean).join('\n\n');
 
     await handleStartOrNewTerm(
       '/api/projects/start',
-      { _autoDispatch: autoDispatch, _rawPrompt: rawPrompt, resume },
       null,
-      async () => ({ projectId, taskId, _autoDispatch: autoDispatch, _rawPrompt: rawPrompt, resume }),
+      null,
+      async () => ({ projectId, taskId, _autoDispatch: autoDispatch, _rawPrompt: overridePrompt, resume }),
       (_res, code, data) => { status = code; payload = data; }
     );
     if (status >= 400) return { error: payload?.error || `HTTP ${status}` };
@@ -1025,6 +1027,7 @@ function createSessionRoutes(hub) {
         return true;
       }
       if (b.text) {
+        t._pendingPromptDraft = undefined;
         hub.termMonitor?.onInput(t, b.text);
         const text = b.submit && /[\r\n]/.test(b.text) ? `\x1b[200~${b.text.replace(/\r\n/g, '\n')}\x1b[201~` : b.text;
         await t.proc.write(text);

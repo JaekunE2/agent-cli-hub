@@ -12,11 +12,11 @@ const hook = ['SessionStart hooks', 'space/enter toggle · esc back'];
 const unknown = ['Do you want to use this API key?', '  Yes', '❯ No (recommended)', 'Enter to confirm · Esc to cancel'];
 
 async function replay(target, frames, { resend = false, cli = 'codex', text = message, immediate = false,
-  resendFrames } = {}) {
+  resendFrames, beforeReady = [] } = {}) {
   const writes = [];
   const term = { id: '1', exited: null, meta: { projectTask: {} } };
   let offset = 0;
-  const read = () => frames[Math.min(writes.length - offset, frames.length - 1)];
+  const read = () => beforeReady.shift() || frames[Math.min(writes.length - offset, frames.length - 1)];
   const write = (data) => {
     writes.push(data.replace(/^\x1b\[200~|\x1b\[201~$/g, ''));
     return { ok: true };
@@ -103,6 +103,13 @@ test('only the project hook settings menu is dismissed automatically in a manage
   }
 });
 
+test('managed dispatch waits for the composer to be redrawn before pasting', async () => {
+  for (const target of ['term', 'automatic']) {
+    assert.deepEqual(await replay(target, [ready, draft, running], { beforeReady: Array(3).fill(['Redrawing…']) }),
+      { ok: true, writes: [message, PTY_KEYS.enter] }, target);
+  }
+});
+
 for (const [cli, frames, keys] of [
   ['agy', [[running[0], 'Queued: ' + message, 'alt+m to send immediately']], [PTY_KEYS['alt+m']]],
   ['claude', [[running[0], 'Queued: ' + message, 'Press up to edit'], draft, running], [PTY_KEYS.esc, PTY_KEYS.enter]],
@@ -139,5 +146,21 @@ test('a long Codex draft still submits after its beginning scrolls off after pas
   for (const target of ['term', 'automatic', 'console']) {
     const frames = [ready, ['› ' + visible], running];
     assert.deepEqual(await replay(target, frames, { text }), { ok: true, writes: [text, PTY_KEYS.enter] });
+  }
+});
+
+test('a matching paste badge followed by other pasted content never triggers Enter', async () => {
+  const mixed = [`› [Pasted Content ${message.length} chars]`, '  [Pasted Content 3875 chars]'];
+  for (const target of ['term', 'automatic', 'console']) {
+    assert.deepEqual(await replay(target, [ready, mixed]), { ok: false, writes: [message] }, target);
+  }
+});
+
+test('the Codex navigation and warning footer is not mistaken for an input draft', async () => {
+  const footer = '  ← for agents · ? for shortcuts                 ⚠ 3 warnings · f2 to view';
+  for (const target of ['term', 'automatic', 'console']) {
+    const frames = [[...ready, footer], [...draft, footer], [...running, footer]];
+    assert.deepEqual(await replay(target, frames), { ok: true, writes: [message, PTY_KEYS.enter] }, target);
+    assert.deepEqual(await replay(target, [[...draft.map((line) => line + ' changed'), footer]]), { ok: false, writes: [] }, target);
   }
 });

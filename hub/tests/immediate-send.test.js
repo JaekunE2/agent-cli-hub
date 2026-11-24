@@ -96,6 +96,23 @@ test('project restart waits for explicit CLI confirmation and resumes the same t
   }
 });
 
+test('restarting a task already running clears the stale error without sending input', async () => {
+  const projectTask = { projectId: 'p', taskId: 't' };
+  const term = { id: '12', exited: null, meta: { projectTask } };
+  let project = { id: 'p', cwd: process.cwd(), agent: 'codex', tasks: [
+    { id: 't', stage: 'doing', title: 'Work', reviewPaused: true, reviewStatus: 'error', reviewNote: 'Old error', retryCount: 2 },
+  ] };
+  const { handleSessionRoutes } = createSessionRoutes({
+    terms: new Map([[term.id, term]]), deletingProjects: new Set(),
+    projects: { list: () => [project], save: (value) => { project = value; } },
+    agentOf: () => 'codex', termInfo: () => ({ id: term.id, status: 'busy' }),
+  });
+  await handleSessionRoutes('/api/projects/start', null, { method: 'POST' }, null, async () => ({ ...projectTask, retry: true }),
+    (_res, status, payload) => { assert.equal(status, 200); assert.equal(payload.existing, true); }, () => true);
+  assert.deepEqual(project.tasks[0], { id: 't', stage: 'doing', title: 'Work', reviewPaused: false, reviewStatus: '', reviewNote: '', retryCount: 0 });
+  assert.equal(term._projectBusySeen, true);
+});
+
 test('sending from the Hub exits Codex history search before typing, once', async () => {
   const prompt = '데스크톱 기준으로 다시 확인해 주세요';
   const normal = ['reverse-i-search: previous search in scrollback', '› Ask Codex to do anything'];

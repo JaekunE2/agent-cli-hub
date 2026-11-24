@@ -16,7 +16,6 @@ const {
   runPreReviewChecks,
   detectTestCommand,
   ensureTaskWorktree,
-  mergeAndCleanupWorktree,
 } = require('../project-autopilot');
 const { validate } = require('../project-validation');
 
@@ -232,6 +231,22 @@ test('failed delivery of a correction returns the task to work and pauses review
   assert.match(project.tasks[0].reviewNote, /Terminal unavailable.*Missing result/s);
 });
 
+test('a manual review retry clears the previous error before running the reviewer', async () => {
+  let project = { id: 'review-retry', autopilot: false, tasks: [
+    { id: 'task', stage: 'review', reviewPaused: true, reviewStatus: 'error', reviewNote: 'Old error', retryCount: 2 },
+  ] };
+  let running;
+  const hub = {
+    projects: { list: () => [project], save: (next) => { project = next; } },
+    reviewTask: async () => { running = project.tasks[0]; return { verdict: 'APPROVE', reason: 'Fresh review' }; },
+  };
+  assert.equal((await completeAutopilotTask(hub, project.id, 'task', { force: true })).approved, true);
+  assert.equal(running.reviewPaused, false);
+  assert.equal(running.retryCount, 0);
+  assert.doesNotMatch(running.reviewNote, /Old error/);
+  assert.equal(project.tasks[0].reviewNote, 'Fresh review');
+});
+
 test('a review that finishes after the task moved back to work cannot overwrite it', async () => {
   let project = { id: 'review-moved', name: 'Moved', autopilot: true, tasks: [{ id: 'task', stage: 'doing' }] };
   const hub = {
@@ -382,62 +397,76 @@ test('completeAutopilotTask resumes priorSessionId on exited retry and auto-back
   assert.ok(String(startedCalls[0].opts.rawPrompt).includes('테스트 보강 필요'));
 });
 
-test('ensureTaskWorktree and mergeAndCleanupWorktree isolate parallel task changes and merge cleanly', async () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-wt-'));
+test('reviewed worktrees are integrated in dependency order and published only after validation', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-integration-'));
   try {
-    execFileSync('git', ['init'], { cwd: tmp, stdio: 'ignore' });
-    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: tmp, stdio: 'ignore' });
-    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: tmp, stdio: 'ignore' });
-    fs.writeFileSync(path.join(tmp, 'base.txt'), 'base\n');
-    execFileSync('git', ['add', 'base.txt'], { cwd: tmp, stdio: 'ignore' });
-    execFileSync('git', ['commit', '-m', 'init'], { cwd: tmp, stdio: 'ignore' });
-
-    const wt = await ensureTaskWorktree(tmp, 'task-12345678');
-    assert.ok(wt && fs.existsSync(wt));
-    fs.writeFileSync(path.join(wt, 'feature.txt'), 'from-worktree\n');
-    assert.equal(fs.existsSync(path.join(tmp, 'feature.txt')), false);
-
-    const merged = await mergeAndCleanupWorktree(tmp, 'task-12345678', wt);
-    assert.equal(merged.ok, true);
-    assert.equal(fs.existsSync(path.join(tmp, 'feature.txt')), true);
-    assert.equal(fs.existsSync(wt), false);
-
-    const pending = await ensureTaskWorktree(tmp, 'wait-first');
-    const parallel = await ensureTaskWorktree(tmp, 'wait-second');
-    fs.writeFileSync(path.join(pending, 'base.txt'), 'approved\n');
-    fs.writeFileSync(path.join(parallel, 'second.txt'), 'approved\n');
-    fs.writeFileSync(path.join(tmp, 'base.txt'), 'uncommitted local edit\n');
-    const waiting = await mergeAndCleanupWorktree(tmp, 'wait-first', pending);
-    assert.equal(waiting.pending, true);
-    assert.match(waiting.error, /base\.txt/);
-    assert.equal(fs.readFileSync(path.join(tmp, 'base.txt'), 'utf8').trim(), 'uncommitted local edit');
-    fs.writeFileSync(path.join(tmp, 'base.txt'), 'base\n');
-    execFileSync('git', ['add', 'second.txt'], { cwd: parallel, stdio: 'ignore' });
-    execFileSync('git', ['commit', '-m', 'second change'], { cwd: parallel, stdio: 'ignore' });
-    let project = { id: 'queued-merge-test', cwd: tmp, autopilot: true, tasks: [
-      { id: 'wait-first', stage: 'review', reviewStatus: 'merge-pending', worktreePath: pending },
-      { id: 'wait-second', stage: 'review', reviewStatus: 'merge-pending', worktreePath: parallel },
+    const git = (root, ...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    git(cwd, 'init');
+    git(cwd, 'config', 'user.email', 'test@example.com');
+    git(cwd, 'config', 'user.name', 'Test');
+    const file = 'base.txt';
+    fs.writeFileSync(path.join(cwd, file), 'base\n');
+    fs.writeFileSync(path.join(cwd, 'other.txt'), 'original\n');
+    git(cwd, 'add', file, 'other.txt');
+    git(cwd, 'commit', '-m', 'init');
+    const base = git(cwd, 'rev-parse', 'HEAD');
+    const first = await ensureTaskWorktree(cwd, 'wait-first');
+    const second = await ensureTaskWorktree(cwd, 'wait-second');
+    for (const [worktree, text] of [[first, 'first'], [second, 'second']]) {
+      fs.writeFileSync(path.join(worktree, file), text + '\n');
+      git(worktree, 'commit', '-am', text);
+    }
+    let project = { id: 'queued-merge-test', cwd, autopilot: true, tasks: [
+      { id: 'wait-second', title: 'Second', stage: 'doing', worktreePath: second },
+      { id: 'wait-first', title: 'First', stage: 'review', reviewStatus: 'merge-pending', worktreePath: first },
     ] };
+    let attempts = 0;
+    let resolverRuns = 0;
+    let integrationPath;
     const hub = { terms: new Map(), projects: { list: () => [project], save: (value) => (project = value) },
+      resolveIntegrationConflict: async (root, entry, files) => {
+        resolverRuns++;
+        assert.equal(entry.id, 'wait-second');
+        assert.deepEqual(files, [file]);
+        if (resolverRuns > 1) fs.writeFileSync(path.join(root, file), 'first and second\n');
+      },
+      validateIntegration: async (root) => {
+        integrationPath = root;
+        assert.notEqual(root, cwd);
+        assert.equal(git(cwd, 'rev-parse', 'HEAD'), base);
+        assert.equal(fs.readFileSync(path.join(root, file), 'utf8').trim(), 'first and second');
+        if (++attempts === 1) throw new Error('combined test failed');
+      },
       reviewTask: () => { throw new Error('Approved work must not be reviewed again'); } };
-    await Promise.all((await checkAutopilotCompletions(hub)).map((item) => item.promise));
+    const tick = async () => Promise.all((await checkAutopilotCompletions(hub)).map((item) => item.promise));
+    await tick();
+    assert.equal(attempts, 0);
+    project.tasks[0] = { ...project.tasks[0], stage: 'review', reviewStatus: 'merge-pending', after: ['wait-first'] };
+    await tick();
+    assert.ok(project.tasks.every((task) => task.reviewStatus === 'merge-blocked' && /leftover conflict marker/.test(task.reviewNote)));
+    assert.equal(attempts, 0);
+    const retry = () => completeAutopilotTask(hub, project.id, 'wait-first', { force: true, retryMerge: true });
+    await retry();
+    assert.ok(project.tasks.every((task) => task.reviewStatus === 'merge-blocked' && /combined test failed/.test(task.reviewNote)));
+    assert.equal(fs.existsSync(integrationPath), true);
+    assert.equal(git(cwd, 'rev-parse', 'HEAD'), base);
+    fs.writeFileSync(path.join(cwd, file), 'local edit\n');
+    assert.match((await retry()).reason, /대상 브랜치 반영 실패:[\s\S]*base\.txt/);
+    assert.equal(git(cwd, 'rev-parse', 'HEAD'), base);
+    assert.equal(fs.readFileSync(path.join(cwd, file), 'utf8').trim(), 'local edit');
+    fs.writeFileSync(path.join(cwd, file), 'base\n');
+    fs.writeFileSync(path.join(cwd, 'other.txt'), 'unrelated local edit\n');
+    assert.equal((await retry()).approved, true);
+    assert.equal(git(cwd, 'status', '--porcelain', '-uno'), 'M other.txt');
+    assert.equal(fs.readFileSync(path.join(cwd, 'other.txt'), 'utf8').trim(), 'unrelated local edit');
+    assert.equal(resolverRuns, 2);
     assert.deepEqual(project.tasks.map((task) => task.stage), ['done', 'done']);
-    assert.equal(fs.readFileSync(path.join(tmp, 'base.txt'), 'utf8').trim(), 'approved');
-    assert.equal(fs.existsSync(path.join(tmp, 'second.txt')), true);
-
-    const conflicting = await ensureTaskWorktree(tmp, 'conflict-test');
-    fs.writeFileSync(path.join(conflicting, 'base.txt'), 'task version\n');
-    fs.writeFileSync(path.join(tmp, 'base.txt'), 'project version\n');
-    execFileSync('git', ['commit', '-am', 'Change project base'], { cwd: tmp, stdio: 'ignore' });
-    const blocked = await mergeAndCleanupWorktree(tmp, 'conflict-test', conflicting);
-    assert.deepEqual(blocked, { ok: false, pending: false, error: '- base.txt' });
-    assert.equal(fs.readFileSync(path.join(tmp, 'base.txt'), 'utf8').trim(), 'project version');
-    assert.equal(fs.readFileSync(path.join(conflicting, 'base.txt'), 'utf8').trim(), 'task version');
-    assert.equal(execFileSync('git', ['diff', '--name-only', '--diff-filter=U'], { cwd: tmp, encoding: 'utf8' }).trim(), '');
+    assert.equal(fs.readFileSync(path.join(cwd, file), 'utf8').trim(), 'first and second');
   } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(cwd, { recursive: true, force: true });
   }
 });
+
 
 test('runProjectAutopilot rolls back failed start and checkAutopilotCompletions recovers orphaned reviewing/doing tasks', async () => {
   let savedProject = {

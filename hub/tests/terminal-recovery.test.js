@@ -52,7 +52,7 @@ test('Codex project dispatch retries Enter without repasting and preserves an ex
   const text = 'Complete the task.\n' + 'x'.repeat(1000);
   const paste = `\x1b[200~${text}\x1b[201~`;
   const ready = '› Ask Codex to do anything';
-  const draft = ['› [Pasted Content 1019 chars]', ...Array(17).fill('  continued prompt'), '  GPT-medium · D:\\repo'].join('\n');
+  const draft = ['› [Pasted Content 1019 chars]', '  GPT-medium · D:\\repo'].join('\n');
   const term = { id: '1', exited: null };
   let screen = ready;
   const writes = [];
@@ -89,6 +89,32 @@ test('Codex project dispatch retries Enter without repasting and preserves an ex
   hub.ptyPost = async (_id, _path, { data }) => { writes.push(data); screen = 'working'; return { ok: true }; };
   assert.equal(await dispatchTerminalPrompt(hub, term, `Earlier lines are scrolled off.\n${ending}`, { submitDraft: true }), true);
   assert.equal(writes.at(-1), '\r');
+});
+
+test('the same verified Codex draft can be retried without appending a second paste', async () => {
+  const text = 'a'.repeat(240);
+  const term = { id: '1', exited: null };
+  let screen = '› Ask Codex to do anything';
+  const writes = [];
+  const hub = {
+    readTerm: () => [screen], codexStatus: () => screen === 'working' ? 'busy' : 'idle',
+    waitFor: async (check) => check(), sleep: async () => {},
+    ptyPost: async (_id, _path, { data }) => {
+      writes.push(data);
+      if (writes.length === 1) screen = '› [Pasted Content 240 chars]';
+      if (writes.length === 4) screen = 'working';
+      return { ok: true };
+    },
+  };
+  await assert.rejects(dispatchTerminalPrompt(hub, term, text), /실행을 시작했다는 신호가 없습니다/);
+  await assert.rejects(dispatchTerminalPrompt(hub, term, text + 'b'), /제출되지 않은/);
+  assert.equal(writes.length, 3);
+  // A different request invalidates the stored draft, so retry the original failed transfer.
+  writes.length = 0;
+  screen = '› Ask Codex to do anything';
+  await assert.rejects(dispatchTerminalPrompt(hub, term, text), /실행을 시작했다는 신호가 없습니다/);
+  assert.equal(await dispatchTerminalPrompt(hub, term, text), true);
+  assert.deepEqual(writes.slice(1), ['\r', '\r', '\r']);
 });
 
 test('Codex recovery restores the conversation without sending a saved prompt', () => {

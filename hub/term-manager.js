@@ -102,8 +102,12 @@ async function dispatchTerminalPrompt(hub, term, text, { submitDraft = false, cl
     text = text.replace(/\r\n?/g, '\n');
     if (resend && term._lastSubmittedPrompt === text) return true;
     term._lastSubmittedPrompt = undefined;
+    const pending = term._pendingPromptDraft;
+    const previousDraft = pending?.text === text && pending.inputSeq === inputSeq ? pending.draft : undefined;
+    term._pendingPromptDraft = undefined;
     await submitPrompt({
       text, read, guard, explicitDraft: submitDraft, waitFor: hub.waitFor || waitFor, sleep: hub.sleep || sleep,
+      previousDraft, onDraft: (draft) => { term._pendingPromptDraft = { text, inputSeq, draft }; },
       paste: cli === 'codex' || /[\n\t]/.test(text) ? `\x1b[200~${text}\x1b[201~` : text,
       pasteMarker: cli,
       write: (data) => {
@@ -120,6 +124,7 @@ async function dispatchTerminalPrompt(hub, term, text, { submitDraft = false, cl
           && turn.text?.trim() === text.trim();
       },
     });
+    term._pendingPromptDraft = undefined;
     term._lastSubmittedPrompt = text;
     return true;
   } finally {
