@@ -94,7 +94,8 @@ function viewTranscript() {
   const linkedTerm = state.terms.find((x) => x.exited === null && x.sessionId === sid) || null;
   const linkedConPid = !linkedTerm && live && !isDesktopSession(live) ? consoleOf(live.pid)?.id : null;
   const hasLivePane = !!(linkedTerm || linkedConPid);
-  const hasCwd = !!(r?.cwd || live?.cwd);
+  const cwdPath = r?.cwd || live?.cwd || '';
+  const hasCwd = !!cwdPath;
   const openExternal = async (isIde) => {
     const kind = r?.agent === 'codex' ? 'codex' : r?.agent === 'agy' ? 'agy' : 'claude';
     const res = await api('/api/term/external', {
@@ -181,7 +182,6 @@ function viewTranscript() {
     const more = e.target.closest('#btnRecMore');
     if (more) {
       e.stopPropagation();
-      const cwdPath = r?.cwd || live?.cwd || '';
       return openMoreMenu(more, [
         { label: '현재 시점에서 분기 만들기', icon: ICO.branch, onClick: () => openBranchDialog({ sid, atIndex: null, agent: r?.agent || 'claude', cwd: cwdPath }) },
         hasCwd && !IS_REMOTE ? {
@@ -254,7 +254,7 @@ function viewTranscript() {
     rootEl: dock.getBody('windows'),
     termId: linkedTerm?.id || null,
     consolePid: linkedConPid || null,
-    cwd: cwdPath || '',
+    cwd: cwdPath,
     gen,
     isOpen: () => !!dock?.isOpen('windows'),
     onCount: (n) => { const c = $('#bar [data-dock-win-cnt]'); if (c) c.textContent = String(n); },

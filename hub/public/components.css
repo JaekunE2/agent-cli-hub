@@ -79,6 +79,7 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height:
 .athumb img { width: 100%; height: 100%; object-fit: cover; }
 .ameta { padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .ameta b { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ameta .artifact-open { display: block; min-width: 0; max-width: 100%; height: auto; min-height: 0; padding: 0; border: 0; background: transparent; font-size: 13px; font-weight: 700; text-align: start; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .artifact-location { color: var(--muted); font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .artifact-location:empty { display: none; }
 .ahide { position: absolute; top: 4px; right: 4px; min-height: 24px; height: 24px; width: 24px; padding: 0; font-size: 12px; opacity: 0; background: rgba(0,0,0,.6); color: #fff; border: 0; }
@@ -358,6 +359,9 @@ textarea { font: inherit; color: inherit; background: var(--panel); border: 1px 
 
 /* Dialogs & Right-Side Detail Drawer */
 .dlg { position: fixed; inset: 0; background: rgba(0,0,0,.38); display: flex; align-items: center; justify-content: center; z-index: 40; }
+.artifact-dialog { width: 100%; height: 100%; max-width: none; max-height: none; border: 0; padding: 0; color: var(--text); }
+.artifact-dialog:not([open]) { display: none; }
+.artifact-dialog::backdrop { background: transparent; }
 .dlg .box { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 18px; width: min(520px, 92vw); display: flex; flex-direction: column; gap: 10px; box-shadow: var(--shadow-med); }
 .dlg .box h3 { margin: 0 0 4px; }
 .dlg-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }

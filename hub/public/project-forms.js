@@ -217,21 +217,21 @@ function projectForm(p) {
     ? `<div class="row" style="justify-content:space-between"><small class="ums" style="margin:0">작업 흐름을 생성하면 기존 카드는 유지되고 새 카드가 추가됩니다.</small><button type="submit" value="generate" class="btn-sm">작업 흐름 생성</button></div>`
     : '';
   const isLocal = isLocalHostSession();
-  const folderFieldHTML = `<label>
+  const folderFieldHTML = `<div>
     <span class="fp-mode-bar">
-      <span>작업 폴더</span>
+      <label for="pjCwd">작업 폴더</label>
       <span class="seg" role="tablist" aria-label="폴더 방식" style="padding:1px">
         <button type="button" data-cwd-mode="existing" class="${p ? 'on' : ''}" style="min-height:22px;height:22px;font-size:11.5px;padding:0 8px">기존 프로젝트 폴더</button>
         <button type="button" data-cwd-mode="internal" class="${!p ? 'on' : ''}" style="min-height:22px;height:22px;font-size:11.5px;padding:0 8px">새 내부 폴더 (projects/)</button>
       </span>
     </span>
     <div class="fp-input-row">
-      <input name="cwd" list="pjCwdList" maxlength="1000" value="${esc(initCwd)}" placeholder="작업할 프로젝트 폴더 경로" required>
+      <input id="pjCwd" name="cwd" list="pjCwdList" maxlength="1000" value="${esc(initCwd)}" placeholder="작업할 프로젝트 폴더 경로" required>
       <datalist id="pjCwdList">${knownCwds.map((c) => `<option value="${esc(c)}">`).join('')}</datalist>
       <button type="button" class="btn-sm" id="btnPickProjDir" title="호스트 컴퓨터 경로 탐색기에서 폴더 선택">${(window.UI_ICO || {}).folder || ''} 폴더 선택</button>
       ${isLocal ? `<button type="button" class="btn-sm" id="btnWinProjDir" title="Windows 파일 탐색기 창으로 폴더 선택">${(window.UI_ICO || {}).monitor || ''} 탐색기</button>` : ''}
     </div>
-  </label>
+  </div>
   <div class="fp-status" data-cwd-status style="margin-top:-4px">폴더 상태를 확인하는 중…</div>`;
 
   const dialog = projectDialog(p ? '작업 설계 수정' : '새 Project 작업 설계',

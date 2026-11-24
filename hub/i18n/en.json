@@ -2773,5 +2773,9 @@
   "검토 실행 오류": "Review execution error",
   "↻ 자동 재검토": "↻ Re-run review",
   "검토 요청 중…": "Requesting review…",
-  "자동 재검토를 시작했습니다": "Started automatic re-review"
+  "자동 재검토를 시작했습니다": "Started automatic re-review",
+  "Role · 에이전트 하네스를 불러오지 못했습니다.": "Could not load the role and agent harness.",
+  "Role · 에이전트 하네스를 복원하지 못했습니다.": "Could not reset the role and agent harness.",
+  "Role · 에이전트 하네스를 저장하지 못했습니다.": "Could not save the role and agent harness.",
+  "미리보기를 불러오지 못했습니다. (": "Could not load the preview. ("
 }
