@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const os = require('node:os');
 const recover = require('../terminal-recovery');
-const { createTermManager, sessionStartupBlock, dispatchCodexProjectPrompt } = require('../term-manager');
+const { createTermManager, sessionStartupBlock, dispatchTerminalPrompt } = require('../term-manager');
 const id = 'aaaaaaaa-bbbb-cccc-dddd-000000000001';
 
 test('managed PTY launch replaces TERM=dumb and keeps valid terminal types', async (t) => {
@@ -32,6 +32,22 @@ test('Codex hook settings are not mistaken for a ready prompt', () => {
   assert.equal(manager.inputReady(term), true);
 });
 
+test('termInfo reports a Codex project draft only while the paste badge is in the composer', async (t) => {
+  t.mock.method(globalThis, 'fetch', async () => ({ json: async () => ({ ok: true }) }));
+  const manager = createTermManager({ baseDir: os.tmpdir(), port: 7777, cleanModelEffort: () => ({}), stripAnsi: (text) => text });
+  const term = manager.createTerm({ cmd: 'codex.exe', projectTask: { projectId: 'p', taskId: 't' } });
+  await term.spawnResult;
+  const screen = (text) => new Promise((resolve) => term.vt.write(text, resolve));
+  await screen('› Ask Codex to do anything');
+  assert.equal(manager.termInfo(term).inputDraft, false);
+  await screen('\r\n› [Pasted Content 200 chars]');
+  assert.equal(manager.termInfo(term).inputDraft, true);
+  await screen('\r\n› Ask Codex to do anything');
+  assert.equal(manager.termInfo(term).inputDraft, false);
+  term.exited = 0;
+  assert.equal(manager.termInfo(term).inputDraft, false);
+});
+
 test('Codex project dispatch retries Enter without repasting and preserves an existing draft', async () => {
   const text = 'Complete the task.\n' + 'x'.repeat(1000);
   const paste = `\x1b[200~${text}\x1b[201~`;
@@ -53,11 +69,11 @@ test('Codex project dispatch retries Enter without repasting and preserves an ex
       return { ok: true };
     },
   };
-  assert.equal(await dispatchCodexProjectPrompt(hub, term, text), true);
+  assert.equal(await dispatchTerminalPrompt(hub, term, text), true);
   assert.deepEqual(writes, [paste, '\r', '\r']);
 
   screen = draft;
-  await assert.rejects(dispatchCodexProjectPrompt(hub, term, text), /제출되지 않은/);
+  await assert.rejects(dispatchTerminalPrompt(hub, term, text), /제출되지 않은/);
   assert.equal(writes.length, 3);
 
   hub.ptyPost = async (_id, _path, { data }) => {
@@ -65,13 +81,13 @@ test('Codex project dispatch retries Enter without repasting and preserves an ex
     screen = data === '\r' ? ready : draft;
     return { ok: true };
   };
-  await assert.rejects(dispatchCodexProjectPrompt(hub, term, text, { submitDraft: true }), /실행을 시작했다는 신호가 없습니다/);
+  await assert.rejects(dispatchTerminalPrompt(hub, term, text, { submitDraft: true }), /실행을 시작했다는 신호가 없습니다/);
   assert.deepEqual(writes.slice(3), ['\r']);
 
   const ending = 'Verify all output and document the final test results in the project reference folder.';
   screen = '› ' + ending.replace('project reference', 'project\n  reference');
   hub.ptyPost = async (_id, _path, { data }) => { writes.push(data); screen = 'working'; return { ok: true }; };
-  assert.equal(await dispatchCodexProjectPrompt(hub, term, `Earlier lines are scrolled off.\n${ending}`, { submitDraft: true }), true);
+  assert.equal(await dispatchTerminalPrompt(hub, term, `Earlier lines are scrolled off.\n${ending}`, { submitDraft: true }), true);
   assert.equal(writes.at(-1), '\r');
 });
 

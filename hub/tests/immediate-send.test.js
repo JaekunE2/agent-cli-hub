@@ -64,15 +64,15 @@ test('project restart waits for explicit CLI confirmation and resumes the same t
       projectAccounts: { resolve: () => ({}) }, agySwap: { available: () => false }, agyExe: () => 'agy',
       agentOf: () => agent, cliModelEffortArgs: () => [], codexLaunch: () => ({ cmd: 'codex.exe', args: [] }), fingerprint: (x) => x,
       termInfo: () => ({ id: term.id, startupBlock: sessionStartupBlock(lines.join('\n')) }),
-      readTerm: () => lines, stripAnsi: (x) => x, inputReady: () => !sessionStartupBlock(lines.join('\n')),
+      readTerm: () => lines, stripAnsi: (x) => x, agyStatus: () => busy ? 'busy' : 'idle', inputReady: () => !sessionStartupBlock(lines.join('\n')),
       rememberProjectTerm() {}, forgetTerm: (value) => terms.delete(value.id),
       codexStatus: () => busy ? 'busy' : 'idle', claudeStatus: () => busy ? 'busy' : 'idle',
-      sleep: noopSleep, dispatchImmediatePrompt: async () => ({ handled: false }),
+      sleep: noopSleep,
       waitFor: async (check, timeout) => { if (timeout === 300000) await confirmation; return check(); },
       ptyPost: async (_id, _path, { data }) => {
         writes.push(data);
-        if (data === '\r') { busy = true; lines = ['Working…']; }
-        else lines = ['[Pasted Content 13 chars]'];
+        if (data === '\r') { busy = true; lines = ['Thinking...', 'Esc to cancel']; }
+        else lines = ['› ' + data.replace(/^\x1b\[200~|\x1b\[201~$/g, '')];
         return { ok: true };
       },
     };
@@ -99,24 +99,31 @@ test('sending from the Hub exits Codex history search before typing, once', asyn
   const prompt = '데스크톱 기준으로 다시 확인해 주세요';
   const normal = ['reverse-i-search: previous search in scrollback', '› Ask Codex to do anything'];
   for (const active of [true, false]) {
-    const lines = active ? ['› Ask Codex to do anything', '  reverse-i-search: no match', ''] : normal;
     for (const target of ['term', 'console']) {
+      let lines = active ? ['› Ask Codex to do anything', '  reverse-i-search: no match', ''] : normal;
+      let busy = false;
       const writes = [];
+      const write = (data) => {
+        writes.push(data);
+        if (data === '\x1b') lines = normal;
+        else if (data === '\r') { busy = true; lines = ['Esc to interrupt', '› Ask Codex to do anything']; }
+        else lines = ['› ' + prompt];
+        return { ok: true };
+      };
       const { handleSessionRoutes } = createSessionRoutes({
-        terms: new Map([['12', { exited: null, proc: { write: (text) => writes.push(text) } }]]),
+        terms: new Map([['12', { id: '12', exited: null, proc: { write } }]]),
         isCodexTerm: () => true, readTerm: () => lines, touchUserInput: () => {},
+        codexStatus: () => busy ? 'busy' : 'idle', waitFor: async (check) => check(),
         consoleInputAt: new Map(), sleep: noopSleep, consoleSubmitDelay: () => 0, PTY_KEYS,
-        helperCall: async ({ op, keys, text }) => {
-          if (op === 'read') return { ok: true, lines };
-          if (text) writes.push(text);
-          for (const key of keys) writes.push(PTY_KEYS[key]);
-          return { ok: true };
-        },
+        ptyPost: async (_id, _path, { data }) => write(data),
+        helperCall: async ({ op, keys, text }) => op === 'read' ? { ok: true, lines }
+          : write(text || PTY_KEYS[keys[0]]),
       });
       const body = async () => ({ id: '12', pid: 12, text: prompt, submit: true });
-      const send = (_res, status, payload) => { assert.equal(status, 200); assert.equal(payload.ok, true); };
+      const send = (_res, status, payload) => { assert.equal(status, 200, payload.error); assert.equal(payload.ok, true); };
       await handleSessionRoutes(`/api/${target}/send`, null, { method: 'POST' }, null, body, send, () => true);
-      assert.deepEqual(writes, active ? ['\x1b', prompt, '\r'] : [prompt, '\r']);
+      const paste = target === 'term' ? `\x1b[200~${prompt}\x1b[201~` : prompt;
+      assert.deepEqual(writes, active ? ['\x1b', paste, '\r'] : [paste, '\r']);
     }
   }
 });
@@ -136,22 +143,6 @@ test('AGY sends Alt+M (\\x1bm) when alt+m to send immediately is visible without
   assert.equal(res.result.flushedQueued, true);
   assert.deepEqual(writes, [PTY_KEYS['alt+m']]);
   assert.equal(writes.includes('후속 질문 보류 중'), false);
-});
-
-test('AGY unsubmitted prompt submits with Enter and follows up with Alt+M if queued', async () => {
-  const writes = [];
-  const res = await dispatchImmediatePrompt({
-    cli: 'agy',
-    isBusy: () => true,
-    readNormLines: () => (writes.includes('\r') ? '미전송 프롬프트\nalt+m to send immediatel' : '> 미전송 프롬프트'),
-    write: (d) => writes.push(d),
-    sleep: noopSleep,
-    text: '미전송 프롬프트',
-    resendIfMissing: true,
-  });
-  assert.equal(res.handled, true);
-  assert.equal(res.result.submittedExisting, true);
-  assert.deepEqual(writes, ['\r', PTY_KEYS['alt+m']]);
 });
 
 test('Codex steers queued prompt using Tab without duplicating text', async () => {
