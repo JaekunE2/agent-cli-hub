@@ -109,6 +109,7 @@ test('completeAutopilotTask approves on APPROVE verdict and retries on REJECT up
   const dispatched = [];
   const ptyWrites = [];
   let verdictMode = 'REJECT';
+  let hookMenu = true;
 
   const fakeHub = {
     terms: new Map([['1', { id: '1', exited: null, meta: { projectTask: { projectId: 'p1', taskId: 't1' } } }]]),
@@ -116,7 +117,16 @@ test('completeAutopilotTask approves on APPROVE verdict and retries on REJECT up
       list: () => [savedProject],
       save: (next) => { savedProject = next; return savedProject; },
     },
-    ptyPost: async (id, _op, body) => { ptyWrites.push({ id, data: body.data }); },
+    readTerm: () => hookMenu ? ['SessionStart hooks', 'space/enter toggle · esc back'] : ['› Ask anything'],
+    inputReady: () => !hookMenu,
+    codexStatus: () => ptyWrites.at(-1)?.data === '\r' ? 'busy' : 'idle',
+    sleep: async () => {},
+    waitFor: async (ready) => ready(),
+    ptyPost: async (id, _op, body) => {
+      ptyWrites.push({ id, data: body.data });
+      if (body.data === '\x1b') hookMenu = false;
+      return { ok: true };
+    },
     startProjectTaskById: async (pid, tid) => { dispatched.push({ pid, tid }); return { id: 'term-2' }; },
     reviewTask: async () => (verdictMode === 'REJECT'
       ? { verdict: 'REJECT', reason: '에러 핸들링 누락' }
@@ -130,6 +140,8 @@ test('completeAutopilotTask approves on APPROVE verdict and retries on REJECT up
   assert.equal(r1.retryCount, 1);
   assert.equal(savedProject.tasks[0].stage, 'doing');
   assert.equal(savedProject.tasks[0].reviewStatus, 'rejected');
+  assert.equal(ptyWrites[0].data, '\x1b');
+  assert.equal(ptyWrites[2].data, '\r');
   assert.ok(ptyWrites.some((w) => String(w.data).includes('에러 핸들링 누락')));
   assert.equal(dispatched.length, 0);
 
@@ -139,16 +151,95 @@ test('completeAutopilotTask approves on APPROVE verdict and retries on REJECT up
   assert.equal(r2.approved, true);
   assert.equal(savedProject.tasks[0].stage, 'done');
   assert.equal(savedProject.tasks[0].reviewStatus, 'approved');
+  assert.equal(savedProject.tasks[0].retryCount, 0);
   assert.equal(dispatched.length, 1);
   assert.equal(dispatched[0].tid, 't2');
 
-  // Exhausted retries -> stays in review without further retry
+  // Exhausted retries return the task to work and pause automatic review.
   savedProject.tasks[0] = { ...savedProject.tasks[0], stage: 'doing', retryCount: 2 };
   verdictMode = 'REJECT';
   const r3 = await completeAutopilotTask(fakeHub, 'p1', 't1', { maxRetries: 2 });
   assert.equal(r3.approved, false);
   assert.equal(r3.retried, false);
-  assert.equal(savedProject.tasks[0].stage, 'review');
+  assert.equal(savedProject.tasks[0].stage, 'doing');
+  assert.equal(savedProject.tasks[0].reviewPaused, true);
+  const term = fakeHub.terms.get('1');
+  term._projectBusySeen = true;
+  term._idleStreak = 3;
+  fakeHub.agentOf = () => 'codex';
+  fakeHub.codexStatus = () => 'idle';
+  assert.deepEqual(await checkAutopilotCompletions(fakeHub), []);
+  assert.equal(savedProject.tasks[0].stage, 'doing');
+  delete fakeHub.agentOf;
+  fakeHub.codexStatus = () => ptyWrites.at(-1)?.data === '\r' ? 'busy' : 'idle';
+
+  const r4 = await completeAutopilotTask(fakeHub, 'p1', 't1', { maxRetries: 2, force: true });
+  assert.equal(r4.retried, true);
+  assert.equal(savedProject.tasks[0].retryCount, 1);
+});
+
+test('a terminal that never ran the task is not submitted for automatic review', async () => {
+  let project = { id: 'startup', name: 'Startup', autopilot: true, tasks: [{ id: 'task', stage: 'doing', kind: 'dev' }] };
+  const term = { id: 'term', exited: null, _projectDispatchPending: true, _idleStreak: 2,
+    meta: { projectTask: { projectId: project.id, taskId: 'task' }, spawnedAt: Date.now() - 60_000 } };
+  let reviewed = false;
+  const hub = { terms: new Map([[term.id, term]]), agentOf: () => 'claude', claudeStatus: () => 'idle',
+    projects: { list: () => [project], save: (next) => { project = next; } },
+    reviewTask: async () => { reviewed = true; } };
+  await checkAutopilotCompletions(hub);
+  assert.equal(project.tasks[0].stage, 'doing');
+  term._projectDispatchPending = false;
+  term._projectDispatchedAt = Date.now() - 100_000;
+  await checkAutopilotCompletions(hub);
+  assert.equal(project.tasks[0].reviewStatus, 'error');
+  assert.equal(reviewed, false);
+});
+
+test('a hook settings menu is not treated as completed work after a busy indication', async () => {
+  let project = { id: 'hook-menu', autopilot: true, tasks: [{ id: 'task', stage: 'doing' }] };
+  const term = { id: 'term', exited: null, _projectBusySeen: true, _idleStreak: 2,
+    _projectDispatchedAt: Date.now() - 100_000, meta: { projectTask: { projectId: project.id, taskId: 'task' } } };
+  const writes = [];
+  const hub = { terms: new Map([[term.id, term]]), agentOf: () => 'codex', codexStatus: () => 'idle',
+    readTerm: () => ['SessionStart hooks', '› [ ] Loading ponytail mode...', 'space/enter toggle · esc back'],
+    ptyPost: async (_id, _op, body) => { writes.push(body.data); return { ok: true }; },
+    projects: { list: () => [project], save: (next) => { project = next; } } };
+  assert.deepEqual(await checkAutopilotCompletions(hub), []);
+  assert.equal(project.tasks[0].stage, 'doing');
+  assert.deepEqual(await checkAutopilotCompletions(hub), []);
+  assert.equal(project.tasks[0].reviewStatus, 'error');
+  assert.deepEqual(writes, ['\x1b']);
+  assert.match(project.tasks[0].reviewNote, /SessionStart.*Esc/);
+});
+
+test('failed delivery of a correction returns the task to work and pauses review', async () => {
+  let project = { id: 'retry-error', name: 'Retry', cwd: 'D:\\tmp', autopilot: true,
+    tasks: [{ id: 'task', stage: 'doing', kind: 'dev', retryCount: 1 }] };
+  const result = await completeAutopilotTask({
+    projects: { list: () => [project], save: (next) => { project = next; } },
+    reviewTask: async () => ({ verdict: 'REJECT', reason: 'Missing result' }),
+    startProjectTaskById: async () => ({ error: 'Terminal unavailable' }),
+  }, project.id, 'task');
+  assert.equal(result.retried, false);
+  assert.equal(project.tasks[0].stage, 'doing');
+  assert.equal(project.tasks[0].reviewPaused, true);
+  assert.equal(project.tasks[0].reviewStatus, 'error');
+  assert.equal(project.tasks[0].retryCount, 1);
+  assert.match(project.tasks[0].reviewNote, /Terminal unavailable.*Missing result/s);
+});
+
+test('a review that finishes after the task moved back to work cannot overwrite it', async () => {
+  let project = { id: 'review-moved', name: 'Moved', autopilot: true, tasks: [{ id: 'task', stage: 'doing' }] };
+  const hub = {
+    projects: { list: () => [project], save: (next) => { project = next; } },
+    reviewTask: async () => {
+      project.tasks[0] = { ...project.tasks[0], stage: 'doing', reviewStatus: '', reviewPaused: true };
+      return { verdict: 'APPROVE' };
+    },
+  };
+  assert.equal((await completeAutopilotTask(hub, project.id, 'task')).skipped, true);
+  assert.equal(project.tasks[0].stage, 'doing');
+  assert.equal(project.tasks[0].reviewPaused, true);
 });
 
 test('runProjectAutopilot enforces maxConcurrent cap and checkAutopilotCompletions debounces idle before completing', async () => {

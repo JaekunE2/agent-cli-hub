@@ -36,3 +36,12 @@ test('matches only the uniquely identified Codex task prompt, not other folder h
   assert.equal(projectSession(term, 'codex', [exact, doc('second-record', 'Run checks')]), null);
   assert.equal(projectSession(term, 'agy', [], 'agy-record-id'), 'agy-record-id');
 });
+
+test('linked review sessions stay visible without listing unrelated automatic sessions', () => {
+  const index = new SearchIndex(os.tmpdir(), null, null);
+  index.docs.clear();
+  for (const id of ['review-id', 'other-id']) index.docs.set(id, { id, agent: 'agy', auto: true, msgs: [{ role: 'user', text: 'Review' }] });
+  const owners = new Map([['review-id', { projectId: 'p', taskId: 't' }]]);
+  assert.deepEqual(index.recent(10, false, 'agy', new Set(), owners).map((d) => d.sessionId), ['review-id']);
+  assert.deepEqual(index.recent(10, false, 'agy', new Set(['review-id']), owners), []);
+});

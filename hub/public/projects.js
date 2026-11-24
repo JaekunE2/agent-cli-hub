@@ -195,22 +195,21 @@ function openProjectTaskDrawer(p, task, focusSubChat = false) {
       </div>
       <div class="seg" role="tablist" aria-label="작업 단계 선택">${stageSeg}</div>
     </div>
-    ${(task.reviewStatus || task.reviewNote || task.retryCount || task.lastOutput || task.stage === 'review' || task.worktreePath) ? `<div class="drw-sec">
+    ${(task.reviewStatus || task.reviewPaused || task.reviewNote || task.retryCount || task.lastOutput || ['doing', 'review'].includes(task.stage) || task.worktreePath) ? `<div class="drw-sec">
       <div class="row" style="gap:6px;flex-wrap:wrap;justify-content:space-between">
         <div class="row" style="gap:6px;flex-wrap:wrap">
           <span class="drw-lbl" style="margin:0">진행 · 검토 상태 및 사유</span>
-          ${stageBadgeHTML(task.stage)}
           ${typeof projectLiveStatusBadgeHTML === 'function' ? projectLiveStatusBadgeHTML(p, task) : ''}
           ${typeof projectReviewBadgeHTML === 'function' ? projectReviewBadgeHTML(task) : ''}
         </div>
-        ${task.stage === 'review' ? '<button type="button" class="btn-sm" data-drw-rereview>↻ 자동 재검토</button>' : ''}
+        ${projectStageActionHTML(task)}
       </div>
       ${typeof projectReviewNoteHTML === 'function' ? projectReviewNoteHTML(task, false) : ''}
       ${task.lastOutput ? `<details class="pj-last-out"><summary>에이전트 최종 출력 요약 보기</summary><pre>${esc(task.lastOutput)}</pre></details>` : ''}
     </div>` : ''}
     <div class="drw-sec">
       <div class="drw-lbl">작업 지시 · 완료 기준</div>
-      <div style="white-space:pre-wrap;line-height:1.6;font-size:13.5px;color:${task.detail ? 'var(--text)' : 'var(--muted)'}">${esc(task.detail || '아직 작성된 작업 지시가 없습니다. 아래 수정 버튼으로 추가할 수 있습니다.')}</div>
+      ${task.detail ? `<div class="pj-task-instructions">${projectTaskTextHTML(task.detail)}</div>` : '<div class="ums">아직 작성된 작업 지시가 없습니다. 아래 수정 버튼으로 추가할 수 있습니다.</div>'}
     </div>
     <div class="drw-sec">
       <div class="row" style="justify-content:space-between">
@@ -262,26 +261,13 @@ function openProjectTaskDrawer(p, task, focusSubChat = false) {
     <button type="button" data-drw-edit>${ico.edit || ''} 수정</button>
     <button type="button" class="primary" data-drw-start>${term ? '메인 터미널 열기 ↗' : '메인 터미널 시작'}</button>`;
   const d = openDrawer({ title: task.title, bodyHTML: body, footerHTML: foot, width: 600 });
-  mountTaskSubChat(d, p, task, cfg, focusSubChat);
 
   d.addEventListener('click', async (e) => {
-    const revBtn = e.target.closest('[data-drw-rereview]');
-    if (revBtn) {
-      revBtn.disabled = true;
-      revBtn.textContent = '검토 요청 중…';
-      try {
-        const res = await api('/api/projects/autopilot/complete', { method: 'POST', body: { projectId: p.id, taskId: task.id, force: true, async: true } });
-        if (res?.error) throw new Error(res.error);
-        d.close();
-        toast('자동 재검토를 시작했습니다');
-        if (typeof refreshProjects === 'function') await refreshProjects();
-        openProject(p.id, projectTab);
-      } catch (er) {
-        toast(er.message, 5000, 'danger');
-        revBtn.disabled = false;
-        revBtn.textContent = '↻ 자동 재검토';
-      }
-      return;
+    const action = e.target.closest('[data-start-task]');
+    if (action) {
+      if (task.stage === 'review') return requestProjectReview(p, task, action, d);
+      d.close();
+      return startProjectTask(p, task, action, { retry: true });
     }
     const stBtn = e.target.closest('[data-drw-stage]');
     if (stBtn) {
@@ -357,9 +343,11 @@ function openProjectTaskDrawer(p, task, focusSubChat = false) {
       startProjectTask(p, task, startBtn);
     }
   });
+  mountTaskSubChat(d, p, task, cfg, focusSubChat);
 }
 
 function mountTaskSubChat(d, p, task, cfg, focusSubChat) {
+  const ico = window.UI_ICO || {};
   const headEl = $('#subChatHead', d);
   const msgsEl = $('#subChatMsgs', d);
   const formEl = $('#subChatForm', d);
@@ -605,6 +593,7 @@ async function viewProjects() {
           </div>
           <button id="projectAutopilot" class="btn-sm${p.autopilot ? ' primary' : ''}" title="켜면 선행 작업 완료 시 다음 대기 작업의 터미널이 자동으로 시작됩니다">${p.autopilot ? '자동 진행 ON' : '자동 진행 OFF'}</button>
           <button id="projectHarness" class="btn-sm" title="Role 프리셋 · 에이전트별 하네스 설정">Role 하네스</button>
+          <button id="projectFollowup" class="btn-sm">개선·버전업</button>
           <button id="projectAdd" class="primary">${ico.plus || ''} 작업</button>
           <button id="projectMore" class="ghost icon-btn" aria-label="Project 메뉴" aria-haspopup="menu" aria-expanded="false" title="새 Project · 설계 수정 · 삭제">${ico.more || '⋯'}</button>
         </div>
@@ -618,6 +607,7 @@ async function viewProjects() {
           return tm && typeof termStateOf === 'function' && termStateOf(tm) === 'busy';
         }).length;
         const revN = p.tasks.filter((t) => t.reviewStatus === 'reviewing' || t.stage === 'review').length;
+        const reviewNote = p.tasks.find((t) => t.stage === 'review' && t.reviewNote)?.reviewNote;
         const retryN = p.tasks.reduce((a, t) => a + (Number(t.retryCount) || 0), 0);
         const readyN = p.tasks.filter((t) => t.stage === 'planned' && !t.autoExclude && (t.after || []).every((id) => p.tasks.find((x) => x.id === id)?.stage === 'done')).length;
         const active = !!(p.autopilot || busyN || revN);
@@ -625,7 +615,8 @@ async function viewProjects() {
         return `<div class="pj-convoy${p.autopilot ? ' on' : ''}">
           <div class="row" style="gap:8px;flex-wrap:wrap">
             <span class="pj-convoy-pill">${p.autopilot ? '<span class="dot busy" style="width:6px;height:6px"></span> 오케스트레이션 가동 중' : '수동 모드'}</span>
-            <span class="ums" style="margin:0">실행 중 <b>${busyN}</b> · 검토 <b>${revN}</b> · 재시도 <b>${retryN}</b> · 대기 준비 <b>${readyN}</b> · 완료 <b>${cnt.done}/${total}</b></span>
+            <span class="ums" style="margin:0">실행 중 <b>${busyN}</b> · 검토 <b>${revN}</b> · 수정 재시도 <b>${retryN}</b> · 대기 준비 <b>${readyN}</b> · 완료 <b>${cnt.done}/${total}</b></span>
+            ${reviewNote ? `<span class="ums" style="margin:0;overflow-wrap:anywhere">${esc(reviewNote)}</span>` : ''}
           </div>
           ${readyN > 0 ? `<button type="button" class="btn-sm primary" id="projectKickoff">${p.autopilot ? `준비된 작업 ${readyN}개 즉시 실행` : `전체 자동 실행 시작 (${readyN}개)`}</button>` : ''}
         </div>`;
@@ -639,6 +630,7 @@ async function viewProjects() {
     $('#projectAutopilot').onclick = () => saveProject({ ...p, autopilot: !p.autopilot }).catch((er) => toast(er.message, 5000, 'danger'));
     $('#projectKickoff')?.addEventListener('click', () => saveProject({ ...p, autopilot: true }).catch((er) => toast(er.message, 5000, 'danger')));
     $('#projectHarness').onclick = () => openProjectHarnessDrawer();
+    $('#projectFollowup').onclick = () => projectFollowupForm(p);
     $('#projectAdd').onclick = () => taskForm(p);
     $('#projectMore').onclick = (e) => {
       e.stopPropagation();

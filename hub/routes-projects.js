@@ -289,13 +289,8 @@ function createProjectRoutes(hub) {
       if (!project || !task) { send(res, 404, { error: 'Project 작업을 찾을 수 없습니다.' }); return true; }
       if (!project.autopilot && !b.force) { send(res, 200, { ok: true, skipped: true, started: [] }); return true; }
       if (b.async) {
-        const reviewingTasks = project.tasks.map((t) => (t.id === task.id
-          ? { ...t, stage: 'review', reviewStatus: 'reviewing', reviewNote: '교차 리뷰 에이전트 자동 검토 중…' }
-          : t));
-        const nextP = projects.save({ ...project, tasks: reviewingTasks });
-        hub.overviewStale?.();
         completeAutopilotTask(hub, project.id, task.id, { force: Boolean(b.force) }).catch((e) => console.error('[autopilot-rereview-manual]', project.id, task.id, e?.message || e));
-        send(res, 200, { ok: true, queued: true, project: nextP });
+        send(res, 200, { ok: true, queued: true, project: hub.projects.list().find((x) => x.id === project.id) || project });
         return true;
       }
       const autoRes = await completeAutopilotTask(hub, project.id, task.id, { force: Boolean(b.force) });
@@ -465,6 +460,15 @@ function createProjectRoutes(hub) {
         send(res, 400, { error: 'Project 이름, 작업 폴더, 목표 및 설계에 사용할 CLI를 확인하세요.' });
         return true;
       }
+      const existing = b.projectId ? projects.list().find((pr) => pr.id === b.projectId) : null;
+      if (b.projectId && (!existing || existing.cwd !== b.cwd)) {
+        send(res, 409, { error: '프로젝트 또는 작업 폴더가 변경되었습니다. 후속 작업 설계를 다시 열어주세요.' });
+        return true;
+      }
+      const draft = existing ? { ...b, existingPlan: {
+        goal: existing.goal,
+        tasks: existing.tasks.slice(-40).map(({ title, stage }) => ({ title, stage })),
+      } } : b;
       let auth;
       try { auth = hub.projectAccounts.resolve(b.agent, b.account); } catch (e) { send(res, 400, { error: e.message }); return true; }
       projectPlanning = true;
@@ -481,7 +485,7 @@ function createProjectRoutes(hub) {
         dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-project-plan-'));
         const exe = b.agent === 'agy' ? hub.agyExe() : b.agent === 'claude' ? 'claude.exe' : hub.codexExe();
         try { unifiedVault.prepareLaunch(b.agent, { resume: false }); } catch {}
-        const { tasks, sessionId } = await generatePlan(exe, b, dir, { ...hub.cleanEnv(), ...auth.env }, { onProgress });
+        const { tasks, sessionId } = await generatePlan(exe, draft, dir, { ...hub.cleanEnv(), ...auth.env }, { onProgress });
         projectPlanState.stage = `작업 ${tasks.length}개 생성 완료`;
         projectPlanState.pct = 100;
         const now = Date.now();
@@ -584,7 +588,7 @@ function createProjectRoutes(hub) {
       if (req.method === 'GET') {
         for (const t of hub.terms.values()) if (t.meta?.projectTask) hub.rememberProjectTerm(t);
         const list = projects.list().map((pr) => ({
-          ...pr, tokens: projects.tokenSummary(pr.id, (sid) => index.get(sid)?.tokens), subChats: projects.allSubChats(pr.id),
+          ...pr, sessionIds: projects.records(pr.id), tokens: projects.tokenSummary(pr.id, (sid) => index.get(sid)?.tokens), subChats: projects.allSubChats(pr.id),
         }));
         send(res, 200, { projects: list, defaultCwd: PROJECTS_DIR, harness: hub.projectHarness.get() });
         return true;
@@ -604,6 +608,14 @@ function createProjectRoutes(hub) {
         try {
           const draft = await body(req);
           if (deletingProjects.has(draft.id)) { send(res, 409, { error: 'Project 기록을 삭제 중입니다.' }); return true; }
+          const previous = draft.id && projects.list().find((pr) => pr.id === draft.id);
+          if (previous && Array.isArray(draft.tasks)) {
+            const byId = new Map(previous.tasks.map((task) => [task.id, task]));
+            draft.tasks = draft.tasks.map((task) => {
+              if (task?.stage !== 'doing' || byId.get(task.id)?.stage !== 'review') return task;
+              return { ...task, reviewPaused: true, ...(task.reviewStatus === 'reviewing' ? { reviewStatus: '', reviewNote: '' } : {}) };
+            });
+          }
           const project = projects.save(draft);
           ensureProjectDir(project.cwd);
           for (const task of project.tasks) {

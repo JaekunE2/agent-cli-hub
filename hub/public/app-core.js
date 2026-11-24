@@ -294,15 +294,26 @@ function fireTermDoneNotice(t, nextState) {
   }
 }
 
+function terminalStartupLabel(t) {
+  if (t?.startupBlock === 'folder-trust') return '폴더 신뢰 확인 필요';
+  if (t?.startupBlock === 'term-dumb') return '터미널 환경 확인 필요';
+  if (t?.startupBlock === 'login') return 'CLI 로그인 필요';
+  if (t?.startupBlock === 'permission' || t?.startupBlock === 'confirmation') return '터미널에서 확인 필요';
+  if (t?.dispatchPending) return '작업 시작 확인 중';
+  if (t?.inputDraft) return '미제출 입력';
+  return '';
+}
+
 function paintActiveTermStatus() {
   const pill = $('#termLiveBadge');
   if (!pill || state.sel.kind !== 'term') return;
   const t = state.terms.find((x) => String(x.id) === String(state.sel.id));
   if (!t) return;
   const st = termStateOf(t);
+  const startup = terminalStartupLabel(t);
   const justDone = st === 'idle' && state.justDoneTerms.has(String(t.id));
-  pill.className = `term-live-pill ${st === 'busy' ? 'busy' : justDone ? 'done' : st === 'exited' ? 'exited' : 'idle'}`;
-  pill.innerHTML = st === 'busy'
+  pill.className = `term-live-pill ${startup || st === 'busy' ? 'busy' : justDone ? 'done' : st === 'exited' ? 'exited' : 'idle'}`;
+  pill.innerHTML = startup ? esc(startup) : st === 'busy'
     ? '<span class="dot busy" style="width:6px;height:6px"></span>실행 중'
     : justDone
       ? `${ICO.check} 작업 완료`
@@ -313,8 +324,11 @@ function paintActiveTermStatus() {
 
 // ---------- data ----------
 async function refreshOverview() {
+  let projectRevisions;
+  const previousBlocks = new Map(state.terms.map((t) => [t.id, terminalStartupLabel(t)]));
   try {
     const o = await api('/api/overview');
+    projectRevisions = o.projectRevisions;
     if (o.buildId) {
       if (activeBuildId && o.buildId !== activeBuildId) {
         const ae = document.activeElement;
@@ -353,9 +367,9 @@ async function refreshOverview() {
     aliveIds.add(id);
     const cur = termStateOf(t);
     const prev = prevTermStates.get(id);
-    if (t.projectTask && prev !== cur) projTermChanged = true;
+    if (t.projectTask && (prev !== cur || previousBlocks.get(t.id) !== terminalStartupLabel(t))) projTermChanged = true;
     if (cur === 'busy') state.justDoneTerms.delete(id);
-    if (booted && prev === 'busy' && (cur === 'idle' || cur === 'exited')) {
+    if (booted && prev === 'busy' && (cur === 'idle' || cur === 'exited') && !terminalStartupLabel(t)) {
       fireTermDoneNotice(t, cur);
     }
     prevTermStates.set(id, cur);
@@ -364,8 +378,11 @@ async function refreshOverview() {
   updateDocTitle();
   paintActiveTermStatus();
   renderSide();
-  if (booted && state.sel.kind === 'projects' && projTermChanged) {
-    if (typeof refreshProjects === 'function') refreshProjects().then(() => { if (state.sel.kind === 'projects' && typeof openProject === 'function') openProject(projectId || state.sel.id, projectTab); }).catch(() => {});
+  if (booted && state.sel.kind === 'projects' && !$('.pj-dialog[open], .drw-backdrop')) {
+    const project = state.projects.find((p) => p.id === state.sel.id);
+    if (projTermChanged || (project && projectRevisions?.[project.id] > project.revision)) {
+      if (typeof openProject === 'function') openProject(state.sel.id, projectTab);
+    }
   }
   if (booted && (state.sel.kind === 'home' || state.sel.kind === 'terms') && homeKeyOf() !== homeKey) select({ kind: state.sel.kind });
   else refreshHomeWidgets();
@@ -509,11 +526,15 @@ function sortConsolesByState(list) {
     return consoleActivityTs(b) - consoleActivityTs(a);
   });
 }
+function projectOfSession(sessionId) {
+  return sessionId ? (state.projects || []).find((p) => p.sessionIds?.includes(sessionId)) || null : null;
+}
 function projectOfTerm(t) {
   if (!t) return null;
   const pid = t.projectTask?.projectId;
   if (pid) return (state.projects || []).find((p) => p.id === pid) || null;
-  return (state.projects || []).find((p) => (p.termIds || []).includes(t.id)) || null;
+  return projectOfSession(t.sessionId) || projectOfSession(t.branch?.parentSessionId)
+    || (state.projects || []).find((p) => (p.termIds || []).includes(t.id)) || null;
 }
 function termKindLabel(t) {
   if (t.operator) return '관제';

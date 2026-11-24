@@ -2,8 +2,72 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const os = require('node:os');
 const recover = require('../terminal-recovery');
-const { createTermManager } = require('../term-manager');
+const { createTermManager, sessionStartupBlock, dispatchCodexProjectPrompt } = require('../term-manager');
 const id = 'aaaaaaaa-bbbb-cccc-dddd-000000000001';
+
+test('managed PTY launch replaces TERM=dumb and keeps valid terminal types', async (t) => {
+  const sent = [];
+  t.mock.method(globalThis, 'fetch', async (url, request) => {
+    assert.match(url, /\/spawn$/);
+    sent.push(JSON.parse(request.body).env.TERM);
+    return { json: async () => ({ ok: true }) };
+  });
+  const hub = createTermManager({ baseDir: os.tmpdir(), port: 7777, cleanModelEffort: () => ({}) });
+  for (const TERM of ['dumb', '', 'xterm']) {
+    const term = hub.createTerm({ cmd: 'codex.exe', env: { TERM }, projectTask: { projectId: 'p', taskId: 't' } });
+    assert.deepEqual(await term.spawnResult, { ok: true });
+  }
+  assert.deepEqual(sent, ['xterm-256color', 'xterm-256color', 'xterm']);
+});
+
+test('Codex hook settings are not mistaken for a ready prompt', () => {
+  const cwd = os.tmpdir();
+  const manager = createTermManager({ baseDir: cwd, CA: { MAIN: cwd }, index: { docs: new Map() }, stripAnsi: (text) => text });
+  const lines = ['SessionStart hooks', '› [ ]  2  Loading ponytail mode...', 'space/enter toggle · esc back'];
+  const term = { vt: { buffer: { active: { get length() { return lines.length; }, getLine: (i) => ({ translateToString: () => lines[i] }) } } } };
+  assert.equal(sessionStartupBlock(lines.join('\n')), 'hooks-menu');
+  assert.equal(manager.inputReady(term), false);
+  assert.equal(sessionStartupBlock('Running SessionStart hooks…'), 'hooks-running');
+  lines.push('› Ask anything');
+  assert.equal(manager.inputReady(term), true);
+});
+
+test('Codex project dispatch retries Enter without repasting and preserves an existing draft', async () => {
+  const text = 'Complete the task.\n' + 'x'.repeat(1000);
+  const paste = `\x1b[200~${text}\x1b[201~`;
+  const ready = '› Ask Codex to do anything';
+  const draft = ['› [Pasted Content 1019 chars]', ...Array(17).fill('  continued prompt'), '  GPT-medium · D:\\repo'].join('\n');
+  const term = { id: '1', exited: null };
+  let screen = ready;
+  const writes = [];
+  const hub = {
+    readTerm: (_term, n) => screen.split('\n').slice(-n),
+    inputReady: () => screen === ready,
+    codexStatus: () => screen === 'working' ? 'busy' : 'idle',
+    waitFor: async (check) => check(),
+    sleep: async () => {},
+    ptyPost: async (_id, _path, { data }) => {
+      writes.push(data);
+      if (data === paste) screen = draft;
+      if (writes.length === 3) screen = 'working';
+      return { ok: true };
+    },
+  };
+  assert.equal(await dispatchCodexProjectPrompt(hub, term, text), true);
+  assert.deepEqual(writes, [paste, '\r', '\r']);
+
+  screen = draft;
+  await assert.rejects(dispatchCodexProjectPrompt(hub, term, text), /제출되지 않은/);
+  assert.equal(writes.length, 3);
+
+  hub.ptyPost = async (_id, _path, { data }) => {
+    writes.push(data);
+    screen = data === '\r' ? ready : draft;
+    return { ok: true };
+  };
+  await assert.rejects(dispatchCodexProjectPrompt(hub, term, text, { submitDraft: true }), /실행을 시작했다는 신호가 없습니다/);
+  assert.deepEqual(writes.slice(3), ['\r']);
+});
 
 test('Codex recovery restores the conversation without sending a saved prompt', () => {
   assert.deepEqual(recover(['resume', id, '계속 진행해']), ['resume', id]);

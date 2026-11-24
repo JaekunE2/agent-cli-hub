@@ -123,22 +123,27 @@ async function runTaskSubChatTurn({
   const outFile = path.join(tmpDir, 'last.txt');
   const logFile = path.join(tmpDir, 'agy.log');
 
+  const activePrompt = sessionId ? prompt : fullPrompt;
   let args;
   let assignedSid = sessionId || '';
+  let useStdin = false;
   if (agent === 'codex') {
     const pre = /plugin-appserver/i.test(exe) ? ['--no-daemon'] : [];
+    useStdin = true;
     args = sessionId
-      ? [...pre, 'exec', '--dangerously-bypass-approvals-and-sandbox', '--skip-git-repo-check', '--json', ...meArgs, '-o', outFile, 'resume', sessionId, prompt]
-      : [...pre, 'exec', '--dangerously-bypass-approvals-and-sandbox', '--skip-git-repo-check', '--json', ...meArgs, '-o', outFile, fullPrompt];
+      ? [...pre, 'exec', '--dangerously-bypass-approvals-and-sandbox', '--skip-git-repo-check', '--json', ...meArgs, '-o', outFile, 'resume', sessionId, '-']
+      : [...pre, 'exec', '--dangerously-bypass-approvals-and-sandbox', '--skip-git-repo-check', '--json', ...meArgs, '-o', outFile, '-'];
   } else if (agent === 'agy') {
+    const agyPrompt = activePrompt.length > 20_000 ? `${activePrompt.slice(0, 20_000)}\n...(truncated)` : activePrompt;
     args = sessionId
-      ? ['--print', prompt, '--output-format', 'json', '--dangerously-skip-permissions', '--conversation', sessionId, ...meArgs, '--log-file', logFile]
-      : ['--print', fullPrompt, '--output-format', 'json', '--dangerously-skip-permissions', ...meArgs, '--log-file', logFile];
+      ? ['--print', agyPrompt, '--output-format', 'json', '--dangerously-skip-permissions', '--conversation', sessionId, ...meArgs, '--log-file', logFile]
+      : ['--print', agyPrompt, '--output-format', 'json', '--dangerously-skip-permissions', ...meArgs, '--log-file', logFile];
   } else {
     if (!assignedSid) assignedSid = randomUUID();
+    useStdin = true;
     args = sessionId
-      ? ['--print', '--output-format', 'json', '--dangerously-skip-permissions', '--resume', sessionId, ...meArgs, prompt]
-      : ['--print', '--output-format', 'json', '--dangerously-skip-permissions', '--session-id', assignedSid, ...meArgs, fullPrompt];
+      ? ['--print', '--output-format', 'json', '--dangerously-skip-permissions', '--resume', sessionId, ...meArgs]
+      : ['--print', '--output-format', 'json', '--dangerously-skip-permissions', '--session-id', assignedSid, ...meArgs];
   }
 
   onProgress?.({ stage: `${agent.toUpperCase()} 서브 개발 실행 중…`, log: '세션 연결 중…' });
@@ -146,7 +151,22 @@ async function runTaskSubChatTurn({
   try {
     const { stdout } = await new Promise((resolve, reject) => {
       let out = '', err = '', settled = false, timedOut = false;
-      const ch = spawn(exe, args, { cwd, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      let spawnCmd = exe;
+      let spawnArgs = args;
+      if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(String(exe || '')) && !/cmd\.exe$/i.test(String(exe || ''))) {
+        spawnCmd = 'cmd.exe';
+        spawnArgs = ['/c', exe, ...args];
+      }
+      let ch;
+      try {
+        ch = spawn(spawnCmd, spawnArgs, { cwd, env, windowsHide: true, stdio: [useStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
+      } catch (e) {
+        return reject(new Error(`CLI 실행 실패: ${e.message}`));
+      }
+      if (useStdin && ch.stdin) {
+        ch.stdin.on('error', () => {});
+        ch.stdin.end(activePrompt);
+      }
       const timer = setTimeout(() => { timedOut = true; try { ch.kill(); } catch {} }, timeoutMs);
 
       const handleLine = (raw) => {

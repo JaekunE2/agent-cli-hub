@@ -50,9 +50,10 @@ function projectBoard(p) {
     const k = typeof taskKindOf === 'function' ? taskKindOf(t) : 'dev';
     const chatCnt = (p.subChats?.[t.id] || []).length;
     const menuAria = `${t.title} 메뉴`;
-    return `<article class="pj-task${t.autoExclude ? ' is-auto-off' : ''}" draggable="true" data-task="${esc(t.id)}" data-kind="${esc(k)}">
+    const collapsed = typeof isTaskCollapsed === 'function' && isTaskCollapsed(p.id, t.id);
+    return `<article class="pj-task${t.autoExclude ? ' is-auto-off' : ''}${collapsed ? ' is-collapsed' : ''}" draggable="true" data-task="${esc(t.id)}" data-kind="${esc(k)}">
       <div class="row" style="justify-content:space-between;gap:6px">
-        <div class="row" style="gap:5px;min-width:0">${typeof kindBadgeHTML === 'function' ? kindBadgeHTML(t) : ''}${typeof projectReviewBadgeHTML === 'function' ? projectReviewBadgeHTML(t) : ''}${subs.length ? `<span class="badge" title="클릭해 하위 서브태스크 확인">하위 ${subDone}/${subs.length}</span>` : ''}</div>
+        <div class="row" style="gap:5px;min-width:0">${typeof collapseBtnHTML === 'function' ? collapseBtnHTML(collapsed, t.id) : ''}${typeof kindBadgeHTML === 'function' ? kindBadgeHTML(t) : ''}${typeof projectReviewBadgeHTML === 'function' ? projectReviewBadgeHTML(t) : ''}${subs.length ? `<span class="badge" title="클릭해 하위 서브태스크 확인">하위 ${subDone}/${subs.length}</span>` : ''}</div>
         <div class="row" style="gap:4px;flex-shrink:0">
           <button type="button" class="pj-auto-sw${t.autoExclude ? ' off' : ' on'}" data-toggle-auto="${esc(t.id)}" aria-pressed="${!t.autoExclude}" title="${t.autoExclude ? '자동 진행에서 제외됨 (클릭해 포함)' : '자동 진행에 포함됨 (클릭해 제외)'}">${t.autoExclude ? '자동 OFF' : '자동 ON'}</button>
           <button class="ghost icon-btn btn-sm" data-task-more="${esc(t.id)}" aria-label="${esc(menuAria)}" aria-haspopup="menu" aria-expanded="false">${ico.more || '⋯'}</button>
@@ -74,7 +75,8 @@ function projectBoard(p) {
     ? projectFlow(p)
     : `<div class="pj-board">${projectStages.map(([stage, label]) => {
       const items = topTasks.filter((t) => t.stage === stage);
-      return `<section data-drop="${stage}"><h2 class="pj-lane-hd">${label} <span class="badge">${items.length}</span></h2>${items.map(card).join('') || '<div class="pj-lane-empty">작업을 여기로 이동</div>'}</section>`;
+      const laneCol = typeof isLaneCollapsed === 'function' && isLaneCollapsed(p.id, stage);
+      return `<section data-drop="${stage}" class="${laneCol ? 'is-lane-collapsed' : ''}"><h2 class="pj-lane-hd"><button type="button" class="ghost icon-btn btn-sm pj-lane-col" data-toggle-lane="${stage}" title="${laneCol ? '열 펼치기' : '열 접기'}" aria-expanded="${!laneCol}">${laneCol ? '▸' : '▾'}</button><span>${label}</span> <span class="badge">${items.length}</span></h2>${items.map(card).join('') || '<div class="pj-lane-empty">작업을 여기로 이동</div>'}</section>`;
     }).join('')}</div>`;
   if (projectTab === 'flow') bindProjectFlow(p, viewGen);
   let saving = false;
@@ -87,6 +89,30 @@ function projectBoard(p) {
     finally { saving = false; }
   };
   host.onclick = (e) => {
+    const laneColBtn = e.target.closest('[data-toggle-lane]');
+    if (laneColBtn) {
+      e.stopPropagation();
+      const stage = laneColBtn.dataset.toggleLane;
+      const next = toggleLaneCollapsed(p.id, stage);
+      const secEl = laneColBtn.closest('section[data-drop]');
+      if (secEl) secEl.classList.toggle('is-lane-collapsed', next);
+      laneColBtn.textContent = next ? '▸' : '▾';
+      laneColBtn.title = next ? '열 펼치기' : '열 접기';
+      laneColBtn.setAttribute('aria-expanded', String(!next));
+      return;
+    }
+    const colBtn = e.target.closest('[data-toggle-collapse]');
+    if (colBtn) {
+      e.stopPropagation();
+      const tid = colBtn.dataset.toggleCollapse;
+      const next = toggleTaskCollapsed(p.id, tid);
+      const cardEl = colBtn.closest('[data-task]');
+      if (cardEl) cardEl.classList.toggle('is-collapsed', next);
+      colBtn.textContent = next ? '▸' : '▾';
+      colBtn.title = next ? '펼치기' : '접기';
+      colBtn.setAttribute('aria-expanded', String(!next));
+      return;
+    }
     const autoSw = e.target.closest('[data-toggle-auto]');
     if (autoSw) {
       e.stopPropagation();
@@ -101,7 +127,7 @@ function projectBoard(p) {
     const assign = e.target.closest('[data-assign-task]');
     if (assign) { e.stopPropagation(); return taskForm(p, p.tasks.find((x) => x.id === assign.dataset.assignTask), true); }
     const b = e.target.closest('[data-start-task]');
-    if (b) { e.stopPropagation(); return startProjectTask(p, p.tasks.find((x) => x.id === b.dataset.startTask), b); }
+    if (b) { e.stopPropagation(); return runProjectCardAction(p, p.tasks.find((x) => x.id === b.dataset.startTask), b); }
     const cardEl = e.target.closest('[data-task]');
     if (cardEl) openProjectTaskDrawer(p, p.tasks.find((x) => x.id === cardEl.dataset.task));
   };

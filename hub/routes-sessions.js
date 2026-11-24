@@ -8,6 +8,7 @@ const { resolveTaskConfig, buildTaskHarnessPrompt } = require('./project-harness
 const { codexHistorySearchActive } = require('./immediate-send');
 const { claudeCommandNote, claudeToolResultNote } = require('./searchindex');
 const { spawnCli } = require('./project-plan');
+const { sessionStartupBlock, dismissProjectHookMenu, writeProjectTerm, dispatchCodexProjectPrompt, projectRunStarted, terminalConfirmationMessage, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE, PROJECT_START_MESSAGE } = require('./term-manager');
 
 const OV_TTL = 2500;
 
@@ -21,6 +22,7 @@ function createSessionRoutes(hub) {
   } = hub;
 
   const transcriptIndex = new Map();
+  const restartingTasks = new Set();
   let ovSnap = null, ovAt = 0, ovBuilding = null;
   let diskLow = null;
 
@@ -267,9 +269,11 @@ function createSessionRoutes(hub) {
       if (br) info.branch = br;
       return info;
     });
-    projects.remember(termsOut.filter((t) => t.projectTask && t.sessionId).map((t) => ({
-      projectId: t.projectTask.projectId, taskId: t.projectTask.taskId, sessionId: t.sessionId, agent: t.agent, accountId: t.account?.id, tokens: index.get(t.sessionId)?.tokens,
-    })));
+    const owners = projects.sessionOwners();
+    projects.remember(termsOut.flatMap((t) => {
+      const owner = t.projectTask || owners.get(t.branch?.parentSessionId);
+      return owner && t.sessionId ? [{ ...owner, sessionId: t.sessionId, agent: t.agent, accountId: t.account?.id, tokens: index.get(t.sessionId)?.tokens }] : [];
+    }));
     const ptyHostPid = hub.getPtyHostPid();
     const services = {
       hub: { ok: true, port, pid: process.pid },
@@ -278,7 +282,8 @@ function createSessionRoutes(hub) {
       agyQuota: { ok: !!hub.agyQuota.get(), refreshing: hub.agyQuota.getFast().refreshing, account: hub.agyQuota.get()?.account || null },
       helper: { ok: !hub.getHelperMissing(), error: hub.getHelperMissing() || null },
     };
-    return { live, consoles, terms: termsOut, consoleError: cons.error, favs: hub.liveFavs(), disk: diskLow, consolesOff: config.consoles === false, services, buildId, accountPrefs: accountPrefs.get() };
+    const projectRevisions = Object.fromEntries(projects.list().map((p) => [p.id, p.revision]));
+    return { live, consoles, terms: termsOut, consoleError: cons.error, favs: hub.liveFavs(), disk: diskLow, consolesOff: config.consoles === false, services, buildId, accountPrefs: accountPrefs.get(), projectRevisions };
   }
 
   function overviewSnapshot() {
@@ -289,13 +294,17 @@ function createSessionRoutes(hub) {
 
   async function handleStartOrNewTerm(p, req, res, body, send) {
     let b = await body(req);
+    const retry = p === '/api/projects/start' && b.retry === true;
+    const submitDraft = retry && b.submitDraft === true;
     let projectTask, projectPrompt, launchAccount, projectRefsBlock = '';
+    let reuseTerm;
     if (p === '/api/projects/start') {
       if (hub.deletingProjects.has(b.projectId)) return send(res, 409, { error: 'Project 기록을 삭제 중입니다.' });
       const project = projects.list().find((x) => x.id === b.projectId);
       const task = project?.tasks.find((x) => x.id === b.taskId);
       if (!task) return send(res, 404, { error: 'Project 작업을 찾을 수 없습니다.' });
       if (task.stage === 'done') return send(res, 409, { error: '완료된 작업입니다. 상태를 바꾼 뒤 시작하세요.' });
+      if (retry && task.stage !== 'doing') return send(res, 409, { error: '진행 단계의 작업만 다시 시작할 수 있습니다.' });
       projectTask = { projectId: project.id, taskId: task.id };
       const harnessState = hub.projectHarness?.get ? hub.projectHarness.get() : null;
       const resolved = resolveTaskConfig(project, task, harnessState);
@@ -304,11 +313,16 @@ function createSessionRoutes(hub) {
       const accountId = resolved.account;
       const model = resolved.model;
       const effort = resolved.effort;
-      const existing = [...hub.terms.values()].find((t) => t.exited === null && t.meta.projectTask?.projectId === project.id && t.meta.projectTask.taskId === task.id && hub.agentOf(t) === kind && (t.account?.id || '') === (accountId || ''));
+      const existing = [...hub.terms.values()].findLast((t) => t.exited === null && t.meta.projectTask?.projectId === project.id && t.meta.projectTask.taskId === task.id && hub.agentOf(t) === kind && (t.account?.id || '') === (accountId || ''));
       if (existing) {
         const result = await existing.spawnResult;
         if (result?.error) return send(res, 502, { error: 'CLI를 시작하지 못했습니다. 설치 경로를 확인하세요.' });
-        return send(res, 200, { ...hub.termInfo(existing), existing: true });
+        const info = hub.termInfo(existing);
+        if (!retry || existing._projectDispatchPending || info.status === 'busy') return send(res, 200, { ...info, existing: true });
+        if (info.startupBlock !== 'term-dumb') reuseTerm = existing;
+      }
+      if (submitDraft && (kind !== 'codex' || String(b.termId || '') !== reuseTerm?.id || !hub.termInfo(reuseTerm).inputDraft)) {
+        return send(res, 409, { error: 'Codex 입력창에서 작업 내용이 확인되지 않았습니다.' });
       }
       if (!hub.projectAgents.includes(kind)) return send(res, 400, { error: '작업 설계에서 CLI를 다시 선택하세요.' });
       hub.ensureProjectDir(project.cwd);
@@ -328,7 +342,7 @@ function createSessionRoutes(hub) {
       if (projectRefsBlock) parts.push(projectRefsBlock);
       const fullTaskPrompt = parts.filter(Boolean).join('\n\n');
       if (!b._rawPrompt) b._rawPrompt = fullTaskPrompt;
-      projectPrompt = fingerprint(fullTaskPrompt);
+      projectPrompt = fingerprint(b._rawPrompt);
       try { launchAccount = hub.projectAccounts.resolve(kind, accountId); } catch (e) { return send(res, 400, { error: e.message }); }
     }
     if (b.resume && !b.fork && !projectTask) {
@@ -392,58 +406,118 @@ function createSessionRoutes(hub) {
       try { launchAccount = hub.projectAccounts.resolve(b.kind, String(b.account)); }
       catch (e) { if (String(b.account) !== 'auto-codex') return send(res, 400, { error: e.message }); }
     }
-    if (launchAccount?.switchAgySwap) {
+    if (!reuseTerm && launchAccount?.switchAgySwap) {
       try { await hub.ensureAgySwap(launchAccount); } catch (e) { return send(res, 502, { error: `Antigravity 계정 전환 실패: ${e.message}` }); }
-    } else if (b.kind === 'agy' && !launchAccount?.account && hub.agySwap.available()) {
+    } else if (!reuseTerm && b.kind === 'agy' && !launchAccount?.account && hub.agySwap.available()) {
       const activeSwap = (hub.agySwap.getFast().accounts || []).find((a) => a.active);
       if (activeSwap) launchAccount = { ...launchAccount, account: { id: activeSwap.id, label: activeSwap.name ? `${activeSwap.name} (${activeSwap.email})` : activeSwap.email, kind: 'agy', email: activeSwap.email } };
     }
-    const t = hub.createTerm({ cwd, cmd, args, title: b.title || title, ...launchAccount, model: b.model || '', effort: b.effort || '', projectTask, projectPrompt });
+    const t = reuseTerm || hub.createTerm({ cwd, cmd, args, title: b.title || title, ...launchAccount, model: b.model || '', effort: b.effort || '', projectTask, projectPrompt });
     if (!projectTask && ['claude', 'codex', 'agy'].includes(b.kind) && (b.model !== undefined || b.effort !== undefined || launchAccount?.account?.id)) {
       accountPrefs.save({ account: launchAccount?.account?.id || b.account || '', agent: b.kind, model: b.model || '', effort: b.effort || '' });
     }
     if (projectTask) {
       const result = await t.spawnResult;
       if (result?.error) { hub.terms.delete(t.id); return send(res, 502, { error: 'CLI를 시작하지 못했습니다. 설치 경로를 확인하세요.' }); }
-      if (!result) return send(res, 503, { error: '터미널 호스트의 응답이 없습니다. 상태를 확인하세요.' });
+      if (!result && !reuseTerm) return send(res, 503, { error: '터미널 호스트의 응답이 없습니다. 상태를 확인하세요.' });
+      if (retry) {
+        const latest = projects.list().find((p) => p.id === projectTask.projectId);
+        if (!latest?.tasks.some((x) => x.id === projectTask.taskId && x.stage === 'doing')) return send(res, 409, { error: '진행 단계의 작업만 다시 시작할 수 있습니다.' });
+        projects.save({ ...latest, tasks: latest.tasks.map((x) => x.id === projectTask.taskId
+          ? { ...x, reviewPaused: false, reviewStatus: '', reviewNote: '', retryCount: 0 } : x) });
+        for (const prior of hub.terms.values()) {
+          if (prior.meta?.projectTask?.projectId !== projectTask.projectId || prior.meta.projectTask.taskId !== projectTask.taskId) continue;
+          prior._projectBusySeen = false;
+          prior._idleStreak = 0;
+          prior._projectDispatchedAt = 0;
+        }
+      }
       overviewStale();
       if (b._autoDispatch && b._rawPrompt) {
         const rawPrompt = b._rawPrompt;
-        (async () => {
-          let trustedOnce = false;
-          const ready = await hub.waitFor(async () => {
-            if (t.exited !== null) return true;
-            const scr = hub.readTerm(t, 40).join('\n');
-            if (!trustedOnce && /trust this folder|Do you trust/i.test(scr)) {
-              trustedOnce = true;
-              await hub.ptyPost(t.id, '/write', { id: t.id, data: '\r' }).catch(() => {});
+        t._projectDispatchPending = true;
+        t._projectDispatchResult = (async () => {
+          let confirmationSeen = false;
+          const readyOrBlocked = async () => {
+            if (t.exited !== null || !hub.terms.has(t.id)) return true;
+            const scr = stripAnsi(hub.readTerm(t, 40).join('\n'));
+            const block = sessionStartupBlock(scr);
+            if (block === 'hooks-menu') {
+              await dismissProjectHookMenu(hub, t, scr);
               return false;
             }
+            if (terminalConfirmationMessage(block)) confirmationSeen = true;
+            if (block === 'term-dumb' || confirmationSeen) return true;
             return hub.inputReady(t);
-          }, 45000, 600);
-          if (!ready || t.exited !== null) return;
-          const scr = hub.readTerm(t, 40).join('\n');
-          if (/trust this folder|Do you trust/i.test(scr)) return;
+          };
+          let ready = await hub.waitFor(readyOrBlocked, 45000, 600);
+          if (confirmationSeen) {
+            confirmationSeen = false;
+            ready = await hub.waitFor(async () => {
+              const scr = stripAnsi(hub.readTerm(t, 40).join('\n'));
+              if (terminalConfirmationMessage(sessionStartupBlock(scr))) return t.exited !== null || !hub.terms.has(t.id);
+              return readyOrBlocked();
+            }, 300000, 600);
+          }
+          if (!hub.terms.has(t.id)) return;
+          const scr = stripAnsi(hub.readTerm(t, 40).join('\n'));
+          const block = sessionStartupBlock(scr);
+          if (block === 'hooks-menu') throw new Error(HOOK_MENU_MESSAGE);
+          const confirmation = terminalConfirmationMessage(block);
+          if (confirmation) throw new Error(confirmation);
+          if (block === 'term-dumb') throw new Error(DUMB_TERMINAL_MESSAGE);
+          if (!ready || t.exited !== null || block) throw new Error('CLI가 작업 입력을 받을 준비가 되지 않았습니다.');
+          t._projectHookEscapeSent = false;
           const cli = hub.agentOf(t) || 'claude';
+          const dispatchedAt = Date.now();
+          if (cli === 'codex') {
+            t._projectBusySeen = await dispatchCodexProjectPrompt(hub, t, rawPrompt, { submitDraft });
+            t._projectDispatchedAt = dispatchedAt;
+            return;
+          }
+          const writes = [];
+          const write = (data) => {
+            const block = sessionStartupBlock(stripAnsi(hub.readTerm(t, 40).join('\n')));
+            if (block === 'hooks-menu') throw new Error(HOOK_MENU_MESSAGE);
+            const confirmation = terminalConfirmationMessage(block);
+            if (confirmation) throw new Error(confirmation);
+            const pending = writeProjectTerm(hub, t, data).catch((e) => e.message || String(e));
+            writes.push(pending);
+          };
           const outcome = await dispatchImmediatePrompt({
             cli,
-            isBusy: () => (cli === 'codex' ? hub.codexStatus(t) : cli === 'agy' ? hub.agyStatus(t) : hub.claudeStatus(t)) === 'busy',
+            isBusy: () => (cli === 'agy' ? hub.agyStatus(t) : hub.claudeStatus(t)) === 'busy',
             readNormLines: (n) => stripAnsi(hub.readTerm(t, n).join('\n')),
-            write: (d) => hub.ptyPost(t.id, '/write', { id: t.id, data: d }),
+            write,
             sleep: hub.sleep,
             text: rawPrompt,
             submitDelay: hub.SUBMIT_DELAY,
           });
           if (!outcome?.handled && t.exited === null) {
-            await hub.ptyPost(t.id, '/write', { id: t.id, data: rawPrompt }).catch(() => {});
+            write(rawPrompt);
             await hub.sleep(hub.SUBMIT_DELAY + Math.min(2500, Math.floor(rawPrompt.length / 2)));
-            if (t.exited === null) await hub.ptyPost(t.id, '/write', { id: t.id, data: '\r' }).catch(() => {});
+            if (t.exited === null) write('\r');
           }
-          t._projectDispatchedAt = Date.now();
-        })().catch(() => {});
+          const error = (await Promise.all(writes)).find(Boolean);
+          if (error || t.exited !== null) throw new Error(error || 'CLI가 작업 입력 중 종료되었습니다.');
+          if (!await hub.waitFor(() => projectRunStarted(hub, t, dispatchedAt), 8000, 200)) throw new Error(PROJECT_START_MESSAGE);
+          t._projectBusySeen = true;
+          t._projectDispatchedAt = dispatchedAt;
+        })().catch((e) => {
+          const latest = projects.list().find((p) => p.id === projectTask.projectId);
+          if (hub.terms.has(t.id) && latest?.tasks.some((x) => x.id === projectTask.taskId && x.stage === 'doing')) {
+            projects.save({ ...latest, tasks: latest.tasks.map((x) => x.id === projectTask.taskId
+              ? { ...x, stage: 'doing', reviewPaused: true, reviewStatus: 'error', reviewNote: [e.message, x.reviewNote].filter(Boolean).join('\n\n') } : x) });
+            overviewStale();
+          }
+          return e.message || String(e);
+        }).catch((e) => {
+          console.error('[project-dispatch]', e.message);
+          return e.message || String(e);
+        }).finally(() => { t._projectDispatchPending = false; });
       }
     }
-    return send(res, 200, projectRefsBlock ? { ...hub.termInfo(t), refsBlock: projectRefsBlock } : hub.termInfo(t));
+    return send(res, 200, { ...hub.termInfo(t), ...(projectRefsBlock ? { refsBlock: projectRefsBlock } : {}), ...(retry ? { restarted: true } : {}) });
   }
 
   hub.startProjectTaskById = async (projectId, taskId, { autoDispatch = true, resume = '', rawPrompt: overridePrompt = '' } = {}) => {
@@ -471,6 +545,11 @@ function createSessionRoutes(hub) {
       (_res, code, data) => { status = code; payload = data; }
     );
     if (status >= 400) return { error: payload?.error || `HTTP ${status}` };
+    if (autoDispatch && overridePrompt && payload?.id) {
+      if (payload.existing) return { error: '터미널 입력을 확인하지 못했습니다.' };
+      const error = await hub.terms.get(payload.id)?._projectDispatchResult;
+      if (error) return { error };
+    }
     return payload;
   };
 
@@ -613,12 +692,14 @@ function createSessionRoutes(hub) {
       conversationBranches.resolveLinks(hub.terms, hub.termSessionId);
       const agent = url.searchParams.get('agent') || '';
       const hidden = projects.hidden();
-      const raw = index.ready ? index.recent(n, auto, agent, hidden) : recentSessions(n).filter((s) => !hidden.has(s.sessionId) && (!agent || (s.agent || 'claude') === agent));
+      const owners = projects.sessionOwners();
+      const raw = index.ready ? index.recent(n, auto, agent, hidden, owners) : recentSessions(n).filter((s) => !hidden.has(s.sessionId) && (!agent || (s.agent || 'claude') === agent));
       const sessions = raw.map((s) => {
         const branch = conversationBranches.branchMetaFor({ sessionId: s.sessionId, lookupTitleFn: (id) => sessionDisplayTitle(id, index.get(id)) });
         const customTitle = conversationBranches.getTitle(s.sessionId);
         const fallbackBranchTitle = branch?.isBranch ? (branch.branchTitle || (branch.parentTitle ? `(분기) ${String(branch.parentTitle).slice(0, 36)}` : null)) : null;
-        return { ...s, title: customTitle || fallbackBranchTitle || s.title, ...(branch ? { branch } : {}) };
+        const owner = owners.get(s.sessionId) || owners.get(branch?.parentSessionId);
+        return { ...s, title: customTitle || fallbackBranchTitle || s.title, projectId: owner?.projectId, ...(branch ? { branch } : {}) };
       });
       send(res, 200, { sessions });
       return true;
@@ -712,15 +793,16 @@ function createSessionRoutes(hub) {
         if (agent === 'codex') {
           const outFile = path.join(os.tmpdir(), `sidechat-${crypto.randomUUID()}.txt`);
           try {
-            const { args, cmd } = hub.codexLaunch(['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '--ephemeral', '--color', 'never', '-o', outFile, prompt]);
-            const { stdout } = await spawnCli(cmd, args, { cwd, env: process.env, timeoutMs: 90_000 });
+            const { args, cmd } = hub.codexLaunch(['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '--ephemeral', '--color', 'never', '-o', outFile, '-']);
+            const { stdout } = await spawnCli(cmd, args, { cwd, env: process.env, timeoutMs: 90_000, stdinText: prompt });
             reply = fs.existsSync(outFile) ? fs.readFileSync(outFile, 'utf8').trim() : stripAnsi(stdout).trim();
           } finally { fs.rmSync(outFile, { force: true }); }
         } else if (agent === 'agy') {
           const logFile = path.join(os.tmpdir(), `sidechat-agy-${crypto.randomUUID()}.log`);
           let convId = '';
           try {
-            const { stdout } = await spawnCli(hub.agyExe(), ['--print', prompt, '--output-format', 'json', '--log-file', logFile], { cwd, env: process.env, timeoutMs: 90_000 });
+            const agyPrompt = prompt.length > 20_000 ? `${prompt.slice(0, 20_000)}\n...(truncated)` : prompt;
+            const { stdout } = await spawnCli(hub.agyExe(), ['--mode', 'plan', '--dangerously-skip-permissions', '--disable-slash-commands', '--print', agyPrompt, '--output-format', 'json', '--log-file', logFile], { cwd, env: process.env, timeoutMs: 90_000 });
             try {
               const parsed = JSON.parse(stdout.slice(stdout.indexOf('{'), stdout.lastIndexOf('}') + 1));
               convId = parsed.conversation_id || '';
@@ -733,7 +815,7 @@ function createSessionRoutes(hub) {
             }
           }
         } else {
-          const { stdout } = await spawnCli('claude.exe', ['--print', '--no-session-persistence', '--tools', '', '--output-format', 'text', prompt], { cwd, env: process.env, timeoutMs: 90_000 });
+          const { stdout } = await spawnCli('claude.exe', ['--print', '--no-session-persistence', '--tools', '', '--output-format', 'text'], { cwd, env: process.env, timeoutMs: 90_000, stdinText: prompt });
           reply = stripAnsi(stdout).trim();
         }
         send(res, 200, { ok: true, reply: reply || '(응답 없음)', agent });
@@ -814,6 +896,13 @@ function createSessionRoutes(hub) {
     if (p === '/api/term/send' && req.method === 'POST') {
       const b = await body(req); const t = hub.terms.get(String(b.id));
       if (!t || t.exited !== null) { send(res, 404, { ok: false, error: 'no such running terminal' }); return true; }
+      if (b.submit || b.immediate || b.text) {
+        const screen = hub.readTerm(t, 12).join('\n');
+        const confirmation = terminalConfirmationMessage(sessionStartupBlock(stripAnsi?.(screen) || screen));
+        if (confirmation) {
+          send(res, 409, { ok: false, error: confirmation }); return true;
+        }
+      }
       if (b.submit || b.immediate || b.text) hub.touchUserInput(t);
       const inHistorySearch = (b.immediate || (b.submit && b.text)) && hub.isCodexTerm(t)
         && codexHistorySearchActive(hub.readTerm(t, 5));
@@ -857,7 +946,12 @@ function createSessionRoutes(hub) {
       return true;
     }
     if ((p === '/api/term/new' || p === '/api/projects/start') && req.method === 'POST') {
-      await handleStartOrNewTerm(p, req, res, body, send);
+      const draft = await body(req);
+      const key = p === '/api/projects/start' && draft.retry === true ? `${draft.projectId}:${draft.taskId}` : '';
+      if (key && restartingTasks.has(key)) { send(res, 409, { error: '작업을 다시 시작하는 중입니다.' }); return true; }
+      if (key) restartingTasks.add(key);
+      try { await handleStartOrNewTerm(p, req, res, async () => draft, send); }
+      finally { if (key) restartingTasks.delete(key); }
       return true;
     }
     if (p === '/api/term/dedupe' && req.method === 'POST') {
@@ -868,7 +962,20 @@ function createSessionRoutes(hub) {
     }
     if (p === '/api/term/close' && req.method === 'POST') {
       const b = await body(req); const t = hub.terms.get(String(b.id));
-      if (t) { hub.rememberProjectTerm(t); hub.forgetTerm(t); }
+      if (t) {
+        const pt = t.meta?.projectTask;
+        if (pt && ![...hub.terms.values()].some((other) => other !== t && other.exited === null
+          && other.meta?.projectTask?.projectId === pt.projectId && other.meta.projectTask.taskId === pt.taskId
+          && (other._projectDispatchPending || other._projectDispatchedAt))) {
+          const project = projects.list().find((x) => x.id === pt.projectId);
+          if (project?.tasks.some((x) => x.id === pt.taskId && x.stage === 'doing')) {
+            projects.save({ ...project, tasks: project.tasks.map((x) => x.id === pt.taskId ? { ...x, reviewPaused: true } : x) });
+          }
+        }
+        hub.rememberProjectTerm(t);
+        hub.forgetTerm(t);
+        overviewStale();
+      }
       send(res, 200, { ok: true });
       return true;
     }

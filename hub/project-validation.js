@@ -87,6 +87,7 @@ function validate(p) {
       parentId: t.parentId ? String(t.parentId) : '',
       autoExclude: !!t.autoExclude,
       reviewStatus: ['reviewing', 'approved', 'rejected', 'error'].includes(t.reviewStatus) ? t.reviewStatus : '',
+      reviewPaused: t.reviewPaused === true,
       reviewNote: typeof t.reviewNote === 'string' ? t.reviewNote.slice(0, 2000) : '',
       lastOutput: typeof t.lastOutput === 'string' ? t.lastOutput.slice(0, 2000) : '',
       lastSessionId: typeof t.lastSessionId === 'string' ? t.lastSessionId.slice(0, 120) : '',

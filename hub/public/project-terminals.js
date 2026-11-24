@@ -22,7 +22,7 @@ function effectiveTaskConfig(p, task) {
 function projectTaskTerm(p, task) {
   const { agent } = effectiveTaskConfig(p, task);
   const sameTask = (state.terms || []).filter((t) => t.exited === null && t.projectTask?.projectId === p.id && t.projectTask.taskId === task.id);
-  return sameTask.find((t) => t.agent === agent) || sameTask[0] || null;
+  return sameTask.findLast((t) => t.agent === agent) || sameTask.at(-1) || null;
 }
 
 function projectCliBadgeHTML(p, task) {
@@ -40,16 +40,23 @@ function projectCliBadgeHTML(p, task) {
 function projectReviewBadgeHTML(task) {
   const st = task?.reviewStatus || '';
   const wtBadge = task?.worktreePath ? `<span class="badge" title="${esc(task.worktreePath)}">🌿 격리</span>` : '';
-  if (!st && !task?.retryCount) return wtBadge;
+  if (!st && !task?.retryCount && !task?.reviewPaused) return wtBadge;
   const tip = task?.reviewNote ? ` title="${esc(task.reviewNote)}"` : '';
   let rev = '';
   if (st === 'reviewing') rev = `<span class="badge warn"${tip}>🔍 자동 검토 중</span>`;
   else if (st === 'approved') rev = `<span class="badge ok"${tip}>✓ 검토 승인</span>`;
-  else if (st === 'rejected' && task.stage === 'doing' && task.retryCount > 0) {
+  else if (st === 'rejected' && task.stage === 'doing' && !task.reviewPaused && task.retryCount > 0) {
     rev = `<span class="badge warn"${tip}>↻ 반려 재시도 ${task.retryCount}회</span>`;
   } else if (st === 'rejected') rev = `<span class="badge lim"${tip}>⚠ 검토 반려</span>`;
   else if (st === 'error') rev = `<span class="badge lim"${tip}>⚠ 검토 오류</span>`;
-  return `${rev}${wtBadge}`;
+  return `${rev}${task.reviewPaused ? '<span class="badge warn">수정 대기</span>' : ''}${wtBadge}`;
+}
+
+function projectTaskTextHTML(text) {
+  return md(String(text || '')
+    .replace(/(?:^|\n)\[(Primary Sources & Assumptions|Methods & Boundaries|Independent Validation)\][ \t]*/g, '\n\n### $1\n')
+    .replace(/[ \t]+\((\d{1,2})\)[ \t]+/g, '\n$1. ')
+    .replace(/(?<=[.!?。])[ \t]+(?=[^\s])/g, '\n\n'));
 }
 
 function projectReviewNoteHTML(task, compact = false) {
@@ -66,12 +73,12 @@ function projectReviewNoteHTML(task, compact = false) {
     tone = 'warn';
     label = '검토 진행';
     if (!text) text = '교차 리뷰 에이전트가 변경 사항과 테스트를 검토 중입니다.';
-  } else if (st === 'rejected' && task.stage === 'doing') {
+  } else if (st === 'rejected' && task.stage === 'doing' && !task.reviewPaused) {
     tone = 'warn';
     label = `반려 재작업 (${task.retryCount || 1}회차)`;
   } else if (st === 'rejected') {
     tone = 'danger';
-    label = '검토 반려 사유';
+    label = '마지막 검토 반려 사유';
   } else if (st === 'error') {
     tone = 'danger';
     label = '검토 실행 오류';
@@ -84,13 +91,19 @@ function projectReviewNoteHTML(task, compact = false) {
     if (!text) text = '완료 조건·테스트 통과 여부를 검토하는 단계입니다.';
   }
   if (!label || !text) return '';
-  return `<div class="pj-review-note is-${tone}${compact ? ' is-compact' : ''}" title="${esc(`${label}: ${text}`)}"><b>${esc(label)}:</b> ${esc(text)}</div>`;
+  return compact
+    ? `<div class="pj-review-note is-${tone} is-compact"><b>${esc(label)}</b> ${esc(text)}</div>`
+    : `<section class="pj-review-note is-${tone}"><b>${esc(label)}</b>${projectTaskTextHTML(text)}</section>`;
 }
 
 function projectLiveStatusBadgeHTML(p, task) {
   const term = projectTaskTerm(p, task);
   if (!term) return '';
+  const startup = terminalStartupLabel(term);
+  if (startup) return `<span class="badge warn">${esc(startup)}</span>`;
   const st = typeof termStateOf === 'function' ? termStateOf(term) : 'idle';
+  if (task.reviewPaused && st !== 'busy') return '';
+  if (st === 'idle' && task.stage === 'doing') return '<span class="badge">입력 대기</span>';
   return st === 'busy'
     ? `<span class="badge warn" data-pj-live-task="${esc(task.id)}" title="에이전트가 작업 중입니다"><span class="dot busy" style="width:6px;height:6px"></span> 작업 중</span>`
     : `<span class="badge ok" data-pj-live-task="${esc(task.id)}" title="에이전트 응답이 완료되어 대기 중입니다">응답 완료</span>`;
@@ -98,19 +111,83 @@ function projectLiveStatusBadgeHTML(p, task) {
 
 function projectStartBtnHTML(p, task) {
   const term = projectTaskTerm(p, task);
-  if (!term && task.stage === 'done') return '<span class="badge st-done">✓ 완료됨</span>';
+  const action = projectStageActionHTML(task);
+  if (action) return projectLiveStatusBadgeHTML(p, task) + action;
+  if (!term && task.stage === 'done') return '';
   if (term) {
     return `${projectLiveStatusBadgeHTML(p, task)}<button class="btn-sm primary" data-start-task="${esc(task.id)}">터미널 열기 ↗</button>`;
   }
   return `<button class="btn-sm" data-start-task="${esc(task.id)}">작업 시작</button>`;
 }
 
-async function startProjectTask(p, task, button) {
+function projectStageActionHTML(task) {
+  const id = esc(task.id);
+  if (task.stage === 'doing') return `<button type="button" class="btn-sm primary" data-start-task="${id}">작업 다시 진행</button>`;
+  if (task.stage === 'review') return `<button type="button" class="btn-sm primary" data-start-task="${id}"${task.reviewStatus === 'reviewing' ? ' disabled' : ''}>${task.reviewStatus === 'reviewing' ? '검토 중…' : '재검토'}</button>`;
+  return '';
+}
+
+async function requestProjectReview(p, task, button, drawer) {
+  if (button.disabled) return;
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = '검토 요청 중…';
+  try {
+    const result = await api('/api/projects/autopilot/complete', { method: 'POST', body: { projectId: p.id, taskId: task.id, force: true, async: true } });
+    if (result.error) throw new Error(result.error);
+    drawer?.close();
+    toast('자동 재검토를 시작했습니다');
+    await refreshProjects();
+    if (state.sel.kind === 'projects' && state.sel.id === p.id) openProject(p.id, projectTab);
+  } catch (error) {
+    toast(error.message, 5000, 'danger');
+    button.textContent = label;
+    button.disabled = false;
+  }
+}
+
+function runProjectCardAction(p, task, button) {
+  if (task.stage === 'review') return requestProjectReview(p, task, button);
+  return startProjectTask(p, task, button, { retry: task.stage === 'doing' });
+}
+
+const PJ_COLLAPSE_KEY = 'ach.pjCollapse.v1';
+function loadPjCollapse() {
+  try { return JSON.parse(localStorage.getItem(PJ_COLLAPSE_KEY) || '{}') || {}; } catch { return {}; }
+}
+function savePjCollapse(map) {
+  try { localStorage.setItem(PJ_COLLAPSE_KEY, JSON.stringify(map)); } catch {}
+}
+function isTaskCollapsed(projectId, taskId) {
+  return !!loadPjCollapse()[`${projectId}:t:${taskId}`];
+}
+function toggleTaskCollapsed(projectId, taskId) {
+  const map = loadPjCollapse();
+  const k = `${projectId}:t:${taskId}`;
+  if (map[k]) delete map[k]; else map[k] = 1;
+  savePjCollapse(map);
+  return !!map[k];
+}
+function isLaneCollapsed(projectId, stage) {
+  return !!loadPjCollapse()[`${projectId}:l:${stage}`];
+}
+function toggleLaneCollapsed(projectId, stage) {
+  const map = loadPjCollapse();
+  const k = `${projectId}:l:${stage}`;
+  if (map[k]) delete map[k]; else map[k] = 1;
+  savePjCollapse(map);
+  return !!map[k];
+}
+function collapseBtnHTML(collapsed, taskId) {
+  return `<button type="button" class="ghost icon-btn btn-sm pj-col-btn" data-toggle-collapse="${esc(taskId)}" title="${collapsed ? '펼치기' : '접기'}" aria-expanded="${!collapsed}">${collapsed ? '▸' : '▾'}</button>`;
+}
+
+async function startProjectTask(p, task, button, { retry = false } = {}) {
   const gen = viewGen;
   if (button) button.disabled = true;
   try {
-    const current = projectTaskTerm(p, task);
-    const t = current || await api('/api/projects/start', { method: 'POST', body: { projectId: p.id, taskId: task.id } });
+    const current = retry ? null : projectTaskTerm(p, task);
+    const t = current || await api('/api/projects/start', { method: 'POST', body: { projectId: p.id, taskId: task.id, ...(retry ? { retry: true } : {}) } });
     if (t.error || !t.id) throw new Error(t.error || '터미널을 열 수 없습니다.');
     // Auto-advance task stage from 'planned' → 'doing' when starting work
     if (!current && task.stage === 'planned') {
@@ -121,7 +198,9 @@ async function startProjectTask(p, task, button) {
     }
     if (!current) await refreshOverview();
     if (gen !== viewGen) return;
-    if (current) {
+    if (current || retry) {
+      if (retry) await refreshProjects();
+      if (gen !== viewGen) return;
       select({ kind: 'term', id: t.id, project: p.id });
     } else {
       if (typeof refreshProjects === 'function') await refreshProjects();

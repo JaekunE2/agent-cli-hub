@@ -42,7 +42,6 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height:
 .search-more > summary, .new-term-options > summary { cursor: pointer; color: var(--muted); padding: 7px 12px; }
 .results .rgroup > .hit .x { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .new-term-options > summary { padding-inline: 0; }
-.drw-foot:has(#nOk) { flex-wrap: wrap; }
 .terms-controls .seg, .usage-page .seg, .gpu-tabs, .research-tabs { flex-wrap: wrap; max-width: 100%; }
 .usage-attention h2 { margin: 0 0 8px; font-size: 16px; }
 #view { flex: 1; min-height: 0; overflow: auto; scrollbar-gutter: stable; scroll-behavior: smooth; position: relative; }
@@ -374,7 +373,13 @@ textarea { font: inherit; color: inherit; background: var(--panel); border: 1px 
 .drw-head { padding: 14px 18px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 10px; flex: none; }
 .drw-head h2, .drw-head h3 { margin: 0; font-size: 15.5px; font-weight: 700; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .drw-body { flex: 1; min-height: 0; overflow: auto; padding: 18px; display: flex; flex-direction: column; gap: 14px; }
-.drw-foot { padding: 12px 18px; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: none; background: var(--panel); }
+.drw-foot { padding: 12px 18px; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; flex: none; background: var(--panel); }
+.artifact-open { display: block; min-width: 0; max-width: 100%; min-height: 0; padding: 0; border: 0; background: transparent; text-align: left; font-weight: 700; overflow: hidden; text-overflow: ellipsis; }
+.artifact-open:hover { text-decoration: underline; background: transparent; }
+.artifact-preview-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.artifact-preview-head h2 { min-width: 0; margin: 0; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dlg .a-view-actions { padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+.avbody { min-height: 0; }
 .drw-foot .sp { flex: 1; }
 .ac-add > summary { cursor: pointer; font-weight: 650; margin-bottom: 8px; }
 .ac-add[open] > :not(summary) { margin-bottom: 8px; }
@@ -396,16 +401,23 @@ textarea { font: inherit; color: inherit; background: var(--panel); border: 1px 
 
 /* Ephemeral Side Chat */
 .chat { position: relative; }
+.chat.has-pinned-sc { padding-right: calc(var(--sc-w, 380px) + 16px); }
+@media (max-width: 900px) { .chat.has-pinned-sc { padding-right: 0; } }
 .sidechat-fab { position: absolute; z-index: 20; display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; font-size: 12px; font-weight: 600; border-radius: 999px; border: 1px solid var(--accent); background: var(--panel); color: var(--text); box-shadow: 0 6px 18px rgba(0,0,0,.22); cursor: pointer; }
-.sidechat-pop { position: sticky; bottom: 12px; z-index: 25; margin: 10px 0 0 auto; width: min(440px, 100%); background: var(--panel); border: 1px solid var(--line-strong); border-radius: var(--radius-lg); box-shadow: 0 12px 32px rgba(0,0,0,.25); display: flex; flex-direction: column; overflow: hidden; }
-.sidechat-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel2); }
-.sidechat-ttl { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 700; }
-.sidechat-quote { margin: 8px 12px 0; padding: 6px 10px; border-left: 3px solid var(--accent); background: var(--bg); font-size: 12px; color: var(--muted); border-radius: 4px; max-height: 76px; overflow: auto; white-space: pre-wrap; }
-.sidechat-msgs { padding: 10px 12px; max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
-.sidechat-msg { font-size: 12.5px; line-height: 1.5; padding: 7px 10px; border-radius: 10px; word-break: keep-all; overflow-wrap: anywhere; }
+.sidechat-pop { position: sticky; bottom: 12px; z-index: 25; margin: 10px 0 0 auto; width: var(--sc-w, 420px); max-width: 100%; min-width: 280px; max-height: 75vh; background: var(--panel); border: 1px solid var(--line-strong); border-radius: var(--radius-lg); box-shadow: 0 12px 32px rgba(0,0,0,.25); display: flex; flex-direction: column; overflow: hidden; }
+.sidechat-pop.is-pinned { position: fixed; top: var(--sc-top, 56px); right: 12px; bottom: 12px; margin: 0; max-height: none; z-index: 40; width: var(--sc-w, 380px); max-width: calc(100vw - 24px); }
+.sidechat-fab[hidden], .sidechat-pop[hidden] { display: none !important; }
+.sidechat-resize { position: absolute; left: 0; top: 0; bottom: 0; width: 6px; cursor: ew-resize; z-index: 3; }
+.sidechat-resize:hover, .sidechat-resize.is-dragging { background: color-mix(in srgb, var(--accent) 40%, transparent); }
+.sidechat-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel2); flex: none; }
+.sidechat-ttl { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 700; min-width: 0; }
+.sidechat-quote { margin: 8px 12px 0; padding: 6px 10px; border-left: 3px solid var(--accent); background: var(--bg); font-size: 12px; color: var(--muted); border-radius: 4px; max-height: 84px; overflow-y: auto; overscroll-behavior: contain; white-space: pre-wrap; flex: none; }
+.sidechat-msgs { padding: 10px 12px; flex: 1 1 auto; min-height: 100px; max-height: 320px; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 8px; }
+.sidechat-pop.is-pinned .sidechat-msgs { max-height: none; }
+.sidechat-msg { font-size: 12.5px; line-height: 1.5; padding: 7px 10px; border-radius: 10px; word-break: keep-all; overflow-wrap: anywhere; flex: none; }
 .sidechat-msg.u { align-self: flex-end; max-width: 85%; background: color-mix(in srgb, var(--accent) 14%, var(--panel)); border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line)); }
 .sidechat-msg.a { align-self: flex-start; max-width: 95%; background: var(--bg); border: 1px solid var(--line); }
-.sidechat-bar { display: flex; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--line); background: var(--panel2); }
+.sidechat-bar { display: flex; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--line); background: var(--panel2); flex: none; }
 .sidechat-bar input { flex: 1; min-width: 0; font-size: 12.5px; height: 32px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--bg); color: var(--text); }
 mark { background: #f4c542; color: #1f1e1c; border-radius: 2px; padding: 0 1px; }
 .msg.target { outline: 2px solid var(--accent); }

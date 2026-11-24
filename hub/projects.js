@@ -43,9 +43,24 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
     return true;
   };
   return {
-    list: () => read().projects,
+    list: () => read().projects.map((project) => ({
+      ...project,
+      tasks: (project.tasks || []).map((task) => task.stage === 'review' && task.reviewPaused === undefined && ['rejected', 'error'].includes(task.reviewStatus)
+        ? { ...task, stage: 'doing', reviewPaused: true } : task),
+    })),
     hidden: () => new Set(read().hidden),
     records: id => read().links[id]?.ids || [],
+    sessionOwners() {
+      const data = read();
+      const owners = new Map();
+      for (const project of data.projects) {
+        const link = data.links[project.id];
+        for (const sid of link?.ids || []) {
+          if (!owners.has(sid)) owners.set(sid, { projectId: project.id, taskId: link.tasks?.[sid] });
+        }
+      }
+      return owners;
+    },
     recordAgent: (id, sid) => read().links[id]?.agents?.[sid],
     recordAccount: (id, sid) => read().links[id]?.accounts?.[sid],
     recordTask: (id, sid) => read().links[id]?.tasks?.[sid],

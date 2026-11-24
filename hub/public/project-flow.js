@@ -190,17 +190,19 @@ function projectFlow(p) {
     const subDone = subs.filter((x) => x.stage === 'done').length;
     const k = typeof taskKindOf === 'function' ? taskKindOf(t) : 'dev';
     const menuAria = `${t.title} 메뉴`;
-    return `<article class="pj-task flow-node" data-task="${esc(t.id)}" data-stage="${esc(t.stage)}" data-kind="${esc(k)}">
+    const collapsed = typeof isTaskCollapsed === 'function' && isTaskCollapsed(p.id, t.id);
+    return `<article class="pj-task flow-node${collapsed ? ' is-collapsed' : ''}" data-task="${esc(t.id)}" data-stage="${esc(t.stage)}" data-kind="${esc(k)}">
       <span class="pj-port in" aria-hidden="true"></span>
       <span class="pj-port out" aria-hidden="true"></span>
       <div class="row" style="justify-content:space-between;gap:6px">
-        <div class="row" style="gap:5px;min-width:0;flex-wrap:wrap">${kindBadgeHTML(t)}${stageBadgeHTML(t.stage)}${typeof projectLiveStatusBadgeHTML === 'function' ? projectLiveStatusBadgeHTML(p, t) : ''}${typeof projectReviewBadgeHTML === 'function' ? projectReviewBadgeHTML(t) : ''}${subs.length ? `<span class="badge">하위 ${subDone}/${subs.length}</span>` : ''}</div>
+        <div class="row" style="gap:5px;min-width:0;flex-wrap:wrap">${typeof collapseBtnHTML === 'function' ? collapseBtnHTML(collapsed, t.id) : ''}${kindBadgeHTML(t)}${stageBadgeHTML(t.stage)}${typeof projectLiveStatusBadgeHTML === 'function' ? projectLiveStatusBadgeHTML(p, t) : ''}${typeof projectReviewBadgeHTML === 'function' ? projectReviewBadgeHTML(t) : ''}${subs.length ? `<span class="badge">하위 ${subDone}/${subs.length}</span>` : ''}</div>
         <button class="ghost icon-btn btn-sm" data-task-more="${esc(t.id)}" aria-label="${esc(menuAria)}" aria-haspopup="menu" aria-expanded="false">${ico.more || '⋯'}</button>
       </div>
       <div class="pj-task-head">
         <button data-edit="${esc(t.id)}" class="pj-title">${esc(t.title)}</button>
       </div>
       ${typeof projectReviewNoteHTML === 'function' ? projectReviewNoteHTML(t, true) : ''}
+      ${projectStageActionHTML(t)}
     </article>`;
   };
 

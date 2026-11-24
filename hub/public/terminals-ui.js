@@ -544,10 +544,11 @@ function viewTerm() {
   const ag = t?.agent || (t?.codex ? 'codex' : t?.agy ? 'agy' : t?.claude ? 'claude' : null);
 
   const pj = projectOfTerm(t);
+  const startup = terminalStartupLabel(t);
   const stNow = t ? termStateOf(t) : 'exited';
   const justDoneNow = stNow === 'idle' && state.justDoneTerms.has(String(t?.id));
-  const pillCls = stNow === 'busy' ? 'busy' : justDoneNow ? 'done' : stNow === 'exited' ? 'exited' : 'idle';
-  const pillText = stNow === 'busy'
+  const pillCls = startup || stNow === 'busy' ? 'busy' : justDoneNow ? 'done' : stNow === 'exited' ? 'exited' : 'idle';
+  const pillText = startup ? esc(startup) : stNow === 'busy'
     ? '<span class="dot busy" style="width:6px;height:6px"></span>실행 중'
     : justDoneNow
       ? `${ICO.check} 작업 완료`

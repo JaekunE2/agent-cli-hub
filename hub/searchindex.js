@@ -496,9 +496,9 @@ class SearchIndex {
 
   get(id) { return this.docs.get(id); }
 
-  recent(limit = 40, includeAuto = false, agent = '', hidden = new Set()) {
+  recent(limit = 40, includeAuto = false, agent = '', hidden = new Set(), projectSessions = new Set()) {
     return [...this.docs.values()]
-      .filter((d) => !hidden.has(d.id) && d.msgs.length && (includeAuto || !d.auto) && (!agent || (d.agent || 'claude') === agent))
+      .filter((d) => !hidden.has(d.id) && d.msgs.length && (includeAuto || !d.auto || projectSessions.has(d.id)) && (!agent || (d.agent || 'claude') === agent))
       .sort((a, b) => (b.lastUserAt || b.mtime) - (a.lastUserAt || a.mtime)).slice(0, limit)
       .map((d) => ({ sessionId: d.id, agent: d.agent || 'claude', cwd: d.cwd, title: d.title, firstPrompt: d.firstPrompt, mtime: d.mtime, lastUserAt: d.lastUserAt || 0, auto: !!d.auto }));
   }

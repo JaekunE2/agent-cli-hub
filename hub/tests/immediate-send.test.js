@@ -2,8 +2,61 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { PTY_KEYS, dispatchImmediatePrompt } = require('../immediate-send');
 const { createSessionRoutes } = require('../routes-sessions');
+const { sessionStartupBlock } = require('../term-manager');
 
 const noopSleep = () => Promise.resolve();
+
+test('project restart waits for explicit CLI confirmation and resumes the same task', async () => {
+  const prompts = {
+    codex: ['Do you trust the files in this folder?'],
+    claude: ['❯ 1. Yes, I trust this folder', '  2. No, exit'],
+    agy: ['Sign in with Google'],
+  };
+  for (const [agent, prompt] of Object.entries(prompts)) {
+    const projectTask = { projectId: 'p', taskId: 't' };
+    const term = { id: '12', exited: null, meta: { projectTask }, spawnResult: Promise.resolve({ ok: true }) };
+    const terms = new Map([[term.id, term]]);
+    let project = { id: 'p', cwd: process.cwd(), agent, tasks: [{ id: 't', agent, account: '', stage: 'doing', reviewPaused: true, title: 'Complete task' }] };
+    let lines = prompt, busy = false;
+    const writes = [];
+    let allow;
+    const confirmation = new Promise((resolve) => { allow = resolve; });
+    const hub = {
+      terms, deletingProjects: new Set(), projectAgents: Object.keys(prompts), ensureProjectDir() {},
+      projects: { list: () => [project], save: (value) => { project = value; } },
+      projectAccounts: { resolve: () => ({}) }, agySwap: { available: () => false }, agyExe: () => 'agy',
+      agentOf: () => agent, cliModelEffortArgs: () => [], codexLaunch: () => ({ cmd: 'codex.exe', args: [] }), fingerprint: (x) => x,
+      termInfo: () => ({ id: term.id, startupBlock: sessionStartupBlock(lines.join('\n')) }),
+      readTerm: () => lines, stripAnsi: (x) => x, inputReady: () => !sessionStartupBlock(lines.join('\n')),
+      rememberProjectTerm() {}, forgetTerm: (value) => terms.delete(value.id),
+      codexStatus: () => busy ? 'busy' : 'idle', claudeStatus: () => busy ? 'busy' : 'idle',
+      sleep: noopSleep, dispatchImmediatePrompt: async () => ({ handled: false }),
+      waitFor: async (check, timeout) => { if (timeout === 300000) await confirmation; return check(); },
+      ptyPost: async (_id, _path, { data }) => {
+        writes.push(data);
+        if (data === '\r') { busy = true; lines = ['Working…']; }
+        else lines = ['[Pasted Content 13 chars]'];
+        return { ok: true };
+      },
+    };
+    const { handleSessionRoutes } = createSessionRoutes(hub);
+    const response = (_res, status, payload) => { assert.equal(status, 200); assert.equal(payload.restarted, true); };
+    await handleSessionRoutes('/api/projects/start', null, { method: 'POST' }, null, async () => ({ ...projectTask, retry: true }), response, () => true);
+    assert.deepEqual(writes, [], `${agent} must wait without sending an approval key`);
+    assert.equal(project.tasks[0].reviewPaused, false);
+    lines = ['› Type a message'];
+    allow();
+    assert.equal(await term._projectDispatchResult, undefined);
+    assert.equal(writes.length, 2, agent);
+    assert.match(writes[0], /Complete task/);
+    assert.equal(writes[1], '\r');
+    await handleSessionRoutes('/api/term/close', null, { method: 'POST' }, null, async () => ({ id: term.id }),
+      (_res, status, payload) => { assert.equal(status, 200); assert.equal(payload.ok, true); }, () => true);
+    assert.equal(project.tasks[0].reviewPaused, true);
+    assert.equal(terms.size, 0);
+    assert.equal(writes.length, 2);
+  }
+});
 
 test('sending from the Hub exits Codex history search before typing, once', async () => {
   const prompt = '데스크톱 기준으로 다시 확인해 주세요';

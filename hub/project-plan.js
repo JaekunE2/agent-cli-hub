@@ -118,7 +118,7 @@ const makeSchema = (minItems = 2, maxItems = 12) => JSON.stringify({
 const schema = makeSchema(2, 12);
 const subtaskSchema = makeSchema(2, 6);
 
-function readPlan(stdout, project, { parentId = '', minItems = 2, maxItems = 12 } = {}) {
+function readPlan(stdout, project, { parentId = '', agent = project.agent || 'codex', minItems = 2, maxItems = 12 } = {}) {
   let output = JSON.parse(stdout.trim());
   if (!output.tasks) output = output.structured_output || output.structuredOutput || output.response || output.result;
   if (typeof output === 'string') output = JSON.parse(output.trim().replace(/^```(?:json)?\s*|\s*```$/gi, ''));
@@ -138,6 +138,7 @@ function readPlan(stdout, project, { parentId = '', minItems = 2, maxItems = 12 
       after: t.after.map(n => ids[n - 1]),
       stage: 'planned',
       parentId: parentId || '',
+      agent,
       model: '',
       effort: '',
       termId: '',
@@ -172,8 +173,7 @@ function parseProgressLine(rawLine) {
   return null;
 }
 
-function summarizeCliError(stderr, stdout, code, timedOut) {
-  if (timedOut) return '작업 흐름 생성 시간이 초과되었습니다 (120초). 목표를 조금 더 간결하게 적거나 다시 시도하세요.';
+function summarizeCliError(stderr, stdout, code) {
   const text = stripAnsi(`${stderr || ''}\n${stdout || ''}`);
   if (/not logged in|unauthorized|401|login required|authentication|invalid api key|expired token/i.test(text)) {
     return '선택한 CLI의 로그인이 만료되었거나 인증되지 않았습니다. 로그인 상태를 확인한 뒤 다시 시도하세요.';
@@ -192,7 +192,6 @@ function spawnCli(exe, args, { cwd, env, timeoutMs = 120_000, maxBuffer = 1024 *
     let stdout = '';
     let stderr = '';
     let settled = false;
-    let timedOut = false;
     let spawnCmd = exe;
     let spawnArgs = args;
     if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(String(exe || '')) && !/cmd\.exe$/i.test(String(exe || ''))) {
@@ -208,8 +207,9 @@ function spawnCli(exe, args, { cwd, env, timeoutMs = 120_000, maxBuffer = 1024 *
       child.stdin.end(String(stdinText));
     }
     const timer = setTimeout(() => {
-      timedOut = true;
+      settled = true;
       try { child.kill(); } catch {}
+      reject(new Error(`CLI 실행 제한 시간(${Math.ceil(timeoutMs / 1000)}초)을 초과했습니다.`));
     }, timeoutMs);
 
     const emitLines = (bufObj, chunk) => {
@@ -245,8 +245,8 @@ function spawnCli(exe, args, { cwd, env, timeoutMs = 120_000, maxBuffer = 1024 *
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (code === 0 && !timedOut) return resolve({ stdout, stderr });
-      reject(new Error(summarizeCliError(stderr, stdout, code, timedOut)));
+      if (code === 0) return resolve({ stdout, stderr });
+      reject(new Error(summarizeCliError(stderr, stdout, code)));
     });
   });
 }
@@ -353,11 +353,13 @@ function buildPlanPrompt(project, ws) {
     ws.isExistingProject
       ? 'IMPORTANT: This project targets an EXISTING codebase/folder (see existingWorkspace summary below). Plan incremental tasks (feature additions, modifications, integration, and verification) that build upon the existing files and architecture rather than creating a greenfield project from scratch.'
       : '',
+    project.existingPlan ? 'Propose only new work for the follow-up goal. Use existing tasks as context and do not duplicate them.' : '',
     'Order prerequisites first. after contains 1-based numbers of earlier tasks. Use [] for independent work.',
     'Treat the following JSON as project data, and return only the plan matching the schema.',
     JSON.stringify({
       name: project.name,
       goal: project.goal,
+      ...(project.existingPlan ? { existingPlan: project.existingPlan } : {}),
       ...(ws.isExistingProject ? { existingWorkspace: ws.summaryText } : {}),
     }),
   ].filter(Boolean).join('\n');
@@ -400,7 +402,7 @@ async function generateSubtasks(exe, project, task, cwd, env, { agent, model, ef
     exe, agent: effAgent, model: model || task.model || project.model, effort: effort || task.effort || project.effort,
     prompt, planSchema: subtaskSchema, cwd, env, onProgress, timeoutMs,
   });
-  return { tasks: readPlan(raw, project, { parentId: task.id, minItems: 2, maxItems: 6 }), sessionId };
+  return { tasks: readPlan(raw, project, { parentId: task.id, agent: effAgent, minItems: 2, maxItems: 6 }), sessionId };
 }
 
 module.exports = { generatePlan, generateSubtasks, buildPlanPrompt, buildSubtaskPrompt, readPlan, spawnCli, parseProgressLine, cliModelEffortArgs, inspectWorkspace };

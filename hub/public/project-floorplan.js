@@ -230,6 +230,9 @@
     let mapSelectedId = '';
     let mapQuery = '';
     let mapZoom = 1;
+    const minMapZoom = 0.15;
+    let savingReport = false;
+    const saveLabel = termCtx?.sessionId ? '산출물 저장' : '작업 폴더에 저장';
 
     const LAYER_COLS = [
       { id: 'ui', title: '화면 · UI', tone: 'c' },
@@ -337,7 +340,7 @@
         <div class="row" style="gap:6px;flex-wrap:wrap">
           <button type="button" class="btn-sm" id="fmPreviewMd" title="아키텍처 & 품질 보고서 전문 미리보기 · 산출물 저장">${ico.file || ''} 보고서 보기</button>
           <details class="fm-exports"><summary>보고서 내보내기</summary><div class="row">
-            <button type="button" class="btn-sm" id="fmSaveArtifact" title="작업 폴더에 FLOORPLAN.md 생성 및 산출물 탭 등록">${ico.plus || ''} 산출물 저장</button>
+            <button type="button" class="btn-sm" id="fmSaveArtifact" title="FLOORPLAN.md" ${savingReport ? 'disabled' : ''}>${ico.plus || ''} ${saveLabel}</button>
             <button type="button" class="btn-sm" id="fmCopyMd" title="실무자 공유용 마크다운 아키텍처 보고서 복사">${ico.copy || ''} 복사</button>
             <button type="button" class="btn-sm" id="fmDownloadMd" title="아키텍처 보고서 .md 파일로 다운로드">${ico.external || ''} .md</button>
           </div></details>
@@ -536,7 +539,7 @@
           <div class="fm-macro-wrap">
             ${mapStatusHTML}
             <div class="fm-map-vp" id="fmMapVp">
-              <div class="fm-map-stage" style="transform:scale(${mapZoom});width:${Math.round(100 / mapZoom)}%">
+              <div class="fm-map-stage" style="zoom:${mapZoom}">
                 <svg class="fm-map-edges" aria-hidden="true"></svg>
                 <div class="fm-map-cols">${colsHTML}</div>
               </div>
@@ -572,6 +575,9 @@
         </section>`;
       }
 
+      const oldViewport = $('#fmMapVp', host);
+      const scrollLeft = oldViewport?.scrollLeft || 0;
+      const scrollTop = oldViewport?.scrollTop || 0;
       host.innerHTML = `<div class="fm-wrap">${!p ? '<h1 class="sr-only">코드 구조</h1>' : ''}${toolbar}${body}</div>`;
 
       const srch = $('#fmSearchIn', host);
@@ -598,6 +604,7 @@
 
       const vp = $('#fmMapVp', host);
       if (vp) {
+        vp.scrollTo(scrollLeft, scrollTop);
         requestAnimationFrame(() => drawMapEdges(mapSelectedId));
         vp.onmousedown = (ev) => {
           if (ev.button !== 0 || ev.target.closest('button, input')) return;
@@ -644,15 +651,16 @@
       if (scopeBtn) { mapScope = scopeBtn.dataset.fmMapScope; paint(); return; }
       if (e.target.closest('#fmMapClearSel')) { mapSelectedId = ''; paint(); return; }
       if (e.target.closest('#fmMapZoomIn')) { mapZoom = Math.min(1.4, +(mapZoom + 0.1).toFixed(2)); paint(); return; }
-      if (e.target.closest('#fmMapZoomOut')) { mapZoom = Math.max(0.65, +(mapZoom - 0.1).toFixed(2)); paint(); return; }
+      if (e.target.closest('#fmMapZoomOut')) { mapZoom = Math.max(minMapZoom, +(mapZoom - 0.1).toFixed(2)); paint(); return; }
       if (e.target.closest('#fmMapZoomReset')) { mapZoom = 1; paint(); return; }
       if (e.target.closest('#fmMapFit')) {
         const vp = $('#fmMapVp', host);
-        const colsEl = $('.fm-map-cols', host);
-        if (vp && colsEl) {
-          const needW = colsEl.scrollWidth + 48;
-          mapZoom = Math.max(0.65, Math.min(1, +(vp.clientWidth / Math.max(1, needW)).toFixed(2)));
+        const last = $('.fm-map-col:last-child', host);
+        if (vp && last) {
+          const needW = last.offsetLeft + last.offsetWidth + 48;
+          mapZoom = Math.max(minMapZoom, Math.min(1, Math.floor(100 * vp.clientWidth / needW) / 100));
           paint();
+          $('#fmMapVp', host)?.scrollTo(0, 0);
         }
         return;
       }
@@ -677,23 +685,33 @@
         return;
       }
       const saveArtifactReport = async () => {
-        const mdText = buildArchitectureMarkdown(fp, p, activeCwd);
-        const r = await api('/api/projects/floorplan/report', {
-          method: 'POST',
-          body: {
-            projectId: p?.id || '',
-            cwd: activeCwd,
-            sessionId: termCtx?.sessionId || '',
-            filename: 'FLOORPLAN.md',
-            content: mdText,
-          },
-        });
-        if (r.error) throw new Error(r.error);
-        toast(r.pinned ? `FLOORPLAN.md 생성 및 산출물 탭 등록 완료` : `작업 폴더에 저장됨: ${r.path}`);
-        return r;
+        if (savingReport) return;
+        savingReport = true;
+        const buttons = [$('#fmSaveArtifact', host), $('#drwSaveMd')].filter(Boolean);
+        buttons.forEach((button) => { button.disabled = true; });
+        try {
+          const mdText = buildArchitectureMarkdown(fp, p, activeCwd);
+          const r = await api('/api/projects/floorplan/report', {
+            method: 'POST',
+            body: {
+              projectId: p?.id || '',
+              cwd: activeCwd,
+              sessionId: termCtx?.sessionId || '',
+              filename: 'FLOORPLAN.md',
+              content: mdText,
+            },
+          });
+          if (r.error) throw new Error(r.error);
+          toast(r.pinned ? `FLOORPLAN.md 생성 및 산출물 탭 등록 완료` : `작업 폴더에 저장됨: ${r.path}`);
+        } catch (er) {
+          toast(er.message, 5000, 'danger');
+        } finally {
+          savingReport = false;
+          for (const button of [...buttons, $('#fmSaveArtifact', host)].filter(Boolean)) button.disabled = false;
+        }
       };
       if (e.target.closest('#fmSaveArtifact')) {
-        saveArtifactReport().catch((er) => toast(er.message, 5000, 'danger'));
+        await saveArtifactReport();
         return;
       }
       if (e.target.closest('#fmPreviewMd')) {
@@ -702,16 +720,13 @@
         const d = openDrawer({
           title: '코드 아키텍처 & 품질 점검 보고서 (FLOORPLAN.md)',
           bodyHTML: `<div class="md">${rendered}</div>`,
-          footerHTML: `<button type="button" data-drw-close>닫기</button><button type="button" id="drwCopyMd">복사</button><button type="button" id="drwDlMd">.md 다운로드</button><button type="button" class="primary" id="drwSaveMd">산출물 저장 (FLOORPLAN.md)</button>`,
+          footerHTML: `<button type="button" data-drw-close>닫기</button><button type="button" id="drwCopyMd">복사</button><button type="button" id="drwDlMd">.md 다운로드</button><button type="button" class="primary" id="drwSaveMd" ${savingReport ? 'disabled' : ''}>${saveLabel}</button>`,
           width: 680,
         });
+        window.ACH_PREVIEW?.hydrateMermaid($('.drw-body', d));
         $('#drwCopyMd', d).onclick = async () => { await copyText(mdText); toast('보고서를 클립보드에 복사했습니다'); };
         $('#drwDlMd', d).onclick = () => $('#fmDownloadMd', host)?.click();
-        $('#drwSaveMd', d).onclick = async (ev) => {
-          const btn = ev.currentTarget;
-          btn.disabled = true;
-          try { await saveArtifactReport(); } catch (er) { toast(er.message, 5000, 'danger'); } finally { btn.disabled = false; }
-        };
+        $('#drwSaveMd', d).onclick = saveArtifactReport;
         return;
       }
       if (e.target.closest('#fmCopyMd')) {

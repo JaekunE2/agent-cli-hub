@@ -148,8 +148,30 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
   const liveHost = $('#chatLiveHost', box);
   const floatWrap = $('.chat-bottom-float', box);
 
-  // Ephemeral Side Chat (drag-select -> ask once without saving to session history)
-  let sideChatState = { open: false, selectedText: '', history: [], busy: false };
+  // Ephemeral Side Chat (per-session state, pinnable to right, resizable, wheel-safe)
+  const scKey = String(curSid || `${state.sel.kind}:${state.sel.id}` || 'default');
+  const SC_STORE_KEY = 'ach.sidechat.sessions.v1';
+  const SC_PIN_KEY = 'ach.sidechat.pinned.v1';
+  const SC_WIDTH_KEY = 'ach.sidechat.width.v1';
+  const loadScStore = () => {
+    try { return JSON.parse(sessionStorage.getItem(SC_STORE_KEY) || '{}') || {}; } catch { return {}; }
+  };
+  const saveScStore = (st) => {
+    try {
+      const all = loadScStore();
+      all[scKey] = { open: !!st.open, selectedText: st.selectedText || '', history: Array.isArray(st.history) ? st.history.slice(-30) : [] };
+      sessionStorage.setItem(SC_STORE_KEY, JSON.stringify(all));
+    } catch {}
+  };
+  const savedSc = loadScStore()[scKey];
+  let sideChatState = savedSc
+    ? { open: !!savedSc.open, selectedText: savedSc.selectedText || '', history: Array.isArray(savedSc.history) ? savedSc.history : [], busy: false }
+    : { open: false, selectedText: '', history: [], busy: false };
+  let sideChatPinned = true;
+  try { sideChatPinned = localStorage.getItem(SC_PIN_KEY) !== '0'; } catch {}
+  let sideChatWidth = 380;
+  try { sideChatWidth = Math.max(280, Math.min(720, Number(localStorage.getItem(SC_WIDTH_KEY)) || 380)); } catch {}
+
   const sideFab = document.createElement('button');
   sideFab.type = 'button';
   sideFab.className = 'sidechat-fab';
@@ -163,19 +185,42 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
   sidePop.setAttribute('aria-label', '사이드 채팅');
   box.appendChild(sidePop);
 
+  const syncSideChatLayout = () => {
+    const pinnedOpen = sideChatState.open && sideChatPinned;
+    sidePop.classList.toggle('is-pinned', pinnedOpen);
+    box.classList.toggle('has-pinned-sc', pinnedOpen);
+    box.style.setProperty('--sc-w', `${sideChatWidth}px`);
+    sidePop.style.setProperty('--sc-w', `${sideChatWidth}px`);
+    if (pinnedOpen) {
+      const top = Math.max(12, Math.round(container.getBoundingClientRect().top || 56));
+      sidePop.style.setProperty('--sc-top', `${top}px`);
+    }
+  };
+
   const renderSideChat = () => {
-    if (!sideChatState.open) { sidePop.hidden = true; return; }
+    saveScStore(sideChatState);
+    if (!sideChatState.open) {
+      sidePop.hidden = true;
+      sidePop.innerHTML = '';
+      syncSideChatLayout();
+      return;
+    }
     sidePop.hidden = false;
+    syncSideChatLayout();
     const quote = sideChatState.selectedText.length > 220
       ? `${sideChatState.selectedText.slice(0, 220)}…`
       : sideChatState.selectedText;
     const msgsHtml = sideChatState.history.length
       ? sideChatState.history.map((m) => `<div class="sidechat-msg ${m.role === 'user' ? 'u' : 'a'}">${m.role === 'user' ? esc(m.text) : md(m.text)}</div>`).join('')
-      : '<div class="ums" style="margin:6px 0">선택한 부분을 기준으로 단발성 질문을 입력하세요. (대화 기록에 저장되지 않음)</div>';
+      : '<div class="ums" style="margin:6px 0">선택한 부분을 기준으로 단발성 질문을 입력하세요. (세션별 유지 · 대화 기록에는 미저장)</div>';
     sidePop.innerHTML = `
+      <div class="sidechat-resize" title="드래그하여 너비 조절"></div>
       <div class="sidechat-hd">
-        <span class="sidechat-ttl">${ICO.chat} 사이드 채팅 <span class="badge">일회성 · 미저장</span></span>
-        <button type="button" class="ghost icon-btn btn-sm" data-sc-close aria-label="사이드 채팅 닫기">${ICO.close}</button>
+        <span class="sidechat-ttl">${ICO.chat} 사이드 채팅 <span class="badge">세션별</span></span>
+        <div class="row" style="gap:4px">
+          <button type="button" class="btn-sm${sideChatPinned ? ' primary' : ' ghost'}" data-sc-pin title="우측 고정 전환">${sideChatPinned ? '📌 고정됨' : '우측 고정'}</button>
+          <button type="button" class="ghost icon-btn btn-sm" data-sc-close aria-label="사이드 채팅 닫기">${ICO.close}</button>
+        </div>
       </div>
       <blockquote class="sidechat-quote">${esc(quote)}</blockquote>
       <div class="sidechat-msgs">${msgsHtml}${sideChatState.busy ? '<div class="ums" style="margin:4px 0">응답 생성 중…</div>' : ''}</div>
@@ -184,9 +229,41 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
         <button type="button" class="primary btn-sm" data-sc-send ${sideChatState.busy ? 'disabled' : ''}>질문</button>
       </div>`;
     const bodyEl = $('.sidechat-msgs', sidePop);
+    const quoteEl = $('.sidechat-quote', sidePop);
     if (bodyEl) bodyEl.scrollTop = bodyEl.scrollHeight;
+    for (const scEl of [bodyEl, quoteEl]) {
+      scEl?.addEventListener('wheel', (ev) => {
+        if (scEl.scrollHeight > scEl.clientHeight) ev.stopPropagation();
+      }, { passive: true });
+    }
+    const resizeEl = $('.sidechat-resize', sidePop);
+    if (resizeEl) {
+      resizeEl.onpointerdown = (ev) => {
+        ev.preventDefault();
+        const startX = ev.clientX;
+        const startW = sideChatWidth;
+        resizeEl.classList.add('is-dragging');
+        const onMove = (mv) => {
+          sideChatWidth = Math.max(280, Math.min(720, startW + (startX - mv.clientX)));
+          syncSideChatLayout();
+        };
+        const onUp = () => {
+          resizeEl.classList.remove('is-dragging');
+          window.removeEventListener('pointermove', onMove);
+          window.removeEventListener('pointerup', onUp);
+          try { localStorage.setItem(SC_WIDTH_KEY, String(sideChatWidth)); } catch {}
+        };
+        window.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onUp);
+      };
+    }
+    $('[data-sc-pin]', sidePop).onclick = () => {
+      sideChatPinned = !sideChatPinned;
+      try { localStorage.setItem(SC_PIN_KEY, sideChatPinned ? '1' : '0'); } catch {}
+      renderSideChat();
+    };
     $('[data-sc-close]', sidePop).onclick = () => {
-      sideChatState = { open: false, selectedText: '', history: [], busy: false };
+      sideChatState = { open: false, selectedText: '', history: sideChatState.history, busy: false };
       renderSideChat();
     };
     const scIn = $('[data-sc-in]', sidePop);
@@ -250,11 +327,12 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
   });
   sideFab.onclick = () => {
     if (!pendingSelText) return;
-    sideChatState = { open: true, selectedText: pendingSelText, history: [], busy: false };
+    sideChatState = { open: true, selectedText: pendingSelText, history: sideChatState.history || [], busy: false };
     sideFab.hidden = true;
     try { window.getSelection()?.removeAllRanges(); } catch {}
     renderSideChat();
   };
+  if (sideChatState.open) renderSideChat();
 
   let lastSig = '';
   let lastLiveMode = '';

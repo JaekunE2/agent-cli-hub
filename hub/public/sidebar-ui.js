@@ -327,7 +327,10 @@ function renderSide() {
     } else if (state.termGroupByProject) {
       const groups = new Map();
       for (const entry of unifiedEntries) {
-        const pj = entry.kind === 'term' ? projectOfTerm(entry.item) : null;
+        const pj = entry.kind === 'term' ? projectOfTerm(entry.item)
+          : entry.kind === 'console' ? projectOfSession(sessionOfConsole(entry.item)?.sessionId)
+            : (state.projects || []).find((p) => p.id === entry.item.projectId)
+              || projectOfSession(entry.item.sessionId) || projectOfSession(entry.item.branch?.parentSessionId);
         const gKey = pj ? `pj:${pj.id}` : '_general';
         const gLabel = pj ? pj.name : '일반 대화 · 터미널';
         if (!groups.has(gKey)) groups.set(gKey, { label: gLabel, isPj: !!pj, items: [] });

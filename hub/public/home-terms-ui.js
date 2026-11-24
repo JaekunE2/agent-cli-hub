@@ -329,6 +329,9 @@ function paintTermsBody() {
   }
 
   if (tab === 'recent') {
+    const previousFilter = $('#recFilter', host);
+    if (previousFilter?.dataset.composing) return;
+    const restoreFocus = previousFilter && document.activeElement === previousFilter;
     const rf = state.recentFilter || '';
     const qTerms = termsOf(state.recentQuery);
     const fbtn = (val, label) => `<button data-rfilt="${val}" class="${rf === val ? 'on' : ''}">${label}</button>`;
@@ -363,7 +366,17 @@ function paintTermsBody() {
       ${groupsHTML}`;
     const inp = $('#recFilter', host);
     if (inp) {
-      inp.oninput = () => { state.recentQuery = inp.value; paintTermsBody(); };
+      if (restoreFocus) {
+        inp.focus({ preventScroll: true });
+        inp.setSelectionRange(previousFilter.selectionStart, previousFilter.selectionEnd);
+      }
+      inp.oncompositionstart = () => { inp.dataset.composing = '1'; };
+      inp.oncompositionend = inp.oninput = (e) => {
+        if (e.type === 'compositionend') delete inp.dataset.composing;
+        if (e.isComposing || inp.dataset.composing || state.recentQuery === inp.value) return;
+        state.recentQuery = inp.value;
+        paintTermsBody();
+      };
     }
     return;
   }

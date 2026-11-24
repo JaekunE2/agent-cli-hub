@@ -10,6 +10,20 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+test('follow-up plan separates the new goal from existing work', () => {
+  const prompt = buildPlanPrompt({ name: 'App', goal: 'Add CSV export', existingPlan: {
+    goal: 'Publish a dashboard', tasks: [{ title: 'Build the dashboard', stage: 'done' }],
+  } }, { isExistingProject: false });
+  assert.match(prompt, /do not duplicate/);
+  assert.match(prompt, /Add CSV export/);
+  assert.match(prompt, /Build the dashboard/);
+});
+
+test('spawnCli reports its configured deadline when a CLI runs too long', async () => {
+  await assert.rejects(spawnCli(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { timeoutMs: 80 }),
+    /CLI 실행 제한 시간\(1초\)/);
+});
+
 test('inspectWorkspace detects existing project markers and builds workspace summary', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-ws-inspect-'));
   try {
@@ -142,6 +156,10 @@ test('generated work becomes cards with instructions and valid links', () => {
     { title: 'Verify', detail: 'Check the design', after },
   ] } });
   const cards = readPlan(raw([1]), project);
+  for (const agent of ['codex', 'claude', 'agy']) {
+    assert.deepEqual(readPlan(raw([1]), { ...project, agent }).map((card) => card.agent), [agent, agent]);
+    assert.deepEqual(readPlan(raw([1]), project, { parentId: 'parent', agent }).map((card) => card.agent), [agent, agent]);
+  }
   assert.equal(cards[1].detail, 'Check the design');
   assert.deepEqual(cards[1].after, [cards[0].id]);
   for (const after of [[2], [0], ['1']]) assert.throws(() => readPlan(raw(after), project));

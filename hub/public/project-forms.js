@@ -391,6 +391,36 @@ function projectForm(p) {
   bindProjectAccounts(dialog, p?.account || '', null, p?.model || '', p?.effort || '');
 }
 
+function projectFollowupForm(p) {
+  const agent = p.agent === 'cursor' ? 'codex' : p.agent || 'codex';
+  let generated, planKey;
+  const dialog = projectDialog('후속 작업 설계', `
+    <p class="ums">${esc(p.name)} · ${esc(p.cwd)}</p>
+    <label>개선·버전업 목표<textarea name="goal" required maxlength="6000" rows="4" placeholder="추가할 기능과 완료 기준을 적어주세요"></textarea></label>
+    ${projectAgentField('설계에 사용할 CLI', agent)}${projectAccountField}${projectModelEffortFields}
+    <p class="ums">기존 목표와 작업 기록을 보존합니다. 자동 진행이 켜져 있으면 추가 후 실행 가능한 작업이 시작됩니다.</p>
+    <div data-plan-preview role="status"></div>`, async (f) => {
+    const selectedAgent = f.get('agent');
+    const draft = { projectId: p.id, name: p.name, cwd: p.cwd, goal: f.get('goal').trim(), agent: selectedAgent,
+      account: f.get('account') === 'inherit' ? p.account || '' : f.get('account'),
+      model: String(f.get('model') || ''), effort: String(f.get('effort') || '') };
+    const key = JSON.stringify(draft);
+    if (!generated || planKey !== key) {
+      generated = await previewProjectPlan(dialog, draft, true);
+      planKey = key;
+      $('.dlg-foot .primary', dialog).textContent = '후속 작업 추가';
+      return false;
+    }
+    const r = await api('/api/projects');
+    if (r.error) throw new Error(r.error);
+    const latest = r.projects?.find((x) => x.id === p.id);
+    if (!latest || latest.cwd !== draft.cwd) throw new Error('프로젝트 또는 작업 폴더가 변경되었습니다. 후속 작업 설계를 다시 열어주세요.');
+    await saveProject({ ...latest, tasks: [...latest.tasks, ...generated] }, 'flow');
+  }, '', '작업 흐름 생성');
+  bindProjectAccounts(dialog, agent === p.agent ? p.account || '' : '', p,
+    agent === p.agent ? p.model || '' : '', agent === p.agent ? p.effort || '' : '');
+}
+
 // Scannable Task List: Task Kind Color Badge + Stage Badge + 1-Click Embedded Sub-Dev Chat (`💬 서브 개발`)
 function projectDesign(p) {
   const ico = window.UI_ICO || {};
@@ -413,28 +443,33 @@ function projectDesign(p) {
     const summary = [t.detail ? t.detail.replace(/\s+/g, ' ').trim() : '', deps.length ? `← ${deps.join(', ')}` : ''].filter(Boolean).join(' · ');
     const k = typeof taskKindOf === 'function' ? taskKindOf(t) : 'dev';
     const chatCnt = (p.subChats?.[t.id] || []).length;
-    const tokBadge = typeof taskTokenBadgeHTML === 'function' ? taskTokenBadgeHTML(p, t, false) : '';
+    const tokBadge = typeof taskTokenBadgeHTML === 'function' ? taskTokenBadgeHTML(p, t, true) : '';
     const subTip = `클릭해 우측 상세 패널에서 하위 서브태스크 ${subs.length}개 확인`;
     const menuAria = `${t.title} 메뉴`;
-    return `<div class="pj-row${t.stage === 'done' ? ' is-done' : ''}${t.autoExclude ? ' is-auto-off' : ''}" data-task-row="${esc(t.id)}">
+    const showSummary = t.stage !== 'done' && summary;
+    const collapsed = typeof isTaskCollapsed === 'function' && isTaskCollapsed(p.id, t.id);
+    return `<div class="pj-row${t.stage === 'done' ? ' is-done' : ''}${t.autoExclude ? ' is-auto-off' : ''}${collapsed ? ' is-collapsed' : ''}" data-task-row="${esc(t.id)}">
       <span class="pj-step-num ${esc(t.stage)} kind-${esc(k)}" title="${esc(projectStages.find((s) => s[0] === t.stage)?.[1] || t.stage)}">${numMark}</span>
       <div class="pj-row-main">
         <div class="pj-row-head">
+          ${typeof collapseBtnHTML === 'function' ? collapseBtnHTML(collapsed, t.id) : ''}
           ${typeof kindBadgeHTML === 'function' ? kindBadgeHTML(t) : ''}
           <button data-plan-task="${esc(t.id)}" class="pj-title">${esc(t.title)}</button>
+        </div>
+        <div class="pj-row-badges">
           ${t.stage !== 'planned' ? stageBadgeHTML(t.stage) : ''}
           ${typeof projectReviewBadgeHTML === 'function' ? projectReviewBadgeHTML(t) : ''}
           ${subs.length ? `<span class="badge" title="${esc(subTip)}">서브 ${subDone}/${subs.length}</span>` : ''}
           ${tokBadge}
         </div>
-        ${summary ? `<div class="pj-row-desc">${esc(summary)}</div>` : ''}
+        ${showSummary ? `<div class="pj-row-desc">${esc(summary)}</div>` : ''}
         ${typeof projectReviewNoteHTML === 'function' ? projectReviewNoteHTML(t, true) : ''}
       </div>
       <div class="pj-row-acts">
         <button type="button" class="pj-auto-sw${t.autoExclude ? ' off' : ' on'}" data-toggle-auto="${esc(t.id)}" aria-pressed="${!t.autoExclude}" title="${t.autoExclude ? '자동 진행에서 제외됨 (클릭해 포함)' : '자동 진행에 포함됨 (클릭해 제외)'}">${t.autoExclude ? '자동 OFF' : '자동 ON'}</button>
         <button class="ghost btn-sm" data-subchat-task="${esc(t.id)}" title="이 태스크 안에서 채팅 기반으로 서브 개발 진행">${ico.chat || ''} 서브 개발${chatCnt ? ` <b>${chatCnt}</b>` : ''}</button>
         ${projectCliBadgeHTML(p, t)}
-        ${projectStartBtnHTML(p, t)}
+        <span class="pj-act-status">${projectStartBtnHTML(p, t)}</span>
         <button class="ghost icon-btn btn-sm" data-task-more="${esc(t.id)}" aria-label="${esc(menuAria)}" aria-haspopup="menu" aria-expanded="false">${ico.more || '⋯'}</button>
       </div>
     </div>`;
@@ -455,6 +490,18 @@ function projectDesign(p) {
   </div>`;
   $('#projectEdit').onclick = () => projectForm(p);
   host.onclick = (e) => {
+    const colBtn = e.target.closest('[data-toggle-collapse]');
+    if (colBtn) {
+      e.stopPropagation();
+      const tid = colBtn.dataset.toggleCollapse;
+      const next = toggleTaskCollapsed(p.id, tid);
+      const rowEl = colBtn.closest('[data-task-row]');
+      if (rowEl) rowEl.classList.toggle('is-collapsed', next);
+      colBtn.textContent = next ? '▸' : '▾';
+      colBtn.title = next ? '펼치기' : '접기';
+      colBtn.setAttribute('aria-expanded', String(!next));
+      return;
+    }
     const autoSw = e.target.closest('[data-toggle-auto]');
     if (autoSw) {
       e.stopPropagation();
@@ -474,7 +521,7 @@ function projectDesign(p) {
     const assign = e.target.closest('[data-assign-task]');
     if (assign) { e.stopPropagation(); return taskForm(p, p.tasks.find((x) => x.id === assign.dataset.assignTask), true); }
     const start = e.target.closest('[data-start-task]');
-    if (start) { e.stopPropagation(); return startProjectTask(p, p.tasks.find((x) => x.id === start.dataset.startTask), start); }
+    if (start) { e.stopPropagation(); return runProjectCardAction(p, p.tasks.find((x) => x.id === start.dataset.startTask), start); }
     const row = e.target.closest('[data-task-row], [data-plan-task]');
     if (row) {
       const id = row.dataset.planTask || row.dataset.taskRow;

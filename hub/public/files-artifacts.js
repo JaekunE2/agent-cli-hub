@@ -372,7 +372,7 @@ async function renderArtifacts(sid, gen) {
       const location = String(it.path || '').split(/[\\/]/).slice(0, -1).filter(Boolean).slice(-2).join('/');
       return `<div class="acard" data-ai="${i}">
         <div class="athumb">${it.kind === 'image' ? `<img loading="lazy" src="${artUrl(sid, it.path)}" alt="">` : `<span>${ART_ICON[it.kind] || ART_ICON.file}</span>`}</div>
-        <div class="ameta"><b title="${esc(it.path)}">${esc(it.title || it.name)}</b>
+        <div class="ameta"><button type="button" class="artifact-open" title="${esc(it.path)}">${esc(it.title || it.name)}</button>
           <span class="artifact-location" title="${esc(it.path)}">${esc(location)}</span>
           <span class="ums">${esc(it.ext.toUpperCase())} · ${fmtSize(it.size)} · ${relTime(it.mtime)}${it.source === 'pinned' ? ' · 지정됨' : ''}</span></div>
         <button class="ahide" data-ahide="${i}" aria-label="목록에서 숨기기" title="목록에서 숨기기">${ICO.close}</button><button class="asend" data-asend="${i}" aria-label="세션에 보내기" title="이 파일을 세션에 보내기 (경로 멘션)">${ICO.arrowUpRight}</button></div>`;
@@ -424,8 +424,13 @@ async function renderArtifacts(sid, gen) {
     }));
     $('#view').querySelectorAll('[data-ahide]').forEach((b) => (b.onclick = async (e) => {
       e.stopPropagation();
-      await api('/api/artifacts/hide', { method: 'POST', body: { session: sid, path: items[Number(b.dataset.ahide)].path } });
-      paint();
+      b.disabled = true;
+      try {
+        const r = await api('/api/artifacts/hide', { method: 'POST', body: { session: sid, path: items[Number(b.dataset.ahide)].path } });
+        if (r.error) throw new Error(r.error);
+        await paint();
+      } catch (e) { toast(e.message, 5000, 'danger'); }
+      finally { b.disabled = false; }
     }));
   };
   paint();
@@ -436,21 +441,29 @@ function addArtifactDialog(sid, done) {
     <label>이름 (선택)<br><input id="apTitle" style="width:100%" placeholder="예: 최종 비교 영상"></label>`;
   const d = openDrawer({ title: '산출물 지정', bodyHTML: body, footerHTML: '<button data-drw-close>취소</button><button class="primary" id="apOk">추가</button>', width: 440 });
   attachFileInput($('.drw-body', d), (txt) => { $('#apPath', d).value = txt.trim().replace(/^"|"$/g, ''); }, null);
-  $('#apOk', d).onclick = async () => {
-    const r = await api('/api/artifacts/add', { method: 'POST', body: { session: sid, path: $('#apPath', d).value.trim(), title: $('#apTitle', d).value.trim() || undefined } });
-    if (r.error) return toast(r.error, 6000);
-    d.close(); toast('산출물로 지정했습니다'); done && done();
+  $('#apOk', d).onclick = async (e) => {
+    const button = e.currentTarget;
+    button.disabled = true;
+    try {
+      const r = await api('/api/artifacts/add', { method: 'POST', body: { session: sid, path: $('#apPath', d).value.trim(), title: $('#apTitle', d).value.trim() || undefined } });
+      if (r.error) throw new Error(r.error);
+      d.close(); toast('산출물로 지정했습니다'); done?.();
+    } catch (er) { toast(er.message, 6000, 'danger'); }
+    finally { button.disabled = false; }
   };
 }
 async function openArtifact(sid, it, url = artUrl(sid, it.path)) {
   const d = document.createElement('div');
   d.className = 'dlg';
-  d.innerHTML = `<div class="box wide aview"><div class="row"><b style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(it.path)}">${ART_ICON[it.kind] || ''} ${esc(it.title || it.name)}</b>
-      <a class="btnlike btn-sm" href="${url}" target="_blank" rel="noopener">${ICO.external} 새 탭</a><a class="btnlike btn-sm" href="${url}&dl=1" download="${esc(it.name)}">다운로드</a><button class="primary btn-sm" id="avSend" title="이 파일 경로를 세션에 보내기">${ICO.arrowUpRight} 세션에</button><button class="ghost icon-btn btn-sm" id="avClose" aria-label="닫기">${ICO.close}</button></div>
+  d.innerHTML = `<div class="box wide aview" role="dialog" aria-labelledby="avTitle"><div class="artifact-preview-head"><h2 id="avTitle" title="${esc(it.path)}">${ART_ICON[it.kind] || ''} ${esc(it.title || it.name)}</h2><button type="button" class="ghost icon-btn btn-sm" id="avClose" aria-label="닫기">${ICO.close}</button></div>
     <div class="ums mono" style="word-break:break-all">${esc(it.path)} · ${fmtSize(it.size)}</div>
+    <div class="row a-view-actions"><a class="btnlike btn-sm" href="${url}" target="_blank" rel="noopener">${ICO.external} 새 탭</a><a class="btnlike btn-sm" href="${url}&dl=1" download="${esc(it.name)}">다운로드</a><button type="button" class="btn-sm" id="avSend" title="이 파일 경로를 세션에 보내기">${ICO.arrowUpRight} 세션에</button></div>
     <div id="avBody" class="avbody">불러오는 중…</div></div>`;
+  const previousFocus = document.activeElement;
   document.body.appendChild(d);
-  const close = () => d.remove();
+  $('#avClose', d).focus({ preventScroll: true });
+  const close = () => { d.remove(); previousFocus?.focus({ preventScroll: true }); };
+  d.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
   d.onclick = (e) => { if (e.target === d || e.target.closest('#avClose')) close(); if (e.target.closest('#avSend')) sendPathDialog(it.abs || it.path); };
   const body = $('#avBody', d);
   if (it.kind === 'video') body.innerHTML = `<video controls autoplay playsinline src="${url}" style="max-width:100%;max-height:72vh;background:#000"></video>`;
@@ -467,7 +480,15 @@ async function openArtifact(sid, it, url = artUrl(sid, it.path)) {
   }
   else if (it.kind === 'markdown' || it.kind === 'text') {
     if (it.size > 3e6) { body.innerHTML = '<div class="empty">파일이 커서 미리보기를 생략합니다 — 새 탭이나 다운로드로 여세요.</div>'; return; }
-    const txt = await (await fetch(url)).text();
+    let txt;
+    try {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(String(r.status));
+      txt = await r.text();
+    } catch {
+      body.innerHTML = '<div class="empty" role="alert">파일 미리보기를 불러오지 못했습니다.</div>';
+      return;
+    }
     if (it.kind === 'markdown') {
       body.innerHTML = md(txt);
       window.ACH_PREVIEW?.hydrateMermaid(body);

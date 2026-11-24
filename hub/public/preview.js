@@ -185,16 +185,21 @@
     let mode = supportsPreviewMode(kind) ? 'preview' : 'source';
     const d = document.createElement('div');
     d.className = 'dlg';
-    d.innerHTML = `<div class="box wide aview">
-      <div class="row">
-        <b style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(title)}</b>
+    d.innerHTML = `<div class="box wide aview" role="dialog" aria-labelledby="pvmTitle">
+      <div class="artifact-preview-head"><h2 id="pvmTitle" title="${esc(title)}">${esc(title)}</h2>
+        <button type="button" class="ghost icon-btn btn-sm" id="pvmClose" aria-label="닫기">${UI_ICO.close}</button>
+      </div>
+      <div class="row a-view-actions">
         ${supportsPreviewMode(kind) ? `<div class="seg"><button type="button" data-pvm="preview" class="on">미리보기</button><button type="button" data-pvm="source">소스</button></div>` : ''}
         <button type="button" class="btn-sm" id="pvmCopy">${UI_ICO.copy} 복사</button>
-        <button type="button" class="ghost icon-btn btn-sm" id="pvmClose" aria-label="닫기">${UI_ICO.close}</button>
       </div>
       <div id="pvmBody" class="avbody" style="min-height:62vh;display:flex;flex-direction:column"></div>
     </div>`;
+    const previousFocus = document.activeElement;
     document.body.appendChild(d);
+    $('#pvmClose', d).focus({ preventScroll: true });
+    const close = () => { d.remove(); previousFocus?.focus({ preventScroll: true }); };
+    d.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
     const bodyEl = $('#pvmBody', d);
     const item = { id: 'modal', source: 'code', kind, title, code };
     const paint = () => {
@@ -202,7 +207,7 @@
       renderItemBody(bodyEl, item, mode);
     };
     d.onclick = (e) => {
-      if (e.target === d || e.target.closest('#pvmClose')) return d.remove();
+      if (e.target === d || e.target.closest('#pvmClose')) return close();
       const mb = e.target.closest('[data-pvm]');
       if (mb) { mode = mb.dataset.pvm; paint(); return; }
       if (e.target.closest('#pvmCopy')) window.copyText?.(code);

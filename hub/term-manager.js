@@ -7,6 +7,8 @@ const crypto = require('crypto');
 const { spawn, execFile } = require('child_process');
 const { Terminal: HeadlessTerminal } = require('@xterm/headless');
 const { createTermScreenMonitor } = require('./term-events');
+const { codexHistorySearchActive, normScreenText } = require('./immediate-send');
+const { agyStatusFromScreen: explicitAgyStatus } = require('./agy-session');
 
 const SESSION_ENV = /^(CLAUDECODE|CLAUDE_PID|CLAUDE_EFFORT|CLAUDE_CODE_(CHILD_SESSION|SESSION_ID|SESSION_ATTENDED|MESSAGING_SOCKET|MESSAGING_TOKEN|ENTRYPOINT|EXECPATH))$/;
 const CODEX_BUSY = /esc to interrupt|esc to cancel/i;
@@ -16,6 +18,108 @@ const RESTART_NOTE = '[대시보드 재시작으로 세션이 자동 재개됨] 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const consoleSubmitDelay = (text) => SUBMIT_DELAY + Math.min(6000, String(text || '').length * 6);
 const safeUploadName = (n) => (String(n || 'file').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(-120) || 'file');
+
+function sessionStartupBlock(screen) {
+  const lines = screen.trimEnd().split('\n');
+  if (/^\s*SessionStart hooks\s*$/im.test(screen) && /space\s*\/\s*enter\s+toggle[^\n]*esc\s+back/i.test(lines.at(-1))) return 'hooks-menu';
+  const bottom = lines.slice(-8).join('\n');
+  if (/TERM is set to ["']dumb["']/i.test(bottom) && /Continue anyway\?\s*\[y\/N\]/i.test(lines.at(-1))) return 'term-dumb';
+  if (/^\s*(?:[│┃?❯›>─ -]+\s*)?(?:Do you (?:want to )?trust\b|Trust (?:this|the) (?:folder|workspace|directory)\b)/im.test(bottom)
+    || (/Yes, I trust this (?:folder|workspace|directory)/i.test(bottom) && /No, exit/i.test(bottom))) return 'folder-trust';
+  if (/(?:Sign in with (?:ChatGPT|Google)|Login with Google|Select an authentication method)/i.test(bottom)) return 'login';
+  if (/^\s*(?:[│┃?❯›>─ -]+\s*)?(?:Do you want to (?:proceed|make this edit|create|allow|run)|Allow Codex to)\b/im.test(bottom)) return 'permission';
+  if (/^\s*(?:[│┃?❯›>─ -]+\s*)?Press Enter to continue[.!…]*\s*$/im.test(lines.at(-1))) return 'confirmation';
+  if (/\brunning\b[^\n]*\bSessionStart\b|\bSessionStart hooks?\b[^\n]*\b(?:running|pending)\b/i.test(bottom)) return 'hooks-running';
+  return '';
+}
+
+const HOOK_MENU_MESSAGE = 'SessionStart 훅 설정 메뉴가 열려 있습니다. 터미널에서 Esc로 메뉴를 닫은 뒤 작업을 다시 실행하세요.';
+const FOLDER_TRUST_MESSAGE = '터미널에 작업 폴더 신뢰 확인이 필요합니다. 경로를 확인한 뒤 터미널에서 선택하세요.';
+const DUMB_TERMINAL_MESSAGE = '이 터미널은 TERM=dumb으로 시작했습니다. 작업 다시 진행을 눌러 새 터미널에서 시작하세요.';
+function terminalConfirmationMessage(block) {
+  if (block === 'folder-trust') return FOLDER_TRUST_MESSAGE;
+  if (block === 'login') return 'CLI 로그인이 필요합니다. 터미널에서 로그인한 뒤 작업을 이어가세요.';
+  if (block === 'permission' || block === 'confirmation') return 'CLI가 확인을 요청하고 있습니다. 터미널에서 요청 내용을 확인하세요.';
+  return '';
+}
+
+async function dismissProjectHookMenu(hub, term, screen) {
+  if (term.exited !== null || term._projectHookEscapeSent || !hub.ptyPost || sessionStartupBlock(screen) !== 'hooks-menu') return false;
+  term._projectHookEscapeSent = true;
+  await writeProjectTerm(hub, term, '\x1b');
+  return true;
+}
+
+async function writeProjectTerm(hub, term, data) {
+  if (term.exited !== null || hub.terms && !hub.terms.has(term.id)) throw new Error('터미널 입력을 확인하지 못했습니다.');
+  const result = await hub.ptyPost(term.id, '/write', { id: term.id, data });
+  if (!result?.ok || term.exited !== null) throw new Error(result?.error || '터미널 입력을 확인하지 못했습니다.');
+}
+
+const CODEX_PASTE_DRAFT = /^\s*(?:[›❯>]\s*)?\[+pasted (?:content|text)\b/i;
+const CODEX_DRAFT_MESSAGE = 'Codex 입력창에 제출되지 않은 내용이 있습니다. 터미널에서 내용을 확인하세요.';
+const PROJECT_START_MESSAGE = '작업 지시를 제출했지만 CLI가 실행을 시작했다는 신호가 없습니다.';
+
+function codexComposerText(screen) {
+  const lines = screen.trimEnd().split('\n');
+  const start = lines.findLastIndex((line) => /^\s*[›❯>]\s/.test(line));
+  return lines.slice(Math.max(0, start)).join('\n').split(/\n\s*[^\n]+ · (?:[A-Z]:[\\/]|~|\/)/i, 1)[0].trim();
+}
+
+function projectRunStarted(hub, term, since) {
+  if (term.exited !== null) return false;
+  const cli = hub.agentOf?.(term) || 'codex';
+  const busy = cli === 'codex' ? hub.codexStatus?.(term)
+    : cli === 'agy' ? explicitAgyStatus(hub.readTerm(term, 16).join('\n')) : hub.claudeStatus?.(term);
+  if (busy === 'busy') return true;
+  const sid = hub.index && (hub.termSessionId?.(term) || term.meta?.sessionId);
+  return Boolean(sid && hub.index.get?.(sid)?.msgs?.slice(-15).some((m) => m.role === 'assistant'
+    && String(m.text || '').trim() && !String(m.text).startsWith('⚙') && Number(new Date(m.ts)) >= since));
+}
+
+async function dispatchCodexProjectPrompt(hub, term, text, { submitDraft = false } = {}) {
+  const read = () => {
+    const screen = hub.readTerm(term, Math.max(40, term.rows || 0)).join('\n');
+    return hub.stripAnsi?.(screen) || screen;
+  };
+  const busy = () => hub.codexStatus(term) === 'busy';
+  const originalInputAt = term.lastInputAt;
+  const expected = normScreenText(text);
+  const hasDraft = () => {
+    const composer = codexComposerText(read());
+    return CODEX_PASTE_DRAFT.test(composer) || (expected && normScreenText(composer).includes(expected));
+  };
+  const write = async (data) => {
+    const screen = read();
+    const block = sessionStartupBlock(screen);
+    if (block === 'hooks-menu') throw new Error(HOOK_MENU_MESSAGE);
+    const confirmation = terminalConfirmationMessage(block);
+    if (confirmation) throw new Error(confirmation);
+    if (block === 'term-dumb') throw new Error(DUMB_TERMINAL_MESSAGE);
+    if (term.lastInputAt !== originalInputAt || busy() || block || codexHistorySearchActive(screen.split('\n'))) throw new Error(CODEX_DRAFT_MESSAGE);
+    await writeProjectTerm(hub, term, data);
+  };
+  if (hasDraft()) {
+    if (!submitDraft && (!term._projectDraft || term._projectDraft.inputAt !== originalInputAt || term._projectDraft.composer !== codexComposerText(read()))) throw new Error(CODEX_DRAFT_MESSAGE);
+  } else {
+    if (submitDraft) throw new Error('Codex 입력창에서 작업 내용이 확인되지 않았습니다.');
+    await write(`\x1b[200~${text}\x1b[201~`);
+    if (!await hub.waitFor(hasDraft, 5000, 150)) throw new Error('Codex 입력창에서 작업 내용이 확인되지 않았습니다.');
+    await (hub.sleep || sleep)(500);
+  }
+  if (!hasDraft()) throw new Error('Codex 입력창에서 작업 내용이 확인되지 않았습니다.');
+  const pasted = codexComposerText(read());
+  term._projectDraft = { inputAt: originalInputAt, composer: pasted };
+  const submittedAt = Date.now();
+  const accepted = () => projectRunStarted(hub, term, submittedAt);
+  await write('\r');
+  if (!await hub.waitFor(accepted, 2500, 150) && !accepted() && codexComposerText(read()) === pasted) {
+    await write('\r');
+  }
+  if (!await hub.waitFor(accepted, 8000, 150)) throw new Error(hasDraft() ? CODEX_DRAFT_MESSAGE : PROJECT_START_MESSAGE);
+  delete term._projectDraft;
+  return true;
+}
 
 function pidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
@@ -107,7 +211,7 @@ function createTermManager(hub) {
 
   const inputReady = (t) => {
     const s = stripAnsi(readTerm(t, 40).join('\n'));
-    return !/trust this folder|Do you trust/i.test(s) && /\? for shortcuts|bypass permissions|auto mode|accept edits|type your message|type a message|ask anything|^\s*[>›❯]/im.test(s);
+    return !sessionStartupBlock(s) && /\? for shortcuts|bypass permissions|auto mode|accept edits|type your message|type a message|ask anything|^\s*[>›❯]/im.test(s);
   };
 
   function agySessionOf(t) {
@@ -253,6 +357,11 @@ function createTermManager(hub) {
     model: t.meta?.model || '', effort: t.meta?.effort || '', mode: t.meta?.mode || '',
     ...(isCodexTerm(t) ? { status: codexStatus(t) } : isAgyTerm(t) ? { status: agyStatus(t) } : /claude(\.exe)?$/i.test(t.meta?.cmd || '') ? { status: claudeStatus(t) } : {}),
     ...(isAgyTerm(t) ? { sessionId: agySessionOf(t) } : {}),
+    ...(t.exited === null ? { startupBlock: sessionStartupBlock(stripAnsi(readTerm(t, 40).join('\n'))) } : {}),
+    ...(t.meta?.projectTask ? {
+      dispatchPending: !!t._projectDispatchPending,
+      inputDraft: t.exited === null && isCodexTerm(t) && CODEX_PASTE_DRAFT.test(codexComposerText(readTerm(t, Math.max(40, t.rows || 0)).join('\n'))),
+    } : {}),
     lastOutputAt: t.lastOutputAt || 0,
     lastInputAt: t.lastInputAt || t.meta?.lastInputAt || t.startedAt || t.meta?.spawnedAt || 0,
     startedAt: t.startedAt || 0,
@@ -326,7 +435,9 @@ function createTermManager(hub) {
     };
     if (projectTask) Object.assign(meta, { projectTask, projectPrompt });
     const t = makeMirror({ id, meta });
-    t.spawnResult = ptyPost(id, '/spawn', { id, cmd, args, cwd, env: { ...cleanEnv(), ...env }, cols: 120, rows: 32, meta });
+    const terminalEnv = { ...cleanEnv(), ...env };
+    if (!terminalEnv.TERM || /^dumb$/i.test(terminalEnv.TERM)) terminalEnv.TERM = 'xterm-256color';
+    t.spawnResult = ptyPost(id, '/spawn', { id, cmd, args, cwd, env: terminalEnv, cols: 120, rows: 32, meta });
     return t;
   }
 
@@ -420,7 +531,7 @@ function createTermManager(hub) {
     for (let i = 0; i < 90 && t.exited === null; i++) {
       await sleep(700);
       const scr = readTerm(t, 40).join('\n');
-      if (/trust this folder|Do you trust/i.test(scr)) return;
+      if (terminalConfirmationMessage(sessionStartupBlock(scr))) return;
       if (/\? for shortcuts|bypass permissions|auto mode|accept edits|^\s*[>❯]\s*$/m.test(scr)) {
         await sleep(800);
         t.proc.write(note);
@@ -741,4 +852,4 @@ function createTermManager(hub) {
   };
 }
 
-module.exports = { createTermManager };
+module.exports = { createTermManager, sessionStartupBlock, dismissProjectHookMenu, writeProjectTerm, dispatchCodexProjectPrompt, projectRunStarted, terminalConfirmationMessage, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE, PROJECT_START_MESSAGE };

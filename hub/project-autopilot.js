@@ -4,7 +4,9 @@ const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
 const { spawnCli, cliModelEffortArgs } = require('./project-plan');
+const { parseAgyJson, parseClaudeJson, parseCodexJsonl } = require('./task-subchat');
 const { resolveTaskConfig, buildTaskHarnessPrompt } = require('./project-harness');
+const { sessionStartupBlock, dismissProjectHookMenu, writeProjectTerm, dispatchCodexProjectPrompt, projectRunStarted, terminalConfirmationMessage, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE, PROJECT_START_MESSAGE } = require('./term-manager');
 
 const MAX_AUTO_RETRIES = 2;
 const MAX_REVIEW_ERROR_RETRIES = 2;
@@ -12,8 +14,8 @@ const DEFAULT_REVIEW_ERROR_BACKOFF_MS = 15_000;
 const DEFAULT_MAX_CONCURRENT = 2;
 const IDLE_STREAK_REQUIRED = 2;
 const OUTPUT_QUIET_MS = 4500;
-const UNSEEN_BUSY_SETTLE_MS = 25000;
-const REVIEW_TIMEOUT_MS = 300_000;
+const DISPATCH_IDLE_LIMIT_MS = 90_000;
+const REVIEW_TIMEOUT_MS = 180_000;
 
 function execGit(cwd, args, timeout = 8000) {
   return new Promise((resolve) => {
@@ -56,7 +58,7 @@ function findReadyTasks(project, activeTerms = []) {
 
 const inFlight = new Set();
 const reviewInFlight = new Set();
-const pendingReReview = new Set();
+const pendingReReview = new Map();
 const reviewErrorCounts = new Map();
 const orphanDoingTicks = new Map();
 const projectLocks = new Map();
@@ -69,7 +71,7 @@ function withProjectLock(lockKey, fn) {
     if (projectLocks.get(lockKey) === cleanup) projectLocks.delete(lockKey);
   });
   projectLocks.set(lockKey, cleanup);
-  return next;
+  return cleanup;
 }
 
 async function ensureTaskWorktree(projectCwd, taskId) {
@@ -112,7 +114,7 @@ async function runProjectAutopilot(hub, projectId, { autoDispatch = true, maxCon
   try {
     const cur = hub.projects.list().find((x) => x.id === projectId);
     if (!cur || !cur.autopilot) return { started };
-    const activeDoing = cur.tasks.filter((t) => t.stage === 'doing' && !t.autoExclude).length;
+    const activeDoing = cur.tasks.filter((t) => t.stage === 'doing' && !t.autoExclude && !t.reviewPaused).length;
     const cap = Math.max(1, Number(cur.maxConcurrent || maxConcurrent) || DEFAULT_MAX_CONCURRENT);
     const slots = Math.max(0, cap - activeDoing);
     if (slots <= 0) return { started };
@@ -263,7 +265,7 @@ function runPreReviewChecks(cwd) {
 
 function findTaskTerminal(hub, projectId, taskId, { liveOnly = false } = {}) {
   const terms = [...(hub.terms?.values?.() || [])];
-  return terms.find((x) => (!liveOnly || x.exited === null) && x.meta?.projectTask?.projectId === projectId && x.meta?.projectTask?.taskId === taskId) || null;
+  return terms.findLast((x) => (!liveOnly || x.exited === null) && x.meta?.projectTask?.projectId === projectId && x.meta?.projectTask?.taskId === taskId) || null;
 }
 
 function extractTaskSessionId(hub, project, task) {
@@ -360,13 +362,14 @@ const REVIEW_SCHEMA = JSON.stringify({
   },
 });
 
-async function defaultReviewTask(hub, project, task) {
+async function defaultReviewTask(hub, project, task, onPhase) {
   const harnessState = hub.projectHarness?.get ? hub.projectHarness.get() : null;
-  const revCfg = resolveTaskConfig(project, { ...task, kind: 'review', role: 'review', agent: '', model: '', effort: '' }, harnessState);
+  const revCfg = resolveTaskConfig(project, { kind: 'review', role: 'review' }, harnessState);
   const agent = ['claude', 'codex', 'agy'].includes(revCfg.agent) ? revCfg.agent : 'claude';
   const taskCwd = task.worktreePath && fs.existsSync(task.worktreePath) ? task.worktreePath : project.cwd;
   const workCwd = (taskCwd && fs.existsSync(taskCwd)) ? taskCwd : process.cwd();
   const [gitSummary, testCheck] = await Promise.all([readGitSummary(workCwd), runPreReviewChecks(workCwd)]);
+  onPhase(`${agent} 교차 검토 중 (최대 ${REVIEW_TIMEOUT_MS / 1000}초)`);
   const taskOut = extractTaskOutput(hub, project, task);
   const harnessBlock = buildTaskHarnessPrompt(project, { ...task, kind: 'review', role: 'review' }, agent, harnessState);
   const refsBlock = hub.projectRefs?.promptBlock ? hub.projectRefs.promptBlock(project.id) : '';
@@ -379,6 +382,7 @@ async function defaultReviewTask(hub, project, task) {
     'You are an independent automated reviewer for a multi-file software project.',
     'Inspect modified files directly in the workspace if the diff excerpt is incomplete, verify against the task completion criteria and test gate below, and return ONLY JSON matching the schema: {"verdict":"APPROVE"|"REJECT","reason":"concise explanation in Korean"}.',
     'Approve only if there are no blockers, test failures, or missing requirements. If rejected, state concrete fixes needed.',
+    'Use the supplied automated test output before considering more commands. Do not repeat an already completed test suite. Limit inspection to evidence relevant to this task.',
     `[Project: ${project.name}]`,
     `[Task: ${task.title}]\n${task.detail || ''}`,
     taskOut ? `[에이전트 최종 출력/보고]\n${taskOut}` : '',
@@ -392,12 +396,18 @@ async function defaultReviewTask(hub, project, task) {
   let authEnv = {};
   try { authEnv = hub.projectAccounts?.resolve(agent, revCfg.account)?.env || {}; } catch {}
   const env = { ...(hub.cleanEnv ? hub.cleanEnv() : process.env), ...authEnv };
+  const rememberReview = ({ sessionId, tokens }) => {
+    if (!sessionId) return;
+    hub.projects.remember?.([{ projectId: project.id, taskId: task.id, agent, accountId: revCfg.account, sessionId, tokens }]);
+    hub.overviewStale?.();
+  };
 
   if (agent === 'agy') {
     const log = path.join(workCwd, `.agy-review-${Date.now()}.log`);
     try {
       const agyPrompt = prompt.length > 20_000 ? `${prompt.slice(0, 20_000)}\n...(truncated)` : prompt;
       const { stdout } = await spawnCli(hub.agyExe(), ['--mode', 'plan', '--dangerously-skip-permissions', '--disable-slash-commands', ...extraME, '--print', agyPrompt, '--output-format', 'json', '--json-schema', REVIEW_SCHEMA, '--log-file', log], { cwd: workCwd, env, timeoutMs: REVIEW_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 });
+      rememberReview(parseAgyJson(stdout, log));
       return parseReviewVerdict(stdout);
     } finally { fs.rmSync(log, { force: true }); }
   }
@@ -406,16 +416,19 @@ async function defaultReviewTask(hub, project, task) {
     const outFile = path.join(workCwd, `.codex-rev-out-${Date.now()}.json`);
     try {
       fs.writeFileSync(schemaFile, REVIEW_SCHEMA);
-      const codexArgs = ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '--ephemeral', ...extraME, '--output-schema', schemaFile, '--output-last-message', outFile, '-'];
+      const codexArgs = ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '--json', ...extraME, '--output-schema', schemaFile, '--output-last-message', outFile, '-'];
       const { cmd, args } = hub.codexLaunch ? hub.codexLaunch(codexArgs) : { cmd: hub.codexExe ? hub.codexExe() : 'codex', args: codexArgs };
       const { stdout } = await spawnCli(cmd, args, { cwd: workCwd, env, timeoutMs: REVIEW_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, stdinText: prompt });
-      return parseReviewVerdict(fs.existsSync(outFile) ? fs.readFileSync(outFile, 'utf8') : stdout);
+      const review = parseCodexJsonl(stdout);
+      rememberReview(review);
+      return parseReviewVerdict(fs.existsSync(outFile) ? fs.readFileSync(outFile, 'utf8') : review.reply);
     } finally {
       fs.rmSync(schemaFile, { force: true });
       fs.rmSync(outFile, { force: true });
     }
   }
-  const { stdout } = await spawnCli('claude.exe', ['--print', '--no-session-persistence', '--permission-mode', 'plan', ...extraME, '--output-format', 'json', '--json-schema', REVIEW_SCHEMA], { cwd: workCwd, env, timeoutMs: REVIEW_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, stdinText: prompt });
+  const { stdout } = await spawnCli('claude.exe', ['--print', '--permission-mode', 'plan', ...extraME, '--output-format', 'json', '--json-schema', REVIEW_SCHEMA], { cwd: workCwd, env, timeoutMs: REVIEW_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, stdinText: prompt });
+  rememberReview(parseClaudeJson(stdout));
   return parseReviewVerdict(stdout);
 }
 
@@ -429,32 +442,79 @@ async function dispatchRetryFeedback(hub, projectId, task, reason, retryNum, pri
 
   const liveTerm = findTaskTerminal(hub, projectId, task.id, { liveOnly: true });
   if (liveTerm && hub.ptyPost) {
-    liveTerm._projectBusySeen = false;
-    liveTerm._idleStreak = 0;
-    liveTerm._projectDispatchedAt = Date.now();
-    await hub.ptyPost(liveTerm.id, '/write', { id: liveTerm.id, data: retryPrompt }).catch(() => {});
-    await new Promise((r) => setTimeout(r, 400));
-    if (liveTerm.exited === null) await hub.ptyPost(liveTerm.id, '/write', { id: liveTerm.id, data: '\r' }).catch(() => {});
-    return;
+    const readScreen = () => {
+      const screen = hub.readTerm?.(liveTerm, 40).join('\n') || '';
+      return hub.stripAnsi?.(screen) || screen;
+    };
+    const screen = readScreen();
+    const block = sessionStartupBlock(screen);
+    const confirmation = terminalConfirmationMessage(block);
+    if (confirmation) throw new Error(confirmation);
+    if (block === 'term-dumb') throw new Error(DUMB_TERMINAL_MESSAGE);
+    if (block === 'hooks-menu') {
+      await dismissProjectHookMenu(hub, liveTerm, screen);
+      if (!await hub.waitFor?.(() => liveTerm.exited === null && hub.inputReady?.(liveTerm), 5000, 300)) throw new Error(HOOK_MENU_MESSAGE);
+    }
+    if (hub.agentOf?.(liveTerm) === 'codex') {
+      const dispatchedAt = Date.now();
+      liveTerm._projectDispatchPending = true;
+      try {
+        liveTerm._projectBusySeen = await dispatchCodexProjectPrompt(hub, liveTerm, retryPrompt);
+        liveTerm._idleStreak = 0;
+        liveTerm._projectDispatchedAt = dispatchedAt;
+      } finally {
+        liveTerm._projectDispatchPending = false;
+      }
+      return;
+    }
+    const write = async (data) => {
+      const block = sessionStartupBlock(readScreen());
+      if (block === 'hooks-menu') throw new Error(HOOK_MENU_MESSAGE);
+      const confirmation = terminalConfirmationMessage(block);
+      if (confirmation) throw new Error(confirmation);
+      await writeProjectTerm(hub, liveTerm, data);
+    };
+    const dispatchedAt = Date.now();
+    liveTerm._projectDispatchPending = true;
+    try {
+      await write(retryPrompt);
+      await (hub.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(400);
+      await write('\r');
+      if (!await hub.waitFor(() => projectRunStarted(hub, liveTerm, dispatchedAt), 8000, 200)) throw new Error(PROJECT_START_MESSAGE);
+      liveTerm._projectBusySeen = true;
+      liveTerm._idleStreak = 0;
+      liveTerm._projectDispatchedAt = dispatchedAt;
+      return;
+    } finally {
+      liveTerm._projectDispatchPending = false;
+    }
   }
   if (hub.startProjectTaskById) {
     const resume = priorSessionId || task.lastSessionId || '';
-    await hub.startProjectTaskById(projectId, task.id, { autoDispatch: true, resume, rawPrompt: retryPrompt });
+    const r = await hub.startProjectTaskById(projectId, task.id, { autoDispatch: true, resume, rawPrompt: retryPrompt });
+    if (r && !r.error) return;
+    if (r?.error) throw new Error(r.error);
   }
+  throw new Error('수정 작업을 시작하지 못했습니다.');
 }
 
 async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_AUTO_RETRIES, force = false } = {}) {
   const key = `${projectId}:${taskId}`;
   if (reviewInFlight.has(key)) return { skipped: true, started: [] };
-  if (force) reviewErrorCounts.delete(key);
+  if (force) {
+    clearTimeout(pendingReReview.get(key));
+    pendingReReview.delete(key);
+    reviewErrorCounts.delete(key);
+  }
   const initialProject = hub.projects.list().find((x) => x.id === projectId);
   const initialTask = initialProject?.tasks?.find((x) => x.id === taskId);
   if (!initialProject || !initialTask) return { started: [] };
+  if (initialTask.reviewPaused && !force) return { skipped: true, started: [] };
 
   const taskOut = extractTaskOutput(hub, initialProject, initialTask);
   const priorSessionId = extractTaskSessionId(hub, initialProject, initialTask);
 
-  if (!initialProject.autopilot || initialTask.kind === 'review') {
+  if ((!initialProject.autopilot || initialTask.kind === 'review') && !force) {
     if (initialTask.stage !== 'done') {
       const nextTasks = initialProject.tasks.map((t) => (t.id === initialTask.id
         ? { ...t, stage: 'done', reviewStatus: 'approved', ...(taskOut ? { lastOutput: taskOut } : {}), ...(priorSessionId ? { lastSessionId: priorSessionId } : {}) }
@@ -471,21 +531,32 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
     return await withProjectLock(initialProject.cwd || projectId, async () => {
       const project = hub.projects.list().find((x) => x.id === projectId) || initialProject;
       const task = project.tasks.find((x) => x.id === taskId) || initialTask;
+      if (task.reviewPaused && !force) return { skipped: true, started: [] };
+      if (task.stage !== initialTask.stage || task.reviewPaused !== initialTask.reviewPaused) return { skipped: true, started: [] };
+      const isReviewing = (p) => p?.tasks.some((x) => x.id === taskId && x.stage === 'review' && x.reviewStatus === 'reviewing');
+      const priorReview = ['rejected', 'error'].includes(task.reviewStatus) ? task.reviewNote : '';
+      const phaseNote = (phase) => priorReview ? `${phase} · 이전 반려: ${priorReview}` : phase;
       const reviewingTasks = project.tasks.map((t) => (t.id === task.id
-        ? { ...t, stage: 'review', reviewStatus: 'reviewing', reviewNote: '교차 리뷰 에이전트 자동 검토 중…', ...(taskOut ? { lastOutput: taskOut } : {}), ...(priorSessionId ? { lastSessionId: priorSessionId } : {}) }
+        ? { ...t, stage: 'review', reviewStatus: 'reviewing', reviewPaused: false, reviewNote: phaseNote('사전 테스트 및 변경 내역 확인 중…'), ...(force ? { retryCount: 0 } : {}), ...(taskOut ? { lastOutput: taskOut } : {}), ...(priorSessionId ? { lastSessionId: priorSessionId } : {}) }
         : t));
       hub.projects.save({ ...project, tasks: reviewingTasks });
       hub.overviewStale?.();
 
       let verdict;
       try {
-        const reviewer = hub.reviewTask || ((p, t) => defaultReviewTask(hub, p, t));
+        const reviewer = hub.reviewTask || ((p, t) => defaultReviewTask(hub, p, t, (reviewNote) => {
+          const latest = hub.projects.list().find((x) => x.id === projectId);
+          if (!isReviewing(latest)) return;
+          hub.projects.save({ ...latest, tasks: latest.tasks.map((x) => x.id === taskId ? { ...x, reviewNote: phaseNote(reviewNote) } : x) });
+          hub.overviewStale?.();
+        }));
         verdict = await reviewer(project, task);
       } catch (e) {
-        const curP = hub.projects.list().find((x) => x.id === projectId) || project;
+        const curP = hub.projects.list().find((x) => x.id === projectId);
+        if (!isReviewing(curP)) return { skipped: true, started: [] };
         const errCount = (reviewErrorCounts.get(key) || 0) + 1;
         const errMsg = String(e?.message || e).slice(0, 400);
-        if (errCount <= MAX_REVIEW_ERROR_RETRIES) {
+        if (curP.autopilot && errCount <= MAX_REVIEW_ERROR_RETRIES) {
           reviewErrorCounts.set(key, errCount);
           const delayMs = hub.reviewRetryDelayMs ?? (DEFAULT_REVIEW_ERROR_BACKOFF_MS * errCount);
           const waitTasks = curP.tasks.map((t) => (t.id === task.id
@@ -493,17 +564,22 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
             : t));
           hub.projects.save({ ...curP, tasks: waitTasks });
           hub.overviewStale?.();
-          pendingReReview.add(key);
           const timer = setTimeout(() => {
             pendingReReview.delete(key);
+            const pending = hub.projects.list().find((x) => x.id === projectId);
+            if (!pending?.autopilot || !pending.tasks.some((x) => x.id === taskId && x.stage === 'review' && x.reviewStatus === 'reviewing')) {
+              reviewErrorCounts.delete(key);
+              return;
+            }
             completeAutopilotTask(hub, projectId, taskId, { maxRetries }).catch((err2) => console.error('[autopilot-rereview]', projectId, taskId, err2?.message || err2));
           }, delayMs);
+          pendingReReview.set(key, timer);
           timer.unref?.();
           return { approved: false, reReviewScheduled: true, reviewErrorCount: errCount, error: e?.message || String(e), started: [] };
         }
         reviewErrorCounts.delete(key);
         const errTasks = curP.tasks.map((t) => (t.id === task.id
-          ? { ...t, stage: 'review', reviewStatus: 'error', reviewNote: errMsg }
+          ? { ...t, stage: 'doing', reviewPaused: true, reviewStatus: 'error', reviewNote: errMsg }
           : t));
         hub.projects.save({ ...curP, tasks: errTasks });
         hub.overviewStale?.();
@@ -511,17 +587,20 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
       }
 
       reviewErrorCounts.delete(key);
-      const curP = hub.projects.list().find((x) => x.id === projectId) || project;
+      let curP = hub.projects.list().find((x) => x.id === projectId);
+      if (!isReviewing(curP)) return { skipped: true, started: [] };
       const curTask = curP.tasks.find((t) => t.id === task.id) || task;
       const reason = String(verdict?.reason || '').trim() || (verdict?.verdict === 'APPROVE' ? '검증 기준 통과' : '수정 필요');
 
       if (verdict?.verdict === 'APPROVE') {
         if (curTask.worktreePath) {
           const mergeRes = await mergeAndCleanupWorktree(curP.cwd, curTask.id, curTask.worktreePath);
+          curP = hub.projects.list().find((x) => x.id === projectId);
+          if (!isReviewing(curP)) return { skipped: true, started: [] };
           if (!mergeRes.ok) {
             const conflictReason = `병렬 워크트리 병합 충돌: ${mergeRes.error}`;
             const conflictTasks = curP.tasks.map((t) => (t.id === task.id
-              ? { ...t, stage: 'review', reviewStatus: 'rejected', reviewNote: conflictReason }
+              ? { ...t, stage: 'doing', reviewPaused: true, reviewStatus: 'rejected', reviewNote: conflictReason }
               : t));
             hub.projects.save({ ...curP, tasks: conflictTasks });
             hub.overviewStale?.();
@@ -529,7 +608,7 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
           }
         }
         const doneTasks = curP.tasks.map((t) => (t.id === task.id
-          ? { ...t, stage: 'done', reviewStatus: 'approved', reviewNote: reason, worktreePath: '', ...(taskOut ? { lastOutput: taskOut } : {}), ...(priorSessionId ? { lastSessionId: priorSessionId } : {}) }
+          ? { ...t, stage: 'done', reviewStatus: 'approved', reviewNote: reason, retryCount: 0, worktreePath: '', ...(taskOut ? { lastOutput: taskOut } : {}), ...(priorSessionId ? { lastSessionId: priorSessionId } : {}) }
           : t));
         hub.projects.save({ ...curP, tasks: doneTasks });
         hub.overviewStale?.();
@@ -542,19 +621,32 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
       }
 
       const retries = Number(curTask.retryCount || 0);
-      if (retries < maxRetries) {
+      if (curP.autopilot && retries < maxRetries) {
         const nextRetry = retries + 1;
         const retryTasks = curP.tasks.map((t) => (t.id === task.id
-          ? { ...t, stage: 'doing', reviewStatus: 'rejected', reviewNote: reason, retryCount: nextRetry, ...(priorSessionId ? { lastSessionId: priorSessionId } : {}) }
+          ? { ...t, stage: 'doing', reviewStatus: 'rejected', reviewNote: reason, ...(priorSessionId ? { lastSessionId: priorSessionId } : {}) }
           : t));
         hub.projects.save({ ...curP, tasks: retryTasks });
         hub.overviewStale?.();
-        await dispatchRetryFeedback(hub, projectId, curTask, reason, nextRetry, priorSessionId);
+        try {
+          await dispatchRetryFeedback(hub, projectId, curTask, reason, nextRetry, priorSessionId);
+        } catch (e) {
+          const latest = hub.projects.list().find((x) => x.id === projectId);
+          const error = `수정 지시 전달 실패: ${e.message || e}`;
+          if (latest) hub.projects.save({ ...latest, tasks: latest.tasks.map((t) => t.id === taskId && (t.stage === 'doing' || t.reviewStatus === 'error')
+            ? { ...t, stage: 'doing', reviewPaused: true, reviewStatus: 'error', reviewNote: `${error}\n\n${reason}` } : t) });
+          hub.overviewStale?.();
+          return { approved: false, retried: false, error, started: [] };
+        }
+        const latest = hub.projects.list().find((x) => x.id === projectId);
+        if (latest) hub.projects.save({ ...latest, tasks: latest.tasks.map((t) => t.id === taskId && t.stage === 'doing'
+          ? { ...t, retryCount: nextRetry } : t) });
+        hub.overviewStale?.();
         return { approved: false, retried: true, retryCount: nextRetry, reason, started: [] };
       }
 
       const pausedTasks = curP.tasks.map((t) => (t.id === task.id
-        ? { ...t, stage: 'review', reviewStatus: 'rejected', reviewNote: `[재시도 ${maxRetries}회 초과] ${reason}` }
+          ? { ...t, stage: 'doing', reviewPaused: true, reviewStatus: 'rejected', reviewNote: curP.autopilot ? `[수정 재시도 ${maxRetries}회 사용]\n\n${reason}` : reason }
         : t));
       hub.projects.save({ ...curP, tasks: pausedTasks });
       hub.overviewStale?.();
@@ -573,9 +665,22 @@ async function checkAutopilotCompletions(hub) {
     const now = Date.now();
     for (const t of hub.terms.values()) {
       const pt = t.meta?.projectTask;
-      if (!pt?.projectId || !pt?.taskId) continue;
-      if (!t._projectDispatchedAt && t.meta?.spawnedAt) t._projectDispatchedAt = t.meta.spawnedAt;
+      if (!pt?.projectId || !pt?.taskId || t._projectDispatchPending) continue;
       const cli = hub.agentOf?.(t);
+      const screen = t.exited === null ? hub.readTerm?.(t, 40).join('\n') || '' : '';
+      const startup = sessionStartupBlock(hub.stripAnsi?.(screen) || screen);
+      if (terminalConfirmationMessage(startup)) { t._idleStreak = 0; continue; }
+      const dispatchedAt = t._projectDispatchedAt;
+      if (startup === 'hooks-menu' && cli === 'codex' && dispatchedAt && !t._projectHookEscapeSent) {
+        const project = hub.projects.list().find((p) => p.id === pt.projectId && p.autopilot);
+        if (project?.tasks.some((task) => task.id === pt.taskId && task.stage === 'doing' && !task.autoExclude && !task.reviewPaused)) {
+          if (await dismissProjectHookMenu(hub, t, screen).catch(() => false)) {
+            t._idleStreak = 0;
+            continue;
+          }
+        }
+      }
+      if (!startup) t._projectHookEscapeSent = false;
       const status = t.exited !== null
         ? 'exited'
         : cli === 'codex'
@@ -583,19 +688,10 @@ async function checkAutopilotCompletions(hub) {
           : cli === 'agy'
             ? hub.agyStatus?.(t)
             : hub.claudeStatus?.(t);
-      if (status === 'busy') {
+      if (status === 'busy' && !startup) {
         t._projectBusySeen = true;
         t._idleStreak = 0;
         continue;
-      }
-      if (t.exited === null && hub.readTerm && hub.ptyPost) {
-        const scr = hub.readTerm(t, 25).join('\n');
-        if (/trust this folder|Do you trust/i.test(scr) && !t._autoTrustedAt) {
-          t._autoTrustedAt = now;
-          t._idleStreak = 0;
-          await hub.ptyPost(t.id, '/write', { id: t.id, data: '\r' }).catch(() => {});
-          continue;
-        }
       }
       const recentOutput = !!(t.lastOutputAt && now - t.lastOutputAt < OUTPUT_QUIET_MS);
       if (status === 'idle' && recentOutput) {
@@ -603,19 +699,30 @@ async function checkAutopilotCompletions(hub) {
         continue;
       }
       t._idleStreak = (t._idleStreak || 0) + 1;
-      const settledAfterUnseen = !t._projectBusySeen && t._projectDispatchedAt && (now - t._projectDispatchedAt > UNSEEN_BUSY_SETTLE_MS) && t._idleStreak >= IDLE_STREAK_REQUIRED;
-      const doneNow = (t._projectBusySeen && status === 'idle' && t._idleStreak >= IDLE_STREAK_REQUIRED)
-        || settledAfterUnseen
-        || (status === 'exited' && t._projectDispatchedAt);
-      if (!doneNow) continue;
+      const stalled = dispatchedAt && (status === 'exited' || now - dispatchedAt >= DISPATCH_IDLE_LIMIT_MS);
+      const settled = status === 'exited' || (status === 'idle' && t._idleStreak >= IDLE_STREAK_REQUIRED) || (startup && stalled);
+      if (!settled) continue;
+      const sid = dispatchedAt && !t._projectBusySeen ? hub.termSessionId?.(t) || t.meta?.sessionId : '';
+      const reply = sid && hub.index?.get?.(sid)?.msgs?.slice(-15).some((m) => m.role === 'assistant'
+        && String(m.text || '').trim() && !String(m.text).startsWith('⚙') && Number(new Date(m.ts)) > dispatchedAt);
+      const doneNow = !startup && (t._projectBusySeen || reply);
+      if (!doneNow && !stalled) continue;
 
       const project = hub.projects.list().find((x) => x.id === pt.projectId);
       const task = project?.tasks?.find((x) => x.id === pt.taskId);
-      if (!project || !project.autopilot || !task || task.stage !== 'doing' || task.autoExclude) continue;
+      if (!project || !project.autopilot || !task || task.stage !== 'doing' || task.autoExclude || task.reviewPaused) continue;
 
       t._projectBusySeen = false;
       t._idleStreak = 0;
       t._projectDispatchedAt = 0;
+      if (!doneNow) {
+        const problem = { 'hooks-menu': HOOK_MENU_MESSAGE, 'term-dumb': DUMB_TERMINAL_MESSAGE }[startup]
+          || '작업 실행이 확인되지 않았습니다. 터미널의 시작 화면과 입력 상태를 확인하세요.';
+        hub.projects.save({ ...project, tasks: project.tasks.map((x) => x.id === task.id
+          ? { ...x, stage: 'doing', reviewPaused: true, reviewStatus: 'error', reviewNote: [problem, x.reviewNote].filter(Boolean).join('\n\n') } : x) });
+        hub.overviewStale?.();
+        continue;
+      }
       const pRun = completeAutopilotTask(hub, project.id, task.id).catch((e) => console.error('[autopilot-review]', project.id, task.id, e?.message || e));
       scheduled.push({ projectId: project.id, completedTaskId: task.id, promise: pRun });
     }
@@ -637,7 +744,7 @@ async function checkAutopilotCompletions(hub) {
           const pRun = completeAutopilotTask(hub, project.id, tk.id).catch((e) => console.error('[autopilot-orphan-review]', project.id, tk.id, e?.message || e));
           scheduled.push({ projectId: project.id, completedTaskId: tk.id, recoveredReview: true, promise: pRun });
         }
-        if (tk.stage === 'doing' && !tk.autoExclude && !inFlight.has(project.id) && !reviewInFlight.has(tkKey)) {
+        if (tk.stage === 'doing' && !tk.autoExclude && !tk.reviewPaused && !inFlight.has(project.id) && !reviewInFlight.has(tkKey)) {
           if (activeTermTaskKeys.has(tkKey)) {
             orphanDoingTicks.delete(tkKey);
           } else {
@@ -659,7 +766,7 @@ async function checkAutopilotCompletions(hub) {
       }
       for (const [parentId, subs] of byParent) {
         const parent = project.tasks.find((x) => x.id === parentId);
-        if (!parent || parent.stage === 'done' || parent.stage === 'review' || parent.autoExclude) continue;
+        if (!parent || parent.stage === 'done' || parent.stage === 'review' || parent.autoExclude || parent.reviewPaused) continue;
         const activeSubs = subs.filter((s) => !s.autoExclude);
         if (activeSubs.length && activeSubs.every((s) => s.stage === 'done')) {
           const pRun = completeAutopilotTask(hub, project.id, parent.id).catch((e) => console.error('[autopilot-rollup]', project.id, parent.id, e?.message || e));
