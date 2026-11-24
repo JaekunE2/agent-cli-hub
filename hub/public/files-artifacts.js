@@ -213,7 +213,7 @@ const ART_ICON = {
   text: '<span class="ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="13" y1="17" x2="8" y2="17"/></svg></span>',
   file: '<span class="ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></span>',
 };
-const artUrl = (sid, p) => `/api/artifact-file?session=${encodeURIComponent(sid)}&path=${encodeURIComponent(p)}&t=${encodeURIComponent(TOKEN)}`;
+const artUrl = (sid, p, termId = '') => `/api/artifact-file?session=${encodeURIComponent(sid || '')}${termId ? `&term=${encodeURIComponent(termId)}` : ''}&path=${encodeURIComponent(p)}&t=${encodeURIComponent(TOKEN)}`;
 window.artUrl = artUrl;
 const rRawUrl = (slug, rel) => `/api/research/raw?slug=${encodeURIComponent(slug)}&path=${encodeURIComponent(rel)}&t=${encodeURIComponent(TOKEN)}`;
 const fmtSize = (n) => (n > 1e9 ? `${(n / 1e9).toFixed(1)}GB` : n > 1e6 ? `${(n / 1e6).toFixed(1)}MB` : `${Math.max(1, Math.round(n / 1024))}KB`);
@@ -358,21 +358,27 @@ function artTimeline(pairs, card) { // pairs: [[item, index]]
   }
   return groups.map(([t, xs]) => `<div class="aday">${label(t)} <span class="empty">${xs.length}개</span></div><div class="agrid">${xs.map(card).join('')}</div>`).join('');
 }
-async function renderArtifacts(sid, gen) {
+async function renderArtifacts(sid, gen, termId = '') {
   $('#view').innerHTML = '<div class="empty" style="padding:20px">산출물 찾는 중…</div>';
   let query = '';
   let showCards = false;
+  let autoExpanded = false;
   const paint = async () => {
-    const r = await api(`/api/artifacts?session=${encodeURIComponent(sid)}`).catch((e) => ({ error: e.message }));
+    const r = await api(`/api/artifacts?session=${encodeURIComponent(sid || '')}${termId ? `&term=${encodeURIComponent(termId)}` : ''}`).catch((e) => ({ error: e.message }));
     if (gen !== viewGen) return;
     if (r.error) { $('#view').innerHTML = `<div class="err">${esc(r.error)}</div>`; return; }
     const all = r.items || [];
+    const mainCount = all.filter((x) => x.main).length;
+    if (!autoExpanded && !artShowAll && mainCount === 0 && all.length > 0) {
+      autoExpanded = true;
+      artShowAll = true;
+    }
     const items = artShowAll ? all : all.filter((x) => x.main);
     const card = ([it, i]) => {
       const location = String(it.path || '').split(/[\\/]/).slice(0, -1).filter(Boolean).slice(-2).join('/');
       return `<div class="acard" data-ai="${i}">
         <button class="artifact-open" type="button">
-        <span class="athumb">${it.kind === 'image' ? `<img loading="lazy" src="${artUrl(sid, it.path)}" alt="">` : `<span>${ART_ICON[it.kind] || ART_ICON.file}</span>`}</span>
+        <span class="athumb">${it.kind === 'image' ? `<img loading="lazy" src="${artUrl(sid, it.path, termId)}" alt="">` : `<span>${ART_ICON[it.kind] || ART_ICON.file}</span>`}</span>
         <span class="ameta"><b title="${esc(it.path)}">${esc(it.title || it.name)}</b>
           <span class="artifact-location" title="${esc(it.path)}">${esc(location)}</span>
           <span class="ums">${esc(it.ext.toUpperCase())} · ${fmtSize(it.size)} · ${relTime(it.mtime)}${it.source === 'pinned' ? ' · 지정됨' : ''}</span></span></button>
@@ -421,13 +427,13 @@ async function renderArtifacts(sid, gen) {
       if (e.target.closest('[data-ahide]')) return;
       const sb = e.target.closest('[data-asend]');
       if (sb) return sendPathDialog(items[Number(sb.dataset.asend)].path);
-      openArtifact(sid, items[Number(el.dataset.ai)]);
+      openArtifact(sid, items[Number(el.dataset.ai)], artUrl(sid, items[Number(el.dataset.ai)].path, termId));
     }));
     $('#view').querySelectorAll('[data-ahide]').forEach((b) => (b.onclick = async (e) => {
       e.stopPropagation();
       b.disabled = true;
       try {
-        const r = await api('/api/artifacts/hide', { method: 'POST', body: { session: sid, path: items[Number(b.dataset.ahide)].path } });
+        const r = await api('/api/artifacts/hide', { method: 'POST', body: { session: sid, term: termId, path: items[Number(b.dataset.ahide)].path } });
         if (r.error) throw new Error(r.error);
         await paint();
       } catch (e) { toast(e.message, 5000, 'danger'); }
@@ -446,7 +452,7 @@ function addArtifactDialog(sid, done) {
     const button = e.currentTarget;
     button.disabled = true;
     try {
-      const r = await api('/api/artifacts/add', { method: 'POST', body: { session: sid, path: $('#apPath', d).value.trim(), title: $('#apTitle', d).value.trim() || undefined } });
+      const r = await api('/api/artifacts/add', { method: 'POST', body: { session: sid, term: state.sel.kind === 'term' ? state.sel.id : '', path: $('#apPath', d).value.trim(), title: $('#apTitle', d).value.trim() || undefined } });
       if (r.error) throw new Error(r.error);
       d.close(); toast('산출물로 지정했습니다'); done?.();
     } catch (er) { toast(er.message, 6000, 'danger'); }

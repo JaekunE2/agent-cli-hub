@@ -147,7 +147,7 @@ function viewTranscript() {
   let dock = null;
   const doRenameSess = async () => {
     const curTitle = sessionLabel(r, sid, live?.name);
-    const lt = findLiveTerm();
+    const lt = state.terms.find((term) => term.exited === null && term.sessionId === sid);
     const saved = await renameSessionItem({ sessionId: sid, termId: lt?.id || '', currentTitle: curTitle });
     if (saved !== null) {
       if (r) r.title = saved || null;
@@ -324,6 +324,9 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
 
   let baselineAccId = ltInit?.account?.id || `__cli__:${initAgent}`;
   let meCtl = null;
+  let userEditedSettings = false;
+  const termSigOf = (t) => (t ? `${t.id}|${t.agent || baseAgent}|${t.account?.id || ''}|${t.model || ''}|${t.effort || ''}` : '');
+  let lastSyncedTermSig = termSigOf(ltInit);
 
   const getSelectedAgent = () => accSel?.selectedOptions?.[0]?.dataset?.agent || initAgent;
   const getConfig = () => {
@@ -346,6 +349,7 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       const ltAcc = lt.account?.id || baselineAccId || `__cli__:${ltAgent}`;
       const accChanged = cfg.account !== ltAcc && !(cfg.account === `__cli__:${ltAgent}` && !lt.account?.id);
       const dirty = accChanged || cfg.agent !== ltAgent || cfg.model !== (lt.model || '') || cfg.effort !== (lt.effort || '');
+      if (!dirty) userEditedSettings = false;
       applyBtn.hidden = !dirty;
       applyBtn.textContent = '변경 적용';
       applyBtn.className = 'btn-sm primary';
@@ -373,11 +377,12 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       useSavedDefaults: !ltInit,
       persistDefaults: true,
       getAccount: () => accSel?.value || '',
-      onChange: syncApplyBtn,
+      onChange: () => { userEditedSettings = true; syncApplyBtn(); },
     });
   }
 
   accSel.onchange = () => {
+    userEditedSettings = true;
     const nextAg = getSelectedAgent();
     const accVal = accSel.value;
     if (typeof saveCliDefaults === 'function') saveCliDefaults(nextAg, { account: accVal });
@@ -433,9 +438,11 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       const postDef = (!lt && typeof readSavedAccountPref === 'function')
         ? readSavedAccountPref(accSel.value, curSelectedAg)
         : ((!lt && typeof readSavedCliDefaults === 'function') ? readSavedCliDefaults(curSelectedAg) : { model: '', effort: '' });
-      const postModel = lt ? initModel : (savedPref ? initModel : postDef.model);
-      const postEffort = lt ? initEffort : (savedPref ? initEffort : postDef.effort);
-      meCtl?.setCli(curSelectedAg, postModel, postEffort);
+      const postModel = lt ? (lt.model || '') : (savedPref ? initModel : postDef.model);
+      const postEffort = lt ? (lt.effort || '') : (savedPref ? initEffort : postDef.effort);
+      if (lt && meCtl?.syncFromTerm) meCtl.syncFromTerm(curSelectedAg, postModel, postEffort);
+      else meCtl?.setCli(curSelectedAg, postModel, postEffort);
+      if (lt) lastSyncedTermSig = termSigOf(lt);
       syncApplyBtn();
     } catch {}
   };
@@ -446,9 +453,26 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
     const lt = findLiveTerm();
     if (lt) {
       activeTermId = String(lt.id);
-      const st = termStateOf(lt);
-      const dotCls = st === 'busy' ? 'busy' : 'idle';
-      const stTxt = st === 'busy' ? '실행 중' : '대기';
+      const curSig = termSigOf(lt);
+      if (curSig !== lastSyncedTermSig) {
+        lastSyncedTermSig = curSig;
+        if (!userEditedSettings) {
+          const ltAgent = lt.agent || baseAgent;
+          if (accSel) {
+            const wantOpt = [...accSel.options].find((o) => (lt.account?.id ? o.value === lt.account.id : o.dataset.agent === ltAgent));
+            if (wantOpt) accSel.value = wantOpt.value;
+          }
+          if (meCtl?.syncFromTerm) meCtl.syncFromTerm(ltAgent, lt.model || '', lt.effort || '');
+          else meCtl?.setCli(ltAgent, lt.model || '', lt.effort || '');
+          if (!lt.projectTask && typeof saveAccountPref === 'function') {
+            saveAccountPref({ account: accSel?.value || lt.account?.id || '', cli: ltAgent, model: lt.model || '', effort: lt.effort || '' });
+          }
+        }
+      }
+      const meta = typeof termStatusMeta === 'function' ? termStatusMeta(lt) : null;
+      const st = meta ? meta.state : termStateOf(lt);
+      const dotCls = meta ? meta.dot : (st === 'busy' ? 'busy' : 'idle');
+      const stTxt = meta ? meta.shortLabel : (st === 'busy' ? '실행 중' : '대기');
       const meBadge = [lt.model, lt.effort].filter(Boolean).join('/');
       connEl.innerHTML = `<span class="dot ${dotCls}" style="width:7px;height:7px"></span><span>터미널 t:${esc(lt.id)} 연결됨 · ${esc(stTxt)}${meBadge ? ` · ${esc(meBadge)}` : ''}</span>`;
     } else if (activeConsolePid) {
@@ -467,16 +491,22 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
   const fitRep = () => { repIn.style.height = 'auto'; repIn.style.height = Math.min(140, Math.max(38, repIn.scrollHeight)) + 'px'; };
   repIn.addEventListener('input', fitRep);
 
-  const notifySent = (targetTermId, text) => {
+  const notifySent = (targetTermId, text, submittedText = text) => {
     if (!chatHost) return;
     chatHost._liveChatHint = {
       termId: targetTermId ? String(targetTermId) : '',
       consolePid: activeConsolePid || null,
       pendingText: text,
+      submittedText,
       sentAt: Date.now(),
       until: Date.now() + 30000,
     };
     chatHost._triggerPoll?.();
+  };
+  const sendToTerm = async (id, text, waitForReady = false, resendIfMissing = false) => {
+    const result = await api('/api/term/send', { method: 'POST', body: { id, text, submit: true, waitForReady, resendIfMissing } });
+    if (!result.ok) throw new Error(result.error || '터미널 입력을 확인하지 못했습니다.');
+    notifySent(id, text, result.submittedText);
   };
 
   const launchWithConfig = async ({ openTerm = false, pendingText = '' } = {}) => {
@@ -487,7 +517,7 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
     const lt = findLiveTerm();
     const needsSwitch = !!lt || cfg.agent !== baseAgent || (!!cfg.account && !cfg.account.startsWith('__cli__:'));
     if (needsSwitch) {
-      const isCrossPlatform = cfg.agent !== baseAgent;
+      const isCrossPlatform = cfg.agent !== (lt?.agent || baseAgent);
       const payload = {
         sessionId: sid || undefined,
         termId: lt?.id || undefined,
@@ -495,7 +525,7 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
         model: cfg.model,
         effort: cfg.effort,
         cont: false,
-        ...(isCrossPlatform && pendingText ? { followUp: pendingText } : {}),
+        ...(isCrossPlatform && pendingText ? { followUp: pendingText, verifyFollowUp: true } : {}),
         skip: true,
         openMode: 'dashboard',
       };
@@ -504,25 +534,24 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       if (res.term) {
         activeTermId = String(res.term.id);
         baselineAccId = cfg.account;
+        userEditedSettings = false;
+        lastSyncedTermSig = termSigOf(res.term);
         if (prefKey) chatLaunchPrefs.set(prefKey, cfg);
       }
       await refreshOverview();
       if (res.term && !state.terms.some((x) => String(x.id) === String(res.term.id))) {
         state.terms = [res.term, ...state.terms];
       }
+      if (pendingText && !res.term?.id) throw new Error('터미널을 열 수 없습니다.');
       if (pendingText && res.term?.id) {
-        if (!isCrossPlatform) {
-          setTimeout(() => {
-            api('/api/term/send', { method: 'POST', body: { id: res.term.id, text: pendingText, submit: true } })
-              .then((sent) => { if (!sent.ok) throw new Error(sent.error); notifySent(res.term.id, pendingText); })
-              .catch((er) => toast(er.message, 6000, 'danger'));
-          }, 2600);
-        } else notifySent(res.term.id, pendingText);
+        if (res.deliveryError) throw new Error(res.deliveryError);
+        if (!res.followUpSubmitted) await sendToTerm(res.term.id, pendingText, true);
+        else notifySent(res.term.id, pendingText);
       }
       if (res.term) {
-        if (openTerm || state.sel.kind === 'term') {
+        if (barHost.isConnected && openTerm) {
           window.ACH_DOCK?.saveDockOpen('term', ['term', 'chat']);
-          openResumedTerm(res.term, { kind: cfg.agent, resume: sid });
+          openResumedTerm(res.term, { kind: cfg.agent, resume: res.crossPlatform ? undefined : sid }, openTerm ? 'split' : undefined);
         } else {
           syncConn();
           loadCandidates();
@@ -543,20 +572,17 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       ...(cfg.agent === 'claude' ? { skipPermissions: true, fork: !!liveDesktop } : {}),
     };
     const t = await api('/api/term/new', { method: 'POST', body });
-    if (t.error) throw new Error(t.error);
+    if (t.error || !t.id) throw new Error(t.error || '터미널을 열 수 없습니다.');
     activeTermId = String(t.id);
+    if (!state.terms.some((term) => String(term.id) === activeTermId)) state.terms = [t, ...state.terms];
     if (prefKey) chatLaunchPrefs.set(prefKey, cfg);
     await refreshOverview();
     if (pendingText) {
-      setTimeout(() => {
-        api('/api/term/send', { method: 'POST', body: { id: t.id, text: pendingText, submit: true } })
-          .then((sent) => { if (!sent.ok) throw new Error(sent.error); notifySent(t.id, pendingText); })
-          .catch((er) => toast(er.message, 6000, 'danger'));
-      }, 2400);
+      await sendToTerm(t.id, pendingText, true);
     }
-    if (openTerm) {
+    if (openTerm && barHost.isConnected) {
       window.ACH_DOCK?.saveDockOpen('term', ['term', 'chat']);
-      openResumedTerm(t, body);
+      openResumedTerm(t, body, 'split');
     } else {
       syncConn();
     }
@@ -591,7 +617,8 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
   attachFileInput(dropZone, null, cwd, { onFiles: (fl, it) => chatAttCtl.addFiles(fl, it) });
   bindFilePick(barHost, null, cwd, { onFiles: (fl, it) => chatAttCtl.addFiles(fl, it) });
 
-  const sendReply = async () => {
+  const sendReply = async (retry = false) => {
+    if (repBtn.disabled) return;
     if (chatAttCtl.isLoading()) return toast('첨부 파일을 준비하는 중입니다…');
     const attPaths = chatAttCtl.takePaths();
     const typed = repIn.value.trim();
@@ -605,46 +632,52 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
         const cfg = getConfig();
         const ltAgent = existing.agent || baseAgent;
         const ltAcc = existing.account?.id || baselineAccId || `__cli__:${ltAgent}`;
-        const changed = cfg.agent !== ltAgent || cfg.model !== (existing.model || '') || cfg.effort !== (existing.effort || '') || (cfg.account !== ltAcc && !(cfg.account === `__cli__:${ltAgent}` && !existing.account?.id));
+        const changed = userEditedSettings && (
+          cfg.agent !== ltAgent
+          || cfg.model !== (existing.model || '')
+          || cfg.effort !== (existing.effort || '')
+          || (cfg.account !== ltAcc && !(cfg.account === `__cli__:${ltAgent}` && !existing.account?.id))
+        );
         if (changed) {
-          await launchWithConfig({ openTerm: false, pendingText: text });
+          await launchWithConfig({ pendingText: text });
           return;
         }
-        const r = await api('/api/term/send', { method: 'POST', body: { id: existing.id, text, submit: true } });
-        if (r.error) throw new Error(r.error);
+        await sendToTerm(existing.id, text, false, retry);
         syncConn();
-        notifySent(existing.id, text);
         return;
       }
       if (activeConsolePid) {
-        const r = await api('/api/console/send', { method: 'POST', body: { pid: activeConsolePid, text, submit: true } });
-        if (r.error) throw new Error(r.error);
+        const r = await api('/api/console/send', { method: 'POST', body: { pid: activeConsolePid, text, submit: true, resendIfMissing: retry } });
+        if (!r.ok) throw new Error(r.error || '터미널 입력을 확인하지 못했습니다.');
         syncConn();
         notifySent(null, text);
         return;
       }
-      const t = await launchWithConfig({ openTerm: false, pendingText: text });
+      const t = await launchWithConfig({ pendingText: text });
       if (t) toast(`터미널 t:${t.id}을(를) 연결해 메시지를 전송했습니다`);
     } catch (er) {
-      toast(er.message, 6000, 'danger');
+      repIn.value = [text, repIn.value].filter(Boolean).join('\n');
+      fitRep();
+      toast(er.message, 6000, 'danger', { label: '다시 전송', onClick: () => { if (barHost.isConnected) sendReply(true); } });
     } finally {
       if (repBtn.isConnected) repBtn.disabled = false;
     }
   };
-  repBtn.onclick = sendReply;
+  repBtn.onclick = () => sendReply();
   repIn.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendReply(); } };
 }
 
-function openResumedTerm(t, request) {
+function openResumedTerm(t, request, tab) {
   const isAgy = request.kind === 'agy';
   const saved = getSavedTermTab(null);
-  select({ kind: 'term', id: t.id, ...(isAgy ? { agyResume: request.resume } : {}) }, saved || (isAgy ? 'split' : undefined));
+  select({ kind: 'term', id: t.id, ...(request.resume ? { historySession: request.resume } : {}), ...(isAgy ? { agyResume: request.resume } : {}) }, tab || saved || (isAgy ? 'split' : undefined));
 }
 
 function resolveTermSessionId(t) {
   if (!t) return null;
   if (t.sessionId) return t.sessionId;
   if (t.projectTask) return null;
+  if (state.sel.kind === 'term' && String(state.sel.id) === String(t.id) && state.sel.historySession) return state.sel.historySession;
   if (t.agy || t.agent === 'agy') return state.sel.kind === 'term' && state.sel.id === t.id ? state.sel.agyResume || null : null;
   const norm = (p) => String(p || '').replace(/[\\/]+$/, '').toLowerCase();
   const tCwd = norm(t.cwd);

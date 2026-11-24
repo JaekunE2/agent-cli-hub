@@ -170,7 +170,7 @@ async function procTable() {
   return (r.ok && r.procs) ? new Map(r.procs.map(([pid, name, ppid]) => [pid, { name, ppid }])) : null;
 }
 
-const artifactsMod = require('./artifacts')({ dir: __dirname, index });
+const artifactsMod = require('./artifacts')({ dir: __dirname, index, terms: hub.terms });
 const notifier = require('./notify')(CONFIG);
 const watchdogOn = PORT === 7777 || process.env.CCD_WATCHDOG === '1';
 
@@ -252,7 +252,9 @@ async function postNotice({ text, to = 'all', boardOnly = false, fromPid = 0 }) 
   fs.appendFileSync(NOTICE_FILE, `- [${stamp}] ${text.replace(/\n+/g, ' ')}\n`);
   if (boardOnly) return { ok: true, sent: [] };
   const want = String(to).split(',').map((x) => x.trim()).filter(Boolean);
-  const targets = [...hub.terms.values()].filter((t) => t.exited === null && !t.meta?.operator && (!fromPid || t.pid !== fromPid) && ['claude', 'codex'].includes(hub.agentOf(t)) && (want.includes('all') || want.includes(`t:${t.id}`) || want.includes(t.id)));
+  const targets = [...hub.terms.values()].filter((t) => t.exited === null && !t.meta?.operator && !t.meta?.projectTask
+    && (!fromPid || t.pid !== fromPid) && ['claude', 'codex'].includes(hub.agentOf(t))
+    && (want.includes('all') || want.includes(`t:${t.id}`) || want.includes(t.id)));
   const msg = `[허브 공지 ${stamp.slice(11)}] ${text.replace(/\n+/g, ' ')} — 하던 작업은 그대로 이어가세요. (전체 공지: ccd notices)`;
   for (const t of targets) { t.proc.write(msg); await hub.sleep(hub.SUBMIT_DELAY); t.proc.write('\r'); }
   hub.overviewStale();
@@ -321,9 +323,22 @@ function body(req) {
 }
 function authed(req, url) {
   const origin = req.headers.origin;
-  if (origin && origin !== `http://${req.headers.host}`) return false;
+  if (origin && origin !== `http://${req.headers.host}` && origin !== `https://${req.headers.host}`) return false;
   return url.searchParams.get('t') === TOKEN || req.headers['x-token'] === TOKEN;
 }
+
+hub.writeInteractiveTerm = async (t, data) => {
+  if (!t || t.exited !== null || typeof data !== 'string' || !data || data.length > 400_000) return false;
+  // xterm replies to CLI status queries during redraws and when the view is attached.
+  if (!/^(?:\x1b\[(?:[IO]|0n|\??\d+;\d+R|[?>][\d;]+c|\??\d+;\d+\$y|8;\d+;\d+t))+$/.test(data)) {
+    t._interactiveInputSeq = (t._interactiveInputSeq || 0) + 1;
+    hub.termMonitor?.onInput(t, data);
+    if (t.meta?.projectAutoClose && t.lastInputAt === t.meta.spawnedAt) hub.touchUserInput(t);
+  }
+  const result = await t.proc.write(data);
+  if (result?.ok && /[\r\n]/.test(data)) hub.touchUserInput(t);
+  return !!result?.ok;
+};
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -364,8 +379,14 @@ server.on('upgrade', (req, sock, head) => {
     if (t.exited !== null) ws.send(JSON.stringify({ type: 'exit', code: t.exited }));
     ws.on('message', (m) => {
       let msg; try { msg = JSON.parse(m); } catch { return; }
+      if (!msg) return;
+      if (msg.type === 'input' && typeof msg.data === 'string' && msg.data) {
+        const inputError = () => {
+          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'input-error', error: '터미널에 키 입력을 전달하지 못했습니다.' }));
+        };
+        hub.writeInteractiveTerm(t, msg.data).then(ok => { if (!ok) inputError(); }, inputError);
+      }
       if (t.exited !== null) return;
-      if (msg.type === 'input') { t._interactiveInputSeq = (t._interactiveInputSeq || 0) + 1; hub.termMonitor?.onInput(t, msg.data); t.proc.write(msg.data); if (/[\r\n]/.test(String(msg.data || ''))) hub.touchUserInput(t); }
       if (msg.type === 'resize' && msg.cols > 0 && msg.rows > 0 && hub.resizeTerm(t, msg.cols, msg.rows)) {
         for (const c of t.clients) if (c !== ws) c.send(JSON.stringify({ type: 'resize', cols: t.cols, rows: t.rows }));
       }
@@ -378,25 +399,27 @@ server.on('upgrade', (req, sock, head) => {
 const remote = new Map();
 function tailscaleIPs() {
   const out = [];
-  for (const [name, addrs] of Object.entries(os.networkInterfaces())) {
+  for (const addrs of Object.values(os.networkInterfaces())) {
     for (const a of addrs || []) {
-      if (a.family !== 'IPv4' || a.internal) continue;
+      if (a.internal) continue;
       const [x, y] = a.address.split('.').map(Number);
-      if (x === 100 && y >= 64 && y <= 127) out.push({ ip: a.address, iface: name });
+      if (a.family === 'IPv4' && x === 100 && y >= 64 && y <= 127
+        || a.family === 'IPv6' && /^fd7a:115c:a1e0:/i.test(a.address)) out.push(a.address);
     }
   }
   return out;
 }
+const remoteUrl = (ip) => `http://${ip.includes(':') ? `[${ip}]` : ip}:${PORT}/`;
 function syncRemoteListeners() {
   if (CONFIG.remote === 'off') return;
-  const want = new Set(tailscaleIPs().map((x) => x.ip));
+  const want = new Set(tailscaleIPs());
   for (const [ip, s] of remote) if (!want.has(ip)) { s.close(); remote.delete(ip); }
   for (const ip of want) {
     if (remote.has(ip)) continue;
     const s = http.createServer((req, res) => server.emit('request', req, res));
     s.on('upgrade', (req, sock, head) => server.emit('upgrade', req, sock, head));
     s.on('error', (e) => { console.error('[remote]', ip, e.message); remote.delete(ip); });
-    s.listen(PORT, ip, () => console.log(`remote (tailscale): http://${ip}:${PORT}/`));
+    s.listen(PORT, ip, () => console.log(`remote (tailscale): ${remoteUrl(ip)}`));
     remote.set(ip, s);
   }
 }
@@ -408,7 +431,7 @@ function remoteInfo() {
     dns = st.Self?.DNSName?.replace(/\.$/, '') || null;
   } catch {}
   const ips = [...remote.keys()];
-  const urls = [...(dns ? [`http://${dns}:${PORT}/`] : []), ...ips.map((ip) => `http://${ip}:${PORT}/`)];
+  const urls = [...(dns ? [remoteUrl(dns)] : []), ...ips.map(remoteUrl)];
   return { enabled: CONFIG.remote !== 'off', listening: ips, urls, tailscaleInstalled: fs.existsSync('C:\\Program Files\\Tailscale\\tailscale.exe') };
 }
 hub.remoteInfo = remoteInfo;

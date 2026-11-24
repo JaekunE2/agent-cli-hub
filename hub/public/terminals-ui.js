@@ -303,7 +303,7 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
   const termId = t?.id || state.sel.id;
   let dockCollapsed = chatHost ? true : termInputCollapsed;
   const keysOpen = getTuiKeysOpen();
-  hostEl.innerHTML = `<div class="full"><div id="termwrap"><button type="button" class="scroll-bottom-btn term-bottom-float" id="btnTermFloatBottom" hidden title="터미널 최하단으로 이동" aria-label="터미널 최하단으로 이동">${ICO.chevDown}<span>최하단</span></button></div>
+  hostEl.innerHTML = `<div class="full"><div id="termwrap"><div class="termhint" id="termConnectionStatus" role="status" hidden></div><button type="button" class="scroll-bottom-btn term-bottom-float" id="btnTermFloatBottom" hidden title="터미널 최하단으로 이동" aria-label="터미널 최하단으로 이동">${ICO.chevDown}<span>최하단</span></button></div>
     <div class="term-dock">
       <div class="tdock-bar">
         <button class="ghost btn-sm" id="tDockToggle" aria-expanded="${!dockCollapsed}" title="하단 프롬프트 작성창 접기/펼치기">${dockCollapsed ? `${ICO.chevUp} 터미널 입력` : `${ICO.chevDown} 터미널 입력`}</button>
@@ -333,8 +333,7 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
           <button class="${chatHost ? '' : 'primary'}" id="tsend" title="터미널에 프롬프트 전송 (Enter)">터미널 전송</button>
         </div>
       </div>
-    </div>
-    <div class="note"></div></div>`;
+    </div></div>`;
 
   const fullEl = $('.full', hostEl);
   const wrapEl = $('#termwrap', fullEl);
@@ -372,19 +371,133 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
     setTimeout(() => h.remove(), 7000);
   }, { passive: true });
 
-  const ws = xws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/term?id=${termId}&t=${TOKEN}`);
-  const send = (data) => ws.readyState === 1 && ws.send(JSON.stringify({ type: 'input', data }));
+  const connectionNote = $('#termConnectionStatus', fullEl);
+  const showConnection = (message) => {
+    connectionNote.textContent = message;
+    connectionNote.hidden = !message;
+  };
+  let ws, connected = false, exited = t?.exited != null;
+  let polling = false, httpReady = false, cursor = '', inputChain = Promise.resolve();
+  let pendingInput = '', inputTimer, inputInFlight = false, pollTimer, pollInFlight = false, refreshAfterPoll = false;
+  let lastHttpInputAt = 0;
+  const current = () => gen === viewGen && wrapEl.isConnected;
+  const streamPath = '/api/term/stream';
+  const refreshOutput = () => {
+    clearTimeout(pollTimer);
+    if (pollInFlight) refreshAfterPoll = true;
+    else pollTimer = setTimeout(poll, 0);
+  };
+  const sendHttp = (payload) => {
+    inputChain = inputChain.then(async () => {
+      if (!current() || exited) return;
+      if (!httpReady) throw new Error('터미널 연결이 끊겼습니다. 재연결 후 다시 입력하세요.');
+      await api(streamPath, { method: 'POST', body: { id: termId, ...payload }, requireOk: true });
+      if (payload.data) {
+        lastHttpInputAt = Date.now();
+        refreshOutput();
+      }
+    }).catch(error => { if (current()) toast(error.message, 5000, 'danger'); });
+    return inputChain;
+  };
+  const flushInput = () => {
+    clearTimeout(inputTimer);
+    inputTimer = undefined;
+    if (!current() || exited || inputInFlight || !pendingInput) return;
+    const data = pendingInput;
+    pendingInput = '';
+    inputInFlight = true;
+    sendHttp({ data }).finally(() => {
+      inputInFlight = false;
+      flushInput();
+    });
+  };
+  const send = (data) => {
+    if (!current()) return false;
+    if (!exited && httpReady) {
+      if (pendingInput.length + data.length > 400_000) flushInput();
+      pendingInput += data;
+      if (/[\r\n\x03]/.test(data)) flushInput();
+      else inputTimer ??= setTimeout(flushInput, 16);
+      return true;
+    }
+    if (exited || ws?.readyState !== WebSocket.OPEN) {
+      showConnection(exited ? '종료된 터미널입니다.' : '터미널 연결이 끊겼습니다. 재연결 후 다시 입력하세요.');
+      return false;
+    }
+    ws.send(JSON.stringify({ type: 'input', data }));
+    return true;
+  };
   const resize = () => {
     if (gen !== viewGen || !wrapEl.isConnected || wrapEl.offsetParent === null) return;
     try { fit.fit(); } catch {}
-    if (ws.readyState === 1 && xterm) ws.send(JSON.stringify({ type: 'resize', cols: xterm.cols, rows: xterm.rows }));
+    if (ws?.readyState === WebSocket.OPEN && xterm) ws.send(JSON.stringify({ type: 'resize', cols: xterm.cols, rows: xterm.rows }));
+    else if (httpReady && xterm) {
+      flushInput();
+      sendHttp({ cols: xterm.cols, rows: xterm.rows });
+    }
   };
-  ws.onopen = resize;
-  ws.onmessage = (m) => {
-    const msg = JSON.parse(m.data);
-    if (msg.type === 'data') xterm?.write(msg.data);
-    if (msg.type === 'exit') xterm?.write(`\r\n\x1b[90m[프로세스 종료: ${msg.code}]\x1b[0m\r\n`);
+  const showExit = (code) => {
+    exited = true;
+    xterm?.write(`\r\n\x1b[90m[프로세스 종료: ${code}]\x1b[0m\r\n`);
   };
+  const poll = async () => {
+    if (!current() || exited || pollInFlight) return;
+    pollInFlight = true;
+    try {
+      const qs = new URLSearchParams({ id: termId, cursor });
+      const reply = await api(`${streamPath}?${qs}`, { requireOk: true, signal: AbortSignal.timeout(5000) });
+      if (!current()) return;
+      const needsResize = !httpReady;
+      httpReady = true;
+      cursor = reply.cursor;
+      if (reply.reset && connected) xterm?.write('\x1bc');
+      connected = true;
+      if (reply.data) xterm?.write(reply.data);
+      showConnection('');
+      if (reply.exited != null) { showExit(reply.exited); return; }
+      if (needsResize) resize();
+    } catch (error) {
+      httpReady = false;
+      if (current()) showConnection(error.message);
+    } finally {
+      pollInFlight = false;
+      if (current() && !exited) {
+        const delay = !httpReady ? 2000 : refreshAfterPoll ? 0 : Date.now() - lastHttpInputAt < 1200 ? 80 : 750;
+        refreshAfterPoll = false;
+        pollTimer = setTimeout(poll, delay);
+      }
+    }
+  };
+  const connect = () => {
+    if (!current()) return;
+    const socket = ws = xws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/term?id=${termId}&t=${TOKEN}`);
+    const timeout = setTimeout(() => { if (socket.readyState === WebSocket.CONNECTING) socket.close(); }, 3500);
+    let opened = false;
+    socket.onopen = () => {
+      clearTimeout(timeout);
+      if (!current()) return;
+      opened = true;
+      if (connected) xterm?.write('\x1bc');
+      connected = true;
+      showConnection('');
+      resize();
+    };
+    socket.onmessage = (m) => {
+      if (!current()) return;
+      const msg = JSON.parse(m.data);
+      if (msg.type === 'data') xterm?.write(msg.data);
+      if (msg.type === 'input-error') toast(msg.error, 5000, 'danger');
+      if (msg.type === 'exit') showExit(msg.code);
+    };
+    socket.onclose = () => {
+      clearTimeout(timeout);
+      if (!current() || exited) return;
+      showConnection('터미널 연결이 끊겼습니다. 재연결 중…');
+      if (opened) setTimeout(connect, 500);
+      else if (!polling) { polling = true; poll(); }
+    };
+  };
+  connect();
   xterm.onData(send);
   let pasteWithShift = false;
   xterm.attachCustomKeyEventHandler((e) => {
@@ -431,7 +544,7 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
   const tAttCtl = createAttachmentStrip($('#tAttStrip', fullEl), t?.cwd);
   const insert = (txt) => {
     if (dockCollapsed) {
-      send((txt.endsWith(' ') ? txt : txt + ' '));
+      if (!send(txt.endsWith(' ') ? txt : txt + ' ')) return;
       if (!IS_MOBILE) xterm?.focus();
       toast('터미널에 파일 경로를 입력했습니다');
       return;
@@ -632,7 +745,7 @@ function viewTerm() {
       ]);
     }
   };
-  if (state.tab === 'files') return renderArtifacts(artSid, gen);
+  if (state.tab === 'files') return renderArtifacts(artSid, gen, t?.id || '');
   if (state.tab === 'floorplan' && typeof renderStandaloneFloorplan === 'function') {
     const termCwd = t?.cwd || pj?.cwd || '';
     return renderStandaloneFloorplan(termCwd, gen, {

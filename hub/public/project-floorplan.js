@@ -14,11 +14,64 @@
 
   const layerOf = (l) => (l === 'docs' || l === 'config' ? 'test' : l);
   const layerMetaOf = (l) => LAYER_META.find((m) => m.id === layerOf(l)) || LAYER_META[2];
-  const impBadgeHTML = (n) => {
-    if (n.importance === 'core') return '<span class="badge c">핵심 허브</span>';
-    if (n.importance === 'major') return '<span class="badge kind-dev">주요 모듈</span>';
-    return '<span class="badge">보조</span>';
+  const cleanNodeSummary = (s) => String(s || '')
+    .replace(/^[\s\-=*\/#]+/, '')
+    .replace(/[\s\-=*\/]+$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const impBadgeHTML = (n, isTopFocal = false) => {
+    if (isTopFocal) return '<span class="badge tag c">핵심 허브 #1</span>';
+    if (n.importance === 'core') return '<span class="badge tag">핵심 모듈</span>';
+    if (n.importance === 'major') return '<span class="badge tag">주요 모듈</span>';
+    return '<span class="badge tag">보조</span>';
   };
+
+  function buildMacroLayerDiagramSVG(fp) {
+    const nodes = fp.nodes || [];
+    const layers = [
+      { id: 'ui', tag: 'CLIENT · UI', title: '화면 · UI', x: 16 },
+      { id: 'api', tag: 'HTTP · WS', title: '서버 · API', x: 232 },
+      { id: 'service', tag: 'DOMAIN', title: '코어 로직', x: 448 },
+      { id: 'data', tag: 'STORAGE', title: '데이터 · 저장', x: 664 },
+    ];
+    const topLayerId = fp.nodes?.[0] ? layerOf(fp.nodes[0].layer) : 'data';
+    const arrowsHTML = layers.slice(0, -1).map((l, idx) =>
+      `<path d="M ${l.x + 168},56 H ${layers[idx + 1].x - 4}" fill="none" stroke="var(--diag-muted)" stroke-width="1.2" marker-end="url(#fmMacroArr)"/>`
+    ).join('');
+    const labelsHTML = layers.slice(0, -1).map((l, idx) =>
+      `<rect x="${l.x + 178}" y="36" width="32" height="12" rx="3" fill="var(--diag-paper)"/>
+       <text x="${l.x + 194}" y="45" text-anchor="middle" font-family="var(--mono)" font-size="8" fill="var(--diag-soft)">${idx === 0 ? 'API' : idx === 1 ? 'CALL' : 'I/O'}</text>`
+    ).join('');
+    const nodesHTML = layers.map((l) => {
+      const list = nodes.filter((n) => layerOf(n.layer) === l.id);
+      const rawTop = list[0]?.name || '—';
+      const topName = rawTop.length > 23 ? `${rawTop.slice(0, 22)}…` : rawTop;
+      const isFocal = l.id === topLayerId;
+      const fill = isFocal ? 'var(--diag-accent-tint)' : 'var(--diag-node)';
+      const stroke = isFocal ? 'var(--diag-accent)' : 'var(--diag-ink)';
+      const sw = isFocal ? '1.2' : '1';
+      return `<g>
+        <rect x="${l.x}" y="16" width="168" height="80" rx="6" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/>
+        <rect x="${l.x + 12}" y="26" width="72" height="14" rx="3" fill="var(--diag-paper)" stroke="${isFocal ? 'var(--diag-accent)' : 'var(--diag-rule-solid)'}" stroke-width="0.8"/>
+        <text x="${l.x + 48}" y="36" text-anchor="middle" font-family="var(--mono)" font-size="7.5" font-weight="600" letter-spacing="0.08em" fill="${isFocal ? 'var(--diag-accent)' : 'var(--diag-muted)'}">${l.tag}</text>
+        <text x="${l.x + 156}" y="36" text-anchor="end" font-family="var(--mono)" font-size="9.5" fill="var(--diag-soft)">${list.length}개</text>
+        <text x="${l.x + 12}" y="60" font-size="12.5" font-weight="700" fill="var(--diag-ink)">${l.title}</text>
+        <text x="${l.x + 12}" y="80" font-family="var(--mono)" font-size="9.5" fill="var(--diag-muted)">${esc(topName)}</text>
+      </g>`;
+    }).join('');
+    return `<svg viewBox="0 0 848 112" role="img" aria-labelledby="fmMacroTitle fmMacroDesc">
+      <title id="fmMacroTitle">시스템 4계층 아키텍처 흐름도</title>
+      <desc id="fmMacroDesc">화면·UI에서 서버·API, 코어 로직, 데이터·저장 계층으로 이어지는 요청 및 모듈 의존성 흐름입니다.</desc>
+      <defs>
+        <marker id="fmMacroArr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M 0,1.2 L 7,4 L 0,6.8 Z" fill="var(--diag-muted)"/>
+        </marker>
+      </defs>
+      ${arrowsHTML}
+      ${labelsHTML}
+      ${nodesHTML}
+    </svg>`;
+  }
 
   function buildArchitectureMarkdown(fp, p, cwd) {
     const name = p?.name || (cwd ? cwd.split(/[\\/]/).filter(Boolean).pop() : '프로젝트');
@@ -55,7 +108,7 @@
       '## 2. 핵심 허브 모듈 (중요도 순 Top 15)',
       '| 중요도 | 파일 경로 | 계층 | 역할 요약 | 참조 수 | API | 라인 |',
       '| --- | --- | --- | --- | ---: | ---: | ---: |',
-      ...topHubs.map((n) => `| ${n.importance === 'core' ? '핵심 허브' : n.importance === 'major' ? '주요' : '보조'} | \`${n.relPath}\` | ${layerMetaOf(n.layer).title} | ${String(n.summary || '').replace(/\|/g, '/')} | ${n.importedBy.length} | ${n.endpoints.length} | ${n.lines} |`),
+      ...topHubs.map((n) => `| ${n.importance === 'core' ? '핵심 허브' : n.importance === 'major' ? '주요' : '보조'} | \`${n.relPath}\` | ${layerMetaOf(n.layer).title} | ${cleanNodeSummary(n.summary).replace(/\|/g, '/')} | ${n.importedBy.length} | ${n.endpoints.length} | ${n.lines} |`),
       '',
       eps.length ? '## 3. 주요 API 엔드포인트\n' + eps.slice(0, 30).map((e) => `- \`${e.method} ${e.path}\` — \`${e.file}:${e.line}\``).join('\n') : '',
       '',
@@ -128,9 +181,9 @@
 
     const body = `
       <div class="drw-sec">
-        <div class="row" style="gap:6px;flex-wrap:wrap">${impBadgeHTML(node)}<span class="badge ${lm.tone}">${esc(lm.title)}</span><span class="badge mono">${node.lines.toLocaleString()}줄</span></div>
+        <div class="row" style="gap:6px;flex-wrap:wrap">${impBadgeHTML(node, allNodes[0]?.id === node.id)}<span class="badge tag ${lm.tone}">${esc(lm.title)}</span><span class="badge tag mono">${node.lines.toLocaleString()}줄</span></div>
         <div class="mono ums" style="margin:4px 0 0;word-break:break-all">${esc(node.relPath)}</div>
-        <p style="margin:6px 0 0;font-size:13.5px;line-height:1.5">${esc(node.summary)}</p>
+        <p style="margin:6px 0 0;font-size:13.5px;line-height:1.5">${esc(cleanNodeSummary(node.summary))}</p>
       </div>
       ${fileIssues.length ? `<div class="drw-sec"><div class="drw-lbl">이 파일 점검 사항 (${fileIssues.length})</div>${fileIssues.map((it) => `<div class="rban ${it.severity === 'critical' ? 'bad' : 'warn'}" style="padding:8px 10px"><b>${esc(it.title)}</b><div class="ums" style="margin:2px 0 0">${esc(it.detail)}</div></div>`).join('')}</div>` : ''}
       <div class="drw-sec">
@@ -239,11 +292,11 @@
     const saveLabel = termCtx?.sessionId ? '산출물 저장' : '작업 폴더에 저장';
 
     const LAYER_COLS = [
-      { id: 'ui', title: '화면 · UI', tone: 'c' },
-      { id: 'api', title: '서버 · API', tone: 'c' },
-      { id: 'service', title: '코어 로직', tone: '' },
-      { id: 'data', title: '데이터 · 저장', tone: 'ok' },
-      { id: 'config', title: '설정 · 문서', tone: '' },
+      { id: 'ui', title: '화면 · UI', tone: 'tag' },
+      { id: 'api', title: '서버 · API', tone: 'tag' },
+      { id: 'service', title: '코어 로직', tone: 'tag' },
+      { id: 'data', title: '데이터 · 저장', tone: 'tag' },
+      { id: 'config', title: '설정 · 문서', tone: 'tag' },
     ];
 
     const edgesForNode = (nid) => {
@@ -254,6 +307,34 @@
         if (e.to === nid) inc.add(e.from);
       }
       return { inc, out };
+    };
+
+    const orthoRounded = (pts, rMax = 8) => {
+      const clean = [];
+      for (const p of pts) {
+        const prev = clean[clean.length - 1];
+        if (!prev || Math.hypot(p.x - prev.x, p.y - prev.y) > 0.5) clean.push(p);
+      }
+      if (clean.length < 2) return '';
+      let d = `M ${clean[0].x.toFixed(1)} ${clean[0].y.toFixed(1)}`;
+      for (let i = 1; i < clean.length; i++) {
+        const p = clean[i];
+        if (i < clean.length - 1) {
+          const prev = clean[i - 1], nxt = clean[i + 1];
+          const dx1 = p.x - prev.x, dy1 = p.y - prev.y;
+          const dx2 = nxt.x - p.x, dy2 = nxt.y - p.y;
+          const l1 = Math.hypot(dx1, dy1), l2 = Math.hypot(dx2, dy2);
+          const r = Math.min(rMax, l1 * 0.45, l2 * 0.45);
+          if (r >= 2) {
+            const preX = p.x - (dx1 / l1) * r, preY = p.y - (dy1 / l1) * r;
+            const postX = p.x + (dx2 / l2) * r, postY = p.y + (dy2 / l2) * r;
+            d += ` L ${preX.toFixed(1)} ${preY.toFixed(1)} Q ${p.x.toFixed(1)} ${p.y.toFixed(1)}, ${postX.toFixed(1)} ${postY.toFixed(1)}`;
+            continue;
+          }
+        }
+        d += ` L ${p.x.toFixed(1)} ${p.y.toFixed(1)}`;
+      }
+      return d;
     };
 
     const drawMapEdges = (focusId = mapSelectedId) => {
@@ -271,6 +352,7 @@
           r: (r.right - sr.left) / z,
           t: (r.top - sr.top) / z,
           b: (r.bottom - sr.top) / z,
+          h: (r.bottom - r.top) / z,
           cx: ((r.left + r.right) / 2 - sr.left) / z,
           cy: ((r.top + r.bottom) / 2 - sr.top) / z,
         });
@@ -285,19 +367,54 @@
       });
 
       const paths = [`<defs>
-        <marker id="fmArrOut" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1 L 10 5 L 0 9 z" fill="var(--accent)"/></marker>
+        <marker id="fmArrDef" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="5.5" markerHeight="5.5" orient="auto"><path d="M 0 1.2 L 7 4 L 0 6.8 z" fill="var(--diag-muted)"/></marker>
+        <marker id="fmArrOut" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1 L 10 5 L 0 9 z" fill="var(--diag-accent)"/></marker>
         <marker id="fmArrIn" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1 L 10 5 L 0 9 z" fill="var(--ok)"/></marker>
       </defs>`];
 
+      // Deduplicate visible edges and compute fanned attach ports (>=10px apart)
+      const visEdges = [];
       const seenPair = new Set();
       for (const e of edges) {
-        const a = boxOf.get(e.from);
-        const b = boxOf.get(e.to);
+        const a = boxOf.get(e.from), b = boxOf.get(e.to);
         if (!a || !b || e.from === e.to) continue;
         const pk = `${e.from}=>${e.to}`;
         if (seenPair.has(pk)) continue;
         seenPair.add(pk);
+        visEdges.push(e);
+      }
 
+      const rightSlots = new Map(), leftSlots = new Map();
+      visEdges.forEach((e, i) => {
+        const a = boxOf.get(e.from), b = boxOf.get(e.to);
+        const sameCol = Math.abs(a.cx - b.cx) < 30;
+        const goRight = sameCol || a.cx < b.cx;
+        const srcMap = goRight ? rightSlots : leftSlots;
+        const dstMap = sameCol ? rightSlots : (goRight ? leftSlots : rightSlots);
+        (srcMap.get(e.from) || srcMap.set(e.from, []).get(e.from)).push({ idx: i, end: 'from', peerY: b.cy });
+        (dstMap.get(e.to) || dstMap.set(e.to, []).get(e.to)).push({ idx: i, end: 'to', peerY: a.cy });
+      });
+
+      const fromY = new Map(), toY = new Map();
+      const assignSidePorts = (sideMap) => {
+        for (const [nid, list] of sideMap.entries()) {
+          const box = boxOf.get(nid);
+          list.sort((u, v) => u.peerY - v.peerY);
+          const n = list.length;
+          const step = n <= 1 ? 0 : Math.min(12, Math.max(8, (box.h - 24) / (n - 1)));
+          list.forEach((item, rank) => {
+            const y = box.cy + (rank - (n - 1) / 2) * step;
+            if (item.end === 'from') fromY.set(item.idx, y);
+            else toY.set(item.idx, y);
+          });
+        }
+      };
+      assignSidePorts(rightSlots);
+      assignSidePorts(leftSlots);
+
+      const gapChannel = new Map();
+      visEdges.forEach((e, idx) => {
+        const a = boxOf.get(e.from), b = boxOf.get(e.to);
         const isOut = focusId && e.from === focusId;
         const isIn = focusId && e.to === focusId;
         const cls = ['fm-edge'];
@@ -307,21 +424,41 @@
           else if (isIn) cls.push('hi-in');
           else cls.push('dim');
         }
-        const marker = isOut ? ' marker-end="url(#fmArrOut)"' : isIn ? ' marker-end="url(#fmArrIn)"' : '';
+        const marker = isOut ? ' marker-end="url(#fmArrOut)"' : isIn ? ' marker-end="url(#fmArrIn)"' : ' marker-end="url(#fmArrDef)"';
+        const y1 = fromY.get(idx) ?? a.cy;
+        const y2 = toY.get(idx) ?? b.cy;
 
-        let d;
+        let pts;
         if (Math.abs(a.cx - b.cx) < 30) {
-          const arcX = Math.max(a.r, b.r) + 26;
-          d = `M ${a.r.toFixed(1)} ${a.cy.toFixed(1)} C ${arcX.toFixed(1)} ${a.cy.toFixed(1)}, ${arcX.toFixed(1)} ${b.cy.toFixed(1)}, ${b.r.toFixed(1)} ${b.cy.toFixed(1)}`;
+          const gKey = `same:${Math.round(a.cx / 40)}`;
+          const c = gapChannel.get(gKey) || 0;
+          gapChannel.set(gKey, c + 1);
+          const arcX = Math.max(a.r, b.r) + 16 + (c % 3) * 6;
+          pts = [{ x: a.r, y: y1 }, { x: arcX, y: y1 }, { x: arcX, y: y2 }, { x: b.r, y: y2 }];
         } else if (a.cx < b.cx) {
-          const dx = Math.max(36, (b.l - a.r) * 0.55);
-          d = `M ${a.r.toFixed(1)} ${a.cy.toFixed(1)} C ${(a.r + dx).toFixed(1)} ${a.cy.toFixed(1)}, ${(b.l - dx).toFixed(1)} ${b.cy.toFixed(1)}, ${b.l.toFixed(1)} ${b.cy.toFixed(1)}`;
+          const gKey = `fwd:${Math.round(a.r / 40)}:${Math.round(b.l / 40)}`;
+          const c = gapChannel.get(gKey) || 0;
+          gapChannel.set(gKey, c + 1);
+          const midX = (b.l - a.r < 90)
+            ? (a.r + b.l) / 2 + ((c % 5) - 2) * 5
+            : a.r + 22 + ((c % 4) * 6);
+          pts = Math.abs(y1 - y2) < 2
+            ? [{ x: a.r, y: y1 }, { x: b.l, y: y2 }]
+            : [{ x: a.r, y: y1 }, { x: midX, y: y1 }, { x: midX, y: y2 }, { x: b.l, y: y2 }];
         } else {
-          const dx = Math.max(36, (a.l - b.r) * 0.55);
-          d = `M ${a.l.toFixed(1)} ${a.cy.toFixed(1)} C ${(a.l - dx).toFixed(1)} ${a.cy.toFixed(1)}, ${(b.r + dx).toFixed(1)} ${b.cy.toFixed(1)}, ${b.r.toFixed(1)} ${b.cy.toFixed(1)}`;
+          const gKey = `rev:${Math.round(b.r / 40)}:${Math.round(a.l / 40)}`;
+          const c = gapChannel.get(gKey) || 0;
+          gapChannel.set(gKey, c + 1);
+          const midX = (a.l - b.r < 90)
+            ? (b.r + a.l) / 2 + ((c % 5) - 2) * 5
+            : a.l - 22 - ((c % 4) * 6);
+          pts = Math.abs(y1 - y2) < 2
+            ? [{ x: a.l, y: y1 }, { x: b.r, y: y2 }]
+            : [{ x: a.l, y: y1 }, { x: midX, y: y1 }, { x: midX, y: y2 }, { x: b.r, y: y2 }];
         }
-        paths.push(`<path class="${cls.join(' ')}" d="${d}"${marker}/>`);
-      }
+        const d = orthoRounded(pts, 8);
+        if (d) paths.push(`<path class="${cls.join(' ')}" d="${d}"${marker}/>`);
+      });
       svg.setAttribute('width', String(stage.scrollWidth));
       svg.setAttribute('height', String(stage.scrollHeight));
       svg.innerHTML = paths.join('');
@@ -424,17 +561,24 @@
           return `<button type="button" class="m-row" data-fm-open-node="${esc(n.id)}">
             <span class="m-row-main">
               <span class="m-row-t" style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
-                ${impBadgeHTML(n)}
+                ${impBadgeHTML(n, topHub?.id === n.id)}
                 <b class="mono">${esc(n.relPath)}</b>
                 ${n.hasIssue ? '<span class="badge warn">점검 필요</span>' : ''}
               </span>
-              <span class="m-row-s">${esc(n.summary)} · ${esc(metaParts)}</span>
+              <span class="m-row-s">${esc(cleanNodeSummary(n.summary))} · ${esc(metaParts)}</span>
             </span>
             <span class="m-row-end"><span class="ico">${ico.chevRight || ''}</span></span>
           </button>`;
         }).join('') || '<div class="empty" style="padding:20px 16px">조건에 맞는 모듈이 없습니다.</div>';
 
         body = `${keyHTML}
+          <div class="fm-arch-strip">
+            <div class="row" style="justify-content:space-between;gap:8px">
+              <b style="font-size:12.5px;color:var(--diag-ink)">계층 간 요청 · 데이터 흐름 구조도</b>
+              <button type="button" class="ghost btn-sm" data-fm-go-sub="diagram">모듈 의존성 계층 맵 열기 →</button>
+            </div>
+            ${buildMacroLayerDiagramSVG(fp)}
+          </div>
           <section class="list-sec">
             <div class="list-sec-hd"><h2>계층별 핵심 구성 요약 (클릭 시 파일 상세)</h2><span class="ums" style="margin:0">${fp.externalServices?.length ? `외부 연동: ${esc(fp.externalServices.join(' · '))}` : 'UI → API → 코어 → 데이터 흐름'}</span></div>
             <div class="fm-arch-grid">${archCols}</div>
@@ -485,6 +629,14 @@
             </div>
             <div class="fm-map-col-list">
               ${picked.map((n) => {
+                const isTopFocal = !selNode && topHub?.id === n.id;
+                const tagTxt = isTopFocal
+                  ? 'HUB #1'
+                  : n.importedBy.length
+                    ? `IN ${n.importedBy.length}`
+                    : n.endpoints.length
+                      ? `API ${n.endpoints.length}`
+                      : 'MOD';
                 const metric = n.importedBy.length
                   ? `참조 ${n.importedBy.length}곳`
                   : n.endpoints.length
@@ -492,12 +644,12 @@
                     : n.calls.length
                       ? `요청 ${n.calls.length}건`
                       : `${n.lines}줄`;
-                return `<button type="button" class="fm-map-node${n.importance === 'core' ? ' is-core' : ''}" data-fm-map-node="${esc(n.id)}">
+                return `<button type="button" class="fm-map-node${isTopFocal ? ' is-focal' : ''}" data-fm-map-node="${esc(n.id)}">
                   <div class="fm-map-node-top">
                     <b class="mono" title="${esc(n.relPath)}">${esc(n.name)}</b>
-                    ${n.importance === 'core' ? '<span class="badge c">핵심</span>' : ''}
+                    <span class="fm-node-tag${isTopFocal ? ' focal' : ''}">${esc(tagTxt)}</span>
                   </div>
-                  <div class="fm-map-node-sum">${esc(n.summary)}</div>
+                  <div class="fm-map-node-sum">${esc(cleanNodeSummary(n.summary))}</div>
                   <div class="fm-map-node-meta">
                     <span>${esc(metric)}</span>
                     <span>${n.lines.toLocaleString()}L</span>
@@ -547,6 +699,14 @@
                 <svg class="fm-map-edges" aria-hidden="true"></svg>
                 <div class="fm-map-cols">${colsHTML}</div>
               </div>
+            </div>
+            <div class="fm-map-legend">
+              <div class="fm-map-legend-items">
+                <span><i class="fm-leg-line"></i>모듈 import</span>
+                <span><i class="fm-leg-line api"></i>HTTP API 호출</span>
+                <span><i class="fm-leg-line focal"></i>포커스 의존 경로</span>
+              </div>
+              <span>최핵심 허브(#1)만 강조하며 클릭 시 상·하위 의존성만 선별 표시됩니다</span>
             </div>
           </div>
         </section>`;

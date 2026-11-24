@@ -589,6 +589,15 @@ function projectVersions(p) {
   };
 }
 
+function cleanTaskPreview(raw) {
+  return String(raw || '')
+    .replace(/\[(?:Primary Sources\s*&\s*Assumptions|Methods\s*&\s*Boundaries|Independent Validation|Verification|Assumptions|Context)\]\s*/gi, '')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+window.cleanTaskPreview = cleanTaskPreview;
+
 // Scannable Task List: Task Kind Color Badge + Stage Badge + 1-Click Embedded Sub-Dev Chat (`💬 서브 개발`)
 function showProjectGoal(goal) {
   const d = document.createElement('dialog');
@@ -622,7 +631,7 @@ function projectDesign(p) {
     const subs = byParent.get(t.id) || [];
     const subDone = subs.filter((s) => s.stage === 'done').length;
     const deps = t.after.map((id) => p.tasks.find((x) => x.id === id)?.title).filter(Boolean);
-    const summary = [t.detail ? t.detail.replace(/\s+/g, ' ').trim() : '', deps.length ? `← ${deps.join(', ')}` : ''].filter(Boolean).join(' · ');
+    const summary = [t.detail ? cleanTaskPreview(t.detail) : '', deps.length ? `← ${deps.join(', ')}` : ''].filter(Boolean).join(' · ');
     const k = typeof taskKindOf === 'function' ? taskKindOf(t) : 'dev';
     const chatCnt = (p.subChats?.[t.id] || []).length;
     const tokBadge = typeof taskTokenBadgeHTML === 'function' ? taskTokenBadgeHTML(p, t, true) : '';
@@ -660,11 +669,12 @@ function projectDesign(p) {
 
   const defCfg = [providerName(p.agent || 'codex'), p.model || '', p.effort ? `추론 ${p.effort}` : ''].filter(Boolean).join(' · ');
   const goal = (p.scope?.version?.goal ?? p.goal) || '작업 설계에서 목표와 완료 기준을 입력하세요.';
+  const goalPreviewTxt = cleanTaskPreview(goal) || goal;
   host.innerHTML = `<div class="pj-design-wrap">
     <section class="pj-objective">
       <div class="pj-objective-body">
-        <span class="pj-objective-lbl">목표 · 완료 기준 <span class="badge" style="margin-left:6px;text-transform:none;letter-spacing:0">${esc(defCfg)}</span></span>
-        <button id="projectGoalPreview" type="button" class="pj-goal" aria-haspopup="dialog"><span>${esc(goal)}</span><small>전체 보기</small></button>
+        <span class="pj-objective-lbl">목표 · 완료 기준 <span class="badge tag" style="margin-left:6px;text-transform:none;letter-spacing:0">${esc(defCfg)}</span></span>
+        <button id="projectGoalPreview" type="button" class="pj-goal" aria-haspopup="dialog"><span>${esc(goalPreviewTxt)}</span><small>전문 보기 →</small></button>
       </div>
       <button id="projectEdit" class="ghost btn-sm">${ico.edit || ''} 수정</button>
     </section>

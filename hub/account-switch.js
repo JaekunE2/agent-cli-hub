@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const { dispatchTerminalPrompt, waitForTerminalInput } = require('./term-manager');
 const { createAgyQuotaService } = require('./agy-quota');
 const { findAgySwapExe, createAgySwapService } = require('./agy-swap');
 
@@ -337,7 +338,7 @@ function createAccountSwitchService(hub) {
     return { ok: true, external: true, openMode: 'external' };
   }
 
-  async function switchAccount({ sessionId, termId, account = 'auto', model = '', effort = '', cont = false, followUp = '', skip = true, interrupt = false, force = false, openMode = 'dashboard' }) {
+  async function switchAccount({ sessionId, termId, account = 'auto', model = '', effort = '', cont = false, followUp = '', verifyFollowUp = false, skip = true, interrupt = false, force = false, openMode = 'dashboard' }) {
     let t0 = termId != null && termId !== '' ? [...hub.terms.values()].find((x) => String(x.id) === String(termId)) : null;
     let sid = sessionId || (t0 && hub.termSessionId(t0)) || '';
     if (!t0 && sid) t0 = [...hub.terms.values()].find((x) => x.exited === null && hub.termSessionId(x) === sid) || null;
@@ -376,6 +377,7 @@ function createAccountSwitchService(hub) {
       }
     }
 
+    const verifyHandoff = verifyFollowUp === true && !!followUp && !!handoffPrompt && openMode === 'dashboard';
     const inheritedProjectTask = t0?.meta?.projectTask || null;
     if (t0 && inheritedProjectTask) {
       if (d?.file) await index.updateFile(d.file).catch(() => {});
@@ -423,7 +425,7 @@ function createAccountSwitchService(hub) {
       ({ cmd, args } = codexLaunch([
         ...(skip ? ['--dangerously-bypass-approvals-and-sandbox'] : []),
         ...cliModelEffortArgs('codex', useME.model, useME.effort),
-        ...(samePlatform && sid ? ['resume', sid, ...(cont ? ['계속 진행해'] : [])] : samePlatform && t0 ? ['resume', '--last', ...(cont ? ['계속 진행해'] : [])] : handoffPrompt ? [handoffPrompt] : []),
+        ...(samePlatform && sid ? ['resume', sid, ...(cont ? ['계속 진행해'] : [])] : samePlatform && t0 ? ['resume', '--last', ...(cont ? ['계속 진행해'] : [])] : handoffPrompt && !verifyHandoff ? [handoffPrompt] : []),
       ]));
     } else if (targetAgent === 'agy') {
       cmd = agyExe();
@@ -441,7 +443,7 @@ function createAccountSwitchService(hub) {
       if (skip) args.push('--dangerously-skip-permissions');
       args.push(...cliModelEffortArgs('agy', useME.model, useME.effort));
       const agyPrompt = !samePlatform ? handoffPrompt : (cont && sid ? '계속 진행해' : null);
-      if (agyPrompt) args.push('--prompt-interactive', agyPrompt);
+      if (agyPrompt && !verifyHandoff) args.push('--prompt-interactive', agyPrompt);
     } else {
       cmd = 'claude.exe';
       if (pick.id !== 'default') {
@@ -508,7 +510,18 @@ function createAccountSwitchService(hub) {
       });
     }
 
-    const promptToSend = targetAgent === 'claude' ? (!samePlatform && handoffPrompt ? handoffPrompt : (cont && samePlatform && sid ? '계속 진행해' : null)) : null;
+    let deliveryError;
+    if (verifyHandoff) {
+      try {
+        const spawned = await t.spawnResult;
+        if (!spawned?.ok) throw new Error(spawned?.error || '터미널을 열 수 없습니다.');
+        await waitForTerminalInput(hub, t);
+        await dispatchTerminalPrompt(hub, t, handoffPrompt, { cli: targetAgent });
+      } catch (error) {
+        deliveryError = error.message;
+      }
+    }
+    const promptToSend = !verifyHandoff && targetAgent === 'claude' ? (!samePlatform && handoffPrompt ? handoffPrompt : (cont && samePlatform && sid ? '계속 진행해' : null)) : null;
     if (promptToSend) (async () => {
       if (await hub.waitFor(() => t.exited === null && hub.inputReady(t), 45000, 700)) {
         await hub.sleep(600);
@@ -520,6 +533,7 @@ function createAccountSwitchService(hub) {
       ok: true, term: hub.termInfo(t),
       account: { id: pick.id, label: pick.label, agent: targetAgent, fiveH: pick.fiveH, weekly: pick.weekly },
       crossPlatform: !samePlatform,
+      ...(verifyHandoff ? { followUpSubmitted: !deliveryError, deliveryError } : {}),
       ...(handoffFile ? { handoffFile } : {}),
       stopped: t0 ? `t:${t0.id}` : loc.live ? (loc.term ? `t:${loc.term.id}` : `c:${loc.console?.id}`) : null,
     };
@@ -578,6 +592,39 @@ function createAccountSwitchService(hub) {
     return [...found];
   }
 
+  let agyModelsCache = { at: 0, models: null, inflight: null };
+  function refreshAgyModelsCache() {
+    if (agyModelsCache.inflight) return agyModelsCache.inflight;
+    const exe = agyExe();
+    if (!exe) return Promise.resolve([]);
+    agyModelsCache.inflight = new Promise((resolve) => {
+      execFile(exe, ['models'], { timeout: 8000, windowsHide: true }, (err, stdout) => {
+        agyModelsCache.inflight = null;
+        if (err || !stdout) return resolve(agyModelsCache.models || []);
+        const parsed = [];
+        for (const rawLine of String(stdout).split(/\r?\n/)) {
+          const m = /^([a-z0-9][a-z0-9._-]*)\t+(.+?)\s*$/i.exec(rawLine.trim());
+          if (m) parsed.push({ id: m[1].trim(), label: m[2].trim() });
+        }
+        if (parsed.length) agyModelsCache = { at: Date.now(), models: parsed, inflight: null };
+        resolve(agyModelsCache.models || []);
+      });
+    });
+    return agyModelsCache.inflight;
+  }
+
+  function readAgyConfigDefaults() {
+    try {
+      const f = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'settings.json');
+      if (!fs.existsSync(f)) return { model: '', effort: '' };
+      const j = JSON.parse(fs.readFileSync(f, 'utf8'));
+      return {
+        model: typeof j?.model === 'string' ? j.model.trim() : '',
+        effort: typeof j?.effort === 'string' ? j.effort.trim() : '',
+      };
+    } catch { return { model: '', effort: '' }; }
+  }
+
   function projectCliOptions() {
     const cx = readCodexConfigDefaults();
     const cxCache = readCodexModelsCache();
@@ -615,6 +662,9 @@ function createAccountSwitchService(hub) {
       { id: 'gemini-4-neon-xhigh', label: 'Gemini 4 Neon (XHigh)' },
       { id: 'gemini-4-neon-medium', label: 'Gemini 4 Neon (Medium)' },
       { id: 'gemini-4-neon-low', label: 'Gemini 4 Neon (Low)' },
+      { id: 'gemini-4-carbon-high', label: 'Gemini 4 Carbon (High)' },
+      { id: 'gemini-4-carbon-medium', label: 'Gemini 4 Carbon (Medium)' },
+      { id: 'gemini-4-carbon-low', label: 'Gemini 4 Carbon (Low)' },
       { id: 'gemini-4-argon-high', label: 'Gemini 4 Argon (High)' },
       { id: 'gemini-4-argon-medium', label: 'Gemini 4 Argon (Medium)' },
       { id: 'gemini-4-argon-low', label: 'Gemini 4 Argon (Low)' },
@@ -623,7 +673,8 @@ function createAccountSwitchService(hub) {
       { id: 'gemini-4-hydrogen-medium', label: 'Gemini 4 Hydrogen (Medium)' },
       { id: 'gemini-4-hydrogen-low', label: 'Gemini 4 Hydrogen (Low)' },
       { id: 'gemini-pro-orchestrator-neon', label: 'Orchestrator (Neon)' },
-      { id: 'gemini-pro-orchestrator-g1-pro', label: 'Orchestrator (Argon)' },
+      { id: 'gemini-pro-orchestrator', label: 'Orchestrator (Carbon)' },
+      { id: 'gemini-pro-orchestrator-argon', label: 'Orchestrator (Argon)' },
       { id: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' },
       { id: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)' },
       { id: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)' },
@@ -635,11 +686,19 @@ function createAccountSwitchService(hub) {
       { id: 'claude-sonnet-5-5-low', label: 'Claude Sonnet 5.5 (Low)' },
       { id: 'gpt-oss-120b-medium', label: 'GPT-OSS 120B (Medium)' },
     ];
+    if (!agyModelsCache.models || Date.now() - agyModelsCache.at > 15 * 60_000) {
+      refreshAgyModelsCache().catch(() => {});
+    }
+    const agyCfg = readAgyConfigDefaults();
+    const agyModels = [
+      ...(agyModelsCache.models?.length ? agyModelsCache.models : agyDefaultModels),
+      ...agyDefaultModels,
+    ].filter((m, i, arr) => arr.findIndex((x) => x.id === m.id) === i);
     const mapEff = (ids) => [...new Set(ids)].map((id) => ({ id, label: EFFORT_LABELS[id] || id }));
     return {
       codex: { models: cxModels, efforts: mapEff(cxEffortIds), defaultModel: cx.model, defaultEffort: cx.effort },
       claude: { models: claudeModels, efforts: mapEff(['', 'low', 'medium', 'high', 'xhigh', 'max']), defaultModel: '', defaultEffort: '' },
-      agy: { models: agyDefaultModels, efforts: mapEff(['', 'low', 'medium', 'high', 'xhigh', 'max']), defaultModel: '', defaultEffort: '' },
+      agy: { models: agyModels, efforts: mapEff(['', 'low', 'medium', 'high', 'xhigh', 'max']), defaultModel: agyCfg.model, defaultEffort: agyCfg.effort },
       cursor: { models: [], efforts: [{ id: '', label: EFFORT_LABELS[''] }], defaultModel: '', defaultEffort: '' },
     };
   }

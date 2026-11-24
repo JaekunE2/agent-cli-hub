@@ -3,7 +3,7 @@ const qs = new URLSearchParams(location.search);
 let TOKEN = qs.get('t') || '';
 try { if (TOKEN) localStorage.setItem('ccd-token', TOKEN); else TOKEN = localStorage.getItem('ccd-token') || ''; } catch {}
 // opened on this PC (127.0.0.1/localhost): the server put the token into the page — any browser profile works
-if (window.__CCD_LOCAL_TOKEN && TOKEN !== window.__CCD_LOCAL_TOKEN) { TOKEN = window.__CCD_LOCAL_TOKEN; try { localStorage.setItem('ccd-token', TOKEN); } catch {} }
+if (window.LOCAL_TOKEN && TOKEN !== window.LOCAL_TOKEN) { TOKEN = window.LOCAL_TOKEN; try { localStorage.setItem('ccd-token', TOKEN); } catch {} }
 if (qs.get('t')) { qs.delete('t'); history.replaceState(null, '', '/' + (qs.toString() ? '?' + qs : '') + location.hash); }
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -313,17 +313,21 @@ function paintActiveTermStatus() {
   if (!pill || state.sel.kind !== 'term') return;
   const t = state.terms.find((x) => String(x.id) === String(state.sel.id));
   if (!t) return;
-  const st = termStateOf(t);
+  const meta = termStatusMeta(t);
+  const st = meta.state;
   const startup = terminalStartupLabel(t);
   const justDone = st === 'idle' && state.justDoneTerms.has(String(t.id));
-  pill.className = `term-live-pill ${startup || st === 'busy' ? 'busy' : justDone ? 'done' : st === 'exited' ? 'exited' : 'idle'}`;
+  pill.className = `term-live-pill ${startup || st === 'busy' ? 'busy' : justDone ? 'done' : st === 'exited' ? 'exited' : meta.dormant ? 'dormant' : 'idle'}`;
+  pill.title = meta.dormant ? '1시간 이상 입력·출력 활동 없음' : '';
   pill.innerHTML = startup ? esc(startup) : st === 'busy'
     ? '<span class="dot busy" style="width:6px;height:6px"></span>실행 중'
     : justDone
       ? `${ICO.check} 작업 완료`
       : st === 'exited'
         ? `<span class="dot dead" style="width:6px;height:6px"></span>종료됨 (${t.exited})`
-        : '대기';
+        : meta.dormant
+          ? '<span class="dot dormant" style="width:6px;height:6px"></span>유휴'
+          : '대기';
 }
 
 // ---------- data ----------
@@ -503,10 +507,22 @@ function consoleStateOf(c) {
   const s = sessionOfConsole(c);
   return s?.status === 'busy' ? 'busy' : 'idle';
 }
-function termStatusLabel(t) {
-  if (!t) return '종료됨';
+const TERM_DORMANT_MS = 60 * 60 * 1000;
+function isTermDormant(t, now = Date.now()) {
+  if (!t || termStateOf(t) !== 'idle') return false;
+  const ts = Math.max(Number(t.lastOutputAt) || 0, Number(t.lastInputAt) || 0, Number(t.startedAt) || 0);
+  return ts > 0 && (now - ts) >= TERM_DORMANT_MS;
+}
+function termStatusMeta(t, now = Date.now()) {
+  if (!t) return { state: 'exited', dormant: false, label: '종료됨', shortLabel: '종료됨', badgeClass: '', dot: 'dead', title: '' };
   const st = termStateOf(t);
-  return st === 'exited' ? `종료됨 (${t.exited ?? '?'})` : st === 'idle' ? '대기' : '실행 중';
+  if (st === 'exited') return { state: 'exited', dormant: false, label: `종료됨 (${t.exited ?? '?'})`, shortLabel: '종료됨', badgeClass: '', dot: 'dead', title: '' };
+  if (st === 'busy') return { state: 'busy', dormant: false, label: '실행 중', shortLabel: '실행 중', badgeClass: 'warn', dot: 'busy', title: '' };
+  if (isTermDormant(t, now)) return { state: 'idle', dormant: true, label: '유휴', shortLabel: '유휴', badgeClass: 'dormant', dot: 'dormant', title: '1시간 이상 입력·출력 활동 없음' };
+  return { state: 'idle', dormant: false, label: '대기', shortLabel: '대기', badgeClass: 'ok', dot: 'idle', title: '' };
+}
+function termStatusLabel(t) {
+  return termStatusMeta(t).label;
 }
 const STATE_RANK = { busy: 0, idle: 1, exited: 2 };
 const SIDE_LIVE_RANK = { busy: 0, idle: 0, exited: 2 };

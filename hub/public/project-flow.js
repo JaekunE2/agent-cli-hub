@@ -129,12 +129,12 @@ function computeAutoFlowLayout(tasks, dir = 'lr') {
     }
   }
 
-  const CARD_W = 252;
-  const CARD_H = 152;
-  const LAYER_GAP = dir === 'tb' ? 68 : 86;
-  const ITEM_GAP = dir === 'tb' ? 28 : 26;
-  const PAD_X = 28;
-  const PAD_Y = 28;
+  const CARD_W = 244;
+  const CARD_H = 128;
+  const LAYER_GAP = dir === 'tb' ? 76 : 104;
+  const ITEM_GAP = dir === 'tb' ? 24 : 24;
+  const PAD_X = 32;
+  const PAD_Y = 36;
 
   const maxRows = Math.max(1, ...columns.map((c) => (c ? c.length : 0)));
   const coords = {};
@@ -147,7 +147,7 @@ function computeAutoFlowLayout(tasks, dir = 'lr') {
       const startX = PAD_X + Math.max(0, Math.round((totalW - rowW) / 2));
       const y = PAD_Y + cIdx * (CARD_H + LAYER_GAP);
       col.forEach((t, rIdx) => {
-        coords[t.id] = { x: startX + rIdx * (CARD_W + ITEM_GAP), y, col: rIdx, row: cIdx };
+        coords[t.id] = { x: startX + rIdx * (CARD_W + ITEM_GAP), y, col: cIdx, row: rIdx };
       });
     });
   } else {
@@ -155,7 +155,6 @@ function computeAutoFlowLayout(tasks, dir = 'lr') {
     columns.forEach((col, cIdx) => {
       if (!col || !col.length) return;
       const colH = col.length * CARD_H + (col.length - 1) * ITEM_GAP;
-      // Vertically center shorter columns relative to tallest column, with a slight stagger to avoid collinear horizontal lines
       const startY = PAD_Y + Math.max(0, Math.round((totalH - colH) / 2));
       const x = PAD_X + cIdx * (CARD_W + LAYER_GAP);
       col.forEach((t, rIdx) => {
@@ -165,6 +164,132 @@ function computeAutoFlowLayout(tasks, dir = 'lr') {
   }
 
   return { coords, columns };
+}
+
+// Re-pack auto-positioned nodes using actual DOM card sizes and parent/child center attraction
+// so straight chains align on a single axis (0 bends) and no vertical space is wasted.
+function refineAutoFlowCoords(tasks, columns, cardEls, dir = 'lr') {
+  const { parentsOf, rawAdj } = computeFlowEdges(tasks, false);
+  const LAYER_GAP = dir === 'tb' ? 76 : 104;
+  const ITEM_GAP = 24;
+  const PAD_X = 32;
+  const PAD_Y = 36;
+  const sizeOf = (id) => {
+    const el = cardEls.get(id);
+    return {
+      w: el?.offsetWidth || 244,
+      h: el?.offsetHeight || 128,
+    };
+  };
+
+  const out = {};
+  if (dir === 'tb') {
+    let curY = PAD_Y;
+    const rowTops = [];
+    columns.forEach((col, cIdx) => {
+      if (!col?.length) return;
+      rowTops[cIdx] = curY;
+      const maxH = Math.max(...col.map((t) => sizeOf(t.id).h));
+      let curX = PAD_X;
+      col.forEach((t) => {
+        const { w } = sizeOf(t.id);
+        out[t.id] = { x: curX, y: curY };
+        curX += w + ITEM_GAP;
+      });
+      curY += maxH + LAYER_GAP;
+    });
+    const packRow = (col, targetXOf) => {
+      const sorted = [...col].sort((a, b) => targetXOf(a) - targetXOf(b));
+      let cursor = PAD_X;
+      const items = sorted.map((t) => {
+        const w = sizeOf(t.id).w;
+        const desired = Math.max(cursor, Math.round(targetXOf(t) - w / 2));
+        cursor = desired + w + ITEM_GAP;
+        return { id: t.id, x: desired, w };
+      });
+      const minX = Math.min(...items.map((it) => it.x));
+      if (minX < PAD_X) {
+        const shift = PAD_X - minX;
+        items.forEach((it) => (it.x += shift));
+      }
+      items.forEach((it) => { out[it.id].x = it.x; });
+    };
+    for (let pass = 0; pass < 3; pass++) {
+      for (let c = 1; c < columns.length; c++) {
+        if (!columns[c]?.length) continue;
+        packRow(columns[c], (t) => {
+          const ps = [...(parentsOf.get(t.id) || [])].filter((id) => out[id]);
+          if (!ps.length) return out[t.id].x + sizeOf(t.id).w / 2;
+          return ps.reduce((s, id) => s + out[id].x + sizeOf(id).w / 2, 0) / ps.length;
+        });
+      }
+      for (let c = columns.length - 2; c >= 0; c--) {
+        if (!columns[c]?.length) continue;
+        packRow(columns[c], (t) => {
+          const cs = [...(rawAdj.get(t.id) || [])].filter((id) => out[id]);
+          if (!cs.length) return out[t.id].x + sizeOf(t.id).w / 2;
+          return cs.reduce((s, id) => s + out[id].x + sizeOf(id).w / 2, 0) / cs.length;
+        });
+      }
+    }
+    const minAllX = Math.min(...Object.values(out).map((p) => p.x));
+    if (minAllX > PAD_X) {
+      const shift = minAllX - PAD_X;
+      Object.values(out).forEach((p) => { p.x -= shift; });
+    }
+    return out;
+  }
+
+  // Left-to-Right (LR) mode: compact columns by actual width, align Y toward parent/child centers
+  let curX = PAD_X;
+  columns.forEach((col) => {
+    if (!col?.length) return;
+    const maxW = Math.max(...col.map((t) => sizeOf(t.id).w));
+    let curY = PAD_Y;
+    col.forEach((t) => {
+      const { h } = sizeOf(t.id);
+      out[t.id] = { x: curX, y: curY };
+      curY += h + ITEM_GAP;
+    });
+    curX += maxW + LAYER_GAP;
+  });
+
+  const packCol = (col, targetYOf) => {
+    const sorted = [...col].sort((a, b) => targetYOf(a) - targetYOf(b));
+    let cursor = PAD_Y;
+    const items = sorted.map((t) => {
+      const h = sizeOf(t.id).h;
+      const desired = Math.max(cursor, Math.round(targetYOf(t) - h / 2));
+      cursor = desired + h + ITEM_GAP;
+      return { id: t.id, y: desired, h };
+    });
+    items.forEach((it) => { out[it.id].y = it.y; });
+  };
+
+  for (let pass = 0; pass < 3; pass++) {
+    for (let c = 1; c < columns.length; c++) {
+      if (!columns[c]?.length) continue;
+      packCol(columns[c], (t) => {
+        const ps = [...(parentsOf.get(t.id) || [])].filter((id) => out[id]);
+        if (!ps.length) return out[t.id].y + sizeOf(t.id).h / 2;
+        return ps.reduce((s, id) => s + out[id].y + sizeOf(id).h / 2, 0) / ps.length;
+      });
+    }
+    for (let c = columns.length - 2; c >= 0; c--) {
+      if (!columns[c]?.length) continue;
+      packCol(columns[c], (t) => {
+        const cs = [...(rawAdj.get(t.id) || [])].filter((id) => out[id]);
+        if (!cs.length) return out[t.id].y + sizeOf(t.id).h / 2;
+        return cs.reduce((s, id) => s + out[id].y + sizeOf(id).h / 2, 0) / cs.length;
+      });
+    }
+  }
+  const minAllY = Math.min(...Object.values(out).map((p) => p.y));
+  if (minAllY > PAD_Y) {
+    const shift = minAllY - PAD_Y;
+    Object.values(out).forEach((p) => { p.y -= shift; });
+  }
+  return out;
 }
 
 function flowTopTasks(p) {
@@ -195,11 +320,14 @@ function projectFlow(p) {
     const k = typeof taskKindOf === 'function' ? taskKindOf(t) : 'dev';
     const menuAria = `${t.title} 메뉴`;
     const collapsed = typeof isTaskCollapsed === 'function' && isTaskCollapsed(p.id, t.id);
+    const liveBadge = t.stage === 'done'
+      ? ''
+      : (typeof projectLiveStatusBadgeHTML === 'function' ? projectLiveStatusBadgeHTML(p, t) : '');
     return `<article class="pj-task flow-node${collapsed ? ' is-collapsed' : ''}" data-task="${esc(t.id)}" data-stage="${esc(t.stage)}" data-kind="${esc(k)}">
       <span class="pj-port in" aria-hidden="true"></span>
       <span class="pj-port out" aria-hidden="true"></span>
       <div class="row" style="justify-content:space-between;gap:6px">
-        <div class="row" style="gap:5px;min-width:0;flex-wrap:wrap">${typeof collapseBtnHTML === 'function' ? collapseBtnHTML(collapsed, t.id) : ''}${kindBadgeHTML(t)}${stageBadgeHTML(t.stage)}${typeof projectLiveStatusBadgeHTML === 'function' ? projectLiveStatusBadgeHTML(p, t) : ''}${typeof projectReviewBadgeHTML === 'function' ? projectReviewBadgeHTML(t) : ''}${subs.length ? `<span class="badge">하위 ${subDone}/${subs.length}</span>` : ''}</div>
+        <div class="row" style="gap:4px;min-width:0;flex-wrap:wrap">${typeof collapseBtnHTML === 'function' ? collapseBtnHTML(collapsed, t.id) : ''}${kindBadgeHTML(t)}${stageBadgeHTML(t.stage)}${liveBadge}${typeof projectReviewBadgeHTML === 'function' ? projectReviewBadgeHTML(t) : ''}${subs.length ? `<span class="badge">하위 ${subDone}/${subs.length}</span>` : ''}</div>
         <button class="ghost icon-btn btn-sm" data-task-more="${esc(t.id)}" aria-label="${esc(menuAria)}" aria-haspopup="menu" aria-expanded="false">${ico.more || '⋯'}</button>
       </div>
       <div class="pj-task-head">
@@ -220,11 +348,18 @@ function projectFlow(p) {
       </button>
       <button type="button" class="btn-sm danger" id="flowDeleteSelected" hidden title="선택한 카드를 일괄 삭제합니다 (Delete 키)">선택 삭제</button>
     </div>
-    <div class="row" style="gap:4px">
-      <button type="button" class="ghost btn-sm" id="flowZoomFit" title="전체 노드가 한눈에 보이도록 화면 맞춤">화면 맞춤</button>
-      <button type="button" class="ghost btn-sm" id="flowZoomOut" title="축소">－</button>
-      <button type="button" class="ghost btn-sm mono" id="flowZoomReset" title="100% 기본 배율">100%</button>
-      <button type="button" class="ghost btn-sm" id="flowZoomIn" title="확대">＋</button>
+    <div class="row" style="gap:10px;flex-wrap:wrap">
+      <div class="pj-flow-legend" aria-hidden="true">
+        <span><i></i>선행 의존</span>
+        <span><i class="focal"></i>활성·포커스</span>
+        <span><i class="sub"></i>하위 분기</span>
+      </div>
+      <div class="row" style="gap:4px">
+        <button type="button" class="ghost btn-sm" id="flowZoomFit" title="전체 노드가 한눈에 보이도록 화면 맞춤">화면 맞춤</button>
+        <button type="button" class="ghost btn-sm" id="flowZoomOut" title="축소">－</button>
+        <button type="button" class="ghost btn-sm mono" id="flowZoomReset" title="100% 기본 배율">100%</button>
+        <button type="button" class="ghost btn-sm" id="flowZoomIn" title="확대">＋</button>
+      </div>
     </div>
   </div>`;
 
@@ -242,14 +377,26 @@ function bindProjectFlow(p, gen) {
 
   const topTasks = flowTopTasks(p);
   let curDir = flowDir();
-  let autoCoords = computeAutoFlowLayout(topTasks, curDir).coords;
+  let autoLayout = computeAutoFlowLayout(topTasks, curDir);
+  let autoCoords = autoLayout.coords;
   const pos = {};
+  const cardEls = new Map([...canvas.querySelectorAll('[data-task]')].map((el) => [el.dataset.task, el]));
+
+  const applyPositions = () => {
+    for (const [id, el] of cardEls.entries()) {
+      const pt = pos[id] || { x: 32, y: 36 };
+      el.style.left = `${pt.x}px`;
+      el.style.top = `${pt.y}px`;
+    }
+  };
+
   const loadPositionsForDir = (dir) => {
-    autoCoords = computeAutoFlowLayout(topTasks, dir).coords;
+    autoLayout = computeAutoFlowLayout(topTasks, dir);
+    autoCoords = refineAutoFlowCoords(topTasks, autoLayout.columns, cardEls, dir);
     const svMap = loadFlowPositions(projectFlowKey(p), dir);
     for (const t of topTasks) {
       const sv = svMap[t.id];
-      const au = autoCoords[t.id] || { x: 28, y: 28 };
+      const au = autoCoords[t.id] || { x: 32, y: 36 };
       pos[t.id] = (sv && Number.isFinite(sv.x) && Number.isFinite(sv.y))
         ? { x: Math.max(8, sv.x), y: Math.max(8, sv.y) }
         : { x: au.x, y: au.y };
@@ -260,20 +407,104 @@ function bindProjectFlow(p, gen) {
   };
   loadPositionsForDir(curDir);
 
-  const cardEls = new Map([...canvas.querySelectorAll('[data-task]')].map((el) => [el.dataset.task, el]));
   let zoom = 1;
   let hoverTaskId = null;
 
-  const applyPositions = () => {
-    for (const [id, el] of cardEls.entries()) {
-      const pt = pos[id] || { x: 28, y: 28 };
-      el.style.left = `${pt.x}px`;
-      el.style.top = `${pt.y}px`;
+  const settlePositions = () => {
+    const placed = [];
+    const vertical = curDir === 'tb';
+    const axis = vertical ? 'x' : 'y';
+    const end = vertical ? 'right' : 'bottom';
+    const gap = 18;
+    const ordered = [...cardEls].sort(([a], [b]) => pos[a][axis] - pos[b][axis]);
+    for (const [id, el] of ordered) {
+      const pt = pos[id], width = el.offsetWidth, height = el.offsetHeight;
+      let hit;
+      do {
+        hit = placed.find(box => pt.x < box.right + gap && pt.x + width + gap > box.x
+          && pt.y < box.bottom + gap && pt.y + height + gap > box.y);
+        if (hit) pt[axis] = hit[end] + gap;
+      } while (hit);
+      placed.push({ ...pt, right: pt.x + width, bottom: pt.y + height });
     }
+    applyPositions();
   };
 
-  // Route edges cleanly; if a multi-column edge passes right through an intermediate card's box,
-  // curve above or below that card so lines never slice across card titles!
+  // Build orthogonal rounded-elbow SVG path (`r = 8`) with semicircular bridge hops at vertical crossings
+  const orthoRoundedPath = (pts, rMax = 8, priorVerticals = []) => {
+    const clean = [];
+    for (const p of pts) {
+      const prev = clean[clean.length - 1];
+      if (!prev || Math.hypot(p.x - prev.x, p.y - prev.y) > 0.5) clean.push({ x: Math.round(p.x * 2) / 2, y: Math.round(p.y * 2) / 2 });
+    }
+    if (clean.length < 2) return '';
+    // Collapse collinear middle points
+    const simp = [clean[0]];
+    for (let i = 1; i < clean.length - 1; i++) {
+      const a = simp[simp.length - 1], b = clean[i], c = clean[i + 1];
+      const sameX = Math.abs(a.x - b.x) < 0.5 && Math.abs(b.x - c.x) < 0.5;
+      const sameY = Math.abs(a.y - b.y) < 0.5 && Math.abs(b.y - c.y) < 0.5;
+      if (!sameX && !sameY) simp.push(b);
+    }
+    simp.push(clean[clean.length - 1]);
+
+    const segHops = (x1, x2, y) => {
+      if (Math.abs(x2 - x1) < 24 || !priorVerticals.length) return `L ${x2} ${y}`;
+      const dir = x2 > x1 ? 1 : -1;
+      const minX = Math.min(x1, x2) + 12;
+      const maxX = Math.max(x1, x2) - 12;
+      const hits = priorVerticals
+        .filter((v) => v.x >= minX && v.x <= maxX && y > v.y1 + 10 && y < v.y2 - 10)
+        .map((v) => v.x)
+        .sort((a, b) => (dir > 0 ? a - b : b - a));
+      if (!hits.length) return `L ${x2} ${y}`;
+      const uniq = [];
+      for (const hx of hits) {
+        if (!uniq.length || Math.abs(hx - uniq[uniq.length - 1]) >= 14) uniq.push(hx);
+      }
+      let cmd = '';
+      for (const hx of uniq) {
+        const bx = hx - dir * 6;
+        const sweep = dir > 0 ? 1 : 0;
+        cmd += ` L ${bx} ${y} a 6,6 0 0,${sweep} ${dir * 12},0`;
+      }
+      cmd += ` L ${x2} ${y}`;
+      return cmd;
+    };
+
+    let d = `M ${simp[0].x} ${simp[0].y}`;
+    let cur = simp[0];
+    for (let i = 1; i < simp.length; i++) {
+      const p = simp[i];
+      if (i < simp.length - 1) {
+        const nxt = simp[i + 1];
+        const dx1 = p.x - cur.x, dy1 = p.y - cur.y;
+        const dx2 = nxt.x - p.x, dy2 = nxt.y - p.y;
+        const len1 = Math.hypot(dx1, dy1), len2 = Math.hypot(dx2, dy2);
+        const r = Math.min(rMax, len1 * 0.45, len2 * 0.45);
+        if (r >= 2) {
+          const pre = { x: Math.round((p.x - (dx1 / len1) * r) * 2) / 2, y: Math.round((p.y - (dy1 / len1) * r) * 2) / 2 };
+          const post = { x: Math.round((p.x + (dx2 / len2) * r) * 2) / 2, y: Math.round((p.y + (dy2 / len2) * r) * 2) / 2 };
+          d += Math.abs(pre.y - cur.y) < 0.5 ? ` ${segHops(cur.x, pre.x, pre.y)}` : ` L ${pre.x} ${pre.y}`;
+          d += ` Q ${p.x} ${p.y}, ${post.x} ${post.y}`;
+          cur = post;
+          continue;
+        }
+      }
+      d += Math.abs(p.y - cur.y) < 0.5 ? ` ${segHops(cur.x, p.x, p.y)}` : ` L ${p.x} ${p.y}`;
+      cur = p;
+    }
+    // Record vertical segments for subsequent bridge hops
+    for (let i = 0; i < simp.length - 1; i++) {
+      const a = simp[i], b = simp[i + 1];
+      if (Math.abs(a.x - b.x) < 0.5 && Math.abs(b.y - a.y) > 16) {
+        priorVerticals.push({ x: a.x, y1: Math.min(a.y, b.y), y2: Math.max(a.y, b.y) });
+      }
+    }
+    return d;
+  };
+
+  // Diagram-Design Orthogonal Edge Router with Fanned Ports (>=12px separation) & Obstacle Detours
   const drawEdges = () => {
     if (gen !== viewGen || !canvas.isConnected) return;
     const simplify = isFlowSimplified();
@@ -283,7 +514,7 @@ function bindProjectFlow(p, gen) {
     let maxRight = 720, maxBottom = 420;
     for (const [id, el] of cardEls.entries()) {
       const pt = pos[id] || { x: 28, y: 28 };
-      const w = el.offsetWidth || 252;
+      const w = el.offsetWidth || 256;
       const h = el.offsetHeight || 144;
       boxes.set(id, { left: pt.x, top: pt.y, right: pt.x + w, bottom: pt.y + h, cx: pt.x + w / 2, cy: pt.y + h / 2, w, h });
       if (pt.x + w + 48 > maxRight) maxRight = pt.x + w + 48;
@@ -307,93 +538,150 @@ function bindProjectFlow(p, gen) {
       el.classList.toggle('is-focus', !!(hoverTaskId && relatedNodes.has(id)));
     }
 
-    const paths = edges.map((e) => {
+    // Fan outgoing & incoming attach ports (>=12px apart, sorted by peer coordinate)
+    const outGroups = new Map(), inGroups = new Map();
+    edges.forEach((e, idx) => {
+      if (!boxes.has(e.from) || !boxes.has(e.to)) return;
+      (outGroups.get(e.from) || outGroups.set(e.from, []).get(e.from)).push(idx);
+      (inGroups.get(e.to) || inGroups.set(e.to, []).get(e.to)).push(idx);
+    });
+    const outPort = new Map(), inPort = new Map();
+    const fanOffset = (i, n, span) => {
+      if (n <= 1) return 0;
+      const step = Math.min(18, Math.max(12, Math.floor((span - 32) / Math.max(1, n - 1))));
+      return Math.round((i - (n - 1) / 2) * step);
+    };
+    for (const [nid, idxs] of outGroups.entries()) {
+      const box = boxes.get(nid);
+      idxs.sort((i, j) => (curDir === 'tb' ? boxes.get(edges[i].to).cx - boxes.get(edges[j].to).cx : boxes.get(edges[i].to).cy - boxes.get(edges[j].to).cy));
+      idxs.forEach((ei, rank) => outPort.set(ei, fanOffset(rank, idxs.length, curDir === 'tb' ? box.w : box.h)));
+    }
+    for (const [nid, idxs] of inGroups.entries()) {
+      const box = boxes.get(nid);
+      idxs.sort((i, j) => (curDir === 'tb' ? boxes.get(edges[i].from).cx - boxes.get(edges[j].from).cx : boxes.get(edges[i].from).cy - boxes.get(edges[j].from).cy));
+      idxs.forEach((ei, rank) => inPort.set(ei, fanOffset(rank, idxs.length, curDir === 'tb' ? box.w : box.h)));
+    }
+
+    // Pre-assign symmetric corridor lane offsets for edges sharing the same gutter,
+    // and compute collision-free horizontal/vertical detours for multi-layer skip edges.
+    const gutterGroups = new Map();
+    edges.forEach((e, ei) => {
+      const a = boxes.get(e.from), b = boxes.get(e.to);
+      if (!a || !b) return;
+      const key = curDir === 'tb'
+        ? `tb:${Math.round(a.bottom / 24)}:${Math.round(b.top / 24)}`
+        : `lr:${Math.round(a.right / 24)}:${Math.round(b.left / 24)}`;
+      (gutterGroups.get(key) || gutterGroups.set(key, []).get(key)).push(ei);
+    });
+    const laneOffset = new Map();
+    for (const idxs of gutterGroups.values()) {
+      idxs.sort((i, j) => {
+        const ai = boxes.get(edges[i].from), bi = boxes.get(edges[i].to);
+        const aj = boxes.get(edges[j].from), bj = boxes.get(edges[j].to);
+        const di = curDir === 'tb' ? (bi.cx - ai.cx) : (bi.cy - ai.cy);
+        const dj = curDir === 'tb' ? (bj.cx - aj.cx) : (bj.cy - aj.cy);
+        return di - dj;
+      });
+      const n = idxs.length;
+      idxs.forEach((ei, rank) => {
+        laneOffset.set(ei, n <= 1 ? 0 : Math.round((rank - (n - 1) / 2) * 10));
+      });
+    }
+
+    const priorVerticals = [];
+    let skipLaneIdx = 0;
+    let minBoxTop = Infinity, maxBoxBottom = 0, minBoxLeft = Infinity, maxBoxRight = 0;
+    for (const ob of boxes.values()) {
+      if (ob.top < minBoxTop) minBoxTop = ob.top;
+      if (ob.bottom > maxBoxBottom) maxBoxBottom = ob.bottom;
+      if (ob.left < minBoxLeft) minBoxLeft = ob.left;
+      if (ob.right > maxBoxRight) maxBoxRight = ob.right;
+    }
+
+    const paths = edges.map((e, ei) => {
       const a = boxes.get(e.from), b = boxes.get(e.to);
       if (!a || !b) return '';
       const isHi = hoverTaskId && (e.from === hoverTaskId || e.to === hoverTaskId);
       const isDim = hoverTaskId && !isHi;
       const cls = `pj-edge-path${isHi ? ' hi' : ''}${isDim ? ' dim' : ''}${e.isSub ? ' sub' : ''}`;
       const marker = isHi ? 'url(#pjArrowHi)' : 'url(#pjArrow)';
+      const oOff = outPort.get(ei) || 0;
+      const iOff = inPort.get(ei) || 0;
+      const lOff = laneOffset.get(ei) || 0;
 
+      let pts;
       if (curDir === 'tb') {
-        if (b.top >= a.bottom - 20) {
-          const x1 = a.cx, y1 = a.bottom;
-          const x2 = b.cx, y2 = b.top;
-          const dy = Math.max(36, (y2 - y1) * 0.48);
-
+        const x1 = a.cx + oOff, y1 = a.bottom;
+        const x2 = b.cx + iOff, y2 = b.top;
+        if (y2 >= y1 + 16) {
+          const midY = Math.round((y1 + y2) / 2) + lOff;
           let detourX = null;
-          if (y2 - y1 > 210) {
-            for (const [oid, ob] of boxes.entries()) {
-              if (oid === e.from || oid === e.to) continue;
-              if (ob.bottom <= y1 + 12 || ob.top >= y2 - 12) continue;
-              const tRatio = (ob.cy - y1) / Math.max(1, y2 - y1);
-              const lineX = x1 + (x2 - x1) * tRatio;
-              if (lineX >= ob.left - 18 && lineX <= ob.right + 18) {
-                const left = ob.left - 28;
-                const right = ob.right + 28;
-                detourX = Math.abs(lineX - left) <= Math.abs(lineX - right) ? left : right;
-                break;
-              }
-            }
-          }
-          if (detourX !== null) {
-            const midY = (y1 + y2) / 2;
-            return `<path class="${cls}" d="M ${x1} ${y1} Q ${detourX} ${midY}, ${x2} ${y2}" marker-end="${marker}"/>`;
-          }
-          return `<path class="${cls}" d="M ${x1} ${y1} C ${x1} ${y1 + dy}, ${x2} ${y2 - dy}, ${x2} ${y2}" marker-end="${marker}"/>`;
-        }
-        const x1 = a.cx, y1 = a.bottom;
-        const x2 = b.cx, y2 = b.top;
-        const loopX = x2 >= x1 ? Math.max(a.right, b.right) + 36 : Math.min(a.left, b.left) - 36;
-        return `<path class="${cls}" d="M ${x1} ${y1} C ${loopX} ${y1 + 48}, ${loopX} ${y2 - 48}, ${x2} ${y2}" marker-end="${marker}"/>`;
-      }
-
-      // Standard forward edge (left -> right)
-      if (b.left >= a.right - 20) {
-        const x1 = a.right, y1 = a.cy;
-        const x2 = b.left, y2 = b.cy;
-        const dx = Math.max(40, (x2 - x1) * 0.48);
-
-        // Check if any third card sits directly in the line segment corridor between (x1,y1) and (x2,y2)
-        let detourY = null;
-        if (x2 - x1 > 280) {
+          const midObstacles = [];
           for (const [oid, ob] of boxes.entries()) {
             if (oid === e.from || oid === e.to) continue;
-            if (ob.right <= x1 + 12 || ob.left >= x2 - 12) continue;
-            const tRatio = (ob.cx - x1) / Math.max(1, x2 - x1);
-            const lineY = y1 + (y2 - y1) * tRatio;
-            if (lineY >= ob.top - 18 && lineY <= ob.bottom + 18) {
-              // Detour above or below whichever is closer
-              const above = ob.top - 28;
-              const below = ob.bottom + 28;
-              detourY = Math.abs(lineY - above) <= Math.abs(lineY - below) ? above : below;
-              break;
+            if (ob.bottom <= y1 + 10 || ob.top >= y2 - 10) continue;
+            if (Math.min(x1, x2) <= ob.right + 16 && Math.max(x1, x2) >= ob.left - 16) {
+              midObstacles.push(ob);
             }
           }
+          if (midObstacles.length) {
+            const leftClear = Math.max(12, Math.min(...midObstacles.map((o) => o.left)) - 22 - (skipLaneIdx % 3) * 10);
+            const rightClear = Math.max(...midObstacles.map((o) => o.right)) + 22 + (skipLaneIdx % 3) * 10;
+            const avgX = (x1 + x2) / 2;
+            detourX = Math.abs(avgX - leftClear) <= Math.abs(avgX - rightClear) ? leftClear : rightClear;
+            skipLaneIdx++;
+          }
+          pts = detourX !== null
+            ? [{ x: x1, y: y1 }, { x: x1, y: y1 + 20 }, { x: detourX, y: y1 + 20 }, { x: detourX, y: y2 - 20 }, { x: x2, y: y2 - 20 }, { x: x2, y: y2 }]
+            : (Math.abs(x1 - x2) < 2 ? [{ x: x1, y: y1 }, { x: x2, y: y2 }] : [{ x: x1, y: y1 }, { x: x1, y: midY }, { x: x2, y: midY }, { x: x2, y: y2 }]);
+        } else {
+          const sideX = x2 >= x1 ? maxBoxRight + 28 + (skipLaneIdx % 3) * 10 : Math.max(12, minBoxLeft - 28 - (skipLaneIdx % 3) * 10);
+          skipLaneIdx++;
+          pts = [{ x: x1, y: y1 }, { x: x1, y: y1 + 20 }, { x: sideX, y: y1 + 20 }, { x: sideX, y: y2 - 20 }, { x: x2, y: y2 - 20 }, { x: x2, y: y2 }];
         }
-        if (detourY !== null) {
-          const midX = (x1 + x2) / 2;
-          return `<path class="${cls}" d="M ${x1} ${y1} Q ${midX} ${detourY}, ${x2} ${y2}" marker-end="${marker}"/>`;
+      } else {
+        const x1 = a.right, y1 = a.cy + oOff;
+        const x2 = b.left, y2 = b.cy + iOff;
+        if (x2 >= x1 + 16) {
+          const midX = Math.round((x1 + x2) / 2) + lOff;
+          let detourY = null;
+          const midObstacles = [];
+          for (const [oid, ob] of boxes.entries()) {
+            if (oid === e.from || oid === e.to) continue;
+            if (ob.right <= x1 + 10 || ob.left >= x2 - 10) continue;
+            if (Math.min(y1, y2) <= ob.bottom + 16 && Math.max(y1, y2) >= ob.top - 16) {
+              midObstacles.push(ob);
+            }
+          }
+          if (midObstacles.length) {
+            const topClear = Math.max(12, Math.min(...midObstacles.map((o) => o.top)) - 22 - (skipLaneIdx % 3) * 10);
+            const botClear = Math.max(...midObstacles.map((o) => o.bottom)) + 22 + (skipLaneIdx % 3) * 10;
+            const avgY = (y1 + y2) / 2;
+            detourY = Math.abs(avgY - topClear) <= Math.abs(avgY - botClear) ? topClear : botClear;
+            skipLaneIdx++;
+          }
+          pts = detourY !== null
+            ? [{ x: x1, y: y1 }, { x: x1 + 26, y: y1 }, { x: x1 + 26, y: detourY }, { x: x2 - 26, y: detourY }, { x: x2 - 26, y: y2 }, { x: x2, y: y2 }]
+            : (Math.abs(y1 - y2) < 2 ? [{ x: x1, y: y1 }, { x: x2, y: y2 }] : [{ x: x1, y: y1 }, { x: midX, y: y1 }, { x: midX, y: y2 }, { x: x2, y: y2 }]);
+        } else {
+          const loopY = y2 >= y1 ? maxBoxBottom + 28 + (skipLaneIdx % 3) * 10 : Math.max(12, minBoxTop - 28 - (skipLaneIdx % 3) * 10);
+          skipLaneIdx++;
+          pts = [{ x: x1, y: y1 }, { x: x1 + 26, y: y1 }, { x: x1 + 26, y: loopY }, { x: x2 - 26, y: loopY }, { x: x2 - 26, y: y2 }, { x: x2, y: y2 }];
         }
-        return `<path class="${cls}" d="M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}" marker-end="${marker}"/>`;
       }
-
-      // Backward / vertical loop edge (when user drags a dependent card to the left of its prerequisite)
-      const x1 = a.right, y1 = a.cy;
-      const x2 = b.left, y2 = b.cy;
-      const loopY = y2 >= y1 ? Math.max(a.bottom, b.bottom) + 36 : Math.min(a.top, b.top) - 36;
-      return `<path class="${cls}" d="M ${x1} ${y1} C ${x1 + 54} ${loopY}, ${x2 - 54} ${loopY}, ${x2} ${y2}" marker-end="${marker}"/>`;
+      const d = orthoRoundedPath(pts, 8, priorVerticals);
+      return d ? `<path class="${cls}" d="${d}" marker-end="${marker}"/>` : '';
     }).filter(Boolean);
 
     svg.innerHTML = `<defs>
-      <marker id="pjArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z"/></marker>
-      <marker id="pjArrowHi" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="hi" d="M 0 0 L 10 5 L 0 10 z"/></marker>
+      <marker id="pjArrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 1.2 L 9 5 L 0 8.8 z"/></marker>
+      <marker id="pjArrowHi" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="hi" d="M 0 1.2 L 9 5 L 0 8.8 z"/></marker>
     </defs>${paths.join('')}`;
   };
 
-  applyPositions();
+  settlePositions();
   requestAnimationFrame(drawEdges);
-  window.onresize = drawEdges;
+  window.onresize = () => { settlePositions(); drawEdges(); };
 
   // Hover highlight + Multi-select + Group/Single Card Dragging
   let dragState = null;
@@ -519,6 +807,8 @@ function bindProjectFlow(p, gen) {
     dragState = null;
     if (canceled) { applyPositions(); drawEdges(); return; }
     if (moved) {
+      settlePositions();
+      drawEdges();
       saveFlowPositions(projectFlowKey(p), pos, curDir);
       suppressDragClick = true;
       const autoBtn = $('#flowAutoLayout');
@@ -647,7 +937,7 @@ function bindProjectFlow(p, gen) {
       viewport.classList.toggle('dir-lr', curDir !== 'tb');
       dirBtn.textContent = curDir === 'tb' ? '흐름: 상하 ↕' : '흐름: 좌우 ↔';
       loadPositionsForDir(curDir);
-      applyPositions();
+      settlePositions();
       drawEdges();
       fitToViewport();
     };
@@ -660,7 +950,7 @@ function bindProjectFlow(p, gen) {
         const au = autoCoords[t.id] || { x: 28, y: 28 };
         pos[t.id] = { x: au.x, y: au.y };
       }
-      applyPositions();
+      settlePositions();
       drawEdges();
       autoBtn.innerHTML = `${ico.refresh || ''} 자동 정렬`;
       toast('겹침 방지 자동 정렬을 적용했습니다');
@@ -695,7 +985,6 @@ function bindProjectFlow(p, gen) {
   if (zFit) zFit.onclick = fitToViewport;
   requestAnimationFrame(() => {
     drawEdges();
-    if (innerWidth >= 1041) applyZoom(0.9);
-    else fitToViewport();
+    fitToViewport();
   });
 }

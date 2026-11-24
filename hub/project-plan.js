@@ -254,6 +254,7 @@ function spawnCli(exe, args, { cwd, env, timeoutMs = 120_000, maxBuffer = 1024 *
 
 const AGY_FAMILY_EFFORTS = {
   'gemini-4-neon': ['low', 'medium', 'high', 'xhigh'],
+  'gemini-4-carbon': ['low', 'medium', 'high'],
   'gemini-4-hydrogen': ['low', 'medium', 'high', 'xhigh'],
   'gemini-4-argon': ['low', 'medium', 'high'],
   'gemini-3.8-flash': ['low', 'medium', 'high'],
@@ -264,7 +265,7 @@ const AGY_FAMILY_EFFORTS = {
 
 function resolveAgyModelEffort(safeM, safeE) {
   if (!safeM) return { model: '', effort: safeE === 'max' ? 'xhigh' : safeE };
-  if (/^gemini-pro-orchestrator-/i.test(safeM)) return { model: safeM, effort: '' };
+  if (/^gemini-pro-orchestrator(?:-|$)/i.test(safeM)) return { model: safeM, effort: '' };
   const m = /^(.+)-(low|medium|high|xhigh|max)$/i.exec(safeM);
   const family = (m ? m[1] : safeM).toLowerCase();
   const suffix = m ? m[2].toLowerCase() : '';

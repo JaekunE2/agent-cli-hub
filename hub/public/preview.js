@@ -35,15 +35,45 @@
     if (!rootEl || !rootEl.isConnected) return;
     const hosts = [...rootEl.querySelectorAll('.mermaid-host[data-mermaid-src]')];
     if (!hosts.length) return;
-    const theme = isDarkTheme() ? 'dark' : 'default';
+    const dark = isDarkTheme();
+    const theme = dark ? 'dark' : 'light';
     try {
       const mmd = await ensureMermaid();
       if (lastTheme !== theme) {
         mmd.initialize({
           startOnLoad: false,
           securityLevel: 'strict',
-          theme,
-          flowchart: { useMaxWidth: true, htmlLabels: true },
+          theme: 'base',
+          themeVariables: dark
+            ? {
+              background: '#12161f',
+              primaryColor: '#181d28',
+              primaryTextColor: '#f1f3f7',
+              primaryBorderColor: '#6d778a',
+              lineColor: '#b6bfce',
+              secondaryColor: '#1a1f2b',
+              tertiaryColor: '#161922',
+              clusterBkg: '#161b25',
+              clusterBorder: '#475163',
+              edgeLabelBackground: '#12161f',
+              fontFamily: '"Pretendard Variable", "Pretendard", system-ui, sans-serif',
+              fontSize: '13px',
+            }
+            : {
+              background: '#f5f5f3',
+              primaryColor: '#ffffff',
+              primaryTextColor: '#1e2430',
+              primaryBorderColor: '#9aa3b2',
+              lineColor: '#4b5669',
+              secondaryColor: '#ececea',
+              tertiaryColor: '#f6f7f9',
+              clusterBkg: '#ececea',
+              clusterBorder: '#c3c8d2',
+              edgeLabelBackground: '#f5f5f3',
+              fontFamily: '"Pretendard Variable", "Pretendard", system-ui, sans-serif',
+              fontSize: '13px',
+            },
+          flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'stepAfter' },
         });
         lastTheme = theme;
       }

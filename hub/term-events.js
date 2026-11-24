@@ -112,6 +112,79 @@ function createTermEventStore(filePath, { maxEvents = 2000 } = {}) {
   };
 }
 
+function normalizeDetectedModelEffort(rawModel, rawEffort, agent = '') {
+  let m = String(rawModel || '').trim().replace(/[·|]+$/g, '').trim();
+  let ef = String(rawEffort || '').trim().toLowerCase();
+  if (!m) return { model: '', effort: ef, resetDefault: false };
+
+  // Strip trailing effort token if attached with spaces or middle dot
+  const trailingEff = /^(.*?)(?:\s*[·|]\s*|\s+)(low|medium|high|xhigh|max|ultra)$/i.exec(m);
+  if (trailingEff && trailingEff[1].trim()) {
+    m = trailingEff[1].trim();
+    if (!ef) ef = trailingEff[2].toLowerCase();
+  }
+  const parenEff = /^(.*?)\s*\((low|medium|high|xhigh|max|ultra)\)$/i.exec(m);
+  if (parenEff && parenEff[1].trim() && !/^orchestrator$/i.test(parenEff[1].trim())) {
+    m = parenEff[1].trim();
+    if (!ef) ef = parenEff[2].toLowerCase();
+  }
+
+  if (/^default(?:\b|\s|\()/i.test(m)) {
+    return { model: '', effort: ef, resetDefault: true };
+  }
+
+  if (agent === 'agy' || /^gemini\s|^orchestrator\b|^gpt-oss\b/i.test(m)) {
+    const g4 = /^gemini\s+4\s+(neon|carbon|argon|hydrogen)$/i.exec(m);
+    if (g4) {
+      const fam = g4[1].toLowerCase();
+      const useEf = (ef === 'max' ? 'xhigh' : ef) || 'high';
+      return { model: `gemini-4-${fam}-${useEf}`, effort: useEf, resetDefault: false };
+    }
+    if (/^gemini\s+3\.8\s+flash$/i.test(m)) {
+      const useEf = (ef === 'max' || ef === 'xhigh' ? 'high' : ef) || 'medium';
+      return { model: `gemini-3.8-flash-${useEf}`, effort: useEf, resetDefault: false };
+    }
+    const cl55 = /^claude\s+(opus|sonnet)\s+5\.5$/i.exec(m);
+    if (cl55 && agent === 'agy') {
+      const tier = cl55[1].toLowerCase();
+      const useEf = (ef === 'max' || ef === 'xhigh' ? 'high' : ef) || 'high';
+      return { model: `claude-${tier}-5-5-${useEf}`, effort: useEf, resetDefault: false };
+    }
+    if (/^gpt-oss\s*120b$/i.test(m)) {
+      return { model: 'gpt-oss-120b-medium', effort: 'medium', resetDefault: false };
+    }
+    const orch = /^orchestrator(?:\s*\(\s*(neon|carbon|argon)\s*\))?$/i.exec(m);
+    if (orch) {
+      const v = (orch[1] || 'carbon').toLowerCase();
+      return {
+        model: v === 'carbon' ? 'gemini-pro-orchestrator' : `gemini-pro-orchestrator-${v}`,
+        effort: '',
+        resetDefault: false,
+      };
+    }
+    const slugAgy = /^(gemini-4-(?:neon|carbon|argon|hydrogen)|gemini-3\.8-flash|claude-(?:opus|sonnet)-5-5|gpt-oss-120b)-(low|medium|high|xhigh)$/i.exec(m);
+    if (slugAgy) {
+      const useEf = ef ? (ef === 'max' ? 'xhigh' : ef) : slugAgy[2].toLowerCase();
+      return { model: `${slugAgy[1].toLowerCase()}-${useEf}`, effort: useEf, resetDefault: false };
+    }
+  }
+
+  if (agent === 'claude') {
+    if (/^claude\s+opus\s+5\.5$|^opus\s+5\.5$/i.test(m)) return { model: 'claude-opus-5-5', effort: ef, resetDefault: false };
+    if (/^claude\s+sonnet\s+5\.5$|^sonnet\s+5\.5$/i.test(m)) return { model: 'claude-sonnet-5-5', effort: ef, resetDefault: false };
+    if (/^claude\s+fable\s+5\.2$|^fable\s+5\.2$/i.test(m)) return { model: 'claude-fable-5-2', effort: ef, resetDefault: false };
+    if (/^claude\s+opus\s+4\.6$|^opus\s+4\.6$/i.test(m)) return { model: 'claude-opus-4-6', effort: ef, resetDefault: false };
+    if (/^claude\s+sonnet\s+4\.6$|^sonnet\s+4\.6$/i.test(m)) return { model: 'claude-sonnet-4-6', effort: ef, resetDefault: false };
+    if (/^(?:claude\s+)?(opus|sonnet|haiku)$/i.test(m)) return { model: RegExp.$1.toLowerCase(), effort: ef, resetDefault: false };
+  }
+
+  if (/^(?:gpt-[\w.-]+|o[1-9][\w.-]*|claude-[\w.-]+|gemini-[\w.-]+)$/i.test(m)) {
+    return { model: m.toLowerCase(), effort: ef, resetDefault: false };
+  }
+
+  return { model: /^[a-z0-9][a-z0-9._:-]{0,119}$/i.test(m) ? m : '', effort: ef, resetDefault: false };
+}
+
 /**
  * Extract mode, model, effort, and interactive prompt state from a terminal screen snapshot.
  */
@@ -131,19 +204,41 @@ function parseTerminalScreenState(screenText, agent = '') {
     else if (/\bworkspace-write\b/i.test(tail)) mode = 'workspace-write';
   }
 
-  let model = '';
-  let effort = '';
-  const claudeSet = /Set model to\s+([^\r\n(]+)/i.exec(tail);
-  const codexSet = /Model changed to\s+([^\r\n(]+)/i.exec(tail);
-  const statusModel = /(?:^|\s|\|)(claude-[\w.-]+|opus(?:\s+[\d.]+)?|sonnet(?:\s+[\d.]+)?|haiku(?:\s+[\d.]+)?|gpt-[\w.-]+|o[1-9][\w.-]*|gemini-[\w.-]+)(?:\s+(low|medium|high|xhigh|max))?/i.exec(tail);
-  if (claudeSet) model = claudeSet[1].trim();
-  else if (codexSet) model = codexSet[1].trim();
-  else if (statusModel) {
-    model = statusModel[1].trim();
-    if (statusModel[2]) effort = statusModel[2].toLowerCase();
+  let rawModel = '';
+  let rawEffort = '';
+  const claudeParen = /Set model to\s+[^\r\n(]*\(\s*(claude-[\w.-]+)\s*\)(?:[^\r\n]*?\b(low|medium|high|xhigh|max)\s+effort\b)?/i.exec(tail);
+  const claudeSet = /Set model to\s+([^\r\n(]+?)(?:\s*\([^)]*\))?(?:\s*[·|-]\s*(low|medium|high|xhigh|max)(?:\s+effort)?)?\s*$/im.exec(tail);
+  const codexSet = /(?:Model changed to|Switched model to|Set model to)\s+([^\r\n(]+?)(?:\s*\([^)]*\))?\s*$/im.exec(tail);
+  const agyFooter = /(Gemini\s+4\s+(?:Neon|Carbon|Argon|Hydrogen)|Gemini\s+3\.8\s+Flash|Claude\s+(?:Opus|Sonnet)\s+5\.5|GPT-OSS\s*120B|Orchestrator(?:\s*\((?:Neon|Carbon|Argon)\))?)(?:\s*[·|]\s*(low|medium|high|xhigh|max))?\s*$/im.exec(tail);
+  const codexFooter = /(?:^|\s)(gpt-[\w.-]+|o[1-9][\w.-]*)(?:\s+(low|medium|high|xhigh|max|ultra))?\s*·\s*(?:[A-Za-z]:[\\/]|~|\/|\d+%)/im.exec(tail);
+  const statusModel = /(?:^|\s|\|)(claude-[\w.-]+|opus(?:\s+[\d.]+)?|sonnet(?:\s+[\d.]+)?|haiku(?:\s+[\d.]+)?|gpt-[\w.-]+|o[1-9][\w.-]*|gemini-[\w.-]+)(?:\s+(low|medium|high|xhigh|max|ultra))?(?=\s|$|[·|])/im.exec(tail);
+
+  if (claudeParen) {
+    rawModel = claudeParen[1];
+    rawEffort = claudeParen[2] || '';
+  } else if (claudeSet) {
+    rawModel = claudeSet[1];
+    rawEffort = claudeSet[2] || '';
+  } else if (codexSet) {
+    rawModel = codexSet[1];
+  } else if (agyFooter) {
+    rawModel = agyFooter[1];
+    rawEffort = agyFooter[2] || '';
+  } else if (codexFooter) {
+    rawModel = codexFooter[1];
+    rawEffort = codexFooter[2] || '';
+  } else if (statusModel) {
+    rawModel = statusModel[1];
+    rawEffort = statusModel[2] || '';
   }
-  const effMatch = /(?:reasoning\s*effort|effort)\s*(?:set\s*to|:|=)\s*(low|medium|high|xhigh|max)\b/i.exec(tail);
-  if (effMatch) effort = effMatch[1].toLowerCase();
+
+  const effMatch = /(?:reasoning\s*effort|effort)\s*(?:set\s*to|changed\s*to|:|=)\s*(low|medium|high|xhigh|max|ultra)\b/i.exec(tail);
+  if (effMatch) rawEffort = effMatch[1].toLowerCase();
+
+  const norm = normalizeDetectedModelEffort(rawModel, rawEffort, agent);
+  const model = norm.model;
+  const effort = norm.effort;
+  const modelReset = norm.resetDefault;
 
   // Detect interactive question / selection prompt
   let prompt = null;
@@ -164,7 +259,7 @@ function parseTerminalScreenState(screenText, agent = '') {
     }
   }
 
-  return { mode, model, effort, prompt };
+  return { mode, model, effort, modelReset, prompt };
 }
 
 /**
@@ -190,47 +285,60 @@ function createTermScreenMonitor({ store, stripAnsi, readTerm, agentOf, getSessi
 
     const spawnedAt = t.meta?.spawnedAt || 0;
     const settled = Date.now() - spawnedAt > 2500;
-    if (!t._lastScreenState) {
+    const firstSeen = !t._lastScreenState;
+    if (firstSeen) {
       t._lastScreenState = {
-        mode: st.mode || '',
-        model: st.model || t.meta?.model || '',
-        effort: st.effort || t.meta?.effort || '',
+        mode: t.meta?.mode || '',
+        model: t.meta?.model || '',
+        effort: t.meta?.effort || '',
       };
-      return;
     }
 
     if (!settled) {
       if (st.mode) t._lastScreenState.mode = st.mode;
       if (st.model) t._lastScreenState.model = st.model;
       if (st.effort) t._lastScreenState.effort = st.effort;
+      if (onMetaChange && (st.mode || st.model || st.effort)) {
+        onMetaChange(t, { mode: t._lastScreenState.mode, model: t._lastScreenState.model, effort: t._lastScreenState.effort });
+      }
       return;
     }
 
+    const hadPriorModel = !!t._lastScreenState.model;
     const changes = [];
+    let silentSync = false;
     if (st.mode && st.mode !== t._lastScreenState.mode) {
       t._lastScreenState.mode = st.mode;
-      changes.push(`모드: ${st.mode}`);
+      if (!firstSeen) changes.push(`모드: ${st.mode}`);
+      else silentSync = true;
     }
-    if (st.model && st.model !== t._lastScreenState.model) {
+    if (st.modelReset && t._lastScreenState.model !== '') {
+      t._lastScreenState.model = '';
+      changes.push('모델: CLI 기본값');
+    } else if (st.model && st.model !== t._lastScreenState.model) {
       t._lastScreenState.model = st.model;
-      changes.push(`모델: ${st.model}`);
+      if (!firstSeen || hadPriorModel) changes.push(`모델: ${st.model}`);
+      else silentSync = true;
     }
     if (st.effort && st.effort !== t._lastScreenState.effort) {
       t._lastScreenState.effort = st.effort;
-      changes.push(`추론: ${st.effort}`);
+      if (!firstSeen || hadPriorModel) changes.push(`추론: ${st.effort}`);
+      else silentSync = true;
     }
 
-    if (changes.length) {
+    if (changes.length || silentSync) {
       const sid = getSessionId ? getSessionId(t) : (t.meta?.sessionId || null);
       if (onMetaChange) onMetaChange(t, { mode: t._lastScreenState.mode, model: t._lastScreenState.model, effort: t._lastScreenState.effort });
-      store.record({
-        termId: t.id,
-        sessionId: sid,
-        agent,
-        kind: 'setting',
-        role: 'assistant',
-        text: `⚙ [터미널 변경] ${changes.join(' · ')}`,
-      });
+      if (changes.length) {
+        store.record({
+          termId: t.id,
+          sessionId: sid,
+          agent,
+          kind: 'setting',
+          role: 'assistant',
+          text: `⚙ [터미널 변경] ${changes.join(' · ')}`,
+        });
+      }
     }
   }
 

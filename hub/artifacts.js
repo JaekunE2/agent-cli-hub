@@ -5,7 +5,9 @@
 const fs = require('fs');
 const path = require('path');
 
-const EXT = 'mp4|webm|mov|mkv|avi|m4v|mp3|wav|m4a|pdf|png|jpe?g|gif|webp|bmp|svg|html?|md|txt|log|csv|tsv|json|jsonl|ya?ml|tex|bib|py|ipynb|ply|glb|gltf|obj|stl|exr|docx|xlsx|pptx|hwp|zip|7z';
+const os = require('os');
+
+const EXT = 'mp4|webm|mov|mkv|avi|m4v|mp3|wav|m4a|pdf|png|jpe?g|gif|webp|bmp|svg|html?|md|txt|log|csv|tsv|json|jsonl|ya?ml|tex|bib|py|ipynb|js|mjs|cjs|ts|tsx|jsx|css|scss|sql|sh|ps1|bat|cmd|c|cpp|h|hpp|rs|go|java|toml|ini|xml|vue|svelte|ply|glb|gltf|obj|stl|exr|docx|xlsx|pptx|hwp|zip|7z';
 const KIND = [
   [/\.(mp4|webm|mov|mkv|avi|m4v)$/i, 'video'], [/\.(mp3|wav|m4a)$/i, 'audio'], [/\.pdf$/i, 'pdf'],
   [/\.(png|jpe?g|gif|webp|bmp|svg)$/i, 'image'], [/\.html?$/i, 'html'], [/\.md$/i, 'markdown'],
@@ -85,94 +87,169 @@ function serve(req, res, file) {
   fs.createReadStream(file).pipe(res);
 }
 
-module.exports = function artifacts({ dir, index }) {
+module.exports = function artifacts({ dir, index, terms = null }) {
   const STORE = path.join(dir, 'artifacts-store.json');
   let store = {};
   try { store = JSON.parse(fs.readFileSync(STORE, 'utf8')); } catch {}
   const save = () => { try { fs.writeFileSync(STORE + '.tmp', JSON.stringify(store, null, 1)); fs.renameSync(STORE + '.tmp', STORE); } catch {} };
   const entry = (sid) => (store[sid] = store[sid] || { pinned: [], hidden: [] });
 
-  // absolute Windows paths (also inside backticks, which may contain spaces), git-bash /g/... paths,
-  // and relative paths resolved against the session's working folder
+  // absolute Windows paths, file:/// URIs, git-bash /g/... paths, relative paths, and bare filenames in cwd
+  const reFileUri = new RegExp(`file:\\/\\/\\/([A-Za-z]:[\\\\/][^"'<>|\\r\\n\\)]+?\\.(?:${EXT}))`, 'gi');
   const reAbs = new RegExp(`(?:[A-Za-z]:[\\\\/])[^\\s"'\`<>|*?()\\[\\]{}]+?\\.(?:${EXT})\\b`, 'gi');
   const reTick = new RegExp(`\`([A-Za-z]:[\\\\/][^\`\\n]+?\\.(?:${EXT}))\``, 'gi');
   const reBash = new RegExp(`(?:^|[\\s'"\`(])(/[a-z]/[^\\s"'\`<>|*?()]+?\\.(?:${EXT}))\\b`, 'gi');
-  const reRel = new RegExp(`(?:^|[\\s'"\`(])((?:[\\w.\\-]+[\\\\/])+[\\w.\\-]+\\.(?:${EXT}))\\b`, 'gi');
+  const reRel = new RegExp(`(?:^|[\\s'"\`(])([^\\s"'\`<>|*?()\\[\\]{}]+?[\\\\/][^\\s"'\`<>|*?()\\[\\]{}]+?\\.(?:${EXT}))\\b`, 'gi');
+  const reBare = new RegExp(`(?:^|[\\s'"\`(\\[])([\\w.\\uAC00-\\uD7A3-]+\\.(?:${EXT}))(?=[\\s'"\`),.:;\\]]|$)`, 'gi');
+  const extRe = new RegExp(`\\.(?:${EXT})$`, 'i');
+
   function candidates(text, cwd) {
     const out = new Set();
-    for (const m of text.matchAll(reTick)) out.add(m[1]);
-    for (const m of text.matchAll(reAbs)) out.add(m[0]);
-    for (const m of text.matchAll(reBash)) out.add(m[1].replace(/^\/([a-z])\//i, (x, d) => `${d.toUpperCase()}:\\`));
-    if (cwd) for (const m of text.matchAll(reRel)) if (!/^[A-Za-z]:/.test(m[1])) out.add(path.join(cwd, m[1]));
+    const s = String(text || '');
+    for (const m of s.matchAll(reFileUri)) {
+      try { out.add(decodeURIComponent(m[1])); } catch { out.add(m[1]); }
+    }
+    for (const m of s.matchAll(reTick)) out.add(m[1]);
+    for (const m of s.matchAll(reAbs)) out.add(m[0]);
+    for (const m of s.matchAll(reBash)) out.add(m[1].replace(/^\/([a-z])\//i, (x, d) => `${d.toUpperCase()}:\\`));
+    if (cwd) {
+      for (const m of s.matchAll(reRel)) if (!/^[A-Za-z]:/.test(m[1])) out.add(path.join(cwd, m[1]));
+      for (const m of s.matchAll(reBare)) out.add(path.join(cwd, m[1]));
+    }
     return [...out].map((p) => path.normalize(p.replace(/[.,;:]+$/, '')));
   }
 
-  const cache = new Map(); // sid -> { at, size, items }
-  async function list(sid) {
-    if (!sid) return [];
-    const d = index.get(sid);
+  function scanAgyBrainFiles(sid) {
+    if (!sid || !/^[0-9a-f-]{16,}$/i.test(sid)) return [];
+    const found = [];
+    for (const name of ['antigravity-cli', 'antigravity', 'antigravity-ide']) {
+      const root = path.join(os.homedir(), '.gemini', name, 'brain', sid);
+      if (!fs.existsSync(root)) continue;
+      let ents; try { ents = fs.readdirSync(root, { withFileTypes: true }); } catch { continue; }
+      for (const e of ents) {
+        if (e.name.startsWith('.') || e.name === 'scratch') continue;
+        const full = path.join(root, e.name);
+        if (e.isFile() && extRe.test(e.name) && !/\.metadata\.json$/i.test(e.name)) found.push(full);
+      }
+    }
+    return found;
+  }
+
+  const SKIP_DIRS = new Set(['node_modules', '.git', '.hub-worktrees', '__pycache__', '.venv', 'venv', 'dist', '.next', '.cache', 'preview-cache', 'agy-logs']);
+  function scanWorkspaceModifiedFiles(cwd, sinceMs) {
+    if (!cwd || !sinceMs || sinceMs < Date.now() - 7 * 86400e3) return [];
+    try { if (!fs.statSync(cwd).isDirectory()) return []; } catch { return []; }
+    const out = [];
+    const threshold = sinceMs - 5000;
+    const queue = [{ dir: cwd, depth: 0 }];
+    let visited = 0;
+    while (queue.length && out.length < 80 && visited < 400) {
+      const { dir: cur, depth } = queue.shift();
+      let ents; try { ents = fs.readdirSync(cur, { withFileTypes: true }); } catch { continue; }
+      for (const e of ents) {
+        visited++;
+        if (visited > 400 || out.length >= 80) break;
+        if (e.name.startsWith('.')) continue;
+        const full = path.join(cur, e.name);
+        if (e.isDirectory()) {
+          if (depth < 3 && !SKIP_DIRS.has(e.name)) queue.push({ dir: full, depth: depth + 1 });
+        } else if (e.isFile() && extRe.test(e.name)) {
+          try {
+            const st = fs.statSync(full);
+            if (st.mtimeMs >= threshold) out.push(full);
+          } catch {}
+        }
+      }
+    }
+    return out;
+  }
+
+  const cache = new Map(); // cacheKey -> { at, size, items }
+  async function list(sid, opts = {}) {
+    const termId = opts.termId ? String(opts.termId) : '';
+    const liveTerm = termId && terms ? terms.get(termId) : null;
+    if (!sid && !liveTerm) return [];
+    const d = sid ? index.get(sid) : null;
     if (d) await index.updateFile(d.file);
-    const c = cache.get(sid);
-    const e = entry(sid);
+    const effCwd = opts.cwd || d?.cwd || liveTerm?.cwd || '';
+    const firstMsgTs = d?.msgs?.[0]?.ts ? Date.parse(d.msgs[0].ts) : 0;
+    const sinceMs = Number(opts.since) || Number(liveTerm?.meta?.spawnedAt) || (Number.isFinite(firstMsgTs) ? firstMsgTs : 0);
+    const storeKey = sid || `term:${termId}`;
+    const e = entry(storeKey);
+    const c = cache.get(storeKey);
     const dOffset = d ? d.offset : 0;
-    if (c && c.size === dOffset && Date.now() - c.at < 30_000 && c.pinnedN === e.pinned.length && c.hiddenN === e.hidden.length) return c.items;
+    if (c && c.size === dOffset && Date.now() - c.at < 8_000 && c.pinnedN === e.pinned.length && c.hiddenN === e.hidden.length) return c.items;
+
     const seen = new Map();
     if (d?.msgs) {
       d.msgs.forEach((m, i) => {
-        for (const p of candidates(m.text, d.cwd)) {
+        for (const p of candidates(m.text, effCwd)) {
           const k = p.toLowerCase();
           if (!seen.has(k)) seen.set(k, { path: p, source: 'auto', msg: i, role: m.role });
         }
       });
+    }
+    for (const bp of scanAgyBrainFiles(sid)) {
+      const k = bp.toLowerCase();
+      if (!seen.has(k)) seen.set(k, { path: bp, source: 'auto', msg: null, role: 'assistant' });
+    }
+    for (const wp of scanWorkspaceModifiedFiles(effCwd, sinceMs)) {
+      const k = wp.toLowerCase();
+      if (!seen.has(k)) seen.set(k, { path: wp, source: 'workspace', msg: null, role: 'assistant' });
     }
     for (const x of e.pinned) seen.set(x.path.toLowerCase(), { path: x.path, source: 'pinned', title: x.title, msg: null, addedAt: x.addedAt });
     const hidden = new Set(e.hidden.map((h) => h.toLowerCase()));
     const items = [];
     for (const [k, it] of seen) {
       if (hidden.has(k)) continue;
-      if (/[\\/]\.claude[\\/]/i.test(it.path)) continue; // Claude's own files (transcripts, settings)
+      if (/[\\/]\.(?:claude|codex)[\\/]/i.test(it.path)) continue;
       let st; try { st = fs.statSync(it.path); } catch { continue; }
       if (!st.isFile()) continue;
       const kind = kindOf(it.path), ext = path.extname(it.path).slice(1).toLowerCase();
-      // "main" = results a person looks at; logs/code/data only under "show all"
+      // "main" = human-facing results (media/docs/html/office/3d); code/logs/data live under "all files"
       const main = it.source === 'pinned' || ['video', 'audio', 'pdf', 'image', 'html'].includes(kind) || /^(docx|xlsx|pptx|hwp|ply|glb|gltf|obj|stl)$/.test(ext)
-        || (kind === 'markdown' && !/^(CLAUDE|JOURNAL|INBOX|DECISIONS|FAILED|QUESTIONS|MEMORY|README)\.md$/i.test(path.basename(it.path)));
+        || (kind === 'markdown' && !/^(CLAUDE|JOURNAL|INBOX|DECISIONS|FAILED|QUESTIONS|MEMORY|README|AGENTS|ENVIRONMENT)\.md$/i.test(path.basename(it.path)));
       items.push({ ...it, name: path.basename(it.path), ext, kind, main, size: st.size, mtime: st.mtimeMs });
     }
     items.sort((a, b) => (b.source === 'pinned') - (a.source === 'pinned') || b.mtime - a.mtime);
-    cache.set(sid, { at: Date.now(), size: dOffset, items: items.slice(0, 300), pinnedN: e.pinned.length, hiddenN: e.hidden.length });
+    cache.set(storeKey, { at: Date.now(), size: dOffset, items: items.slice(0, 300), pinnedN: e.pinned.length, hiddenN: e.hidden.length });
     return items.slice(0, 300);
   }
 
   async function handle(p, url, req, res, body, send) {
     if (p === '/api/artifacts') {
       const sid = url.searchParams.get('session') || '';
-      return send(200, { session: sid, items: await list(sid) });
+      const termId = url.searchParams.get('term') || '';
+      return send(200, { session: sid, items: await list(sid, { termId }) });
     }
     if (p === '/api/artifacts/add' && req.method === 'POST') {
       const b = await body();
-      if (!b.session || !b.path) return send(400, { error: 'session and path required' });
+      const key = b.session || (b.term ? `term:${b.term}` : '');
+      if (!key || !b.path) return send(400, { error: 'session and path required' });
       const file = path.normalize(String(b.path).replace(/^"|"$/g, '').replace(/^\/([a-z])\//i, (x, d) => `${d.toUpperCase()}:\\`));
       try { if (!fs.statSync(file).isFile()) throw new Error('not a file'); } catch { return send(400, { error: `파일을 찾을 수 없음: ${file}` }); }
-      const e = entry(b.session);
+      const e = entry(key);
       e.pinned = e.pinned.filter((x) => x.path.toLowerCase() !== file.toLowerCase());
       e.pinned.unshift({ path: file, title: b.title || null, addedAt: Date.now() });
       e.hidden = e.hidden.filter((h) => h.toLowerCase() !== file.toLowerCase());
       save();
+      cache.delete(key);
       return send(200, { ok: true, path: file });
     }
     if (p === '/api/artifacts/hide' && req.method === 'POST') {
       const b = await body();
-      if (!b.session || !b.path) return send(400, { error: 'session and path required' });
-      const e = entry(b.session);
+      const key = b.session || (b.term ? `term:${b.term}` : '');
+      if (!key || !b.path) return send(400, { error: 'session and path required' });
+      const e = entry(key);
       e.pinned = e.pinned.filter((x) => x.path.toLowerCase() !== String(b.path).toLowerCase());
       if (!e.hidden.some((h) => h.toLowerCase() === String(b.path).toLowerCase())) e.hidden.push(b.path);
       save();
+      cache.delete(key);
       return send(200, { ok: true });
     }
     if (p === '/api/artifact-file') {
-      const sid = url.searchParams.get('session') || '', want = String(url.searchParams.get('path') || '').toLowerCase();
-      const it = (await list(sid)).find((x) => x.path.toLowerCase() === want);
+      const sid = url.searchParams.get('session') || '', termId = url.searchParams.get('term') || '', want = String(url.searchParams.get('path') || '').toLowerCase();
+      const it = (await list(sid, { termId })).find((x) => x.path.toLowerCase() === want);
       if (!it) return send(403, { error: '이 세션의 산출물로 등록된 파일만 열 수 있습니다' });
       return serve(req, res, it.path);
     }

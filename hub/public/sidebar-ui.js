@@ -96,7 +96,7 @@ function renderSide() {
 
   const navigation = `<nav class="snav" aria-label="주요 메뉴">
     <button type="button" class="snav-item${curKind === 'home' ? ' sel' : ''}" data-key="home">${ICO.home}<span class="snav-lbl">홈</span></button>
-    <button type="button" class="snav-item${curKind === 'search' ? ' sel' : ''}" data-key="cmdk" aria-haspopup="dialog">${ICO.search}<span class="snav-lbl">빠른 이동 · 검색</span></button>
+    <button type="button" class="snav-item${curKind === 'search' ? ' sel' : ''}" data-key="cmdk" aria-haspopup="dialog">${ICO.search}<span class="snav-lbl">빠른 이동 · 검색</span><span class="snav-kbd">Ctrl K</span></button>
     <button type="button" class="snav-item${isSys ? ' sel' : ''}" data-key="system">${ICO.settings}<span class="snav-lbl">설정</span>${sysAlert ? '<span class="snav-dot danger" title="확인할 항목 있음"></span>' : ''}</button>
     <button type="button" class="snav-item${curKind === 'calendar' ? ' sel' : ''}" data-key="calendar">${ICO.calendar}<span class="snav-lbl">캘린더</span>${overN ? '<span class="snav-dot danger" title="기한 지난 할 일 있음"></span>' : ''}</button>
   </nav>`;
@@ -249,21 +249,24 @@ function renderSide() {
   const unifiedEntries = [...combinedLive, ...unlinkedRecent].sort((a, b) => compareUnifiedEntries(a, b, recentMap));
   const liveCount = activeTermCount + (state.recent || []).filter((r) => !seenSids.has(r.sessionId) && liveBySid.has(r.sessionId)).length;
 
-  const sideLiveStateTag = (st, unread = false) => (
+  const sideLiveStateTag = (st, unread = false, dormant = false) => (
     st === 'busy'
       ? '<span class="srow-tag busy">실행 중</span>'
       : unread
         ? '<span class="srow-tag done">완료</span>'
         : st === 'exited'
           ? '<span class="srow-tag">종료됨</span>'
-          : '<span class="srow-tag idle">대기</span>'
+          : dormant
+            ? '<span class="srow-tag dormant" title="1시간 이상 입력·출력 활동 없음">유휴</span>'
+            : '<span class="srow-tag idle">대기</span>'
   );
 
   const renderUnifiedRow = (entry) => {
     if (entry.kind === 'term') {
       const t = entry.item;
-      const st = termStateOf(t);
-      const dot = st === 'exited' ? 'dead' : st === 'busy' ? 'busy' : 'idle';
+      const meta = termStatusMeta(t);
+      const st = meta.state;
+      const dot = meta.dot;
       const kind = t.operator ? 'operator' : t.agent || 'shell';
       const pj = projectOfTerm(t);
       const idStr = String(t.id);
@@ -277,7 +280,7 @@ function renderSide() {
       const tags = [
         branchTagHTML(t.branch, true),
         subKindTag,
-        sideLiveStateTag(st, unread),
+        sideLiveStateTag(st, unread, meta.dormant),
       ].filter(Boolean).join('');
       return `<div class="srow${isSel ? ' sel' : ''}${unread ? ' just-done' : ''}" data-key="term:${esc(t.id)}" title="${esc([termLabel(t), pj?.name, t.cwd, brTip].filter(Boolean).join(' · '))}">
         ${agentIcon(kind, dot)}

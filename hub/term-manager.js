@@ -31,7 +31,8 @@ function sessionStartupBlock(screen) {
   if (/(?:Sign in with (?:ChatGPT|Google)|Login with Google|Select an authentication method)/i.test(bottom)) return 'login';
   if (/^\s*(?:[│┃?❯›>─ -]+\s*)?(?:Do you want to (?:proceed|make this edit|create|allow|run)|Allow Codex to)\b/im.test(bottom)) return 'permission';
   if (/^\s*(?:[│┃?❯›>─ -]+\s*)?Press Enter to continue[.!…]*\s*$/im.test(lines.at(-1))) return 'confirmation';
-  if (/(?:enter to (?:confirm|select)|esc to (?:cancel|deny|reject)|arrow keys to select)/i.test(lines.at(-1)) && /^\s*[›❯>]\s+\S/m.test(bottom)) return 'confirmation';
+  if (/enter select · esc back/i.test(lines.at(-1)) && /\bKeep current model\b/i.test(bottom)) return 'confirmation';
+  if (/(?:enter to (?:confirm|select)|esc to (?:deny|reject)|arrow keys to select|\benter\b[^\n]*\besc to cancel\b|\besc to cancel\b[^\n]*\benter\b)/i.test(lines.at(-1)) && /^\s*[›❯>]\s+\S/m.test(bottom)) return 'confirmation';
   if (/\brunning\b[^\n]*\bSessionStart\b|\bSessionStart hooks?\b[^\n]*\b(?:running|pending)\b/i.test(bottom)) return 'hooks-running';
   return '';
 }
@@ -65,6 +66,28 @@ function submissionBlockMessage(screen) {
   if (block === 'term-dumb') return DUMB_TERMINAL_MESSAGE;
   if (block === 'hooks-running') return 'CLI 시작 훅이 실행 중입니다.';
   return terminalConfirmationMessage(block);
+}
+
+async function waitForTerminalInput(hub, term) {
+  const screen = () => {
+    const raw = hub.readTerm(term, Math.max(40, term.rows || 0)).join('\n');
+    return hub.stripAnsi?.(raw) || raw;
+  };
+  const stopped = () => term.exited !== null || !hub.terms.has(term.id);
+  const ready = await (hub.waitFor || waitFor)(async () => {
+    if (stopped()) return true;
+    const current = screen();
+    const block = sessionStartupBlock(current);
+    if (block === 'hooks-menu' && term.meta?.projectTask) {
+      await dismissProjectHookMenu(hub, term, current);
+      return false;
+    }
+    return !!terminalConfirmationMessage(block) || block === 'term-dumb' || hub.inputReady(term);
+  }, 45000, 250);
+  if (stopped()) throw new Error('터미널 입력을 확인하지 못했습니다.');
+  const message = submissionBlockMessage(screen());
+  if (message) throw new Error(message);
+  if (!ready) throw new Error('CLI가 작업 입력을 받을 준비가 되지 않았습니다.');
 }
 
 async function dispatchTerminalPrompt(hub, term, text, { submitDraft = false, cli, immediate = false, resend = false } = {}) {
@@ -107,12 +130,16 @@ async function dispatchTerminalPrompt(hub, term, text, { submitDraft = false, cl
     const previousDraft = pending?.text === text && pending.inputSeq === inputSeq ? pending.draft : undefined;
     term._pendingPromptDraft = undefined;
     await submitPrompt({
-      text, read, guard, explicitDraft: submitDraft, waitFor: hub.waitFor || waitFor, sleep: hub.sleep || sleep,
+      text, read, guard, explicitDraft: submitDraft, resend, waitFor: hub.waitFor || waitFor, sleep: hub.sleep || sleep,
       previousDraft, onDraft: (draft) => { term._pendingPromptDraft = { text, inputSeq, draft }; },
       paste: cli === 'codex' || /[\n\t]/.test(text) ? `\x1b[200~${text}\x1b[201~` : text,
       pasteMarker: cli,
       write: (data) => {
         guard(read());
+        if (term.meta?.projectAutoClose && !term.meta.projectSubmitted && (data === '\r' || data === '\t')) {
+          term.meta.projectSubmitted = true;
+          hub.ptyPost(term.id, '/meta', { id: term.id, meta: { projectSubmitted: true } });
+        }
         hub.termMonitor?.onInput(term, data);
         return writeProjectTerm(hub, term, data);
       },
@@ -120,6 +147,9 @@ async function dispatchTerminalPrompt(hub, term, text, { submitDraft = false, cl
       flushQueue: immediate && cli === 'agy' ? flushNewAgyQueue : undefined,
       started: (view, baseline, since) => {
         if (!baseline.busy && view.busy && view.screen !== baseline.screen) return true;
+        if (baseline.busy && (cli === 'agy' || cli === 'claude') && view.screen !== baseline.screen
+          && /(?:alt\s*\+\s*m\s*(?:to\s*)?send|^\s*queued:|press up to edit)/im.test(view.screen)
+          && !/(?:alt\s*\+\s*m\s*(?:to\s*)?send|^\s*queued:|press up to edit)/im.test(baseline.screen)) return true;
         const turn = sessionTurn();
         return turn && turn !== priorTurn && Number(new Date(turn.ts)) >= since
           && turn.text?.trim() === text.trim();
@@ -206,9 +236,18 @@ function createTermManager(hub) {
     getSessionId: (t) => termSessionId(t) || t.meta?.sessionId || null,
     onMetaChange: (t, next) => {
       if (!t.meta) t.meta = {};
-      if (next.model) t.meta.model = next.model;
-      if (next.effort) t.meta.effort = next.effort;
-      if (next.mode) t.meta.mode = next.mode;
+      let changed = false;
+      if (next.model !== undefined && next.model !== (t.meta.model || '')) { t.meta.model = next.model; changed = true; }
+      if (next.effort !== undefined && next.effort !== (t.meta.effort || '')) { t.meta.effort = next.effort; changed = true; }
+      if (next.mode && next.mode !== (t.meta.mode || '')) { t.meta.mode = next.mode; changed = true; }
+      if (changed) {
+        ptyPost(t.id, '/meta', { id: t.id, meta: { model: t.meta.model || '', effort: t.meta.effort || '', mode: t.meta.mode || '' } });
+        const ag = agentOf(t);
+        if (!t.meta.projectTask && ['claude', 'codex', 'agy'].includes(ag)) {
+          accountPrefs?.save?.({ account: t.account?.id || '', agent: ag, model: t.meta.model || '', effort: t.meta.effort || '' });
+        }
+        hub.overviewStale?.();
+      }
     },
   }) : null;
 
@@ -407,6 +446,7 @@ function createTermManager(hub) {
 
   function mirrorData(t, d) {
     t.vt.write(d);
+    t.outputEnd = (t.outputEnd ?? t.buf.length) + d.length;
     t.buf = (t.buf + d).slice(-400_000);
     if (stripAnsi(d).trim()) t.lastOutputAt = Date.now();
     termMonitor?.onOutput(t);
@@ -450,7 +490,8 @@ function createTermManager(hub) {
       ...(me.effort ? { effort: me.effort } : {}),
       ...(operator ? { operator: true } : {}),
     };
-    if (projectTask) Object.assign(meta, { projectTask, projectPrompt });
+    if (projectTask) Object.assign(meta, { projectTask, projectPrompt,
+      projectAutoClose: !args.some(a => /^(?:resume|--resume|--conversation|--continue)$/.test(a)) });
     const t = makeMirror({ id, meta });
     const terminalEnv = { ...cleanEnv(), ...env };
     if (!terminalEnv.TERM || /^dumb$/i.test(terminalEnv.TERM)) terminalEnv.TERM = 'xterm-256color';
@@ -686,7 +727,10 @@ function createTermManager(hub) {
       t.startedAt = x.startedAt || null;
       if (!t.lastInputAt) t.lastInputAt = t.startedAt || Date.now();
       const { buf = '' } = await ptyCall(`/buf?id=${encodeURIComponent(x.id)}`).catch(() => ({}));
-      if (buf) { t.buf = buf.slice(-400_000); t.vt.write(t.buf); }
+      if (buf) {
+        t.buf = buf.slice(-400_000);
+        t.vt.write(t.buf, () => { try { termMonitor?.inspect(t); } catch {} });
+      }
     }
     const WebSocketClient = require('ws');
     const ev = new WebSocketClient(`ws://127.0.0.1:${PTY_PORT}/events?t=${token}`);
@@ -870,4 +914,4 @@ function createTermManager(hub) {
   };
 }
 
-module.exports = { createTermManager, sessionStartupBlock, dismissProjectHookMenu, writeProjectTerm, dispatchTerminalPrompt, submissionBlockMessage, terminalConfirmationMessage, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE };
+module.exports = { createTermManager, waitForTerminalInput, sessionStartupBlock, dismissProjectHookMenu, writeProjectTerm, dispatchTerminalPrompt, submissionBlockMessage, terminalConfirmationMessage, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE };

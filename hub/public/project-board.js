@@ -12,7 +12,9 @@ function openProjectTaskMenu(p, task, anchor, onMove) {
       },
     }));
   openMoreMenu(anchor, [
-    running || task.stage !== 'done' ? { label: running ? '터미널 열기' : '작업 시작', icon: ico.play || '', onClick: () => startProjectTask(p, task) } : null,
+    running ? { label: '터미널 열기', icon: ico.play || '', onClick: () => startProjectTask(p, task, null, { openTerminal: true }) } : null,
+    task.stage !== 'done' ? { label: task.stage === 'review' ? (task.reviewStatus?.startsWith('merge-') ? '통합 재시도' : '재검토') : task.stage === 'doing' ? '작업 다시 진행' : '작업 시작',
+      icon: ico.play || '', onClick: () => runProjectCardAction(p, task) } : null,
     ...moveItems,
     { divider: true },
     { label: '서브 개발 채팅 열기', icon: ico.chat || '', onClick: () => openProjectTaskDrawer(p, task, true) },
@@ -62,7 +64,7 @@ function projectBoard(p) {
       <div class="pj-task-head">
         <button data-edit="${esc(t.id)}" class="pj-title">${esc(t.title)}</button>
       </div>
-      ${t.detail ? `<p class="pj-card-desc">${esc(t.detail)}</p>` : ''}
+      ${t.detail ? `<p class="pj-card-desc">${esc(typeof cleanTaskPreview === 'function' ? cleanTaskPreview(t.detail) : t.detail)}</p>` : ''}
       ${t.lastRun || t.launchBlock ? `<div class="row">${projectLastRunHTML(t)}</div>` : ''}
       ${typeof projectReviewNoteHTML === 'function' ? projectReviewNoteHTML(t, true) : ''}
       <div class="pj-task-foot">

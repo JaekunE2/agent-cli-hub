@@ -5,7 +5,8 @@ function homeStatsHTML() {
   const cons = visibleConsoles();
   const runTerms = state.terms.filter((t) => t.exited === null);
   const busyN = runTerms.filter((t) => termStateOf(t) === 'busy').length + cons.filter((c) => consoleStateOf(c) === 'busy').length;
-  const idleN = (runTerms.length + cons.length) - busyN;
+  const dormantN = runTerms.filter((t) => isTermDormant(t)).length;
+  const idleN = (runTerms.length + cons.length) - busyN - dormantN;
 
   const u = state.usage;
   const okAccs = (u?.accounts || []).filter((a) => a.ok && a.meters?.length);
@@ -44,7 +45,7 @@ function homeStatsHTML() {
     <div class="h-stat" data-hnav="terms">
       <div class="h-stat-lbl"><span>열린 터미널</span>${busyN ? `<span class="badge warn">실행 중 ${busyN}</span>` : ''}</div>
       <div class="h-stat-val">${runTerms.length + cons.length}개</div>
-      <div class="h-stat-sub">${runTerms.length + cons.length ? `실행 중 ${busyN} · 대기 ${idleN}` : '열린 세션 없음'}</div>
+      <div class="h-stat-sub">${runTerms.length + cons.length ? `실행 중 ${busyN} · 대기 ${idleN}${dormantN ? ` · 유휴 ${dormantN}` : ''}` : '열린 세션 없음'}</div>
     </div>
     <div class="h-stat" data-hnav="usage">
       <div class="h-stat-lbl"><span>AI 남은 한도</span>${tightAccounts ? `<span class="badge lim">임박 ${tightAccounts}개</span>` : ''}</div>
@@ -74,13 +75,15 @@ function homeListsHTML() {
   const termRows = merged.map((entry) => {
     if (entry.kind === 'term') {
       const t = entry.item;
-      const st = termStateOf(t);
+      const meta = termStatusMeta(t);
       const kind = t.operator ? 'operator' : t.agent || 'shell';
       const pj = projectOfTerm(t);
+      const cwdBase = base(t.cwd);
+      const showCwd = cwdBase && cwdBase !== pj?.name ? ` · ${esc(cwdBase)}` : '';
       return `<div class="m-row" data-open-term="${esc(t.id)}">
-        ${agentIcon(kind, st === 'busy' ? 'busy' : 'idle')}
-        <div class="m-row-main"><div class="m-row-t">${esc(termLabel(t))}</div><div class="m-row-s">${pj ? `Project: ${esc(pj.name)} · ` : ''}${esc(termKindLabel(t))}${base(t.cwd) ? ` · ${esc(base(t.cwd))}` : ''}</div></div>
-        <div class="m-row-end">${branchTagHTML(t.branch)}${pj ? `<span class="badge c">${esc(pj.name)}</span>` : ''}<span class="badge ${st === 'busy' ? 'warn' : 'ok'}">${st === 'busy' ? '실행 중' : '대기'}</span></div>
+        ${agentIcon(kind, meta.dot)}
+        <div class="m-row-main"><div class="m-row-t">${esc(termLabel(t))}</div><div class="m-row-s">${esc(termKindLabel(t))}${showCwd}</div></div>
+        <div class="m-row-end">${branchTagHTML(t.branch)}${pj ? `<span class="badge tag">${esc(pj.name)}</span>` : ''}<span class="badge ${meta.badgeClass}" title="${esc(meta.title)}">${esc(meta.shortLabel)}</span></div>
       </div>`;
     }
     const c = entry.item;
@@ -122,17 +125,14 @@ function refreshHomeWidgets() {
 }
 
 function termCardHTML(t, extraBadge = '') {
-  const st = termStateOf(t);
-  const dot = st === 'exited' ? 'dead' : st === 'busy' ? 'busy' : 'idle';
+  const meta = termStatusMeta(t);
+  const st = meta.state;
+  const dot = meta.dot;
   const kind = t.operator ? 'operator' : t.agent || 'shell';
   const pj = projectOfTerm(t);
   const pjBadge = pj && !extraBadge ? `<span class="badge c" title="Project: ${esc(pj.name)}">${esc(pj.name)}</span>` : '';
   const kindBadge = `<span class="badge">${esc(t.operator ? '관제' : t.agent ? '터미널' : '셸')}</span>`;
-  const stBadge = st === 'exited'
-    ? '<span class="badge">종료됨</span>'
-    : st === 'busy'
-      ? '<span class="badge warn">실행 중</span>'
-      : '<span class="badge ok">대기</span>';
+  const stBadge = `<span class="badge ${meta.badgeClass}" title="${esc(meta.title)}">${esc(meta.shortLabel)}</span>`;
   const closeBtn = st === 'exited'
     ? `<button class="ghost icon-btn btn-sm" data-term-close="${esc(t.id)}" aria-label="종료된 터미널 닫기" title="종료된 터미널 제거">${ICO.close}</button>`
     : '';
@@ -198,11 +198,14 @@ function viewHome() {
   setBar('');
   $('#view').innerHTML = `<div class="page-wrap">
     <header class="h-hero">
-      <h1>홈</h1>
+      <div class="h-hero-txt">
+        <h1>홈</h1>
+        <p class="h-hero-sub">실시간 에이전트 세션 · AI 한도 · GPU 워크스페이스 요약</p>
+      </div>
       <button class="primary" data-hopen-new="1">${ICO.plus} 새 터미널</button>
     </header>
-    <div class="h-two" id="homeLists">${homeListsHTML()}</div>
     <div class="h-stats" id="homeStats">${homeStatsHTML()}</div>
+    <div class="h-two" id="homeLists">${homeListsHTML()}</div>
   </div>`;
   $('#view').onclick = async (e) => {
     if (e.target.closest('[data-hopen-new]')) return openNewTermDrawer();
@@ -295,18 +298,19 @@ function paintTermsBody() {
       const rows = mergedActive.map((entry) => {
         if (entry.kind === 'term') {
           const t = entry.item;
-          const st = termStateOf(t);
+          const meta = termStatusMeta(t);
+          const st = meta.state;
           const kind = t.operator ? 'operator' : t.agent || 'shell';
           const pj = projectOfTerm(t);
           const fk = favKeyOf(`term:${t.id}`), on = !!fk && (state.favs || new Set()).has(fk);
           return `<div class="m-row" data-open-term="${esc(t.id)}">
-            ${agentIcon(kind, st === 'exited' ? 'dead' : st === 'busy' ? 'busy' : 'idle')}
+            ${agentIcon(kind, meta.dot)}
             <div class="m-row-main"><div class="m-row-t">${esc(termLabel(t))}</div><div class="m-row-s">${esc(termKindLabel(t))}${base(t.cwd) ? ` · ${esc(base(t.cwd))}` : ''}</div></div>
             <div class="m-row-end">
               ${branchTagHTML(t.branch)}
               ${fk ? `<span class="fav${on ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0">${on ? ICO.starFill : ICO.star}</span>` : ''}
               ${pj ? `<span class="badge c">${esc(pj.name)}</span>` : ''}
-              <span class="badge ${st === 'exited' ? '' : st === 'busy' ? 'warn' : 'ok'}">${termStatusLabel(t)}</span>
+              <span class="badge ${meta.badgeClass}" title="${esc(meta.title)}">${esc(meta.label)}</span>
               ${st === 'exited' ? `<button class="ghost icon-btn btn-sm" data-term-close="${esc(t.id)}" aria-label="닫기">${ICO.close}</button>` : ''}
             </div>
           </div>`;
@@ -391,8 +395,8 @@ function paintTermsBody() {
     }
     if (entry.kind === 'term') {
       const t = entry.item;
-      const st = termStateOf(t);
-      return `<div class="m-row" data-open-term="${esc(t.id)}">${agentIcon(t.operator ? 'operator' : t.agent || 'shell', st === 'exited' ? 'dead' : st === 'busy' ? 'busy' : 'idle')}<div class="m-row-main"><div class="m-row-t">${esc(termLabel(t))}</div><div class="m-row-s">${esc(base(t.cwd))}</div></div><div class="m-row-end"><span class="fav on" data-fav="${esc(f)}" data-fav-keys="${esc((entry.allKeys || [f]).join(','))}" role="button" tabindex="0">${ICO.starFill}</span><span class="badge ${st === 'exited' ? '' : st === 'busy' ? 'warn' : 'ok'}">${termStatusLabel(t)}</span></div></div>`;
+      const meta = termStatusMeta(t);
+      return `<div class="m-row" data-open-term="${esc(t.id)}">${agentIcon(t.operator ? 'operator' : t.agent || 'shell', meta.dot)}<div class="m-row-main"><div class="m-row-t">${esc(termLabel(t))}</div><div class="m-row-s">${esc(base(t.cwd))}</div></div><div class="m-row-end"><span class="fav on" data-fav="${esc(f)}" data-fav-keys="${esc((entry.allKeys || [f]).join(','))}" role="button" tabindex="0">${ICO.starFill}</span><span class="badge ${meta.badgeClass}" title="${esc(meta.title)}">${esc(meta.label)}</span></div></div>`;
     }
     if (entry.kind === 'sid') {
       const sid = entry.sid;

@@ -11,7 +11,7 @@ function composerText(screen, cursorLine) {
   const start = lines.findLastIndex((line) => /^\s*[›❯>](?:\s|$)/.test(line));
   if (start < 0 || cursorLine < start) return null;
   const draft = lines.slice(start).join('\n').replace(/^[ \t]*[›❯>][ \t]*/, '').split(
-    /\n\s*(?:[─━]{3,}|[^\n]+ · (?:[A-Z]:[\\/]|~|\/)|← for agents\s*·\s*\? for shortcuts|\? for shortcuts|esc to interrupt|tab to (?:queue|steer))/i, 1
+    /\n\s*(?:[─━]{3,}|[^\n]+ · (?:[A-Z]:[\\/]|~|\/)|← for agents\s*·\s*\? for shortcuts|\? for shortcuts|esc to (?:interrupt|cancel)|alt\s*\+\s*m\s*(?:to\s*)?send|tab to (?:queue|steer))/i, 1
   )[0];
   if (cursorLine >= start + draft.split('\n').length) return null;
   return draft.trimEnd();
@@ -22,12 +22,17 @@ const hasCodexPasteDraft = (screen, cursorLine) => PASTE_MARKER.test(composerTex
 const isPlaceholder = (text) => /^(?:Ask Codex to do anything|Ask anything|Type (?:your|a) message)(?:[.…]+)?$/i.test(text || '');
 
 async function submitPrompt({ text, read, write, guard, waitFor, sleep, delay = 350,
-  started, paste = text, explicitDraft = false, queueKey, pasteMarker, flushQueue, previousDraft, onDraft }) {
+  started, paste = text, explicitDraft = false, queueKey, pasteMarker, flushQueue, previousDraft, onDraft, resend = false }) {
   if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text)) throw new Error('CLI 메시지에 제어 문자를 보낼 수 없습니다.');
   const expected = unwrap(text);
   const matched = (draft) => draft != null && unwrap(draft) === expected;
   const compact = (value) => value.replace(/[\s\u00b7]/g, '');
   const expectedCompact = compact(text);
+  const renderedMatch = (draft) => matched(draft) || (pasteMarker === 'codex' && !!draft
+    && draft.replace(/\s/g, '') === text.replace(/\s/g, ''));
+  const wrappedRetry = (draft) => resend && pasteMarker === 'codex' && draft?.includes('\n')
+    && new RegExp('^' + draft.split(/\n/).map((line) => line.trim()).filter(Boolean)
+      .map((line) => line.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join(' *') + '$').test(expected);
   const tail = expectedCompact.slice(-64);
   const visibleTail = (draft) => {
     const visible = compact(draft || '');
@@ -55,7 +60,7 @@ async function submitPrompt({ text, read, write, guard, waitFor, sleep, delay = 
     return view.draft != null;
   }, 5000, 150);
   let draft = view.draft;
-  const alreadyPresent = matched(draft) || (!!draft && draft === previousDraft)
+  const alreadyPresent = matched(draft) || wrappedRetry(draft) || (!!draft && draft === previousDraft)
     || (explicitDraft && draft && (freshPaste(draft) || (!PASTE_MARKER.test(draft.trimStart()) && expected.endsWith(unwrap(draft)))));
   let pasted = false;
   if (!alreadyPresent) {
@@ -66,14 +71,14 @@ async function submitPrompt({ text, read, write, guard, waitFor, sleep, delay = 
     pasted = true;
     const hasPaste = async () => {
       view = await current();
-      return matched(view.draft) || (view.draft !== draft && (freshPaste(view.draft) || visibleTail(view.draft)));
+      return view.draft !== draft && (renderedMatch(view.draft) || freshPaste(view.draft) || visibleTail(view.draft));
     };
     if (!await waitFor(hasPaste, 5000, 150)) throw new Error('CLI 입력창에서 전송한 내용을 확인하지 못했습니다.');
     draft = view.draft;
     onDraft?.(draft);
     await sleep(delay);
   }
-  const sameDraft = (next) => next === draft || (pasted && (matched(next) || freshPaste(next) || visibleTail(next)));
+  const sameDraft = (next) => next === draft || (pasted && (renderedMatch(next) || freshPaste(next) || visibleTail(next)));
   view = await current();
   if (!sameDraft(view.draft)) {
     if (view.draft && !isPlaceholder(view.draft)) throw new Error(DRAFT);

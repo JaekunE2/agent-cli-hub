@@ -205,7 +205,8 @@ async function paintResearch(auto) {
     const steps = prog.phases.map((ph, i) => {
       const beyond = i > prog.phases.indexOf(prog.goal);
       const cls = d.gates?.[ph]?.passed ? 'done' : i === prog.cur ? 'cur' : beyond ? 'off' : '';
-      return `<div class="rstep ${cls}" title="${esc(PHASE_DESC[ph])}"><span class="n">${d.gates?.[ph]?.passed ? '✓' : i + 1}</span><span class="l">${PHASE_KO[ph]}</span></div>`;
+      const numTxt = d.gates?.[ph]?.passed ? '✓' : String(i + 1).padStart(2, '0');
+      return `<div class="rstep ${cls}" title="${esc(PHASE_DESC[ph])}"><span class="n">${numTxt}</span><span class="l">${PHASE_KO[ph]}</span></div>`;
     }).join('');
     const items = journalItems(d.journal).slice(-8).reverse();
     const dir = (d.dir || '').toLowerCase();

@@ -53,6 +53,9 @@ const FALLBACK_CLI_OPTIONS = {
       { id: 'gemini-4-neon-xhigh', label: 'Gemini 4 Neon (XHigh)' },
       { id: 'gemini-4-neon-medium', label: 'Gemini 4 Neon (Medium)' },
       { id: 'gemini-4-neon-low', label: 'Gemini 4 Neon (Low)' },
+      { id: 'gemini-4-carbon-high', label: 'Gemini 4 Carbon (High)' },
+      { id: 'gemini-4-carbon-medium', label: 'Gemini 4 Carbon (Medium)' },
+      { id: 'gemini-4-carbon-low', label: 'Gemini 4 Carbon (Low)' },
       { id: 'gemini-4-argon-high', label: 'Gemini 4 Argon (High)' },
       { id: 'gemini-4-argon-medium', label: 'Gemini 4 Argon (Medium)' },
       { id: 'gemini-4-argon-low', label: 'Gemini 4 Argon (Low)' },
@@ -60,12 +63,18 @@ const FALLBACK_CLI_OPTIONS = {
       { id: 'gemini-4-hydrogen-xhigh', label: 'Gemini 4 Hydrogen (XHigh)' },
       { id: 'gemini-4-hydrogen-medium', label: 'Gemini 4 Hydrogen (Medium)' },
       { id: 'gemini-4-hydrogen-low', label: 'Gemini 4 Hydrogen (Low)' },
+      { id: 'gemini-pro-orchestrator-neon', label: 'Orchestrator (Neon)' },
+      { id: 'gemini-pro-orchestrator', label: 'Orchestrator (Carbon)' },
+      { id: 'gemini-pro-orchestrator-argon', label: 'Orchestrator (Argon)' },
       { id: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' },
       { id: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)' },
+      { id: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)' },
       { id: 'claude-opus-5-5-high', label: 'Claude Opus 5.5 (High)' },
       { id: 'claude-opus-5-5-medium', label: 'Claude Opus 5.5 (Medium)' },
+      { id: 'claude-opus-5-5-low', label: 'Claude Opus 5.5 (Low)' },
       { id: 'claude-sonnet-5-5-high', label: 'Claude Sonnet 5.5 (High)' },
       { id: 'claude-sonnet-5-5-medium', label: 'Claude Sonnet 5.5 (Medium)' },
+      { id: 'claude-sonnet-5-5-low', label: 'Claude Sonnet 5.5 (Low)' },
       { id: 'gpt-oss-120b-medium', label: 'GPT-OSS 120B (Medium)' },
     ],
     efforts: [
@@ -346,6 +355,15 @@ function createCliModelEffortController({
       const we = nextEffort !== undefined ? nextEffort : (effortByCli.has(k) ? effortByCli.get(k) : savedNext.effort);
       modelByCli.set(k, wm);
       effortByCli.set(k, we);
+      paint(k, wm, we);
+    },
+    syncFromTerm(nextKind, nextModel = '', nextEffort = '') {
+      const k = nextKind || curKind || 'claude';
+      const wm = String(nextModel || '');
+      const we = String(nextEffort || '');
+      modelByCli.set(k, wm);
+      effortByCli.set(k, we);
+      dirty = false;
       paint(k, wm, we);
     },
     repaintProject() {

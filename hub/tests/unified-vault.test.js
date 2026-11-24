@@ -111,6 +111,10 @@ test('parseSkillFrontmatter extracts name and description cleanly', () => {
   const meta = parseSkillFrontmatter(`---\nname: "demo-skill"\ndescription: 'Helps test frontmatter'\n---\n\n# Body`);
   assert.equal(meta.name, 'demo-skill');
   assert.equal(meta.description, 'Helps test frontmatter');
+
+  const folded = parseSkillFrontmatter(`---\r\nname: aws-skill\r\ndescription: >-\r\n  Builds generative AI apps\r\n  on Amazon Bedrock.\r\n---\r\n# Body`);
+  assert.equal(folded.name, 'aws-skill');
+  assert.equal(folded.description, 'Builds generative AI apps on Amazon Bedrock.');
 });
 
 test('moveDirSafe falls back to copy+remove on EXDEV cross-device rename errors', () => {

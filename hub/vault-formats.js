@@ -126,12 +126,14 @@ function parseSkillFrontmatter(mdText) {
   const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(s);
   if (!m) return { name: '', description: '' };
   const body = m[1];
-  const nameM = /^name:\s*(.+)$/m.exec(body);
-  const descSingle = /^description:\s*(?![>|])(.+)$/m.exec(body);
-  let description = descSingle ? descSingle[1].replace(/^['"]|['"]$/g, '').trim() : '';
-  if (!description) {
-    const multiM = /^description:\s*[>|]-?\r?\n((?:[ \t]+.+\r?\n?)+)/m.exec(body);
-    if (multiM) description = multiM[1].split(/\r?\n/).map((l) => l.trim()).filter(Boolean).join(' ');
+  const nameM = /^name:[ \t]*(.+)$/m.exec(body);
+  const multiM = /^description:[ \t]*[>|][+-]?[ \t]*\r?\n((?:(?:[ \t]+.+|[ \t]*)\r?\n?)+)/m.exec(body);
+  let description = '';
+  if (multiM) {
+    description = multiM[1].split(/\r?\n/).map((l) => l.trim()).filter(Boolean).join(' ');
+  } else {
+    const descSingle = /^description:[ \t]*(?![>|])(\S.*)$/m.exec(body);
+    if (descSingle) description = descSingle[1].replace(/^['"]|['"]$/g, '').trim();
   }
   return {
     name: nameM ? nameM[1].replace(/^['"]|['"]$/g, '').trim() : '',

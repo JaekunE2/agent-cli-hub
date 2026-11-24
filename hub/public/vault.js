@@ -5,6 +5,89 @@
   let skillQuery = '';
   let sourceFilter = 'all'; // 'all' | 'claude' | 'codex' | 'agy' | 'vault'
   let vaultState = null;
+  const descFixCache = new Map();
+  let hydratingDescs = false;
+
+  const isScalarMarkerOnly = (txt) => /^[>|][+-]?$/.test(String(txt || '').trim());
+  function parseSkillMdDesc(mdText) {
+    const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(String(mdText || ''));
+    if (!m) return '';
+    const body = m[1];
+    const multiM = /^description:[ \t]*[>|][+-]?[ \t]*\r?\n((?:(?:[ \t]+.+|[ \t]*)\r?\n?)+)/m.exec(body);
+    if (multiM) return multiM[1].split(/\r?\n/).map((l) => l.trim()).filter(Boolean).join(' ').slice(0, 260);
+    const singleM = /^description:[ \t]*(?![>|])(\S.*)$/m.exec(body);
+    return singleM ? singleM[1].replace(/^['"]|['"]$/g, '').trim().slice(0, 260) : '';
+  }
+  function resolvedSkillDesc(sk) {
+    if (!sk) return '';
+    if (descFixCache.has(sk.name)) return descFixCache.get(sk.name);
+    return isScalarMarkerOnly(sk.description) ? '' : String(sk.description || '');
+  }
+  async function hydrateBrokenSkillDescs(skills) {
+    if (hydratingDescs) return;
+    const targets = (skills || []).filter((sk) => isScalarMarkerOnly(sk.description) && !descFixCache.has(sk.name));
+    if (!targets.length) return;
+    hydratingDescs = true;
+    try {
+      await Promise.all(targets.map(async (sk) => {
+        try {
+          const r = await api('/api/vault/skill?name=' + encodeURIComponent(sk.name));
+          const parsed = parseSkillMdDesc(r?.content || '');
+          descFixCache.set(sk.name, parsed);
+          sk.description = parsed;
+        } catch {
+          descFixCache.set(sk.name, '');
+        }
+      }));
+      if ($('#vaultBody')) paintVault();
+    } finally {
+      hydratingDescs = false;
+    }
+  }
+
+  function buildVaultTopologySVG(st) {
+    const skillsN = (st.skills || []).filter((x) => x.enabled !== false).length;
+    const mcpsN = (st.mcps || []).filter((x) => x.enabled !== false).length;
+    const rulesN = (st.rules || []).filter((x) => x.enabled !== false).length + 1;
+    const clis = st.clis || {};
+    const rows = [
+      { key: 'claude', label: 'Claude Code', y: 12 },
+      { key: 'codex', label: 'Codex CLI', y: 60 },
+      { key: 'agy', label: 'Antigravity', y: 108 },
+    ];
+    return `<svg class="v-diag-svg" viewBox="0 0 560 160" role="img" aria-labelledby="vDiagTitle vDiagDesc">
+      <title id="vDiagTitle">통합 공통 자원 동기화 구조도</title>
+      <desc id="vDiagDesc">공통 볼트의 스킬 ${skillsN}개, MCP ${mcpsN}개, 하네스 규칙 ${rulesN}개가 Claude Code, Codex CLI, Antigravity로 정션 및 변환 동기화되는 다이어그램입니다.</desc>
+      <defs>
+        <marker id="vArr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M 0,1.2 L 7,4 L 0,6.8 Z" fill="var(--diag-muted)"/>
+        </marker>
+      </defs>
+      <path d="M 200,60 H 264 Q 272,60 272,52 V 40 Q 272,32 280,32 H 344" fill="none" stroke="var(--diag-muted)" stroke-width="1.2" marker-end="url(#vArr)"/>
+      <path d="M 200,80 H 344" fill="none" stroke="var(--diag-muted)" stroke-width="1.2" marker-end="url(#vArr)"/>
+      <path d="M 200,100 H 264 Q 272,100 272,108 V 120 Q 272,128 280,128 H 344" fill="none" stroke="var(--diag-muted)" stroke-width="1.2" marker-end="url(#vArr)"/>
+
+      <rect x="220" y="62" width="88" height="12" rx="3" fill="var(--diag-paper)"/>
+      <text x="264" y="71" text-anchor="middle" font-family="var(--mono)" font-size="8" font-weight="500" fill="var(--diag-soft)">Junction · Sync</text>
+
+      <rect x="12" y="40" width="188" height="80" rx="6" fill="var(--diag-accent-tint)" stroke="var(--diag-accent)" stroke-width="1.2"/>
+      <rect x="24" y="50" width="80" height="14" rx="3" fill="var(--diag-node)" stroke="var(--diag-accent)" stroke-width="0.8"/>
+      <text x="64" y="60" text-anchor="middle" font-family="var(--mono)" font-size="8" font-weight="600" letter-spacing="0.1em" fill="var(--diag-accent)">SHARED VAULT</text>
+      <text x="24" y="84" font-size="12.5" font-weight="700" fill="var(--diag-ink)">통합 공통 자원 허브</text>
+      <text x="24" y="104" font-family="var(--mono)" font-size="9.5" fill="var(--diag-muted)">Skills ${skillsN} · MCP ${mcpsN} · Rules ${rulesN}</text>
+
+      ${rows.map((r) => {
+        const c = clis[r.key] || {};
+        const ok = !!c.hasHarness;
+        return `<g>
+          <rect x="348" y="${r.y}" width="200" height="40" rx="6" fill="var(--diag-node)" stroke="${ok ? 'var(--diag-ink)' : 'var(--diag-rule-solid)'}" stroke-width="1"${ok ? '' : ' stroke-dasharray="4 3"'}/>
+          <text x="360" y="${r.y + 18}" font-size="12" font-weight="650" fill="var(--diag-ink)">${esc(r.label)}</text>
+          <text x="360" y="${r.y + 32}" font-family="var(--mono)" font-size="9.5" fill="var(--diag-muted)">skills ${c.skillsCount || 0} · mcp ${c.mcpCount || 0}</text>
+          <circle cx="534" cy="${r.y + 20}" r="3.5" fill="${ok ? 'var(--ok)' : 'var(--diag-soft)'}"/>
+        </g>`;
+      }).join('')}
+    </svg>`;
+  }
 
   const CLI_LABELS = { claude: 'Claude', codex: 'Codex', agy: 'AGY' };
   const SOURCE_META = [
@@ -488,10 +571,12 @@
     const mcps = st.mcps || [];
     const rules = st.rules || [];
 
+    hydrateBrokenSkillDescs(skills);
+
     const filteredSkills = skills.filter((s) => {
       if (!matchesSourceFilter(s, sourceFilter)) return false;
       if (!skillQuery) return true;
-      return (`${s.name} ${s.description}`).toLowerCase().includes(skillQuery.toLowerCase());
+      return (`${s.name} ${resolvedSkillDesc(s)}`).toLowerCase().includes(skillQuery.toLowerCase());
     });
     const filteredMcps = mcps.filter((m) => matchesSourceFilter(m, sourceFilter));
 
@@ -523,13 +608,15 @@
 
     let tabBody = '';
     if (vaultTab === 'skills') {
-      const renderSkillRow = (sk) => `<div class="v-row${sk.enabled ? '' : ' off'}">
+      const renderSkillRow = (sk) => {
+        const descTxt = resolvedSkillDesc(sk);
+        return `<div class="v-row${sk.enabled ? '' : ' off'}">
         <div class="v-row-main">
           <div class="row" style="gap:6px;flex-wrap:wrap">
             <b>${esc(sk.name)}</b>
-            ${(sk.sources || []).map((src) => `<span class="badge">${esc(src)}</span>`).join('')}
+            ${(sk.sources || []).map((src) => `<span class="badge tag">${esc(src)}</span>`).join('')}
           </div>
-          ${sk.description ? `<div class="ums" style="margin:2px 0 0">${esc(sk.description)}</div>` : ''}
+          ${descTxt ? `<div class="ums" style="margin:2px 0 0">${esc(descTxt)}</div>` : ''}
         </div>
         <div class="v-row-right">
           <div class="v-tgts">${targetPillsHTML('skill', sk.name, sk.targets, sk.enabled)}</div>
@@ -538,6 +625,7 @@
           <button type="button" class="ghost icon-btn btn-sm" data-v-del="skill" data-v-id="${esc(sk.name)}" title="공통 자원에서 삭제">${UI_ICO.trash}</button>
         </div>
       </div>`;
+      };
       tabBody = `<div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:10px">
         ${sourceStripHTML}
         <div class="row" style="gap:6px;flex-wrap:wrap">
@@ -599,24 +687,51 @@
       </div>`).join('') : '<div class="empty">수집된 추가 규칙 파일이 없습니다.</div>'}</div>`;
     }
 
+    const cliMiniCards = ['claude', 'codex', 'agy'].map((k) => {
+      const c = clis[k] || {};
+      return `<button type="button" class="v-cli-mini" data-v-cli="${k}" title="스킬 · MCP · 하네스 목록 열기 및 가져오기">
+        <div class="v-cli-mini-top"><span style="display:inline-flex;align-items:center;gap:5px">${agentIcon(k)} ${esc(CLI_LABELS[k] || k)}</span><span class="dot ${c.hasHarness ? 'idle' : 'dead'}"></span></div>
+        <div class="v-cli-mini-cnt">스킬 ${c.skillsCount || 0} · MCP ${c.mcpCount || 0}</div>
+      </button>`;
+    }).join('');
+
     const body = $('#vaultBody');
     if (!body) return;
     const settingsOpen = $('#vSettings', body)?.open;
-    body.innerHTML = `<div class="vault-toolbar"><div class="seg" role="tablist" aria-label="공통 자원">
+    body.innerHTML = `<div class="v-top-band">
+      <div class="v-diag-card">
+        <div class="v-diag-hd">
+          <span class="v-diag-title">공통 자원 배포 토폴로지</span>
+          <span class="v-diag-sub">${st.autoLoad !== false ? '실행 시 자동 동기화 활성' : '수동 동기화 모드'}</span>
+        </div>
+        ${buildVaultTopologySVG(st)}
+      </div>
+      <div class="v-sync-card">
+        <div class="row" style="justify-content:space-between;gap:8px">
+          <b style="font-size:13px">연결된 CLI 환경 점검 · 동기화</b>
+          <div class="row" style="gap:6px">
+            <button type="button" class="btn-sm" id="vGatherBtn" title="모든 CLI에서 미등록 스킬·MCP·규칙 수집">${UI_ICO.refresh} CLI 수집</button>
+            <button type="button" class="primary btn-sm" id="vSyncAllBtn" title="공통 자원을 모든 CLI에 즉시 배포">${UI_ICO.swap} 전체 동기화</button>
+          </div>
+        </div>
+        <div class="v-cli-mini-grid">${cliMiniCards}</div>
+        <label class="v-en" style="font-size:12px;color:var(--muted)">
+          <input type="checkbox" id="vAutoLoadChk" ${st.autoLoad !== false ? 'checked' : ''}>
+          <span>허브에서 CLI 실행 시 공통 스킬 · MCP · 하네스 자동 로드</span>
+        </label>
+      </div>
+    </div>
+    <div class="vault-toolbar"><div class="seg" role="tablist" aria-label="공통 자원">
       <button type="button" role="tab" data-vtab="skills" aria-selected="${vaultTab === 'skills'}" class="${vaultTab === 'skills' ? 'on' : ''}">스킬 (${skills.length})</button>
       <button type="button" role="tab" data-vtab="mcp" aria-selected="${vaultTab === 'mcp'}" class="${vaultTab === 'mcp' ? 'on' : ''}">MCP 서버 (${mcps.length})</button>
       <button type="button" role="tab" data-vtab="harness" aria-selected="${vaultTab === 'harness'}" class="${vaultTab === 'harness' ? 'on' : ''}">하네스 · 규칙 (${rules.length + 1})</button>
     </div>
     <details id="vSettings" class="v-settings"${settingsOpen ? ' open' : ''}>
-    <summary>공통 자원 설정</summary>
+    <summary>${UI_ICO.settings || ''} 경로 · 상세 설정</summary>
     <div class="rcard">
-      <div class="row">
-        <button type="button" class="btn-sm" id="vGatherBtn">${UI_ICO.refresh} 모든 CLI → 공통 자원으로 가져오기</button>
-        <button type="button" class="btn-sm" id="vSyncAllBtn">${UI_ICO.swap} 공통 자원 → 모든 CLI로 동기화</button>
-      </div>
       <div class="row" style="justify-content:space-between;gap:10px;flex-wrap:wrap">
         <div style="min-width:0;flex:1">
-          <div style="font-weight:700;font-size:14.5px">공통 자원 경로 (Shared Path)</div>
+          <div style="font-weight:700;font-size:13.5px">공통 자원 경로 (Shared Path)</div>
           <div class="mono ums" style="margin:3px 0 0;word-break:break-all">${esc(st.vaultDir)}</div>
         </div>
         <div class="row" style="gap:6px;flex-wrap:wrap">
@@ -624,10 +739,6 @@
           ${!IS_REMOTE ? `<button type="button" class="btn-sm" id="vOpenDir">${UI_ICO.external} 폴더 열기</button>` : ''}
         </div>
       </div>
-      <label class="v-en" style="font-size:12.5px;padding:6px 10px;border-radius:8px;background:color-mix(in srgb,var(--accent) 8%,var(--panel));border:1px solid color-mix(in srgb,var(--accent) 24%,var(--line))">
-        <input type="checkbox" id="vAutoLoadChk" ${st.autoLoad !== false ? 'checked' : ''}>
-        <span><b>허브에서 CLI 실행 시 공통 자원 자동 로드</b> · Claude · Codex · Antigravity 실행할 때 공통 스킬 · MCP · 하네스를 자동으로 불러옵니다</span>
-      </label>
       <div class="h-stats v-cli-grid">${cliCards}</div>
     </div>
     </details></div>

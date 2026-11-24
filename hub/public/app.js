@@ -48,7 +48,14 @@ function select(sel, tab, persistTab = false) {
     else if (t) { sel = { kind: 'term', id: t.id }; }
     else { sel = { kind: 'recent', id: sel.id, live: true }; }
   }
+  const leaving = state.sel.kind === 'term' && (sel.kind !== 'term' || String(state.sel.id) !== String(sel.id))
+    ? state.terms.find(t => String(t.id) === String(state.sel.id) && t.projectTask) : null;
   stopView();
+  if (leaving) setTimeout(() => {
+    if (state.sel.kind === 'term' && String(state.sel.id) === String(leaving.id)) return;
+    api('/api/term/discard-unused', { method: 'POST', body: { id: leaving.id } })
+      .then(r => { if (r.removed) return refreshOverview(); }).catch(() => {});
+  }, 1750);
   state.sel = sel;
   if (sel.kind === 'term') { state.unreadTerms.delete(String(sel.id)); updateDocTitle(); }
   if (persistTab && tab) {
@@ -309,21 +316,41 @@ function openNewTermDrawer(projectCwd = '', onCreated = null, initialKind = null
   const resolvedKind = initialKind || savedKind || 'claude';
   const cwds = [...new Set([...state.live.map((s) => s.cwd), ...state.recent.map((r) => r.cwd)].filter(Boolean))].slice(0, 15);
   const chk = (v) => (resolvedKind === v ? 'checked' : '');
+  const agTile = (val, icoKind, name, sub, tip = '') => `<label class="nt-tile"${tip ? ` title="${esc(tip)}"` : ''}>
+    <input type="radio" name="k" value="${val}" ${chk(val)}>
+    ${agentIcon(icoKind)}
+    <span class="nt-tile-txt"><span class="nt-tile-name">${esc(name)}</span><span class="nt-tile-sub">${esc(sub)}</span></span>
+  </label>`;
+  const shTile = (val, name) => `<label class="nt-tile">
+    <input type="radio" name="k" value="${val}" ${chk(val)}>
+    ${agentIcon('shell')}
+    <span class="nt-tile-txt"><span class="nt-tile-name">${esc(name)}</span></span>
+  </label>`;
   const body = `
-    <div class="row"><label><input type="radio" name="k" value="claude" ${chk('claude')}> claude</label>
-      <label title="ChatGPT 계정(Codex 앱 로그인)으로 GPT 대화형 세션"><input type="radio" name="k" value="codex" ${chk('codex')}> GPT (Codex)</label>
-      <label title="Cursor 터미널 에이전트 (cursor-agent, 처음 한 번 cursor-agent login 필요)"><input type="radio" name="k" value="cursor" ${chk('cursor')}> Cursor</label>
-      <label title="Antigravity CLI (agy)"><input type="radio" name="k" value="agy" ${chk('agy')}> agy (Antigravity)</label>
-      <label><input type="radio" name="k" value="powershell" ${chk('powershell')}> PowerShell</label>
-      <label><input type="radio" name="k" value="pwsh" ${chk('pwsh')}> PowerShell 7</label>
-      <label><input type="radio" name="k" value="cmd" ${chk('cmd')}> cmd</label>
-      <label><input type="radio" name="k" value="ubuntu" ${chk('ubuntu')}> Ubuntu (WSL)</label>
-      <label><input type="radio" name="k" value="gitbash" ${chk('gitbash')}> Git Bash</label>
-      ${state.researchEnabled ? `<label><input type="radio" name="k" value="research" ${chk('research')}> 연구 디렉터 (자율)</label>` : ''}</div>
-    <div id="nTerm" style="display:flex;flex-direction:column;gap:10px">
-      <label>작업 폴더<br>
+    <div class="nt-sec">
+      <div class="drw-lbl">AI 에이전트</div>
+      <div class="nt-grid">
+        ${agTile('claude', 'claude', 'Claude Code', 'Anthropic CLI 에이전트')}
+        ${agTile('codex', 'codex', 'GPT (Codex)', 'OpenAI 코딩 에이전트', 'ChatGPT 계정(Codex 앱 로그인)으로 GPT 대화형 세션')}
+        ${agTile('agy', 'agy', 'Antigravity', 'Google 에이전트 CLI (agy)')}
+        ${agTile('cursor', 'cursor', 'Cursor', 'cursor-agent 터미널', 'Cursor 터미널 에이전트 (처음 한 번 cursor-agent login 필요)')}
+      </div>
+    </div>
+    <div class="nt-sec">
+      <div class="drw-lbl">시스템 터미널 셸${state.researchEnabled ? ' · 자율 연구' : ''}</div>
+      <div class="nt-grid shells">
+        ${shTile('powershell', 'PowerShell')}
+        ${shTile('pwsh', 'PowerShell 7')}
+        ${shTile('cmd', 'cmd')}
+        ${shTile('ubuntu', 'Ubuntu (WSL)')}
+        ${shTile('gitbash', 'Git Bash')}
+        ${state.researchEnabled ? agTile('research', 'operator', '연구 디렉터', '무인 자율 연구') : ''}
+      </div>
+    </div>
+    <div id="nTerm" style="display:flex;flex-direction:column;gap:10px;padding-top:4px;border-top:1px solid var(--line)">
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12.5px;font-weight:600;color:var(--muted)">작업 폴더
         <div class="fp-input-row">
-          <input id="nCwd" list="cwdl" style="width:100%" value="${esc(projectCwd || cwds[0] || '')}" placeholder="비우면 홈 폴더">
+          <input id="nCwd" list="cwdl" style="width:100%;font-weight:400;color:var(--text)" value="${esc(projectCwd || cwds[0] || '')}" placeholder="비우면 홈 폴더">
           <button type="button" class="btn-sm" id="nPickDir" title="호스트 컴퓨터 경로 탐색기 열기">${ICO.folder || ''} 폴더 선택</button>
         </div>
         <datalist id="cwdl">${cwds.map((c) => `<option value="${esc(c)}">`).join('')}</datalist></label>
@@ -331,17 +358,17 @@ function openNewTermDrawer(projectCwd = '', onCreated = null, initialKind = null
         <summary>모델 및 추론 옵션</summary>
         <div id="nMeHost" style="display:flex;flex-direction:column;gap:8px">${typeof projectModelEffortFields === 'string' ? projectModelEffortFields : ''}</div>
       </details>
-      <label class="row"><input type="checkbox" id="nSkip" checked> YOLO 모드 자동 승인 (Claude · Codex · Antigravity)</label>
-      <label class="row"><input type="checkbox" id="nAdmin"> 관리자 권한으로 실행 (Windows UAC · 외부 콘솔 창)</label>
+      <label class="row" style="font-size:12.5px;cursor:pointer"><input type="checkbox" id="nSkip" checked> YOLO 모드 자동 승인 (Claude · Codex · Antigravity)</label>
+      <label class="row" style="font-size:12.5px;cursor:pointer"><input type="checkbox" id="nAdmin"> 관리자 권한으로 실행 (Windows UAC · 외부 콘솔 창)</label>
     </div>
-    <div id="nRes" hidden style="display:flex;flex-direction:column;gap:10px">
-      <label>프로젝트 이름<br><input id="rName" style="width:100%" placeholder="예: 조명 변화에 강한 DT 3DGS"></label>
-      <label>연구 방향<br><textarea id="rDir" rows="7" style="width:100%" placeholder="예) 공장 디지털트윈에서 조명이 바뀌어도 3DGS 재구성이 흔들리지 않게 하고 싶다. 가진 것: CAD 모델, Replica 데이터, RTX 4090 1장. 원하는 기여: …  기간: 11월 중순 투고"></textarea></label>
-      <label>목표 학회·저널 (선택)<br><input id="rVenue" style="width:100%" placeholder="비우면 디렉터가 조사해 정합니다 — 예: CVPR 2027"></label>
-      <label>어디까지 진행할까요?<br><select id="rGoal" style="width:100%">${Object.entries(GOAL_KO).map(([k, v]) => `<option value="${k}" ${k === 'P9_review' ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></label>
+    <div id="nRes" hidden style="display:flex;flex-direction:column;gap:10px;padding-top:4px;border-top:1px solid var(--line)">
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12.5px;font-weight:600;color:var(--muted)">프로젝트 이름<input id="rName" style="width:100%;font-weight:400;color:var(--text)" placeholder="예: 조명 변화에 강한 DT 3DGS"></label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12.5px;font-weight:600;color:var(--muted)">연구 방향<textarea id="rDir" rows="6" style="width:100%;font-weight:400;color:var(--text)" placeholder="예) 공장 디지털트윈에서 조명이 바뀌어도 3DGS 재구성이 흔들리지 않게 하고 싶다. 가진 것: CAD 모델, Replica 데이터, RTX 4090 1장. 원하는 기여: …  기간: 11월 중순 투고"></textarea></label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12.5px;font-weight:600;color:var(--muted)">목표 학회·저널 (선택)<input id="rVenue" style="width:100%;font-weight:400;color:var(--text)" placeholder="비우면 디렉터가 조사해 정합니다 — 예: CVPR 2027"></label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12.5px;font-weight:600;color:var(--muted)">어디까지 진행할까요?<select id="rGoal" style="width:100%;font-weight:400;color:var(--text)">${Object.entries(GOAL_KO).map(([k, v]) => `<option value="${k}" ${k === 'P9_review' ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></label>
       <div class="rban ok" style="margin:0"><b>중간에 묻지 않고 목표까지 알아서 진행합니다.</b> 환경 설치·데이터 받기·테스트도 스스로 합니다. 진행할 수 없는 문제가 생겼을 때만 멈추고 알려드립니다.</div>
     </div>`;
-  const d = openDrawer({ title: '새로 열기', bodyHTML: body, footerHTML: '<button data-drw-close>취소</button><button id="nExt" title="이 PC의 새 Windows 콘솔 창(외부 터미널)에서 엽니다">외부 창으로 열기</button><button class="primary" id="nOk">대시보드에서 열기</button>', width: 480 });
+  const d = openDrawer({ title: '새 세션 · 터미널 열기', bodyHTML: body, footerHTML: '<button data-drw-close>취소</button><button id="nExt" title="이 PC의 새 Windows 콘솔 창(외부 터미널)에서 엽니다">외부 창으로 열기</button><button class="primary" id="nOk">대시보드에서 열기</button>', width: 520 });
   d.classList.add('drw-compact');
   const kindOf = () => $('input[name=k]:checked', d).value;
   const supportsME = (k) => k === 'claude' || k === 'codex' || k === 'agy';
@@ -359,7 +386,9 @@ function openNewTermDrawer(projectCwd = '', onCreated = null, initialKind = null
   const syncKindUI = () => {
     const k = kindOf();
     const isRes = k === 'research';
+    $('#nTerm', d).hidden = isRes;
     $('#nTerm', d).style.display = isRes ? 'none' : 'flex';
+    $('#nRes', d).hidden = !isRes;
     $('#nRes', d).style.display = isRes ? 'flex' : 'none';
     $('.new-term-options', d).hidden = !supportsME(k);
     if (supportsME(k)) nMeCtl?.setCli(k);

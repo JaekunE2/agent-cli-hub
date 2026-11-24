@@ -138,6 +138,80 @@ test('term-events store & screen monitor capture terminal mode changes and inter
   }
 });
 
+test('AGY, Claude, and Codex terminal model changes sync to meta without false confirmation blocks', () => {
+  const { sessionStartupBlock } = require('../term-manager');
+  const { cliModelEffortArgs } = require('../project-plan');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ach-agy-sync-'));
+  try {
+    // 1. AGY busy status footer must NOT trigger confirmation block even with > prompt text
+    const agyScreen = [
+      '──────────────────────────────────────────────────────────────',
+      '> 방금 보낸 메시지 확인해줘',
+      '──────────────────────────────────────────────────────────────',
+      'esc to cancel                                  Gemini 4 Carbon · medium',
+    ].join('\n');
+    assert.equal(sessionStartupBlock(agyScreen), '');
+
+    // Real confirmation prompt with Enter + Esc to cancel MUST still return confirmation
+    const realConfirm = [
+      'Do you want to use this API key?',
+      '  Yes',
+      '❯ No (recommended)',
+      'Enter to confirm · Esc to cancel',
+    ].join('\n');
+    assert.equal(sessionStartupBlock(realConfirm), 'confirmation');
+
+    // 2. Parse AGY, Codex, and Claude model/effort formats
+    const agyParsed = parseTerminalScreenState(agyScreen, 'agy');
+    assert.equal(agyParsed.model, 'gemini-4-carbon-medium');
+    assert.equal(agyParsed.effort, 'medium');
+
+    const agyOrch = parseTerminalScreenState('? for shortcuts                     Orchestrator (Carbon)', 'agy');
+    assert.equal(agyOrch.model, 'gemini-pro-orchestrator');
+    assert.equal(agyOrch.effort, '');
+
+    const codexFooter = parseTerminalScreenState('› Ask Codex to do anything\n  GPT-6.2-Sol medium · D:\\Gitsource\\demo', 'codex');
+    assert.equal(codexFooter.model, 'gpt-6.2-sol');
+    assert.equal(codexFooter.effort, 'medium');
+
+    const claudeSet = parseTerminalScreenState('Set model to sonnet (claude-sonnet-4-6) · high effort', 'claude');
+    assert.equal(claudeSet.model, 'claude-sonnet-4-6');
+    assert.equal(claudeSet.effort, 'high');
+
+    const claudeDef = parseTerminalScreenState('Set model to Default (recommended)', 'claude');
+    assert.equal(claudeDef.model, '');
+    assert.equal(claudeDef.modelReset, true);
+
+    // 3. Monitor updates meta immediately on first reattach inspection when terminal screen differs from launch meta
+    const store = createTermEventStore(path.join(dir, 'ev.json'));
+    let curScreen = agyScreen;
+    const term = {
+      id: '57',
+      exited: null,
+      meta: { spawnedAt: Date.now() - 20_000, sessionId: 'sid-agy', model: 'gemini-4-hydrogen-medium', effort: 'medium' },
+    };
+    const updates = [];
+    const mon = createTermScreenMonitor({
+      store,
+      stripAnsi: (x) => x,
+      readTerm: () => curScreen.split('\n'),
+      agentOf: () => 'agy',
+      getSessionId: (t) => t.meta.sessionId,
+      onMetaChange: (_t, m) => updates.push(m),
+    });
+    mon.inspect(term);
+    assert.equal(updates.length, 1);
+    assert.equal(updates[0].model, 'gemini-4-carbon-medium');
+    assert.equal(updates[0].effort, 'medium');
+
+    // 4. Updated AGY CLI model flags
+    assert.deepEqual(cliModelEffortArgs('agy', 'gemini-4-carbon-medium', 'high'), ['--model', 'gemini-4-carbon-high', '--effort', 'high']);
+    assert.deepEqual(cliModelEffortArgs('agy', 'gemini-pro-orchestrator', ''), ['--model', 'gemini-pro-orchestrator']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('cross-platform switchAlways writes handoff.md and records branch lineage even when cont is false', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ach-handoff-'));
   try {
