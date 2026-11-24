@@ -238,6 +238,10 @@ function projectForm(p) {
     field('Project 이름', 'name', 120, p?.name) + folderFieldHTML +
     `<label>목표·완료 기준<textarea name="goal" maxlength="6000" rows="3" placeholder="새 프로젝트 목표 또는 기존 프로젝트에 추가·수정할 기능과 완료 기준을 적어주세요" ${p ? '' : 'required'}>${esc(p?.goal || '')}</textarea></label>` +
     projectAgentField('Project 기본 CLI', p?.agent || 'codex') + projectAccountField + projectModelEffortFields +
+    `<label>필수 MCP 대체 CLI<select name="mcpFallbackAgent">
+      <option value="">대체 CLI 없음</option>
+      ${['claude', 'codex', 'agy'].map((id) => `<option value="${id}" ${p?.mcpFallbackAgent === id ? 'selected' : ''}>${esc(providerName(id))}</option>`).join('')}
+    </select></label>` +
     genRow +
     '<div data-plan-preview role="status"></div>',
     async (f, button) => {
@@ -246,6 +250,7 @@ function projectForm(p) {
         cwd: f.get('cwd').trim(),
         goal: f.get('goal'),
         agent: f.get('agent'),
+        mcpFallbackAgent: f.get('mcpFallbackAgent') || '',
         account: f.get('account'),
         model: String(f.get('model') || '').trim(),
         effort: String(f.get('effort') || ''),
@@ -600,7 +605,7 @@ function projectDesign(p) {
         </div>
         ${showSummary ? `<div class="pj-row-desc">${esc(summary)}</div>` : ''}
         ${typeof projectReviewNoteHTML === 'function' ? projectReviewNoteHTML(t, true) : ''}
-        ${t.lastRun ? `<div class="row">${projectLastRunHTML(t)}</div>` : ''}
+        ${t.lastRun || t.launchBlock ? `<div class="row">${projectLastRunHTML(t)}</div>` : ''}
       </div>
       <div class="pj-row-acts">
         <button type="button" class="pj-auto-sw${t.autoExclude ? ' off' : ' on'}" data-toggle-auto="${esc(t.id)}" aria-pressed="${!t.autoExclude}" title="${t.autoExclude ? '자동 진행에서 제외됨 (클릭해 포함)' : '자동 진행에 포함됨 (클릭해 제외)'}">${t.autoExclude ? '자동 OFF' : '자동 ON'}</button>

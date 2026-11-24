@@ -285,7 +285,7 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
       write(data);
       return link.ids.length;
     },
-    save(input, { taskRun } = {}) {
+    save(input, { taskRun, taskLaunchBlock } = {}) {
       const clean = validate(input), data = read(), all = data.projects;
       const old = input.id && all.find(p => p.id === input.id);
       if (input.id && !old) throw new Error('프로젝트를 찾을 수 없습니다.');
@@ -297,10 +297,13 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
         for (const id of Object.keys(vaultRuns)) if (!taskIds.has(id)) delete vaultRuns[id];
       }
       if (old && !old.agent && !input.agent) delete project.agent;
+      if (old?.mcpFallbackAgent && !Object.hasOwn(input, 'mcpFallbackAgent')) project.mcpFallbackAgent = old.mcpFallbackAgent;
       const priorTasks = new Map(old?.tasks?.map((task) => [task.id, task]));
       for (const task of project.tasks) {
         const lastRun = task.id === taskRun?.taskId ? taskRun.run : priorTasks.get(task.id)?.lastRun;
         if (lastRun) task.lastRun = lastRun;
+        if (task.id === taskLaunchBlock?.taskId) task.launchBlock = taskLaunchBlock.block;
+        else if (task.id !== taskRun?.taskId && priorTasks.get(task.id)?.launchBlock) task.launchBlock = priorTasks.get(task.id).launchBlock;
       }
       if (old) all[all.indexOf(old)] = project; else all.push(project);
       write(data);

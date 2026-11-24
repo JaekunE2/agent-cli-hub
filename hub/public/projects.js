@@ -226,7 +226,7 @@ function openProjectTaskDrawer(p, task, focusSubChat = false) {
   }).join('');
   const cliLine = [providerName(ag), term?.account?.label || (cfg.account || ''), cfg.model || '', cfg.effort ? `추론 ${cfg.effort}` : ''].filter(Boolean).join(' · ');
   const body = `
-    ${task.lastRun ? `<div class="drw-sec"><div class="row">${projectLastRunHTML(task)}</div></div>` : ''}
+    ${task.lastRun || task.launchBlock ? `<div class="drw-sec"><div class="row">${projectLastRunHTML(task)}</div></div>` : ''}
     ${parent ? `<div class="drw-sec"><div class="drw-lbl">상위 작업</div><button type="button" class="ghost btn-sm" data-drw-open-sub="${esc(parent.id)}">↳ ${esc(parent.title)}</button></div>` : ''}
     <div class="drw-sec">
       <div class="row" style="justify-content:space-between">
@@ -395,6 +395,10 @@ function paintTaskVaultRuns(host, runs) {
     missing: '자원 파일 없음', empty: '내용 없음', disabled: '자원 비활성화',
     'unsupported-target': 'CLI 적용 대상에서 제외', 'unsupported-cli': '지원되지 않는 CLI 실행 환경',
     'autoload-disabled': 'Vault 자동 적용 꺼짐', 'sync-failed': 'CLI 설정 동기화 실패',
+    'mcp-missing': 'MCP가 Vault에 등록되지 않음', 'mcp-invalid': 'MCP 실행 명령 또는 URL 누락',
+    'mcp-unsupported': 'CLI 또는 스킬의 적용 대상에서 제외됨',
+    'mcp-disabled': 'MCP 자동 활성화가 허용되지 않음', 'mcp-activation-failed': 'MCP 구성 활성화 실패',
+    'mcp-unreachable': 'MCP 초기 연결에 실패함', 'mcp-config-changed': '확인 중 MCP 설정이 변경됨',
   };
   host.innerHTML = runs.slice().sort((a, b) => b.at - a.at).map((run) => `
     <details>

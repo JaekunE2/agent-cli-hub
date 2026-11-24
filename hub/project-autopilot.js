@@ -7,6 +7,7 @@ const { spawnCli, cliModelEffortArgs } = require('./project-plan');
 const { parseAgyJson, parseClaudeJson, parseCodexJsonl } = require('./task-subchat');
 const { resolveTaskConfig, buildTaskHarnessPrompt } = require('./project-harness');
 const { versionWorkspace } = require('./version-files');
+const { requiredMcpMessage } = require('./vault-cli-ops');
 const { sessionStartupBlock, dismissProjectHookMenu, dispatchTerminalPrompt, terminalConfirmationMessage, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE } = require('./term-manager');
 
 const MAX_AUTO_RETRIES = 2;
@@ -46,7 +47,7 @@ function findReadyTasks(project, activeTerms = []) {
   );
 
   return project.tasks.filter((t) => {
-    if (!t || t.stage !== 'planned' || t.autoExclude) return false;
+    if (!t || t.stage !== 'planned' || t.autoExclude || t.launchBlock) return false;
     if (t.version && !versionWorkspace(project, t.version)) return false;
     if (runningTaskIds.has(t.id)) return false;
     if (t.parentId) {
@@ -494,9 +495,10 @@ async function defaultReviewTask(hub, project, task, onPhase) {
   let authEnv = {};
   try { authEnv = hub.projectAccounts?.resolve(agent, revCfg.account)?.env || {}; } catch {}
   const env = { ...(hub.cleanEnv ? hub.cleanEnv() : process.env), ...authEnv };
-  const prep = hub.unifiedVault?.prepareLaunch(agent, { env });
+  const prep = await hub.unifiedVault?.prepareLaunch(agent, { env, cwd: workCwd });
   Object.assign(env, prep?.env);
   hub.projects.recordVaultRun?.(project.id, [task.id], 'review', agent, prep?.vault);
+  if (prep?.blocked) throw new Error(`필수 MCP 준비 실패 · ${requiredMcpMessage(prep.blocked)}`);
   const rememberReview = ({ sessionId, tokens }) => {
     if (!sessionId) return;
     hub.projects.remember?.([{ projectId: project.id, taskId: task.id, agent, accountId: revCfg.account, sessionId, tokens }]);

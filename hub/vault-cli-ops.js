@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { checkMcp } = require('./vault-mcp-check');
 const {
   ALL_CLIS,
   BUNDLED_SYSTEM_SKILLS,
@@ -22,16 +23,43 @@ const {
   normalizeImportedMcp,
 } = require('./vault-formats');
 
+const supportsMcp = (cli, cfg) => (!cfg.cliOnly || cfg.source === cli)
+  && (Array.isArray(cfg.targets) ? cfg.targets : ALL_CLIS).includes(cli);
+const mcpConnectionConfig = (cfg) => JSON.stringify([cfg.command, cfg.args, cfg.env, cfg.url, cfg.headers, cfg.bearer_token]);
+
+function activeMcpsFor(cli, mcps, activate) {
+  return Object.fromEntries(Object.entries(mcps)
+    .filter(([name, cfg]) => supportsMcp(cli, cfg) && (cfg.enabled !== false || activate?.has(name)))
+    .map(([name, cfg]) => [name, cfg.enabled === false ? { ...cfg, enabled: true } : cfg]));
+}
+
+function httpHeaders(cfg) {
+  const headers = { ...cfg.headers };
+  if (cfg.bearer_token && !Object.keys(headers).some((key) => key.toLowerCase() === 'authorization')) {
+    headers.Authorization = `Bearer ${cfg.bearer_token}`;
+  }
+  return headers;
+}
+
+function requiredMcpMessage(issues) {
+  const reasons = {
+    'mcp-missing': 'Vault에 등록되지 않음',
+    'mcp-invalid': '실행 명령 또는 URL 누락',
+    'mcp-unsupported': 'CLI 또는 스킬의 적용 대상에서 제외됨',
+    'mcp-disabled': '비활성 상태이며 자동 활성화가 허용되지 않음',
+    'mcp-activation-failed': 'CLI 설정에 연결하지 못함',
+    'mcp-unreachable': 'MCP 초기 연결에 실패함',
+    'mcp-config-changed': '확인 중 MCP 설정이 변경됨',
+  };
+  return issues.map(({ id, reason }) => `${id.slice(4)} (${reasons[reason]})`).join(', ');
+}
+
 function formatMcpServerForJson(cli, cfg) {
   if (!cfg.url) {
     return { command: cfg.command, args: cfg.args || [], ...(cfg.env ? { env: cfg.env } : {}) };
   }
-  if (cli === 'agy') {
-    const headers = { ...(cfg.headers || {}) };
-    if (cfg.bearer_token && !headers.Authorization) headers.Authorization = `Bearer ${cfg.bearer_token}`;
-    return { url: cfg.url, ...(Object.keys(headers).length ? { headers } : {}) };
-  }
-  return { type: 'http', url: cfg.url, ...(cfg.headers ? { headers: cfg.headers } : {}) };
+  const headers = httpHeaders(cfg);
+  return { ...(cli === 'agy' ? {} : { type: 'http' }), url: cfg.url, ...(Object.keys(headers).length ? { headers } : {}) };
 }
 
 function syncJsonMcpTarget(cli, cliCfg, mcps, activeMcps, report, summary) {
@@ -164,12 +192,7 @@ function createVaultCliOps(ctx) {
         if (active) launch.applied?.push(`skill:${sk.name}`);
       }
 
-      const activeMcps = {};
-      for (const [name, cfg] of Object.entries(mcps)) {
-        if (cfg.enabled !== false && (Array.isArray(cfg.targets) ? cfg.targets : ALL_CLIS).includes(cli)) {
-          activeMcps[name] = cfg;
-        }
-      }
+      const activeMcps = activeMcpsFor(cli, mcps, launch.activate);
 
       if (cli === 'claude' || cli === 'agy') {
         syncJsonMcpTarget(cli, cliCfg, mcps, activeMcps, report, summary);
@@ -177,10 +200,12 @@ function createVaultCliOps(ctx) {
         const curText = fs.existsSync(cliCfg.mcpFile) ? fs.readFileSync(cliCfg.mcpFile, 'utf8') : '';
         const managedNames = new Set(
           Object.entries(mcps)
-            .filter(([, cfg]) => !cfg.cliOnly || cfg.enabled === false || !(Array.isArray(cfg.targets) ? cfg.targets : ALL_CLIS).includes('codex'))
+            .filter(([name, cfg]) => Object.hasOwn(activeMcps, name) || !cfg.cliOnly || cfg.enabled === false || !(Array.isArray(cfg.targets) ? cfg.targets : ALL_CLIS).includes('codex'))
             .map(([n]) => n)
         );
-        const nextText = [stripManagedTomlSections(curText, managedNames), serializeCodexMcpBlock(activeMcps)].filter(Boolean).join('\n\n') + '\n';
+        const codexMcps = Object.fromEntries(Object.entries(activeMcps).map(([name, cfg]) =>
+          [name, cfg.bearer_token && cfg.url ? { ...cfg, bearer_token: undefined, headers: httpHeaders(cfg) } : cfg]));
+        const nextText = [stripManagedTomlSections(curText, managedNames), serializeCodexMcpBlock(codexMcps)].filter(Boolean).join('\n\n') + '\n';
         if (nextText !== curText) {
           const bak = backupFile(cliCfg.mcpFile, 'hub-vault');
           if (bak) report.backedUp.push(bak);
@@ -203,6 +228,14 @@ function createVaultCliOps(ctx) {
       if (cliCfg.harnessFile) {
         if (sharedText) launch.applied?.push('shared');
         launch.applied?.push(...enabledRules.map((r) => `rule:${r.name}`));
+      }
+      if (launch.required?.length) {
+        const written = readRawCliMcps(cli, { [cli]: { ...cliCfg, extraMcpFiles: [] } });
+        for (const name of launch.required) {
+          if (!Object.hasOwn(written, name) || written[name].enabled === false) {
+            throw new Error('Required MCP missing from the CLI configuration');
+          }
+        }
       }
       report.clis[cli] = summary;
     }
@@ -398,7 +431,7 @@ function createVaultCliOps(ctx) {
     return { ok: true, importedSkills, movedSkills, importedMcps, importedRules, importedHarness, cliData: inspectCli(cli), state: getState() };
   };
 
-  const prepareLaunch = (cliKey, { resume = false, env = {}, native = true } = {}) => {
+  const prepareLaunch = (cliKey, { resume = false, env = {}, native = true, requiredSkills = [], fallbackAgent, cwd, verified } = {}) => {
     const vault = { applied: [], omitted: [] };
     const result = { extraArgs: [], env: {}, synced: false, vault };
     const selection = { applied: vault.applied, skills: [], rules: [] };
@@ -427,24 +460,70 @@ function createVaultCliOps(ctx) {
       else pending.push('shared');
       selection.skills = select('skill', skills, (sk) => sk.hasSkillMd ? '' : 'missing');
       selection.rules = select('rule', rules, (rule) => rule.content.trim() ? '' : 'empty');
+      const target = ALL_CLIS.includes(cliKey) ? cliKey : fallbackAgent;
+      const required = skills.filter((sk) => sk.requiredMcps.length && (requiredSkills.includes(sk.name)
+        || selection.skills.includes(sk.name) || (commonReason === 'unsupported-cli' && manifest.autoLoad && sk.enabled && sk.hasSkillMd && sk.targets.includes(target))));
+      result.requiredSkills = required.map((sk) => sk.name);
+      selection.required = [...new Set(required.flatMap((sk) => sk.requiredMcps))];
+      const mcps = selection.required.length ? readMcps() : {};
+      selection.activate = new Set();
+      const issues = [];
+      for (const name of selection.required) {
+        const cfg = Object.hasOwn(mcps, name) && mcps[name];
+        const reason = !cfg ? 'mcp-missing' : !cfg.command && !cfg.url ? 'mcp-invalid'
+          : !native || !ALL_CLIS.includes(cliKey) || !supportsMcp(cliKey, cfg)
+            || required.some((sk) => sk.requiredMcps.includes(name) && !selection.skills.includes(sk.name)) ? 'mcp-unsupported'
+          : verified && mcpConnectionConfig(cfg) !== verified.get(name) ? 'mcp-config-changed'
+          : cfg.enabled === false && cfg.autoEnable !== true ? 'mcp-disabled' : '';
+        if (reason) issues.push({ id: `mcp:${name}`, reason });
+        else if (cfg.enabled === false) selection.activate.add(name);
+      }
+      if (issues.length) {
+        vault.omitted.push(...issues);
+        result.blocked = issues;
+        return result;
+      }
       if (commonReason) return result;
+
+      if (cwd && !verified && selection.required.length) {
+        const checks = selection.required.map(async (name) => ({
+          name, config: mcpConnectionConfig(mcps[name]), ok: await checkMcp(mcps[name], { cwd, env }),
+        }));
+        return Promise.all(checks).then((checked) => {
+          const failed = checked.filter(({ ok }) => !ok).map(({ name }) => ({ id: `mcp:${name}`, reason: 'mcp-unreachable' }));
+          if (failed.length) {
+            vault.omitted.push(...failed);
+            return { ...result, blocked: failed };
+          }
+          return prepareLaunch(cliKey, { resume, env, native, requiredSkills, fallbackAgent, verified: new Map(checked.map(({ name, config }) => [name, config])) });
+        });
+      }
 
       if (cliKey === 'codex' && env.CODEX_HOME) {
         const root = path.resolve(env.CODEX_HOME);
-        selection.paths = { skillDirs: [path.join(root, 'skills')], harnessFile: path.join(root, 'AGENTS.md') };
+        selection.paths = { skillDirs: [path.join(root, 'skills')], harnessFile: path.join(root, 'AGENTS.md'), mcpFile: path.join(root, 'config.toml') };
       } else if (cliKey === 'claude' && env.CLAUDE_CONFIG_DIR) {
         const root = path.resolve(env.CLAUDE_CONFIG_DIR);
         selection.paths = { skillDirs: [path.join(root, 'skills')], harnessFile: path.join(root, 'CLAUDE.md') };
       }
       syncToClis({ clis: [cliKey] }, selection);
-      if (cliKey !== 'claude') return { ...result, synced: true };
-      return { ...prepareClaude(l, { resume, skills, rules, sharedText, selection }), vault };
+      const prepared = cliKey === 'claude' ? prepareClaude(l, { resume, skills, rules, sharedText, selection }) : { synced: true };
+      if (selection.activate.size) {
+        for (const name of selection.activate) mcps[name].enabled = true;
+        writeMcps(mcps);
+      }
+      vault.applied.push(...selection.required.map((name) => `mcp:${name}`));
+      return { ...result, ...prepared };
     } catch (error) {
       console.error('[vault-launch]', cliKey, error.code || error.name, (error.stack || '').split('\n')[1]?.trim());
       for (const id of pending) {
         if (!vault.applied.includes(id)) vault.omitted.push({ id, reason: 'sync-failed' });
       }
       vault.error = 'sync-failed';
+      if (selection.required?.length) {
+        result.blocked = selection.required.map((name) => ({ id: `mcp:${name}`, reason: 'mcp-activation-failed' }));
+        vault.omitted.push(...result.blocked);
+      }
       return result;
     }
   };
@@ -464,12 +543,8 @@ function createVaultCliOps(ctx) {
       if (!activeSkillNames.has(ent.name)) fs.rmSync(path.join(rtSkillsDir, ent.name), { recursive: true, force: true });
     }
 
-    const activeMcps = {};
-    for (const [name, cfg] of Object.entries(readMcps())) {
-      if (cfg.enabled !== false && (Array.isArray(cfg.targets) ? cfg.targets : ALL_CLIS).includes('claude')) {
-        activeMcps[name] = formatMcpServerForJson('claude', cfg);
-      }
-    }
+    const activeMcps = Object.fromEntries(Object.entries(activeMcpsFor('claude', readMcps(), selection.activate))
+      .map(([name, cfg]) => [name, formatMcpServerForJson('claude', cfg)]));
     const mcpFile = path.join(runtimeDir, 'mcp-config.json');
     const hasMcps = Object.keys(activeMcps).length > 0;
     if (hasMcps) writeJsonAtomic(mcpFile, { mcpServers: activeMcps });
@@ -493,4 +568,4 @@ function createVaultCliOps(ctx) {
   return { gatherFromClis, syncToClis, inspectCli, importFromCli, prepareLaunch };
 }
 
-module.exports = { createVaultCliOps };
+module.exports = { createVaultCliOps, requiredMcpMessage };
