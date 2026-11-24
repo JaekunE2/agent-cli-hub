@@ -67,6 +67,12 @@ test('Codex project dispatch retries Enter without repasting and preserves an ex
   };
   await assert.rejects(dispatchCodexProjectPrompt(hub, term, text, { submitDraft: true }), /실행을 시작했다는 신호가 없습니다/);
   assert.deepEqual(writes.slice(3), ['\r']);
+
+  const ending = 'Verify all output and document the final test results in the project reference folder.';
+  screen = '› ' + ending.replace('project reference', 'project\n  reference');
+  hub.ptyPost = async (_id, _path, { data }) => { writes.push(data); screen = 'working'; return { ok: true }; };
+  assert.equal(await dispatchCodexProjectPrompt(hub, term, `Earlier lines are scrolled off.\n${ending}`, { submitDraft: true }), true);
+  assert.equal(writes.at(-1), '\r');
 });
 
 test('Codex recovery restores the conversation without sending a saved prompt', () => {

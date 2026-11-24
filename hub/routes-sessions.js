@@ -321,7 +321,7 @@ function createSessionRoutes(hub) {
         if (!retry || existing._projectDispatchPending || info.status === 'busy') return send(res, 200, { ...info, existing: true });
         if (info.startupBlock !== 'term-dumb') reuseTerm = existing;
       }
-      if (submitDraft && (kind !== 'codex' || String(b.termId || '') !== reuseTerm?.id || !hub.termInfo(reuseTerm).inputDraft)) {
+      if (submitDraft && (kind !== 'codex' || String(b.termId || '') !== reuseTerm?.id)) {
         return send(res, 409, { error: 'Codex 입력창에서 작업 내용이 확인되지 않았습니다.' });
       }
       if (!hub.projectAgents.includes(kind)) return send(res, 400, { error: '작업 설계에서 CLI를 다시 선택하세요.' });

@@ -85,9 +85,10 @@ async function dispatchCodexProjectPrompt(hub, term, text, { submitDraft = false
   const busy = () => hub.codexStatus(term) === 'busy';
   const originalInputAt = term.lastInputAt;
   const expected = normScreenText(text);
+  const tail = expected.replace(/[\s·]/g, '').slice(-64);
   const hasDraft = () => {
     const composer = codexComposerText(read());
-    return CODEX_PASTE_DRAFT.test(composer) || (expected && normScreenText(composer).includes(expected));
+    return CODEX_PASTE_DRAFT.test(composer) || (tail && composer.replace(/[\s·]/g, '').endsWith(tail));
   };
   const write = async (data) => {
     const screen = read();
