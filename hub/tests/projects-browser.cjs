@@ -25,6 +25,7 @@ const { chromium } = require(process.env.HUB_PLAYWRIGHT || 'playwright');
     await page.getByLabel('작업 폴더', { exact: true }).fill('D:\\demo');
     await page.getByLabel('목표·완료 기준').fill('Design, implement and verify');
     await page.getByLabel('Project 기본 CLI').selectOption('agy');
+    await page.getByLabel('필수 MCP 대체 CLI').selectOption('codex');
     await page.locator('option[value="agy-a"]').waitFor({ state: 'attached' });
     await page.getByLabel('CLI 계정').selectOption('agy-a');
     await page.getByLabel('Project 기본 CLI').selectOption('codex');
@@ -35,6 +36,7 @@ const { chromium } = require(process.env.HUB_PLAYWRIGHT || 'playwright');
     await renderedEdge();
     assert.equal(await page.locator('.pj-task').count(), 3);
     assert.equal(store.list()[0].account, 'agy-a');
+    assert.equal(store.list()[0].mcpFallbackAgent, 'codex');
     await clickTab('작업 설계');
     await page.locator('.pj-objective').getByText('Design, implement and verify', { exact: true }).waitFor();
     assert.equal(await page.locator('[data-plan-task]').count(), 3);
@@ -141,7 +143,25 @@ const { chromium } = require(process.env.HUB_PLAYWRIGHT || 'playwright');
     await page.getByRole('menuitem', { name: 'Project 삭제', exact: true }).click();
     await page.locator('#projectPick option[value="' + existing.id + '"]').waitFor({ state: 'detached' });
     assert.equal(store.list().some(p => p.id === existing.id), false);
+    const project = store.list()[0];
+    const [started, blocked] = project.tasks;
+    const saved = store.save(project, {
+      taskRun: { taskId: started.id, run: { agent: 'codex', source: 'project', termId: '3',
+        mcpFallback: { from: 'agy', reason: 'fixture (CLI 또는 스킬의 적용 대상에서 제외됨)' } } },
+      taskLaunchBlock: { taskId: blocked.id, block: { agent: 'agy', source: 'project', message: '필수 MCP 준비 실패 · fixture' } },
+    });
+    await page.goto(fixture.url + '/#projects:' + saved.id + ':board');
+    await page.reload();
+    const verifyMcpCards = async () => {
+      const card = page.locator(`[data-drop] [data-task="${started.id}"]`);
+      await card.getByText(/^실제 실행 CLI Codex/).waitFor();
+      await card.getByText(/MCP 대체 CLI.*Antigravity CLI.*Codex.*fixture/).waitFor();
+      await page.locator(`[data-drop] [data-task="${blocked.id}"]`).getByText(/필수 MCP 준비 실패.*fixture/).waitFor();
+    };
+    await verifyMcpCards();
+    await page.reload();
+    await verifyMcpCards();
     assert.deepEqual(errors, []);
-    console.log('PASS: Linear sidebar, grouped system hub, project 1-line rows + drawer, terminal status tabs, AGY history');
+    console.log('PASS: project cards, MCP fallback and blocking after reload, terminal tabs, AGY history');
   } finally { await browser.close(); await fixture.close(); fs.rmSync(dir, { recursive: true }); }
 })().catch(e => { console.error(e); process.exitCode = 1; });

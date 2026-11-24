@@ -6,6 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { resolveTaskConfig, buildTaskHarnessPrompt } = require('./project-harness');
 const { versionWorkspace } = require('./version-files');
+const { requiredMcpMessage } = require('./vault-cli-ops');
 const { AGY_ALTM_RE, codexHistorySearchActive, dispatchImmediatePrompt, flushNewAgyQueue } = require('./immediate-send');
 const { composerText, submitPrompt } = require('./prompt-submission');
 const { claudeCommandNote, claudeToolResultNote } = require('./searchindex');
@@ -24,7 +25,7 @@ function createSessionRoutes(hub) {
   } = hub;
 
   const transcriptIndex = new Map();
-  const restartingTasks = new Set();
+  const startingTasks = new Set();
   let ovSnap = null, ovAt = 0, ovBuilding = null;
   let diskLow = null;
 
@@ -299,7 +300,7 @@ function createSessionRoutes(hub) {
     const retry = p === '/api/projects/start' && b.retry === true;
     const submitDraft = retry && b.submitDraft === true;
     let projectTask, projectPrompt, launchAccount, projectRefsBlock = '';
-    let reuseTerm, agentSource;
+    let reuseTerm, agentSource, preparedVault, mcpFallback;
     if (p === '/api/projects/start') {
       if (hub.deletingProjects.has(b.projectId)) return send(res, 409, { error: 'Project 기록을 삭제 중입니다.' });
       const project = projects.list().find((x) => x.id === b.projectId);
@@ -312,10 +313,10 @@ function createSessionRoutes(hub) {
       const resolved = resolveTaskConfig(project, task, harnessState);
       agentSource = resolved.agentSource;
       const parentTask = resolved.parent;
-      const kind = resolved.agent;
-      const accountId = resolved.account;
-      const model = resolved.model;
-      const effort = resolved.effort;
+      let kind = resolved.agent;
+      let accountId = resolved.account;
+      let model = resolved.model;
+      let effort = resolved.effort;
       const workspace = versionWorkspace(project, task.version);
       if (!workspace) return send(res, 409, { error: '이 버전에서 이어 작업을 먼저 시작하세요.' });
       const isolated = workspace !== project.cwd;
@@ -324,13 +325,23 @@ function createSessionRoutes(hub) {
         const prior = index.get(b.resume);
         if (!prior?.cwd || path.relative(workspace, prior.cwd) !== '') return send(res, 409, { error: '이 버전의 작업 폴더에서 시작한 세션만 이어갈 수 있습니다.' });
       }
-      const existing = [...hub.terms.values()].findLast((t) => t.exited === null && t.meta.projectTask?.projectId === project.id && t.meta.projectTask.taskId === task.id && hub.agentOf(t) === kind && (t.account?.id || '') === (accountId || '') && (!isolated || (t.cwd && path.relative(workspace, t.cwd) === '')));
+      const existing = [...hub.terms.values()].findLast((t) => {
+        const agent = hub.agentOf(t);
+        const sameCli = agent === kind && (t.account?.id || '') === (accountId || '');
+        const sameFallback = task.lastRun?.termId === t.id && task.lastRun?.mcpFallback?.from === kind && agent === project.mcpFallbackAgent;
+        return t.exited === null && t.meta.projectTask?.projectId === project.id && t.meta.projectTask.taskId === task.id
+          && (sameCli || sameFallback) && (!isolated || (t.cwd && path.relative(workspace, t.cwd) === ''));
+      });
       if (existing) {
         const result = await existing.spawnResult;
         if (result?.error) return send(res, 502, { error: 'CLI를 시작하지 못했습니다. 설치 경로를 확인하세요.' });
         const info = hub.termInfo(existing);
         if (!retry || existing._projectDispatchPending || info.status === 'busy') return send(res, 200, { ...info, existing: true });
-        if (info.startupBlock !== 'term-dumb') reuseTerm = existing;
+        if (info.startupBlock !== 'term-dumb') {
+          reuseTerm = existing;
+          kind = hub.agentOf(existing);
+          mcpFallback = task.lastRun?.mcpFallback;
+        }
       }
       if (submitDraft && (kind !== 'codex' || String(b.termId || '') !== reuseTerm?.id)) {
         return send(res, 409, { error: 'Codex 입력창에서 작업 내용이 확인되지 않았습니다.' });
@@ -340,6 +351,47 @@ function createSessionRoutes(hub) {
       if (!path.isAbsolute(workspace) || !fs.statSync(workspace, { throwIfNoEntry: false })?.isDirectory()) return send(res, 400, { error: '작업 설계에서 존재하는 작업 폴더의 전체 경로를 입력하세요.' });
       const worktree = !isolated && task.worktreePath;
       if (worktree && (!path.isAbsolute(worktree) || !fs.statSync(worktree, { throwIfNoEntry: false })?.isDirectory())) return send(res, 409, { error: '격리 작업 폴더를 찾을 수 없습니다.' });
+      if (!reuseTerm) {
+        const prepare = (cli, requiredSkills) => hub.unifiedVault?.prepareLaunch(cli, {
+          env: { ...hub.cleanEnv?.(), ...launchAccount.env },
+          native: cli !== 'codex' || !/^wsl(?:\.exe)?$/i.test(path.basename(hub.codexLaunch().cmd)),
+          resume: !!b.resume,
+          cwd: worktree || workspace,
+          requiredSkills,
+          fallbackAgent: project.mcpFallbackAgent,
+        });
+        try { launchAccount = hub.projectAccounts.resolve(kind, accountId); } catch (e) { return send(res, 400, { error: e.message }); }
+        preparedVault = await prepare(kind);
+        const fallback = project.mcpFallbackAgent;
+        if (preparedVault?.blocked?.every(({ reason }) => reason === 'mcp-unsupported')
+          && fallback && fallback !== kind && hub.projectAgents.includes(fallback)
+          && (!b.resume || (index?.get(b.resume)?.agent || task.lastRun?.agent) === fallback)) {
+          mcpFallback = { from: kind, reason: requiredMcpMessage(preparedVault.blocked) };
+          kind = fallback;
+          accountId = kind === project.agent ? project.account : '';
+          model = kind === project.agent ? project.model : '';
+          effort = kind === project.agent ? project.effort : '';
+          try { launchAccount = hub.projectAccounts.resolve(kind, accountId); }
+          catch (e) {
+            launchAccount = null;
+            mcpFallback.error = e.message;
+          }
+          if (launchAccount) preparedVault = await prepare(kind, preparedVault.requiredSkills);
+        }
+        const latest = projects.list().find((candidate) => candidate.id === project.id);
+        const latestTask = latest?.tasks.find((candidate) => candidate.id === task.id);
+        if (!latestTask || latestTask.stage === 'done' || hub.deletingProjects.has(project.id)) {
+          return send(res, 409, { error: '실행 준비 중에 프로젝트 또는 작업 상태가 변경되었습니다.' });
+        }
+        if (preparedVault?.blocked) {
+          const message = `필수 MCP 준비 실패 · ${requiredMcpMessage(preparedVault.blocked)}${mcpFallback?.error ? ` · ${mcpFallback.error}` : ''}`;
+          const block = { agent: kind, source: agentSource, message, ...(mcpFallback ? { mcpFallback } : {}) };
+          projects.recordVaultRun(project.id, [task.id], 'terminal', kind, preparedVault.vault);
+          projects.save(latest, { taskLaunchBlock: { taskId: task.id, block } });
+          overviewStale();
+          return send(res, 409, { error: message });
+        }
+      }
       b = { kind, cwd: worktree || workspace, title: parentTask ? `${parentTask.title} › ${task.title}` : task.title, skipPermissions: b.skipPermissions !== false, model, effort, resume: typeof b.resume === 'string' ? b.resume.trim() : '', _autoDispatch: b.autoDispatch !== false && b._autoDispatch !== false, _rawPrompt: b._rawPrompt || '' };
       const parts = parentTask ? [`[상위 작업: ${parentTask.title}]`, parentTask.detail ? parentTask.detail.slice(0, 600) : '', `[서브 개발 작업: ${task.title}]`, task.detail] : [task.title, task.detail];
       const harnessBlock = buildTaskHarnessPrompt(project, task, kind, harnessState);
@@ -357,7 +409,6 @@ function createSessionRoutes(hub) {
       const version = project.versions?.find((item) => item.number === task.version);
       if (version) b._rawPrompt = `[Project version: v${version.number}]\n${version.goal}\n\n${b._rawPrompt}`;
       projectPrompt = fingerprint(b._rawPrompt);
-      try { launchAccount = hub.projectAccounts.resolve(kind, accountId); } catch (e) { return send(res, 400, { error: e.message }); }
     }
     if (b.resume && !b.fork && !projectTask) {
       const existingTerm = [...hub.terms.values()].find((x) => x.exited === null && hub.termSessionId(x) === b.resume);
@@ -426,7 +477,7 @@ function createSessionRoutes(hub) {
       const activeSwap = (hub.agySwap.getFast().accounts || []).find((a) => a.active);
       if (activeSwap) launchAccount = { ...launchAccount, account: { id: activeSwap.id, label: activeSwap.name ? `${activeSwap.name} (${activeSwap.email})` : activeSwap.email, kind: 'agy', email: activeSwap.email } };
     }
-    const t = reuseTerm || hub.createTerm({ cwd, cmd, args, title: b.title || title, ...launchAccount, model: b.model || '', effort: b.effort || '', projectTask, projectPrompt, agent: projectTask ? b.kind : undefined });
+    const t = reuseTerm || hub.createTerm({ cwd, cmd, args, title: b.title || title, ...launchAccount, model: b.model || '', effort: b.effort || '', projectTask, projectPrompt, agent: projectTask ? b.kind : undefined, preparedVault });
     if (!projectTask && ['claude', 'codex', 'agy'].includes(b.kind) && (b.model !== undefined || b.effort !== undefined || launchAccount?.account?.id)) {
       accountPrefs.save({ account: launchAccount?.account?.id || b.account || '', agent: b.kind, model: b.model || '', effort: b.effort || '' });
     }
@@ -438,7 +489,7 @@ function createSessionRoutes(hub) {
       const latestTask = latest?.tasks.find((x) => x.id === projectTask.taskId);
       if (!latestTask) return send(res, 404, { error: 'Project 작업을 찾을 수 없습니다.' });
       if (retry && latestTask.stage !== 'doing') return send(res, 409, { error: '진행 단계의 작업만 다시 시작할 수 있습니다.' });
-      const run = { agent: hub.agentOf(t) || b.kind, source: agentSource, termId: t.id };
+      const run = { agent: hub.agentOf(t) || b.kind, source: agentSource, termId: t.id, ...(mcpFallback ? { mcpFallback } : {}) };
       projects.save({
         ...latest,
         tasks: latest.tasks.map((x) => x.id === projectTask.taskId ? {
@@ -519,14 +570,18 @@ function createSessionRoutes(hub) {
     return send(res, 200, { ...hub.termInfo(t), ...(projectRefsBlock ? { refsBlock: projectRefsBlock } : {}), ...(retry ? { restarted: true } : {}) });
   }
 
+  async function startProjectTask(req, res, draft, send, options) {
+    const key = `${draft.projectId}:${draft.taskId}`;
+    if (startingTasks.has(key)) return send(res, 409, { error: '작업을 시작하는 중입니다.' });
+    startingTasks.add(key);
+    try { return await handleStartOrNewTerm('/api/projects/start', req, res, async () => draft, send, options); }
+    finally { startingTasks.delete(key); }
+  }
+
   hub.startProjectTaskById = async (projectId, taskId, { autoDispatch = true, resume = '', rawPrompt: overridePrompt = '', trackHandoff = false } = {}) => {
     let status = 200;
     let payload = null;
-    await handleStartOrNewTerm(
-      '/api/projects/start',
-      null,
-      null,
-      async () => ({ projectId, taskId, _autoDispatch: autoDispatch, _rawPrompt: overridePrompt, resume }),
+    await startProjectTask(null, null, { projectId, taskId, _autoDispatch: autoDispatch, _rawPrompt: overridePrompt, resume },
       (_res, code, data) => { status = code; payload = data; },
       { trackHandoff }
     );
@@ -1054,11 +1109,8 @@ function createSessionRoutes(hub) {
     }
     if ((p === '/api/term/new' || p === '/api/projects/start') && req.method === 'POST') {
       const draft = await body(req);
-      const key = p === '/api/projects/start' && draft.retry === true ? `${draft.projectId}:${draft.taskId}` : '';
-      if (key && restartingTasks.has(key)) { send(res, 409, { error: '작업을 다시 시작하는 중입니다.' }); return true; }
-      if (key) restartingTasks.add(key);
-      try { await handleStartOrNewTerm(p, req, res, async () => draft, send); }
-      finally { if (key) restartingTasks.delete(key); }
+      if (p === '/api/projects/start') await startProjectTask(req, res, draft, send);
+      else await handleStartOrNewTerm(p, req, res, async () => draft, send);
       return true;
     }
     if (p === '/api/term/dedupe' && req.method === 'POST') {

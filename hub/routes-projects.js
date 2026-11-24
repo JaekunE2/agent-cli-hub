@@ -11,6 +11,7 @@ const { resolveTaskConfig } = require('./project-harness');
 const { runProjectAutopilot, completeAutopilotTask } = require('./project-autopilot');
 const { versionFolder, copyVersion, versionWorkspace } = require('./version-files');
 const { VERSION_RE } = require('./project-validation');
+const { requiredMcpMessage } = require('./vault-cli-ops');
 
 const projectAgents = ['codex', 'claude', 'agy', 'cursor'];
 
@@ -516,8 +517,9 @@ function createProjectRoutes(hub) {
         const cwd = versionWorkspace(project, task.version);
         if (!cwd || (cwd !== project.cwd && !fs.existsSync(cwd))) throw new Error('버전 작업 폴더를 열어주세요.');
         const env = { ...hub.cleanEnv(), ...auth.env };
-        const prep = unifiedVault.prepareLaunch(effAgent, { env });
+        const prep = await unifiedVault.prepareLaunch(effAgent, { env, cwd });
         projects.recordVaultRun(project.id, [task.id], 'plan', effAgent, prep.vault);
+        if (prep.blocked) throw new Error(`필수 MCP 준비 실패 · ${requiredMcpMessage(prep.blocked)}`);
         const { tasks, sessionId } = await generateSubtasks(exe, { ...project, cwd }, task, dir, { ...env, ...prep.env }, { agent: effAgent, model: effModel, effort: effEffort, launchArgs: prep.extraArgs, onProgress });
         if (recordUuid(sessionId)) projects.remember([{ projectId: project.id, taskId: task.id, sessionId, agent: effAgent }]);
         projectPlanState.stage = `서브 작업 ${tasks.length}개 생성 완료`;
@@ -578,7 +580,8 @@ function createProjectRoutes(hub) {
         dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-project-plan-'));
         const exe = b.agent === 'agy' ? hub.agyExe() : b.agent === 'claude' ? 'claude.exe' : hub.codexExe();
         const env = { ...hub.cleanEnv(), ...auth.env };
-        const prep = unifiedVault.prepareLaunch(b.agent, { env });
+        const prep = await unifiedVault.prepareLaunch(b.agent, { env, cwd: fs.existsSync(cwd) ? cwd : undefined });
+        if (prep.blocked) throw new Error(`필수 MCP 준비 실패 · ${requiredMcpMessage(prep.blocked)}`);
         const at = Date.now();
         const { tasks, sessionId } = await generatePlan(exe, draft, dir, { ...env, ...prep.env }, { launchArgs: prep.extraArgs, onProgress });
         projectPlanState.stage = `작업 ${tasks.length}개 생성 완료`;
@@ -652,8 +655,9 @@ function createProjectRoutes(hub) {
         try {
           await hub.ensureAgySwap(auth);
           const env = { ...hub.cleanEnv(), ...auth.env };
-          const prep = unifiedVault.prepareLaunch(effAgent, { env, resume: !!chat.sessionId });
+          const prep = await unifiedVault.prepareLaunch(effAgent, { env, cwd: workCwd, resume: !!chat.sessionId });
           projects.recordVaultRun(project.id, [task.id], 'subchat', effAgent, prep.vault);
+          if (prep.blocked) throw new Error(`필수 MCP 준비 실패 · ${requiredMcpMessage(prep.blocked)}`);
           const resTurn = await runTaskSubChatTurn({
             exe, agent: effAgent, cwd: workCwd, env: { ...env, ...prep.env }, launchArgs: prep.extraArgs,
             model: effModel, effort: effEffort, sessionId: chat.sessionId, prompt, project, task, harnessState,

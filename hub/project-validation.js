@@ -22,6 +22,7 @@ function validate(p) {
   const str = (s, max, required = false) => typeof s === 'string' && s.length <= max && (!required || s.trim());
   if (!p || !str(p.name, 120, true) || !str(p.cwd, 1000, true) || !str(p.goal, 6000)) fail('프로젝트 이름·폴더·목표를 확인하세요.');
   if (p.agent !== undefined && p.agent !== '' && !agents.includes(p.agent)) fail('Project 기본 CLI를 확인하세요.');
+  if (p.mcpFallbackAgent && !['claude', 'codex', 'agy'].includes(p.mcpFallbackAgent)) fail('필수 MCP 대체 CLI를 확인하세요.');
   if (p.account !== undefined && !str(p.account, 160)) fail('Project 기본 계정을 확인하세요.');
   if (p.model !== undefined && (!str(p.model, 120) || !MODEL_RE.test(p.model.trim()))) fail('Project 기본 모델 이름이 올바르지 않습니다.');
   if (p.effort !== undefined && !efforts.includes(String(p.effort || ''))) fail('Project 추론 성능 설정이 올바르지 않습니다.');
@@ -85,6 +86,7 @@ function validate(p) {
     goal: p.goal,
     autopilot: !!p.autopilot,
     agent: p.agent || 'codex',
+    ...(p.mcpFallbackAgent ? { mcpFallbackAgent: p.mcpFallbackAgent } : {}),
     account: p.account || '',
     model: String(p.model || '').trim(),
     effort: String(p.effort || ''),
