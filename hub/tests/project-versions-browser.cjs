@@ -14,14 +14,15 @@ const { chromium } = require(process.env.HUB_PLAYWRIGHT || 'playwright');
   const projects = require('../projects')(path.join(dir, 'projects.json'));
   const baseTask = { id: 'base-task', title: 'Base task', detail: '', stage: 'planned', after: [], termId: '' };
   const project = projects.save({ name: 'Versions example', cwd, goal: 'Version a local project', termIds: [], tasks: [baseTask] });
-  const { handleProjectRoutes } = require('../routes-projects').createProjectRoutes({
+  const hub = {
     baseDir: dir, config: { versionStorageDir: path.join(dir, 'versions') }, projects,
     scanFloorplan: require('../workspace-floorplan').scanFloorplan,
     projectRefs: require('../project-refs').createProjectRefsStore(path.join(dir, 'refs')),
-  });
+  };
+  const { handleProjectRoutes } = require('../routes-projects').createProjectRoutes(hub);
   const fixture = await require('./browser-fixture')(projects, (url, req, res) => {
     if (!(url.pathname === '/api/projects' && req.method === 'POST') &&
-      !/^\/api\/projects\/(refs|floorplan)(\/|$)/.test(url.pathname)) return false;
+      !/^\/api\/projects\/(refs|floorplan|file-snapshots)(\/|$)/.test(url.pathname)) return false;
     return handleProjectRoutes(url.pathname, url, req, res, async () => {
       let data = '';
       for await (const chunk of req) data += chunk;
@@ -176,8 +177,37 @@ const { chromium } = require(process.env.HUB_PLAYWRIGHT || 'playwright');
     await page.locator('#btnBackProject').click();
     await page.locator('[data-pjtab=terms][aria-selected=true]').waitFor();
     assert.equal(await page.locator('#projectVersionPick').inputValue(), '1.0.0');
+    await page.locator('[data-pjtab=design]').click();
+    await page.locator('[data-plan-task]').getByText('Version task', { exact: true }).click();
+    assert.equal(await button('시작 스냅샷').count(), 0);
+    await page.keyboard.press('Escape');
+    const run = await hub.fileRuns.prepare(project.id, versionTask.id, workspace, false);
+    const current = projects.list()[0];
+    const tasks = current.tasks.map((task) => task.id === versionTask.id ? { ...task, stage: 'done', reviewStatus: 'approved' } : task);
+    fs.writeFileSync(path.join(workspace, 'run-output.txt'), 'snapshot result');
+    projects.save({ ...current, tasks }, { fileRun: { ...run, startedAt: Date.now() },
+      taskRun: { taskId: versionTask.id, run: { agent: 'codex', source: 'project', termId: '4', fileRunId: run.id } } });
+    await hub.fileRuns.finish(project.id, run.id);
+    await page.reload();
+    await page.locator('[data-plan-task]').getByText('Version task', { exact: true }).click();
+    await button('완료 스냅샷').click();
+    const entry = page.locator(`[data-file-run="${run.id}"]`);
+    await entry.getByText('검토 승인', { exact: false }).waitFor();
+    const completion = entry.locator('[data-file-run-phase=finish]');
+    await completion.getByRole('button', { name: '완료 파일 보기' }).click();
+    await page.getByText('run-output.txt', { exact: true }).waitFor();
+    await page.keyboard.press('Escape');
+    await entry.getByRole('button', { name: 'Version task', exact: true }).click();
+    await button('시작 스냅샷').waitFor();
+    await page.keyboard.press('Escape');
+    await completion.getByRole('button', { name: '이 스냅샷에서 이어 작업' }).click();
+    await page.getByLabel('버전 번호').fill('2.0.1');
+    await button('저장').click();
+    await button('이 버전에 작업 추가').waitFor();
+    const restored = projects.list()[0].versions.find((item) => item.number === '2.0.1');
+    assert.equal(fs.readFileSync(path.join(restored.workspace, 'run-output.txt'), 'utf8'), 'snapshot result');
     assert.deepEqual(errors, []);
-    console.log('PASS: version save and restore, focus return, mobile controls, and project tab layout');
+    console.log('PASS: version save and restore, mobile controls, task snapshot links, and snapshot continuation');
   } finally {
     await browser?.close();
     await fixture.close();

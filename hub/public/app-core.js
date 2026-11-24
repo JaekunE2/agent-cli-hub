@@ -394,6 +394,14 @@ async function refreshOverview() {
         if (badge.isConnected && latest?.revision > Number(badge.dataset.handoffRevision)) {
           badge.innerHTML = projectHandoffBadgeHTML(latest.tasks.find((t) => t.id === badge.dataset.handoffTask));
           badge.dataset.handoffRevision = latest.revision;
+          const snapshots = drawer.querySelector('[data-drw-file-runs]');
+          if (snapshots) {
+            const html = projectFileRunLinksHTML(latest, badge.dataset.handoffTask);
+            if (html !== snapshots.dataset.rendered) {
+              snapshots.innerHTML = html;
+              snapshots.dataset.rendered = html;
+            }
+          }
         }
       } catch (e) { console.warn('[project-handoff]', e.message); }
     } else if (!drawer && (projTermChanged || revision > project?.revision)) {

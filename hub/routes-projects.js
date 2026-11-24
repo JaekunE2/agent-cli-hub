@@ -9,7 +9,8 @@ const gitVersion = require('util').promisify(execFile);
 
 const { resolveTaskConfig } = require('./project-harness');
 const { runProjectAutopilot, completeAutopilotTask } = require('./project-autopilot');
-const { versionFolder, copyVersion, versionWorkspace } = require('./version-files');
+const { versionFolder, copyVersion, versionWorkspace, scanVersion } = require('./version-files');
+const { createFileRuns, fileRunPath } = require('./project-file-runs');
 const { VERSION_RE } = require('./project-validation');
 const { requiredMcpMessage } = require('./vault-cli-ops');
 
@@ -26,12 +27,21 @@ function createProjectRoutes(hub) {
 
   const PROJECTS_DIR = path.resolve(config.projectsDir || path.join(baseDir, '..', 'projects'));
   const VERSION_DIR = path.resolve(config.versionStorageDir || path.join(baseDir, '..', '..', 'agent-cli-hub-versions'));
+  hub.fileRuns = createFileRuns(hub, VERSION_DIR);
   const copyingVersions = new Set();
   let projectPlanning = false;
   let projectPlanState = { active: false, agent: '', name: '', startedAt: 0, stage: '', pct: 0, logs: [] };
   const taskChatActive = new Map();
   const pendingPlanRecords = new Map();
   const deletingProjects = new Set();
+
+  function savedFileRunPath(project, id, phase) {
+    const run = project?.fileRuns?.find((item) => item.id === id);
+    if (!run?.startedAt || !(phase === 'start' || (phase === 'finish' && run.finishedAt))) {
+      throw new Error('저장된 작업 스냅샷을 찾을 수 없습니다.');
+    }
+    return fileRunPath(VERSION_DIR, project.id, run.id, phase);
+  }
 
   function findVersion(projectId, number) {
     if (!number) return;
@@ -58,22 +68,29 @@ function createProjectRoutes(hub) {
     if (draft.sourceVersion && !versions.some((item) => item.number === draft.sourceVersion)) throw new Error('프로젝트 버전을 찾을 수 없습니다.');
     const snapshotDir = versionFolder(path.join(VERSION_DIR, 'snapshots'), project.id, number);
     const snapshotId = existing?.snapshotId || crypto.randomUUID();
-    const source = restoring ? path.join(snapshotDir, snapshotId) : versionWorkspace(project, draft.sourceVersion);
+    const source = restoring ? path.join(snapshotDir, snapshotId) : draft.sourceFileRun
+      ? savedFileRunPath(project, draft.sourceFileRun.id, draft.sourceFileRun.phase) : versionWorkspace(project, draft.sourceVersion);
     if (!source) throw new Error('이 버전에서 이어 작업을 먼저 시작하세요.');
     const destination = restoring
       ? path.join(versionFolder(path.join(VERSION_DIR, 'workspaces'), project.id, number), crypto.randomUUID())
       : path.join(snapshotDir, snapshotId);
+    const workspace = restoring ? destination : draft.sourceFileRun
+      ? path.join(versionFolder(path.join(VERSION_DIR, 'workspaces'), project.id, number), crypto.randomUUID()) : '';
     if (copyingVersions.has(project.id)) throw new Error('버전 파일을 처리 중입니다. 잠시 기다려 주세요.');
     copyingVersions.add(project.id);
+    const copied = [];
     try {
       await copyVersion(source, destination);
-      const version = { number, goal, createdAt: Date.now(), ...existing, snapshotId, ...(restoring ? { workspace: destination } : {}) };
-      try {
-        return projects.save({ ...project, versions: existing ? versions.map((item) => item === existing ? version : item) : [...versions, version] });
-      } catch (error) {
-        await fs.promises.rm(destination, { recursive: true, force: true });
-        throw error;
+      copied.push(destination);
+      if (workspace && !restoring) {
+        await copyVersion(destination, workspace);
+        copied.push(workspace);
       }
+      const version = { number, goal, createdAt: Date.now(), ...existing, snapshotId, ...(workspace ? { workspace } : {}) };
+      return projects.save({ ...project, versions: existing ? versions.map((item) => item === existing ? version : item) : [...versions, version] });
+    } catch (error) {
+      for (const directory of copied) await fs.promises.rm(directory, { recursive: true, force: true });
+      throw error;
     } finally {
       copyingVersions.delete(project.id);
     }
@@ -430,6 +447,16 @@ function createProjectRoutes(hub) {
       return true;
     }
 
+    if (p === '/api/projects/file-snapshots' && req.method === 'GET') {
+      const project = projects.list().find((item) => item.id === url.searchParams.get('id'));
+      try {
+        const directory = savedFileRunPath(project, url.searchParams.get('run'), url.searchParams.get('phase'));
+        const entries = await scanVersion(directory);
+        send(res, 200, { files: [...entries].filter(([, stamp]) => stamp !== 'dir').map(([name]) => name) });
+      } catch (error) { send(res, 400, { error: error.message }); }
+      return true;
+    }
+
     if (p === '/api/projects/floorplan' && req.method === 'GET') {
       const pid = url.searchParams.get('id') || '';
       const rawCwd = url.searchParams.get('cwd') || '';
@@ -769,6 +796,11 @@ function createProjectRoutes(hub) {
             });
           }
           const project = projects.save(draft);
+          for (const run of project.fileRuns || []) {
+            if (run.completingAt && !run.finishedAt && (!run.error || draft.tasks.some((task) => task.id === run.taskId && task.stage === 'done'))) {
+              await hub.fileRuns.finish(project.id, run.id);
+            }
+          }
           ensureProjectDir(project.cwd);
           const planRuns = new Map();
           for (const task of project.tasks) {

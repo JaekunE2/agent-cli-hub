@@ -305,7 +305,7 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
       write(data);
       return true;
     },
-    save(input, { taskRun, taskLaunchBlock } = {}) {
+    save(input, { taskRun, taskLaunchBlock, fileRun } = {}) {
       const clean = validate(input), data = read(), all = data.projects;
       const old = input.id && all.find(p => p.id === input.id);
       if (input.id && !old) throw new Error('프로젝트를 찾을 수 없습니다.');
@@ -319,11 +319,21 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
       if (old && !old.agent && !input.agent) delete project.agent;
       if (old?.mcpFallbackAgent && !Object.hasOwn(input, 'mcpFallbackAgent')) project.mcpFallbackAgent = old.mcpFallbackAgent;
       const priorTasks = new Map(old?.tasks?.map((task) => [task.id, task]));
+      const fileRuns = new Map(old?.fileRuns?.map((run) => [run.id, run]));
+      if (fileRun) fileRuns.set(fileRun.id, fileRun);
       for (const task of project.tasks) {
         const prior = priorTasks.get(task.id);
         const newRun = task.id === taskRun?.taskId;
         const lastRun = newRun ? taskRun.run : prior?.lastRun;
         if (lastRun) task.lastRun = lastRun;
+        const capture = fileRuns.get(lastRun?.fileRunId);
+        if (capture && !capture.finishedAt && (capture.completingAt || task.stage === 'done')) {
+          const completion = capture.completingAt ? capture : { ...capture, completingAt: Date.now(),
+            reviewStatus: task.reviewStatus === 'reviewing' ? '' : task.reviewStatus,
+            reviewNote: task.reviewStatus === 'reviewing' ? '' : task.reviewNote };
+          if (completion !== capture) fileRuns.set(capture.id, completion);
+          Object.assign(task, { stage: 'review', reviewStatus: completion.reviewStatus, reviewNote: completion.reviewNote });
+        }
         if (task.stage === 'planned' || (task.stage === 'doing' && prior?.stage === 'planned' && !newRun)) {
           if (project.autopilot && !task.autoExclude && task.after.length) {
             task.handoff = prior?.stage === 'planned' && prior.handoff
@@ -335,6 +345,7 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
         if (task.id === taskLaunchBlock?.taskId) task.launchBlock = taskLaunchBlock.block;
         else if (!newRun && prior?.launchBlock) task.launchBlock = prior.launchBlock;
       }
+      if (fileRuns.size) project.fileRuns = [...fileRuns.values()];
       if (old) all[all.indexOf(old)] = project; else all.push(project);
       write(data);
       return project;

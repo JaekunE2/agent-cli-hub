@@ -445,7 +445,7 @@ function projectFollowupForm(p, versionMode = false, existingVersion = '') {
     agent === p.agent ? p.model || '' : '', agent === p.agent ? p.effort || '' : '');
 }
 
-function projectSnapshotForm(p, selected) {
+function projectSnapshotForm(p, selected, sourceFileRun) {
   const versions = p.versions || [];
   const last = (selected || versions.at(-1))?.number.split('.').map(Number);
   let number = '1.0.0';
@@ -454,8 +454,8 @@ function projectSnapshotForm(p, selected) {
     while (versions.some((item) => item.number === number));
     if (last[2] > 999999999) number = '';
   }
-  return projectDialog('버전 저장', `
-    <p class="ums">현재 작업 파일을 이 버전의 보관본으로 저장합니다.</p>
+  return projectDialog(sourceFileRun ? '스냅샷에서 이어 작업' : '버전 저장', `
+    <p class="ums">${sourceFileRun ? '스냅샷을 새 버전으로 저장하고 작업 폴더를 엽니다.' : '현재 작업 파일을 이 버전의 보관본으로 저장합니다.'}</p>
     <label>버전 번호<input name="version" value="${esc(number)}" placeholder="1.2.0" maxlength="29" required autofocus></label>
     <label>버전 메모<textarea name="goal" maxlength="6000" rows="3"></textarea></label>`, async (form, button) => {
     const version = form.get('version').trim().replace(/^v/i, '');
@@ -463,10 +463,42 @@ function projectSnapshotForm(p, selected) {
     button.textContent = '저장 중…';
     try {
       await saveProject({ id: p.id, revision: p.revision, snapshotVersion: version,
-        sourceVersion: selected?.number, versionGoal: form.get('goal') }, 'versions', version);
-      toast('버전 파일을 저장했습니다.');
+        sourceVersion: selected?.number, sourceFileRun, versionGoal: form.get('goal') }, 'versions', version);
+      toast(sourceFileRun ? '이 버전의 작업 폴더를 열었습니다.' : '버전 파일을 저장했습니다.');
     } finally { button.textContent = '저장'; }
   });
+}
+
+function projectFileRunHistoryHTML(p) {
+  const runs = (p.fileRuns || []).filter((run) => run.startedAt).reverse();
+  if (!runs.length) return '';
+  return `<h3>작업 실행 스냅샷</h3>${runs.map((run) => {
+    const task = p.tasks.find((item) => item.id === run.taskId);
+    const current = task?.lastRun?.fileRunId === run.id ? task : null;
+    const state = run.finishedAt ? { stage: 'done', reviewStatus: run.reviewStatus, reviewNote: run.reviewNote } : current;
+    const rows = [['start', '시작', '시작 파일 보기', run.startedAt], ['finish', '완료', '완료 파일 보기', run.finishedAt]];
+    return `<section class="pj-version" data-file-run="${esc(run.id)}" tabindex="-1">
+      <div class="row">${task ? `<button type="button" class="ghost btn-sm" data-file-run-task="${esc(task.id)}">${esc(run.title)}</button>` : `<b>${esc(run.title)}</b>`}
+        ${state ? stageBadgeHTML(state.stage) + ' ' + projectReviewBadgeHTML(state, false) : ''}</div>
+      ${run.error ? `<p class="ums">${esc(run.error)}</p>` : ''}
+      ${rows.filter(([, , , at]) => at).map(([phase, label, action, at]) => `<div class="row" data-file-run-phase="${phase}">
+        <span>${label} · <time datetime="${new Date(at).toISOString()}">${new Date(at).toLocaleString()}</time></span>
+        <button type="button" class="btn-sm" data-file-run-view>${action}</button>
+        <button type="button" class="btn-sm" data-file-run-restore>이 스냅샷에서 이어 작업</button>
+      </div>`).join('')}
+    </section>`;
+  }).join('')}`;
+}
+
+async function viewFileRunSnapshot(p, { id, phase }) {
+  try {
+    const params = new URLSearchParams({ id: p.id, run: id, phase });
+    const { files, error } = await api('/api/projects/file-snapshots?' + params);
+    if (error) throw new Error(error);
+    openDrawer({ title: phase === 'start' ? '시작 스냅샷 파일' : '완료 스냅샷 파일',
+      bodyHTML: files.length ? `<ul>${files.map((name) => `<li><code>${esc(name)}</code></li>`).join('')}</ul>` : '<p>저장된 파일이 없습니다.</p>',
+      footerHTML: '<button data-drw-close>닫기</button>', width: 540 });
+  } catch (error) { toast(error.message, 6000, 'danger'); }
 }
 
 function editProjectScope(p) {
@@ -523,8 +555,17 @@ function projectVersions(p) {
         </div></li>`).join('')}</ul>` : ''}
         ${selected && !version.snapshotId && version.baseCommit && !version.completedCommit && tasks.length && done === tasks.length ? `<button type="button" class="btn-sm" data-finalize-version="${esc(version.number)}">현재 Git 커밋으로 확정</button>` : ''}
       </section>`;
-    }).join('') : '<div class="pj-empty">등록된 버전이 없습니다.</div>'}`;
+    }).join('') : !p.fileRuns?.some((run) => run.startedAt) ? '<div class="pj-empty">등록된 버전이 없습니다.</div>' : ''}
+    ${selected ? '' : projectFileRunHistoryHTML(p)}`;
   view.onclick = async (event) => {
+    const fileRunTask = p.tasks.find((task) => task.id === event.target.closest('[data-file-run-task]')?.dataset.fileRunTask);
+    if (fileRunTask) return openProjectTaskDrawer(scopedProject(p, fileRunTask.version), fileRunTask);
+    const phase = event.target.closest('[data-file-run-phase]')?.dataset.fileRunPhase;
+    if (phase) {
+      const source = { id: event.target.closest('[data-file-run]').dataset.fileRun, phase };
+      if (event.target.closest('[data-file-run-restore]')) return projectSnapshotForm(p, null, source);
+      if (event.target.closest('[data-file-run-view]')) return viewFileRunSnapshot(p, source);
+    }
     const version = event.target.closest('[data-open-version]')?.dataset.openVersion;
     if (version) return openProject(p.id, 'design', version);
     if (event.target.closest('#projectVersionBack')) return openProject(p.id, 'versions', '');
