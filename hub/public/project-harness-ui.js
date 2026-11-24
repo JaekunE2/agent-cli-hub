@@ -33,13 +33,14 @@ async function openProjectHarnessDrawer() {
 
   const bodyHTML = `
     <div class="ums" style="margin:0"><b>universal-agent-harness</b> 표준 기반 Role 프리셋과 에이전트 어댑터입니다. 태스크 시작 및 서브 개발 채팅 첫 턴에 자동 주입됩니다.</div>
-    <div class="pj-hr-tabs" role="tablist">
+    <div class="pj-hr-tabs" role="group" aria-label="Role · 에이전트 하네스 설정">
       <button type="button" class="on" data-hr-tab="roles">Role 프리셋 (5)</button>
       <button type="button" data-hr-tab="adapters">CLI 어댑터 (3)</button>
     </div>
     <div id="hrBody"></div>`;
 
   const footHTML = `
+    <p class="pj-hr-save-error" role="alert" id="hrSaveError"></p>
     <button type="button" class="ghost danger" id="hrResetBtn">기본값 복원</button>
     <span class="sp"></span>
     <button type="button" data-drw-close>취소</button>
@@ -74,14 +75,16 @@ async function openProjectHarnessDrawer() {
 
   const render = () => {
     for (const b of d.querySelectorAll('[data-hr-tab]')) {
-      b.classList.toggle('on', b.dataset.hrTab === activeTab);
+      const selected = b.dataset.hrTab === activeTab;
+      b.classList.toggle('on', selected);
+      b.setAttribute('aria-pressed', String(selected));
     }
     if (activeTab === 'roles') {
       const pillsHTML = roleOrder.map((id) => {
         const r = roles[id] || { id, label: id, agent: '', model: '', effort: '' };
         const cliLbl = r.agent ? (typeof providerName === 'function' ? providerName(r.agent) : r.agent) : 'Project 기본';
         const meta = [cliLbl, r.model, r.effort].filter(Boolean).join(' · ');
-        return `<button type="button" class="pj-hr-pill${activeRole === id ? ' on' : ''}" data-hr-pick-role="${esc(id)}">
+        return `<button type="button" class="pj-hr-pill${activeRole === id ? ' on' : ''}" aria-pressed="${activeRole === id}" data-hr-pick-role="${esc(id)}">
           <span class="row" style="gap:7px;min-width:0"><span class="badge kind-${esc(id)}">${esc(id)}</span><b style="font-size:13px">${esc(r.label || id)}</b></span>
           <span class="pj-hr-pill-meta">${esc(meta)}</span>
         </button>`;
@@ -134,22 +137,39 @@ async function openProjectHarnessDrawer() {
       commitVisibleInputs();
       activeRole = roleBtn.dataset.hrPickRole;
       render();
+      bodyEl.querySelector(`[data-hr-pick-role="${activeRole}"]`).focus();
     }
   });
 
-  d.querySelector('#hrResetBtn').onclick = async () => {
-    if (!confirm('universal-agent-harness 기반 기본 Role 프리셋과 에이전트 어댑터로 초기화할까요?')) return;
+  const saveBtn = d.querySelector('#hrSaveBtn');
+  const resetBtn = d.querySelector('#hrResetBtn');
+  const errorEl = d.querySelector('#hrSaveError');
+  const formBody = d.querySelector('.drw-body');
+  const persist = async (body, button, message) => {
+    if (saveBtn.disabled) return;
+    saveBtn.disabled = resetBtn.disabled = formBody.inert = true;
+    errorEl.textContent = '';
     try {
-      const r = await api('/api/projects/harness', { method: 'POST', body: { action: 'reset' } });
-      if (r.error || !r.ok || !r.harness) throw new Error(r.error || 'Role · 에이전트 하네스를 복원하지 못했습니다.');
+      const r = await api('/api/projects/harness', { method: 'POST', body, requireOk: true });
+      if (!r?.harness || r.error) throw new Error(r?.error || '하네스 설정 저장 응답이 올바르지 않습니다.');
       state.projectHarness = r.harness;
       d.close();
-      toast('Role · 에이전트 하네스를 기본값으로 복원했습니다.');
+      toast(message);
       if (typeof viewProjects === 'function' && state.sel?.kind === 'projects') viewProjects();
-    } catch (e) { toast(e.message, 5000, 'danger'); }
+    } catch (e) {
+      errorEl.textContent = e.message;
+    } finally {
+      saveBtn.disabled = resetBtn.disabled = formBody.inert = false;
+      if (errorEl.textContent && document.activeElement === document.body) button.focus();
+    }
   };
 
-  d.querySelector('#hrSaveBtn').onclick = async () => {
+  resetBtn.onclick = () => {
+    if (!confirm('universal-agent-harness 기반 기본 Role 프리셋과 에이전트 어댑터로 초기화할까요?')) return;
+    return persist({ action: 'reset' }, resetBtn, 'Role · 에이전트 하네스를 기본값으로 복원했습니다.');
+  };
+
+  saveBtn.onclick = () => {
     commitVisibleInputs();
     const cleanRoles = {};
     for (const id of roleOrder) {
@@ -173,14 +193,7 @@ async function openProjectHarnessDrawer() {
         rules: String(cur.rules || '').trim(),
       };
     }
-    try {
-      const r = await api('/api/projects/harness', { method: 'POST', body: { roles: cleanRoles, adapters: cleanAdapters } });
-      if (r.error || !r.ok || !r.harness) throw new Error(r.error || 'Role · 에이전트 하네스를 저장하지 못했습니다.');
-      state.projectHarness = r.harness;
-      d.close();
-      toast('Role · 에이전트 하네스를 저장했습니다.');
-      if (typeof viewProjects === 'function' && state.sel?.kind === 'projects') viewProjects();
-    } catch (e) { toast(e.message, 5000, 'danger'); }
+    return persist({ roles: cleanRoles, adapters: cleanAdapters }, saveBtn, 'Role · 에이전트 하네스를 저장했습니다.');
   };
 
   render();

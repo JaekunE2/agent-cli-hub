@@ -43,7 +43,7 @@ async function saveProject(p, tab) {
   if (gen === viewGen) openProject(r.project.id, tab || (p.id ? projectTab : 'design'));
 }
 
-function openProject(id = projectId, tab = projectTab) { select({ kind: 'projects', id }, tab); }
+function openProject(id = projectId, tab = projectTab) { return select({ kind: 'projects', id }, tab); }
 
 function stageBadgeHTML(stage) {
   const label = projectStages.find((x) => x[0] === stage)?.[1] || stage;
@@ -599,7 +599,7 @@ async function viewProjects() {
         </div>
       </header>
       <div class="pj-toolbar">
-        <div class="tablist" role="tablist" aria-label="Project 보기">${projectViews.map(([id, label, description]) => `<button type="button" role="tab" data-pjtab="${id}" title="${description}" aria-selected="${projectTab === id}" class="${projectTab === id ? 'on' : ''}">${label}</button>`).join('')}</div>
+        <div class="tablist" role="tablist" aria-label="Project 보기">${projectViews.map(([id, label, description]) => `<button type="button" role="tab" id="project-tab-${id}" data-pjtab="${id}" title="${description}" aria-controls="projectContent" aria-selected="${projectTab === id}" tabindex="${projectTab === id ? 0 : -1}" class="${projectTab === id ? 'on' : ''}">${label}</button>`).join('')}</div>
       </div>
       ${(() => {
         const busyN = p.tasks.filter((t) => {
@@ -622,11 +622,41 @@ async function viewProjects() {
         </div>`;
       })()}
       <p class="pj-view-description">${projectViews.find(([id]) => id === projectTab)[2]}</p>
-      <div id="projectContent"></div>
+      <div id="projectContent" role="tabpanel" aria-labelledby="project-tab-${projectTab}" tabindex="0"></div>
     </div>`;
     $('#projectPick').onchange = e => openProject(e.target.value);
     $('#projectTokens').onclick = () => openProjectTokensDrawer(p);
-    document.querySelectorAll('[data-pjtab]').forEach(b => (b.onclick = () => openProject(p.id, b.dataset.pjtab)));
+    const tablist = $('.pj-toolbar [role=tablist]');
+    const tabs = [...tablist.querySelectorAll('[data-pjtab]')];
+    const setTabStop = target => {
+      tabs.forEach(tab => { tab.tabIndex = tab === target ? 0 : -1; });
+    };
+    tablist.onkeydown = e => {
+      const index = tabs.indexOf(e.target);
+      if (index < 0 || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      const next = {
+        ArrowRight: (index + 1) % tabs.length,
+        ArrowLeft: (index + tabs.length - 1) % tabs.length,
+        Home: 0,
+        End: tabs.length - 1,
+      }[e.key];
+      if (!Number.isInteger(next)) return;
+      e.preventDefault();
+      setTabStop(tabs[next]);
+      tabs[next].focus();
+    };
+    tablist.onfocusout = e => {
+      if (!tablist.contains(e.relatedTarget)) setTabStop(tabs.find(tab => tab.dataset.pjtab === projectTab));
+    };
+    tabs.forEach(tab => {
+      tab.onclick = async () => {
+        const nextView = viewGen + 1;
+        await openProject(p.id, tab.dataset.pjtab);
+        if (viewGen === nextView && document.activeElement === document.body) {
+          document.getElementById(tab.id)?.focus();
+        }
+      };
+    });
     $('#projectAutopilot').onclick = () => saveProject({ ...p, autopilot: !p.autopilot }).catch((er) => toast(er.message, 5000, 'danger'));
     $('#projectKickoff')?.addEventListener('click', () => saveProject({ ...p, autopilot: true }).catch((er) => toast(er.message, 5000, 'danger')));
     $('#projectHarness').onclick = () => openProjectHarnessDrawer();

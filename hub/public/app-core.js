@@ -30,13 +30,17 @@ function hl(text, terms) {
 }
 const base = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || p || '';
 
-async function api(path, opts = {}) {
+async function api(path, { requireOk = false, ...opts } = {}) {
   const r = await fetch(path, {
     ...opts,
     headers: { 'x-token': TOKEN, 'content-type': 'application/json', ...(opts.headers || {}) },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   if (r.status === 401) throw new Error('토큰이 없거나 틀립니다. 서버 콘솔/url.txt의 주소로 여세요.');
+  if (requireOk && !r.ok) {
+    const result = await r.json().catch(() => null);
+    throw new Error(result?.error || `HTTP ${r.status} ${r.statusText}`.trim());
+  }
   return r.json();
 }
 

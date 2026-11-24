@@ -150,6 +150,7 @@
       bodyHTML: body,
       footerHTML: `<button type="button" data-drw-close>닫기</button><button type="button" class="primary" id="drwNodeAct">${primaryLbl}</button>`,
       width: 500,
+      focus: true,
     });
     $('#drwNodeAct', d).onclick = async () => {
       d.close();

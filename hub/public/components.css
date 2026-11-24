@@ -86,9 +86,18 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height:
 .asend { position: absolute; top: 4px; right: 32px; min-height: 24px; height: 24px; width: 24px; padding: 0; font-size: 12px; opacity: 0; background: rgba(0,0,0,.6); color: #fff; border: 0; }
 .acard[data-rout] .asend { right: 4px; }
 .acard:hover .asend, .acard:focus-within .asend { opacity: 1; }
+.session-artifacts .artifact-open { width: 100%; min-width: 0; display: flex; flex-direction: column; align-items: stretch; gap: 0; padding: 0; border: 0; border-radius: 0; background: transparent; text-align: start; white-space: normal; }
+.session-artifacts.artifact-list .artifact-open { flex-direction: row; align-items: center; justify-content: flex-start; }
+.artifact-open:focus-visible { outline-offset: -3px; }
 .aview { gap: 8px; }
 .avbody { display: flex; justify-content: center; align-items: flex-start; overflow: auto; max-height: 78vh; }
 .avbody .md, .avbody .mdpre { width: 100%; }
+.artifact-preview { width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; color: var(--text); }
+.artifact-preview:not([open]) { display: none; }
+.artifact-preview .avhead { flex-wrap: wrap; }
+.artifact-preview #avTitle { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
+.artifact-preview .avbody:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+@media (max-width: 520px) { .artifact-preview #avTitle { flex-basis: 100%; } }
 .btnlike { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: var(--ctrl-h-md); font-size: 13px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--radius-md); color: inherit; text-decoration: none; background: var(--panel); }
 .btnlike.btn-sm { min-height: var(--ctrl-h-sm); height: var(--ctrl-h-sm); font-size: 12px; padding: 0 9px; border-radius: var(--radius-sm); }
 .btnlike:hover { border-color: var(--accent); }
@@ -447,8 +456,8 @@ mark { background: #f4c542; color: #1f1e1c; border-radius: 2px; padding: 0 1px; 
   html, body { height: 100dvh; }
   body { flex-direction: column; }
   .mtop { display: flex; align-items: center; gap: 8px; min-height: 46px; padding: 6px 12px; background: var(--panel); border-bottom: 1px solid var(--line); flex: none; }
-  .side { position: fixed; top: 0; bottom: 0; left: 0; width: min(84vw, 290px); z-index: 35; transform: translateX(-105%); transition: transform .2s ease; box-shadow: 4px 0 24px rgba(0,0,0,.28); }
-  body.drawer .side { transform: none; }
+  .side { position: fixed; top: 0; bottom: 0; left: 0; width: min(84vw, 290px); z-index: 35; visibility: hidden; transform: translateX(-105%); transition: transform .2s ease; box-shadow: 4px 0 24px rgba(0,0,0,.28); }
+  body.drawer .side { visibility: visible; transform: none; }
   body.drawer #backdrop { display: block; position: fixed; inset: 0; background: rgba(0,0,0,.38); z-index: 30; }
   .side-float-btn, #btnSideCollapse, .desk { display: none !important; }
   main, #view { width: 100%; overflow-x: hidden; }
