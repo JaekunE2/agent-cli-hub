@@ -37,6 +37,12 @@ test('four project launch paths apply and persist the same Vault resources', asy
     });
     return child;
   });
+  t.mock.method(require('../project-review-run'), 'runReview', async (_dir, prepare) => {
+    const spec = await prepare();
+    assert.equal(spec.cmd, 'claude.exe');
+    recordLaunch({ args: spec.args, env: spec.options.env });
+    return { verdict: { verdict: 'APPROVE', reason: 'fixture' } };
+  });
 
   const { createUnifiedVault } = require('../unified-vault');
   const { createProjectRoutes } = require('../routes-projects');

@@ -2,12 +2,14 @@
 
 const fs = require('fs');
 const path = require('path');
+const { randomUUID } = require('crypto');
 const { execFile } = require('child_process');
 const { spawnCli, cliModelEffortArgs } = require('./project-plan');
 const { parseAgyJson, parseClaudeJson, parseCodexJsonl } = require('./task-subchat');
 const { resolveTaskConfig, buildTaskHarnessPrompt } = require('./project-harness');
 const { versionWorkspace } = require('./version-files');
 const { integrateBatch } = require('./project-integration');
+const { runReview, hasReviewClaim } = require('./project-review-run');
 const { requiredMcpMessage } = require('./vault-cli-ops');
 const { sessionStartupBlock, dismissProjectHookMenu, dispatchTerminalPrompt, terminalConfirmationMessage, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE } = require('./term-manager');
 
@@ -66,21 +68,39 @@ function findReadyTasks(project, activeTerms = []) {
 const inFlight = new Set();
 const reviewInFlight = new Set();
 const pendingReReview = new Map();
-const reviewErrorCounts = new Map();
 const orphanDoingTicks = new Map();
-const projectLocks = new Map();
+const operationLocks = new Map();
 const mergeRetryAt = new Map();
 let watcherBusy = false;
 
-function withProjectLock(lockKey, fn) {
-  const prev = projectLocks.get(lockKey) || Promise.resolve();
+function withOperationLock(lockKey, fn) {
+  const prev = operationLocks.get(lockKey) || Promise.resolve();
   const next = prev.catch(() => {}).then(fn);
   const cleanup = next.finally(() => {
-    if (projectLocks.get(lockKey) === cleanup) projectLocks.delete(lockKey);
+    if (operationLocks.get(lockKey) === cleanup) operationLocks.delete(lockKey);
   });
-  projectLocks.set(lockKey, cleanup);
+  operationLocks.set(lockKey, cleanup);
   return cleanup;
 }
+
+function folderKey(cwd) {
+  let resolved = path.resolve(cwd || process.cwd());
+  try {
+    resolved = fs.realpathSync.native(resolved);
+    const { dev, ino } = fs.statSync(resolved, { bigint: true });
+    if (ino) return `${dev}:${ino}`;
+  }
+  catch (error) { if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error; }
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function reviewWorkspace(project, task) {
+  const workspace = versionWorkspace(project, task.version);
+  const cwd = (workspace === project.cwd && task.worktreePath) || workspace;
+  return cwd && fs.existsSync(cwd) ? cwd : process.cwd();
+}
+
+const reviewDir = (hub, run) => path.join(hub.baseDir || __dirname, 'data', 'review-runs', run.id);
 
 async function ensureTaskWorktree(projectCwd, taskId) {
   if (!projectCwd || !taskId || !fs.existsSync(projectCwd)) return '';
@@ -279,10 +299,14 @@ async function runProjectAutopilot(hub, projectId, { autoDispatch = true, maxCon
     if (!launchable.length) return { started };
 
     const readyIds = new Set(launchable.map((t) => t.id));
-    const nextTasks = cur.tasks.map((t) => (readyIds.has(t.id)
+    const latest = hub.projects.list().find((item) => item.id === projectId);
+    if (!latest?.autopilot || latest.cwd !== cur.cwd) return { started };
+    const stillReady = new Set(findReadyTasks(latest, [...hub.terms.values()]).map((t) => t.id));
+    if (launchable.some((t) => !stillReady.has(t.id) || latest.tasks.find((item) => item.id === t.id)?.version !== t.version)) return { started };
+    const nextTasks = latest.tasks.map((t) => (readyIds.has(t.id)
       ? { ...t, stage: 'doing', ...(worktreeByTask.has(t.id) ? { worktreePath: worktreeByTask.get(t.id) } : {}) }
       : t));
-    hub.projects.save({ ...cur, tasks: nextTasks });
+    hub.projects.save({ ...latest, tasks: nextTasks });
 
     for (const task of launchable) {
       let ok = false;
@@ -516,15 +540,14 @@ const REVIEW_SCHEMA = JSON.stringify({
   },
 });
 
-async function defaultReviewTask(hub, project, task, onPhase, taskOut) {
+async function prepareReview(hub, project, task, onPhase, taskOut, dir) {
   const harnessState = hub.projectHarness?.get ? hub.projectHarness.get() : null;
   const revCfg = resolveTaskConfig(project, { kind: 'review', role: 'review' }, harnessState, { preferProject: false });
   const agent = ['claude', 'codex', 'agy'].includes(revCfg.agent) ? revCfg.agent : 'claude';
   if (task.worktreePath && !fs.existsSync(task.worktreePath)) throw new Error('격리 작업 폴더를 찾을 수 없습니다.');
   const workspace = versionWorkspace(project, task.version);
   if (task.version && (!workspace || (workspace !== project.cwd && !fs.existsSync(workspace)))) throw new Error('버전 작업 폴더를 열어주세요.');
-  const taskCwd = (workspace === project.cwd && task.worktreePath) || workspace;
-  const workCwd = (taskCwd && fs.existsSync(taskCwd)) ? taskCwd : process.cwd();
+  const workCwd = reviewWorkspace(project, task);
   const [gitSummary, testCheck] = await Promise.all([readGitSummary(workCwd), runPreReviewChecks(workCwd)]);
   onPhase(`${agent} 교차 검토 중 (최대 ${REVIEW_TIMEOUT_MS / 1000}초)`);
   const harnessBlock = buildTaskHarnessPrompt(project, { ...task, kind: 'review', role: 'review' }, agent, harnessState);
@@ -556,40 +579,35 @@ async function defaultReviewTask(hub, project, task, onPhase, taskOut) {
   Object.assign(env, prep?.env);
   hub.projects.recordVaultRun?.(project.id, [task.id], 'review', agent, prep?.vault);
   if (prep?.blocked) throw new Error(`필수 MCP 준비 실패 · ${requiredMcpMessage(prep.blocked)}`);
-  const rememberReview = ({ sessionId, tokens }) => {
-    if (!sessionId) return;
-    hub.projects.remember?.([{ projectId: project.id, taskId: task.id, agent, accountId: revCfg.account, sessionId, tokens }]);
-    hub.overviewStale?.();
+  const spec = {
+    agent, account: revCfg.account,
+    options: { cwd: workCwd, env, timeoutMs: REVIEW_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, stdinText: prompt },
   };
 
   if (agent === 'agy') {
-    const log = path.join(workCwd, `.agy-review-${Date.now()}.log`);
-    try {
-      const agyPrompt = prompt.length > 20_000 ? `${prompt.slice(0, 20_000)}\n...(truncated)` : prompt;
-      const { stdout } = await spawnCli(hub.agyExe(), ['--mode', 'plan', '--dangerously-skip-permissions', '--disable-slash-commands', ...extraME, '--print', agyPrompt, '--output-format', 'json', '--json-schema', REVIEW_SCHEMA, '--log-file', log], { cwd: workCwd, env, timeoutMs: REVIEW_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 });
-      rememberReview(parseAgyJson(stdout, log));
-      return parseReviewVerdict(stdout);
-    } finally { fs.rmSync(log, { force: true }); }
+    const log = path.join(dir, 'agy.log');
+    const agyPrompt = prompt.length > 20_000 ? `${prompt.slice(0, 20_000)}\n...(truncated)` : prompt;
+    return { ...spec, cmd: hub.agyExe(), files: [log], options: { ...spec.options, stdinText: null },
+      args: ['--mode', 'plan', '--dangerously-skip-permissions', '--disable-slash-commands', ...extraME, '--print', agyPrompt, '--output-format', 'json', '--json-schema', REVIEW_SCHEMA, '--log-file', log] };
   }
   if (agent === 'codex') {
-    const schemaFile = path.join(workCwd, `.codex-rev-schema-${Date.now()}.json`);
-    const outFile = path.join(workCwd, `.codex-rev-out-${Date.now()}.json`);
-    try {
-      fs.writeFileSync(schemaFile, REVIEW_SCHEMA);
-      const codexArgs = ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '--json', ...extraME, '--output-schema', schemaFile, '--output-last-message', outFile, '-'];
-      const { cmd, args } = hub.codexLaunch ? hub.codexLaunch(codexArgs) : { cmd: hub.codexExe ? hub.codexExe() : 'codex', args: codexArgs };
-      const { stdout } = await spawnCli(cmd, args, { cwd: workCwd, env, timeoutMs: REVIEW_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, stdinText: prompt });
-      const review = parseCodexJsonl(stdout);
-      rememberReview(review);
-      return parseReviewVerdict(fs.existsSync(outFile) ? fs.readFileSync(outFile, 'utf8') : review.reply);
-    } finally {
-      fs.rmSync(schemaFile, { force: true });
-      fs.rmSync(outFile, { force: true });
-    }
+    const schemaFile = path.join(dir, 'schema.json');
+    const outFile = path.join(dir, 'codex-output.json');
+    fs.writeFileSync(schemaFile, REVIEW_SCHEMA);
+    const codexArgs = ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '--json', ...extraME, '--output-schema', schemaFile, '--output-last-message', outFile, '-'];
+    const launch = hub.codexLaunch ? hub.codexLaunch(codexArgs) : { cmd: hub.codexExe ? hub.codexExe() : 'codex', args: codexArgs };
+    return { ...spec, ...launch, files: [outFile, schemaFile] };
   }
-  const { stdout } = await spawnCli('claude.exe', ['--print', '--permission-mode', 'plan', ...extraME, '--output-format', 'json', '--json-schema', REVIEW_SCHEMA, ...(prep?.extraArgs || [])], { cwd: workCwd, env, timeoutMs: REVIEW_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, stdinText: prompt });
-  rememberReview(parseClaudeJson(stdout));
-  return parseReviewVerdict(stdout);
+  return { ...spec, cmd: 'claude.exe', args: ['--print', '--permission-mode', 'plan', ...extraME, '--output-format', 'json', '--json-schema', REVIEW_SCHEMA, ...(prep?.extraArgs || [])] };
+}
+
+function readReviewResult(spec, stdout) {
+  const outputFile = spec.files?.[0];
+  const review = spec.agent === 'codex' ? parseCodexJsonl(stdout)
+    : spec.agent === 'agy' ? parseAgyJson(stdout, outputFile) : parseClaudeJson(stdout);
+  const raw = spec.agent !== 'codex' ? stdout
+    : fs.existsSync(outputFile) ? fs.readFileSync(outputFile, 'utf8') : review.reply;
+  return { verdict: parseReviewVerdict(raw), sessionId: review.sessionId, tokens: review.tokens };
 }
 
 async function dispatchRetryFeedback(hub, projectId, task, reason, retryNum, priorSessionId = '') {
@@ -641,7 +659,6 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
   if (force) {
     clearTimeout(pendingReReview.get(key));
     pendingReReview.delete(key);
-    reviewErrorCounts.delete(key);
   }
   const initialProject = hub.projects.list().find((x) => x.id === projectId);
   const initialTask = initialProject?.tasks?.find((x) => x.id === taskId);
@@ -650,8 +667,9 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
 
   const taskOut = extractTaskOutput(hub, initialProject, initialTask, terminal, dispatchedAt);
   const priorSessionId = extractTaskSessionId(hub, initialProject, initialTask, terminal);
+  const interrupted = initialTask.stage === 'review' && initialTask.reviewStatus === 'reviewing';
 
-  if (!approvedMerge(initialTask) && (!initialProject.autopilot || initialTask.kind === 'review') && !force && !initialTask.worktreePath) {
+  if (!interrupted && !approvedMerge(initialTask) && (!initialProject.autopilot || initialTask.kind === 'review') && !force && !initialTask.worktreePath) {
     if (initialTask.stage !== 'done') {
       const nextTasks = initialProject.tasks.map((t) => (t.id === initialTask.id
         ? { ...t, stage: 'done', reviewStatus: 'approved', ...(taskOut ? { lastOutput: taskOut } : {}), ...(priorSessionId ? { lastSessionId: priorSessionId } : {}) }
@@ -665,58 +683,104 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
 
   reviewInFlight.add(key);
   try {
-    return await withProjectLock(initialProject.cwd || projectId, async () => {
-      const project = hub.projects.list().find((x) => x.id === projectId) || initialProject;
-      const task = project.tasks.find((x) => x.id === taskId) || initialTask;
-      if (approvedMerge(task) && (!force || retryMerge)) return runProjectIntegration(hub, project, force && !autoMerge);
-      if (retryMerge) return { skipped: true, started: [] };
-      if (task.reviewPaused && !force) return { skipped: true, started: [] };
-      if (task.stage !== initialTask.stage || task.reviewPaused !== initialTask.reviewPaused) return { skipped: true, started: [] };
-      const isReviewing = (p) => p?.tasks.some((x) => x.id === taskId && x.stage === 'review' && x.reviewStatus === 'reviewing');
-      const priorReview = !force && ['rejected', 'error'].includes(task.reviewStatus) ? task.reviewNote : '';
-      const phaseNote = (phase) => priorReview ? `${phase} · 이전 반려: ${priorReview}` : phase;
-      const reviewingTasks = project.tasks.map((t) => (t.id === task.id
-        ? { ...t, stage: 'review', reviewStatus: 'reviewing', reviewPaused: false, reviewNote: phaseNote('사전 테스트 및 변경 내역 확인 중…'), ...(force ? { retryCount: 0 } : {}), ...(taskOut ? { lastOutput: taskOut } : {}), ...(priorSessionId ? { lastSessionId: priorSessionId } : {}) }
-        : t));
-      hub.projects.save({ ...project, tasks: reviewingTasks });
+    const getProject = () => hub.projects.list().find((x) => x.id === projectId);
+    if (approvedMerge(initialTask) && (!force || retryMerge)) {
+      return await withOperationLock(`merge:${folderKey(initialProject.cwd)}`, () => {
+        const project = getProject();
+        if (project?.cwd !== initialProject.cwd || !project?.tasks.some((task) => task.id === taskId && approvedMerge(task))) return { skipped: true, started: [] };
+        return runProjectIntegration(hub, project, force && !autoMerge);
+      });
+    }
+    if (retryMerge) return { skipped: true, started: [] };
+    if (interrupted && !initialTask.reviewRun && !force && !hub.reviewTask) {
+      const error = '이전 검토의 제출 기록이 없어 중복 검토를 방지하기 위해 중단했습니다.';
+      const tasks = initialProject.tasks.map((t) => t.id !== taskId ? t
+        : { ...t, stage: 'doing', reviewPaused: true, reviewStatus: 'error', reviewNote: error });
+      hub.projects.save({ ...initialProject, tasks });
       hub.overviewStale?.();
+      return { approved: false, error, started: [] };
+    }
+    const workspace = folderKey(reviewWorkspace(initialProject, initialTask));
+    const run = initialTask.reviewRun || { id: randomUUID(), workspace, queuedAt: Date.now(), errors: 0, retryAt: 0 };
+    if (!force && Date.now() < run.retryAt) return { skipped: true, started: [] };
+    const dir = reviewDir(hub, run);
+    const priorReview = !force && ['rejected', 'error'].includes(initialTask.reviewStatus) ? initialTask.reviewNote : '';
+    const phaseNote = (phase) => priorReview ? `${phase} · 이전 반려: ${priorReview}` : phase;
+    const runState = { taskId, run };
+    if (!interrupted || force || !initialTask.reviewRun) {
+      const tasks = initialProject.tasks.map((t) => t.id !== taskId ? t : {
+        ...t, stage: 'review', reviewStatus: 'reviewing', reviewPaused: false, reviewRun: run,
+        reviewNote: phaseNote('검토 대기 중…'), ...(force ? { retryCount: 0 } : {}),
+        ...(taskOut ? { lastOutput: taskOut } : {}), ...(priorSessionId ? { lastSessionId: priorSessionId } : {}),
+      });
+      hub.projects.save({ ...initialProject, tasks }, { reviewRun: runState });
+      hub.overviewStale?.();
+    }
+    return await withOperationLock(`review:${run.workspace}`, async () => {
+      const isReviewing = (p) => p?.tasks.some((x) => x.id === taskId && x.stage === 'review'
+        && x.reviewStatus === 'reviewing' && !x.reviewPaused && x.reviewRun?.id === run.id);
+      const project = getProject();
+      if (!isReviewing(project)) return { skipped: true, started: [] };
+      const task = project.tasks.find((x) => x.id === taskId);
+      const assertReviewWorkspace = (p) => {
+        if (folderKey(reviewWorkspace(p, p.tasks.find((item) => item.id === taskId))) !== run.workspace) {
+          throw Object.assign(new Error('검토 중 작업 폴더가 변경됐습니다.'), { code: 'REVIEW_WORKSPACE_CHANGED' });
+        }
+      };
 
       let verdict;
       try {
-        const reviewer = hub.reviewTask || ((p, t) => defaultReviewTask(hub, p, t, (reviewNote) => {
-          const latest = hub.projects.list().find((x) => x.id === projectId);
-          if (!isReviewing(latest)) return;
-          hub.projects.save({ ...latest, tasks: latest.tasks.map((x) => x.id === taskId ? { ...x, reviewNote: phaseNote(reviewNote) } : x) });
-          hub.overviewStale?.();
-        }, taskOut));
-        verdict = await reviewer(project, task);
+        if (hub.reviewTask) verdict = await hub.reviewTask(project, task);
+        else {
+          const onPhase = (reviewNote, started = false) => {
+            const latest = getProject();
+            if (!isReviewing(latest)) return;
+            if (started) run.started = true;
+            hub.projects.save({ ...latest, tasks: latest.tasks.map((x) => x.id === taskId ? { ...x, reviewNote: phaseNote(reviewNote) } : x) }, { reviewRun: runState });
+            hub.overviewStale?.();
+          };
+          const result = await runReview(dir, async () => {
+            assertReviewWorkspace(project);
+            onPhase('사전 테스트 및 변경 내역 확인 중…', true);
+            const spec = await prepareReview(hub, project, task, onPhase, taskOut, dir);
+            const latest = getProject();
+            if (!isReviewing(latest)) throw new Error('검토 요청이 취소됐습니다.');
+            assertReviewWorkspace(latest);
+            return spec;
+          });
+          if (result.sessionId) {
+            hub.projects.remember?.([{ projectId, taskId, agent: result.agent, accountId: result.account, sessionId: result.sessionId, tokens: result.tokens }]);
+            hub.overviewStale?.();
+          }
+          verdict = result.verdict;
+        }
+        const latest = getProject();
+        if (!isReviewing(latest)) return { skipped: true, started: [] };
+        assertReviewWorkspace(latest);
       } catch (e) {
         const curP = hub.projects.list().find((x) => x.id === projectId);
         if (!isReviewing(curP)) return { skipped: true, started: [] };
-        const errCount = (reviewErrorCounts.get(key) || 0) + 1;
+        const errCount = (force ? 0 : run.errors) + 1;
         const errMsg = String(e?.message || e).slice(0, 400);
-        if (curP.autopilot && e?.code !== 'CLI_TIMEOUT' && errCount <= MAX_REVIEW_ERROR_RETRIES) {
-          reviewErrorCounts.set(key, errCount);
+        if (curP.autopilot && !['CLI_TIMEOUT', 'REVIEW_UNCERTAIN', 'REVIEW_WORKSPACE_CHANGED'].includes(e?.code) && errCount <= MAX_REVIEW_ERROR_RETRIES) {
           const delayMs = hub.reviewRetryDelayMs ?? (DEFAULT_REVIEW_ERROR_BACKOFF_MS * errCount);
+          const id = e.reviewCompleted || hub.reviewTask ? randomUUID() : run.id;
+          const nextRun = { id, workspace, queuedAt: Date.now(), errors: errCount, retryAt: Date.now() + delayMs };
           const waitTasks = curP.tasks.map((t) => (t.id === task.id
-            ? { ...t, stage: 'review', reviewStatus: 'reviewing', reviewNote: `검토 일시 오류 — 자동 재검토 대기 중 (${errCount}/${MAX_REVIEW_ERROR_RETRIES}): ${errMsg}` }
+            ? { ...t, reviewRun: nextRun, reviewNote: `검토 일시 오류 — 자동 재검토 대기 중 (${errCount}/${MAX_REVIEW_ERROR_RETRIES}): ${errMsg}` }
             : t));
-          hub.projects.save({ ...curP, tasks: waitTasks });
+          hub.projects.save({ ...curP, tasks: waitTasks }, { reviewRun: { taskId, run: nextRun } });
           hub.overviewStale?.();
           const timer = setTimeout(() => {
             pendingReReview.delete(key);
             const pending = hub.projects.list().find((x) => x.id === projectId);
-            if (!pending?.autopilot || !pending.tasks.some((x) => x.id === taskId && x.stage === 'review' && x.reviewStatus === 'reviewing')) {
-              reviewErrorCounts.delete(key);
-              return;
-            }
+            if (!pending?.autopilot || !pending.tasks.some((x) => x.id === taskId && x.reviewRun?.id === nextRun.id && x.stage === 'review' && x.reviewStatus === 'reviewing')) return;
             completeAutopilotTask(hub, projectId, taskId, { maxRetries }).catch((err2) => console.error('[autopilot-rereview]', projectId, taskId, err2?.message || err2));
           }, delayMs);
           pendingReReview.set(key, timer);
           timer.unref?.();
           return { approved: false, reReviewScheduled: true, reviewErrorCount: errCount, error: e?.message || String(e), started: [] };
         }
-        reviewErrorCounts.delete(key);
         const errTasks = curP.tasks.map((t) => (t.id === task.id
           ? { ...t, stage: 'doing', reviewPaused: true, reviewStatus: 'error', reviewNote: errMsg }
           : t));
@@ -725,7 +789,6 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
         return { approved: false, reReviewScheduled: false, error: e?.message || String(e), started: [] };
       }
 
-      reviewErrorCounts.delete(key);
       let curP = hub.projects.list().find((x) => x.id === projectId);
       if (!isReviewing(curP)) return { skipped: true, started: [] };
       const curTask = curP.tasks.find((t) => t.id === task.id) || task;
@@ -789,6 +852,20 @@ async function checkAutopilotCompletions(hub) {
   const scheduled = [];
   try {
     const now = Date.now();
+    const recovering = hub.projects.list().flatMap((project) => (project.tasks || [])
+      .filter((task) => task.stage === 'review' && task.reviewStatus === 'reviewing' && !task.reviewPaused
+        && (task.reviewRun?.retryAt || 0) <= now
+        && !reviewInFlight.has(`${project.id}:${task.id}`) && !pendingReReview.has(`${project.id}:${task.id}`))
+      .map((task) => ({ project, task, claimed: task.reviewRun && hasReviewClaim(reviewDir(hub, task.reviewRun)) })));
+    // Reattach running reviews before queueing unsent work for the same folders.
+    recovering.sort((a, b) => Number(!!b.claimed) - Number(!!a.claimed)
+      || Number(!!b.task.reviewRun?.started) - Number(!!a.task.reviewRun?.started)
+      || (a.task.reviewRun?.queuedAt || 0) - (b.task.reviewRun?.queuedAt || 0));
+    for (const { project, task } of recovering) {
+      const promise = completeAutopilotTask(hub, project.id, task.id)
+        .catch((error) => console.error('[autopilot-orphan-review]', project.id, task.id, error));
+      scheduled.push({ projectId: project.id, completedTaskId: task.id, recoveredReview: true, promise });
+    }
     for (const t of hub.terms.values()) {
       const pt = t.meta?.projectTask;
       if (!pt?.projectId || !pt?.taskId || t._projectDispatchPending) continue;
@@ -887,10 +964,6 @@ async function checkAutopilotCompletions(hub) {
       const recoveredTasks = project.tasks.map((tk) => {
         if (tk.parentId) (byParent.get(tk.parentId) || byParent.set(tk.parentId, []).get(tk.parentId)).push(tk);
         const tkKey = `${project.id}:${tk.id}`;
-        if (tk.stage === 'review' && tk.reviewStatus === 'reviewing' && !reviewInFlight.has(tkKey) && !pendingReReview.has(tkKey)) {
-          const pRun = completeAutopilotTask(hub, project.id, tk.id).catch((e) => console.error('[autopilot-orphan-review]', project.id, tk.id, e?.message || e));
-          scheduled.push({ projectId: project.id, completedTaskId: tk.id, recoveredReview: true, promise: pRun });
-        }
         if (tk.stage === 'doing' && !tk.autoExclude && !tk.reviewPaused && !inFlight.has(project.id) && !reviewInFlight.has(tkKey)) {
           if (activeTermTaskKeys.has(tkKey)) {
             orphanDoingTicks.delete(tkKey);
@@ -933,6 +1006,7 @@ module.exports = {
   completeAutopilotTask,
   checkAutopilotCompletions,
   parseReviewVerdict,
+  readReviewResult,
   runPreReviewChecks,
   readGitSummary,
   detectTestCommand,
