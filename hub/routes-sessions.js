@@ -298,7 +298,7 @@ function createSessionRoutes(hub) {
     const retry = p === '/api/projects/start' && b.retry === true;
     const submitDraft = retry && b.submitDraft === true;
     let projectTask, projectPrompt, launchAccount, projectRefsBlock = '';
-    let reuseTerm;
+    let reuseTerm, agentSource;
     if (p === '/api/projects/start') {
       if (hub.deletingProjects.has(b.projectId)) return send(res, 409, { error: 'Project 기록을 삭제 중입니다.' });
       const project = projects.list().find((x) => x.id === b.projectId);
@@ -309,6 +309,7 @@ function createSessionRoutes(hub) {
       projectTask = { projectId: project.id, taskId: task.id };
       const harnessState = hub.projectHarness?.get ? hub.projectHarness.get() : null;
       const resolved = resolveTaskConfig(project, task, harnessState);
+      agentSource = resolved.agentSource;
       const parentTask = resolved.parent;
       const kind = resolved.agent;
       const accountId = resolved.account;
@@ -432,11 +433,20 @@ function createSessionRoutes(hub) {
       const result = await t.spawnResult;
       if (result?.error) { hub.terms.delete(t.id); return send(res, 502, { error: 'CLI를 시작하지 못했습니다. 설치 경로를 확인하세요.' }); }
       if (!result && !reuseTerm) return send(res, 503, { error: '터미널 호스트의 응답이 없습니다. 상태를 확인하세요.' });
+      const latest = projects.list().find((p) => p.id === projectTask.projectId);
+      const latestTask = latest?.tasks.find((x) => x.id === projectTask.taskId);
+      if (!latestTask) return send(res, 404, { error: 'Project 작업을 찾을 수 없습니다.' });
+      if (retry && latestTask.stage !== 'doing') return send(res, 409, { error: '진행 단계의 작업만 다시 시작할 수 있습니다.' });
+      const run = { agent: hub.agentOf(t) || b.kind, source: agentSource, termId: t.id };
+      projects.save({
+        ...latest,
+        tasks: latest.tasks.map((x) => x.id === projectTask.taskId ? {
+          ...x,
+          stage: x.stage === 'planned' ? 'doing' : x.stage,
+          ...(retry ? { reviewPaused: false, reviewStatus: '', reviewNote: '', retryCount: 0 } : {}),
+        } : x),
+      }, { taskRun: { taskId: projectTask.taskId, run } });
       if (retry) {
-        const latest = projects.list().find((p) => p.id === projectTask.projectId);
-        if (!latest?.tasks.some((x) => x.id === projectTask.taskId && x.stage === 'doing')) return send(res, 409, { error: '진행 단계의 작업만 다시 시작할 수 있습니다.' });
-        projects.save({ ...latest, tasks: latest.tasks.map((x) => x.id === projectTask.taskId
-          ? { ...x, reviewPaused: false, reviewStatus: '', reviewNote: '', retryCount: 0 } : x) });
         for (const prior of hub.terms.values()) {
           if (prior.meta?.projectTask?.projectId !== projectTask.projectId || prior.meta.projectTask.taskId !== projectTask.taskId) continue;
           prior._projectBusySeen = false;

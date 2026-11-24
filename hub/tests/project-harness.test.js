@@ -51,7 +51,7 @@ test('createProjectHarnessStore initializes universal-agent-harness presets and 
   }
 });
 
-test('resolveTaskConfig respects task > parent > role preset > project fallback and builds harness prompt', () => {
+test('resolveTaskConfig prefers task and project CLIs and preserves legacy fallbacks', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-harness-cfg-'));
   const store = createProjectHarnessStore(path.join(dir, 'project-harness.json'));
   try {
@@ -61,15 +61,26 @@ test('resolveTaskConfig respects task > parent > role preset > project fallback 
     const reviewTask = { id: 't1', title: '교차 코드 리뷰', detail: '보안 점검', kind: 'review' };
     const cfgReview = resolveTaskConfig(project, reviewTask, harness);
     assert.equal(cfgReview.roleId, 'review');
-    assert.equal(cfgReview.agent, 'agy');
-    assert.equal(cfgReview.model, 'gemini-4-argon-high');
-    assert.equal(cfgReview.effort, 'high');
+    assert.equal(cfgReview.agent, 'codex');
+    assert.equal(cfgReview.agentSource, 'project');
+    assert.equal(cfgReview.model, 'gpt-5.4');
+    assert.equal(cfgReview.effort, 'medium');
+    const legacy = resolveTaskConfig({ ...project, agent: '' }, reviewTask, harness);
+    assert.equal(legacy.agent, 'agy');
+    assert.equal(legacy.agentSource, 'role');
+    assert.equal(legacy.model, 'gemini-4-argon-high');
+    assert.equal(resolveTaskConfig(project, reviewTask, harness, { preferProject: false }).agent, 'agy');
 
     const overrideTask = { id: 't2', title: '직접 지정 리뷰', detail: '', kind: 'review', agent: 'claude', model: 'opus', effort: 'max' };
     const cfgOverride = resolveTaskConfig(project, overrideTask, harness);
     assert.equal(cfgOverride.agent, 'claude');
+    assert.equal(cfgOverride.agentSource, 'task');
     assert.equal(cfgOverride.model, 'opus');
     assert.equal(cfgOverride.effort, 'max');
+    const child = { ...reviewTask, parentId: overrideTask.id };
+    const withParent = { ...project, tasks: [overrideTask] };
+    assert.equal(resolveTaskConfig(withParent, child, harness).agent, 'codex');
+    assert.equal(resolveTaskConfig({ ...withParent, agent: undefined }, child, harness).agentSource, 'parent');
 
     const prompt = buildTaskHarnessPrompt(project, reviewTask, cfgReview.agent, harness);
     assert.match(prompt, /Role 하네스/);

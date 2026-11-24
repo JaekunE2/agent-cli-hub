@@ -459,7 +459,7 @@ const REVIEW_SCHEMA = JSON.stringify({
 
 async function defaultReviewTask(hub, project, task, onPhase) {
   const harnessState = hub.projectHarness?.get ? hub.projectHarness.get() : null;
-  const revCfg = resolveTaskConfig(project, { kind: 'review', role: 'review' }, harnessState);
+  const revCfg = resolveTaskConfig(project, { kind: 'review', role: 'review' }, harnessState, { preferProject: false });
   const agent = ['claude', 'codex', 'agy'].includes(revCfg.agent) ? revCfg.agent : 'claude';
   if (task.worktreePath && !fs.existsSync(task.worktreePath)) throw new Error('격리 작업 폴더를 찾을 수 없습니다.');
   const workspace = versionWorkspace(project, task.version);

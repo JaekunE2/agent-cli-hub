@@ -118,7 +118,7 @@ const makeSchema = (minItems = 2, maxItems = 12) => JSON.stringify({
 const schema = makeSchema(2, 12);
 const subtaskSchema = makeSchema(2, 6);
 
-function readPlan(stdout, project, { parentId = '', agent = project.agent || 'codex', minItems = 2, maxItems = 12 } = {}) {
+function readPlan(stdout, project, { parentId = '', minItems = 2, maxItems = 12 } = {}) {
   let output = JSON.parse(stdout.trim());
   if (!output.tasks) output = output.structured_output || output.structuredOutput || output.response || output.result;
   if (typeof output === 'string') output = JSON.parse(output.trim().replace(/^```(?:json)?\s*|\s*```$/gi, ''));
@@ -138,7 +138,6 @@ function readPlan(stdout, project, { parentId = '', agent = project.agent || 'co
       after: t.after.map(n => ids[n - 1]),
       stage: 'planned',
       parentId: parentId || '',
-      agent,
       model: '',
       effort: '',
       termId: '',
@@ -402,7 +401,7 @@ async function generateSubtasks(exe, project, task, cwd, env, { agent, model, ef
     exe, agent: effAgent, model: model || task.model || project.model, effort: effort || task.effort || project.effort,
     prompt, planSchema: subtaskSchema, cwd, env, launchArgs, onProgress, timeoutMs,
   });
-  return { tasks: readPlan(raw, project, { parentId: task.id, agent: effAgent, minItems: 2, maxItems: 6 }), sessionId };
+  return { tasks: readPlan(raw, project, { parentId: task.id, minItems: 2, maxItems: 6 }), sessionId };
 }
 
 module.exports = { generatePlan, generateSubtasks, buildPlanPrompt, buildSubtaskPrompt, readPlan, spawnCli, parseProgressLine, cliModelEffortArgs, inspectWorkspace };

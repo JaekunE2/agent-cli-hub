@@ -2925,5 +2925,12 @@
   "← 버전 목록": "← Version list",
   "버전 작업 설계": "Plan version work",
   "이 버전에 작업 추가": "Add a task to this version",
-  "확정 후 작업 중": "Follow-up work in progress"
+  "확정 후 작업 중": "Follow-up work in progress",
+  "자동 배정": "Automatic assignment",
+  "실제 실행 CLI": "CLI used",
+  "선택 근거": "Selection reason",
+  "작업별 지정": "Task override",
+  "프로젝트 기본값": "Project default",
+  "상위 작업 지정": "Parent task assignment",
+  "역할 프리셋": "Role preset"
 }

@@ -224,15 +224,17 @@ function resolveTaskRole(task) {
   return ROLE_IDS.includes(inferred) ? inferred : 'dev';
 }
 
-function resolveTaskConfig(project, task, harnessState) {
+function resolveTaskConfig(project, task, harnessState, { preferProject = true } = {}) {
   const parent = task?.parentId ? (project?.tasks || []).find((x) => x.id === task.parentId) : null;
   const roleId = resolveTaskRole(task);
   const rolePreset = harnessState?.roles?.[roleId] || DEFAULT_ROLE_PRESETS[roleId] || DEFAULT_ROLE_PRESETS.dev;
   const projAgent = project?.agent || 'codex';
-  const agent = task?.agent || parent?.agent || rolePreset?.agent || projAgent;
+  const projectDefault = preferProject ? project?.agent : '';
+  const agent = task?.agent || projectDefault || parent?.agent || rolePreset?.agent || projAgent;
+  const agentSource = task?.agent ? 'task' : projectDefault ? 'project' : parent?.agent ? 'parent' : rolePreset?.agent ? 'role' : 'project';
 
-  const sameAsParent = !!(parent && (!task?.agent || task.agent === (parent.agent || projAgent)));
-  const sameAsRole = !task?.agent && !parent?.agent && rolePreset?.agent && agent === rolePreset.agent;
+  const sameAsParent = !!(parent && agentSource !== 'project' && agent === (parent.agent || projAgent));
+  const sameAsRole = agentSource === 'role';
   const sameAsProject = agent === projAgent;
 
   const account = task?.account
@@ -251,7 +253,7 @@ function resolveTaskConfig(project, task, harnessState) {
     || (sameAsProject ? project?.effort : '')
     || '';
 
-  return { agent, account: account || '', model, effort, roleId, rolePreset, parent };
+  return { agent, agentSource, account: account || '', model, effort, roleId, rolePreset, parent };
 }
 
 function buildTaskHarnessPrompt(project, task, effectiveAgent, harnessState) {

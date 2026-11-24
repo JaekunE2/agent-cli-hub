@@ -264,8 +264,9 @@ test('generated work becomes cards with instructions and valid links', () => {
   ] } });
   const cards = readPlan(raw([1]), project);
   for (const agent of ['codex', 'claude', 'agy']) {
-    assert.deepEqual(readPlan(raw([1]), { ...project, agent }).map((card) => card.agent), [agent, agent]);
-    assert.deepEqual(readPlan(raw([1]), project, { parentId: 'parent', agent }).map((card) => card.agent), [agent, agent]);
+    const draft = { ...project, agent };
+    assert.deepEqual(readPlan(raw([1]), draft).map((card) => card.agent), ['', '']);
+    assert.deepEqual(readPlan(raw([1]), draft, { parentId: 'parent' }).map((card) => card.agent), ['', '']);
   }
   assert.equal(cards[1].detail, 'Check the design');
   assert.deepEqual(cards[1].after, [cards[0].id]);

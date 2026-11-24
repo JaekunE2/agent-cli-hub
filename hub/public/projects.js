@@ -219,13 +219,14 @@ function openProjectTaskDrawer(p, task, focusSubChat = false) {
     return `<div class="pj-drw-sub-item">
       <div class="pj-drw-sub-main" data-drw-open-sub="${esc(st.id)}">
         <div class="pj-drw-sub-title">${kindBadgeHTML(st)} ${esc(st.title)}</div>
-        <div class="pj-drw-sub-meta">${stageBadgeHTML(st.stage)}<span>${esc([providerName(sCfg.agent), sCfg.model, sCfg.effort].filter(Boolean).join(' · '))}</span><span class="badge tok-badge${sRoll.total.total > 0 ? ' active' : ''}">토큰 ${tokFmt(sRoll.total.total)}</span></div>
+        <div class="pj-drw-sub-meta">${stageBadgeHTML(st.stage)}<span>${esc([providerName(sCfg.agent), sCfg.model, sCfg.effort].filter(Boolean).join(' · '))}</span>${projectLastRunHTML(st)}<span class="badge tok-badge${sRoll.total.total > 0 ? ' active' : ''}">토큰 ${tokFmt(sRoll.total.total)}</span></div>
       </div>
       <button type="button" class="btn-sm${sTerm ? ' primary' : ''}" data-drw-start-sub="${esc(st.id)}">${sTerm ? '열기 ↗' : '시작'}</button>
     </div>`;
   }).join('');
   const cliLine = [providerName(ag), term?.account?.label || (cfg.account || ''), cfg.model || '', cfg.effort ? `추론 ${cfg.effort}` : ''].filter(Boolean).join(' · ');
   const body = `
+    ${task.lastRun ? `<div class="drw-sec"><div class="row">${projectLastRunHTML(task)}</div></div>` : ''}
     ${parent ? `<div class="drw-sec"><div class="drw-lbl">상위 작업</div><button type="button" class="ghost btn-sm" data-drw-open-sub="${esc(parent.id)}">↳ ${esc(parent.title)}</button></div>` : ''}
     <div class="drw-sec">
       <div class="row" style="justify-content:space-between">

@@ -1,6 +1,6 @@
 function projectAgentField(label, selected, inherited) {
   const choices = ['claude', 'codex', 'agy', 'cursor'].map(id => [id, providerName(id)]);
-  if (inherited) choices.unshift(['', `Project 기본 · ${providerName(inherited)}`]);
+  if (inherited !== undefined) choices.unshift(['', inherited ? `Project 기본 · ${providerName(inherited)}` : '자동 배정']);
   return `<label>${label}<select name="agent">${choices.map(([id, name]) => `<option value="${id}" ${selected === id ? 'selected' : ''}>${esc(name)}</option>`).join('')}</select></label>`;
 }
 
@@ -9,9 +9,9 @@ function effectiveTaskConfig(p, task) {
   const roleId = String(task?.role || task?.kind || (typeof taskKindOf === 'function' ? taskKindOf(task) : 'dev') || 'dev').toLowerCase();
   const rolePreset = state.projectHarness?.roles?.[roleId] || null;
   const projAgent = p?.agent || 'codex';
-  const agent = task?.agent || parent?.agent || rolePreset?.agent || projAgent;
-  const sameAsParent = parent && (!task?.agent || task.agent === (parent.agent || projAgent));
-  const sameAsRole = !task?.agent && !parent?.agent && rolePreset?.agent && agent === rolePreset.agent;
+  const agent = task?.agent || p?.agent || parent?.agent || rolePreset?.agent || projAgent;
+  const sameAsParent = parent && (task?.agent || !p?.agent) && agent === (parent.agent || projAgent);
+  const sameAsRole = !task?.agent && !p?.agent && !parent?.agent && rolePreset?.agent;
   const sameAsProject = agent === projAgent;
   const account = task?.account ?? (sameAsParent ? parent.account : null) ?? (sameAsRole && rolePreset?.account ? rolePreset.account : null) ?? (sameAsProject ? p.account : '');
   const model = task?.model || (sameAsParent ? parent.model : '') || (sameAsRole ? rolePreset?.model : '') || (sameAsProject ? p.model : '') || '';
@@ -24,7 +24,14 @@ function projectTaskTerm(p, task) {
   const workspace = p.scope?.version?.workspace;
   const sameTask = (state.terms || []).filter((t) => t.exited === null && t.projectTask?.projectId === p.id && t.projectTask.taskId === task.id
     && (!workspace || sameProjectFolder(t.cwd, workspace)));
-  return sameTask.findLast((t) => t.agent === agent) || sameTask.at(-1) || null;
+  return sameTask.findLast((t) => t.agent === agent) || (task.stage !== 'planned' ? sameTask.at(-1) : null) || null;
+}
+
+function projectLastRunHTML(task) {
+  const run = task.lastRun;
+  if (!run) return '';
+  const source = { task: '작업별 지정', project: '프로젝트 기본값', parent: '상위 작업 지정', role: '역할 프리셋' }[run.source];
+  return `<span class="badge">실제 실행 CLI ${esc(providerName(run.agent))}</span> <span class="badge">선택 근거 ${esc(source)}</span>`;
 }
 
 function sameProjectFolder(a, b) {
@@ -214,13 +221,6 @@ async function startProjectTask(p, task, button, { retry = false } = {}) {
     const current = retry ? null : projectTaskTerm(p, task);
     const t = current || await api('/api/projects/start', { method: 'POST', body: { projectId: p.id, taskId: task.id, ...(retry ? { retry: true } : {}) } });
     if (t.error || !t.id) throw new Error(t.error || '터미널을 열 수 없습니다.');
-    // Auto-advance task stage from 'planned' → 'doing' when starting work
-    if (!current && task.stage === 'planned') {
-      const nextTasks = p.tasks.map((x) => (x.id === task.id ? { ...x, stage: 'doing' } : x));
-      api('/api/projects', { method: 'POST', body: projectDraft({ ...p, tasks: nextTasks }) })
-        .then(() => { if (typeof refreshProjects === 'function') refreshProjects(); })
-        .catch(() => {});
-    }
     if (!current) await refreshOverview();
     if (gen !== viewGen) return;
     if (current || retry) {
