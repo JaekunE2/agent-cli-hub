@@ -25,6 +25,13 @@ async function submitPrompt({ text, read, write, guard, waitFor, sleep, delay = 
   if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text)) throw new Error('CLI 메시지에 제어 문자를 보낼 수 없습니다.');
   const expected = unwrap(text);
   const matched = (draft) => draft != null && unwrap(draft) === expected;
+  const compact = (value) => value.replace(/[\s?]/g, '');
+  const expectedCompact = compact(text);
+  const tail = expectedCompact.slice(-64);
+  const visibleTail = (draft) => {
+    const visible = compact(draft || '');
+    return pasteMarker === 'codex' && expectedCompact.length > visible.length && visible.length >= 64 && visible.endsWith(tail);
+  };
   const freshPaste = (draft) => {
     const shown = draft?.trimStart() || '';
     if (pasteMarker === 'claude') {
@@ -50,7 +57,7 @@ async function submitPrompt({ text, read, write, guard, waitFor, sleep, delay = 
     await write(paste);
     const hasPaste = async () => {
       view = await current();
-      return matched(view.draft) || (view.draft !== draft && freshPaste(view.draft));
+      return matched(view.draft) || (view.draft !== draft && (freshPaste(view.draft) || visibleTail(view.draft)));
     };
     if (!await waitFor(hasPaste, 5000, 150)) throw new Error('CLI 입력창에서 전송한 내용을 확인하지 못했습니다.');
     draft = view.draft;

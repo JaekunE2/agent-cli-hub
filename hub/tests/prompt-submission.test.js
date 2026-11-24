@@ -132,3 +132,12 @@ test('Claude multiline paste is confirmed from the current paste badge', async (
   const legacy = await replay('console', [ready], { text });
   assert.deepEqual(legacy, { ok: false, writes: [] });
 });
+
+test('a long Codex draft still submits after its beginning scrolls off after paste', async () => {
+  const visible = 'Confirm the tests and report which changes were verified before returning.';
+  const text = 'Inspect the full project context and implement the requested update. ' + visible;
+  for (const target of ['term', 'automatic', 'console']) {
+    const frames = [ready, ['› ' + visible], running];
+    assert.deepEqual(await replay(target, frames, { text }), { ok: true, writes: [text, PTY_KEYS.enter] });
+  }
+});
