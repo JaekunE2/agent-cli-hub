@@ -398,12 +398,35 @@ test('ensureTaskWorktree and mergeAndCleanupWorktree isolate parallel task chang
     assert.equal(fs.existsSync(path.join(tmp, 'feature.txt')), true);
     assert.equal(fs.existsSync(wt), false);
 
+    const pending = await ensureTaskWorktree(tmp, 'wait-first');
+    const parallel = await ensureTaskWorktree(tmp, 'wait-second');
+    fs.writeFileSync(path.join(pending, 'base.txt'), 'approved\n');
+    fs.writeFileSync(path.join(parallel, 'second.txt'), 'approved\n');
+    fs.writeFileSync(path.join(tmp, 'base.txt'), 'uncommitted local edit\n');
+    const waiting = await mergeAndCleanupWorktree(tmp, 'wait-first', pending);
+    assert.equal(waiting.pending, true);
+    assert.match(waiting.error, /base\.txt/);
+    assert.equal(fs.readFileSync(path.join(tmp, 'base.txt'), 'utf8').trim(), 'uncommitted local edit');
+    fs.writeFileSync(path.join(tmp, 'base.txt'), 'base\n');
+    execFileSync('git', ['add', 'second.txt'], { cwd: parallel, stdio: 'ignore' });
+    execFileSync('git', ['commit', '-m', 'second change'], { cwd: parallel, stdio: 'ignore' });
+    let project = { id: 'queued-merge-test', cwd: tmp, autopilot: true, tasks: [
+      { id: 'wait-first', stage: 'review', reviewStatus: 'merge-pending', worktreePath: pending },
+      { id: 'wait-second', stage: 'review', reviewStatus: 'merge-pending', worktreePath: parallel },
+    ] };
+    const hub = { terms: new Map(), projects: { list: () => [project], save: (value) => (project = value) },
+      reviewTask: () => { throw new Error('Approved work must not be reviewed again'); } };
+    await Promise.all((await checkAutopilotCompletions(hub)).map((item) => item.promise));
+    assert.deepEqual(project.tasks.map((task) => task.stage), ['done', 'done']);
+    assert.equal(fs.readFileSync(path.join(tmp, 'base.txt'), 'utf8').trim(), 'approved');
+    assert.equal(fs.existsSync(path.join(tmp, 'second.txt')), true);
+
     const conflicting = await ensureTaskWorktree(tmp, 'conflict-test');
     fs.writeFileSync(path.join(conflicting, 'base.txt'), 'task version\n');
     fs.writeFileSync(path.join(tmp, 'base.txt'), 'project version\n');
     execFileSync('git', ['commit', '-am', 'Change project base'], { cwd: tmp, stdio: 'ignore' });
     const blocked = await mergeAndCleanupWorktree(tmp, 'conflict-test', conflicting);
-    assert.deepEqual(blocked, { ok: false, error: '- base.txt' });
+    assert.deepEqual(blocked, { ok: false, pending: false, error: '- base.txt' });
     assert.equal(fs.readFileSync(path.join(tmp, 'base.txt'), 'utf8').trim(), 'project version');
     assert.equal(fs.readFileSync(path.join(conflicting, 'base.txt'), 'utf8').trim(), 'task version');
     assert.equal(execFileSync('git', ['diff', '--name-only', '--diff-filter=U'], { cwd: tmp, encoding: 'utf8' }).trim(), '');

@@ -77,6 +77,15 @@ test('project token ledger accumulates tokens across switched CLIs without dropp
     assert.equal(summary.rollupByTask['task-1'].subTotal.total, 8500);
     assert.equal(summary.rollupByTask['task-1'].sessions, 3);
     assert.equal(summary.rollupByTask['task-1'].subtaskCount, 2);
+    const versioned = store.save({ ...p, versions: [{ number: '1.0.0', goal: 'First' }, { number: '2.0.0', goal: 'Second' }],
+      tasks: p.tasks.map((task) => ({ ...task, version: task.id === 'sub-1b' ? '2.0.0' : '1.0.0' })) });
+    store.remember([{ projectId: p.id, version: '2.0.0', sessionId: 'planning', agent: 'codex', tokens: { total: 50 } }]);
+    const scoped = store.tokenSummary(versioned.id, (sid) => sid === codexSid ? { total: 3200 } : null);
+    assert.equal(scoped.byVersion['1.0.0'].total.total, 4800);
+    assert.equal(scoped.byVersion['1.0.0'].sessions, 2);
+    assert.equal(scoped.byVersion['2.0.0'].total.total, 5550);
+    assert.equal(scoped.byVersion['2.0.0'].byAgent.codex.total, 50);
+    assert.equal(scoped.rollupByTask['task-1'].total.total, 4800);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

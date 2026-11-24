@@ -395,30 +395,27 @@ function createTermManager(hub) {
     for (const ws of t.clients) ws.send(JSON.stringify({ type: 'data', data: d }));
   }
 
-  function launchSpecWithShared(cmd, args = [], env = {}) {
-    const base = path.basename(String(cmd || '')).toLowerCase();
-    const kind = /^claude(?:\.exe)?$/.test(base)
-      ? 'claude'
-      : (/^codex(?:\.exe)?$/.test(base) || (base === 'wsl.exe' && Array.isArray(args) && args.includes('codex')))
-        ? 'codex'
-        : /^agy(?:\.exe)?$/.test(base) ? 'agy' : null;
-    if (!kind) return { args, env };
-    try {
-      const prep = unifiedVault.prepareLaunch(kind, { resume: Array.isArray(args) && args.includes('--resume') });
-      return {
-        args: prep.extraArgs?.length ? [...args, ...prep.extraArgs] : args,
-        env: prep.env && Object.keys(prep.env).length ? { ...env, ...prep.env } : env,
-      };
-    } catch { return { args, env }; }
+  function launchSpecWithShared(cmd, args, env, agent) {
+    const wrapper = path.basename(String(cmd || '')).toLowerCase();
+    const base = wrapper === 'cmd.exe' && args[0] === '/c' ? path.basename(String(args[1] || '')).toLowerCase() : wrapper;
+    const kind = agent || (/^(claude|codex|agy|cursor-agent)(?:\.(?:exe|cmd))?$/.exec(base)?.[1]?.replace('cursor-agent', 'cursor'))
+      || (wrapper === 'wsl.exe' && args.includes('codex') ? 'codex' : '');
+    const prep = kind && unifiedVault?.prepareLaunch(kind, {
+      env: { ...cleanEnv(), ...env },
+      native: wrapper !== 'wsl.exe',
+      resume: kind === 'claude' && (args.includes('--resume') || args.includes('--continue')),
+    });
+    return { kind, args: [...args, ...(prep?.extraArgs || [])], env: { ...env, ...prep?.env }, vault: prep?.vault };
   }
 
-  function createTerm({ cwd, cmd, args = [], title, env = {}, account = null, model = '', effort = '', lastInputAt = 0, research = null, operator = false, projectTask, projectPrompt }) {
+  function createTerm({ cwd, cmd, args = [], title, env = {}, account = null, model = '', effort = '', lastInputAt = 0, research = null, operator = false, projectTask, projectPrompt, agent }) {
     const id = String(++termSeq);
     if (!cwd || !fs.existsSync(cwd)) cwd = os.homedir();
     const me = cleanModelEffort(model, effort);
-    const shared = launchSpecWithShared(cmd, args, env);
+    const shared = launchSpecWithShared(cmd, args, env, agent);
     args = shared.args;
     env = shared.env;
+    if (projectTask) projects?.recordVaultRun?.(projectTask.projectId, [projectTask.taskId], 'terminal', shared.kind, shared.vault);
     const envFlags = Object.fromEntries(Object.entries(env).filter(([k]) => !/TOKEN|KEY|SECRET/i.test(k)));
     if (/\bagy(?:\.exe)?$/i.test(cmd)) {
       const dir = path.join(baseDir, 'data', 'agy-logs');
@@ -853,4 +850,4 @@ function createTermManager(hub) {
   };
 }
 
-module.exports = { createTermManager, sessionStartupBlock, dismissProjectHookMenu, writeProjectTerm, dispatchCodexProjectPrompt, projectRunStarted, terminalConfirmationMessage, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE, PROJECT_START_MESSAGE };
+module.exports = { createTermManager, sessionStartupBlock, dismissProjectHookMenu, writeProjectTerm, dispatchCodexProjectPrompt, projectRunStarted, terminalConfirmationMessage, codexComposerText, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE, PROJECT_START_MESSAGE };

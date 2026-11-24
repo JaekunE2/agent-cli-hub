@@ -28,6 +28,28 @@ function makeTempEnv() {
   return { base, homeDir, repoRoot, vaultDir, configPath };
 }
 
+test('prepareLaunch respects CLI targets, the Codex account home, and auto-load', (t) => {
+  const env = makeTempEnv();
+  t.after(() => fs.rmSync(env.base, { recursive: true, force: true }));
+  const vault = createUnifiedVault(env);
+  vault.saveSkill({ name: 'demo', content: 'Skill body' });
+  vault.saveRule({ name: 'codex-only', content: 'Codex rule', targets: ['codex'] });
+  const accountHome = path.join(env.homeDir, 'other-codex');
+  const codex = vault.prepareLaunch('codex', { env: { CODEX_HOME: accountHome } });
+  assert.deepEqual(codex.vault.applied, ['skill:demo', 'shared', 'rule:codex-only.md']);
+  assert.ok(fs.existsSync(path.join(accountHome, 'skills', 'demo', 'SKILL.md')));
+  assert.match(fs.readFileSync(path.join(accountHome, 'AGENTS.md'), 'utf8'), /Codex rule/);
+  const agy = vault.prepareLaunch('agy');
+  assert.deepEqual(agy.vault.applied, ['skill:demo', 'shared']);
+  assert.deepEqual(agy.vault.omitted, [{ id: 'rule:codex-only.md', reason: 'unsupported-target' }]);
+  assert.ok(vault.prepareLaunch('cursor').vault.omitted.every((entry) => entry.reason === 'unsupported-cli'));
+  vault.setAutoLoad(false);
+  const disabled = vault.prepareLaunch('claude');
+  assert.deepEqual(disabled.vault.applied, []);
+  assert.equal(disabled.vault.omitted.length, 3);
+  assert.ok(disabled.vault.omitted.every((entry) => entry.reason === 'autoload-disabled'));
+});
+
 test('TOML MCP parser and serializer round-trip stdio and http servers', () => {
   const sample = `
 model = "gpt-5"

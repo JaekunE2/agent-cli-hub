@@ -172,6 +172,10 @@ function flowTopTasks(p) {
   return (p.tasks || []).filter((t) => !(t.parentId && allIds.has(t.parentId)));
 }
 
+function projectFlowKey(p) {
+  return p.scope?.number ? `${p.id}:${p.scope.number}` : p.id;
+}
+
 function projectFlow(p) {
   const ico = window.UI_ICO || {};
   const topTasks = flowTopTasks(p);
@@ -182,7 +186,7 @@ function projectFlow(p) {
   const dir = flowDir();
   const simplify = isFlowSimplified();
   const { hiddenCount } = computeFlowEdges(topTasks, simplify);
-  const savedPos = loadFlowPositions(p.id, dir);
+  const savedPos = loadFlowPositions(projectFlowKey(p), dir);
   const hasCustomPos = Object.keys(savedPos).some((id) => topTasks.some((t) => t.id === id));
 
   const flowNode = (t) => {
@@ -202,7 +206,7 @@ function projectFlow(p) {
         <button data-edit="${esc(t.id)}" class="pj-title">${esc(t.title)}</button>
       </div>
       ${typeof projectReviewNoteHTML === 'function' ? projectReviewNoteHTML(t, true) : ''}
-      ${projectStageActionHTML(t)}
+      ${projectStageActionHTML(t, p)}
     </article>`;
   };
 
@@ -229,7 +233,7 @@ function projectFlow(p) {
 function bindProjectFlow(p, gen) {
   const ico = window.UI_ICO || {};
   const generate = $('#flowGenerate');
-  if (generate) generate.onclick = () => projectForm(p);
+  if (generate) generate.onclick = () => p.scope?.version ? projectFollowupForm(p, false, p.scope.number) : projectForm(p);
   const viewport = $('#pjFlowViewport');
   const canvas = $('#pjFlowCanvas');
   const svg = canvas?.querySelector('svg');
@@ -241,7 +245,7 @@ function bindProjectFlow(p, gen) {
   const pos = {};
   const loadPositionsForDir = (dir) => {
     autoCoords = computeAutoFlowLayout(topTasks, dir).coords;
-    const svMap = loadFlowPositions(p.id, dir);
+    const svMap = loadFlowPositions(projectFlowKey(p), dir);
     for (const t of topTasks) {
       const sv = svMap[t.id];
       const au = autoCoords[t.id] || { x: 28, y: 28 };
@@ -514,7 +518,7 @@ function bindProjectFlow(p, gen) {
     dragState = null;
     if (canceled) { applyPositions(); drawEdges(); return; }
     if (moved) {
-      saveFlowPositions(p.id, pos, curDir);
+      saveFlowPositions(projectFlowKey(p), pos, curDir);
       suppressDragClick = true;
       const autoBtn = $('#flowAutoLayout');
       if (autoBtn && !autoBtn.textContent.includes('초기화')) autoBtn.innerHTML = `${ico.refresh || ''} 자동 정렬 (초기화)`;
@@ -650,7 +654,7 @@ function bindProjectFlow(p, gen) {
   const autoBtn = $('#flowAutoLayout');
   if (autoBtn) {
     autoBtn.onclick = () => {
-      saveFlowPositions(p.id, {}, curDir);
+      saveFlowPositions(projectFlowKey(p), {}, curDir);
       for (const t of topTasks) {
         const au = autoCoords[t.id] || { x: 28, y: 28 };
         pos[t.id] = { x: au.x, y: au.y };

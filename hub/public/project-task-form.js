@@ -18,9 +18,10 @@ function removeTaskCascade(p, taskId) {
   }));
 }
 
-function taskForm(p, task, focusAgent = false, defaultParentId = '') {
+function taskForm(p, task, focusAgent = false, defaultParentId = '', version = '') {
+  version = task?.version || version || p.scope?.number || '';
   const blockedParents = task ? taskDescendants(p.tasks, task.id) : new Set();
-  const parentChoices = p.tasks.filter((t) => !t.parentId && !blockedParents.has(t.id));
+  const parentChoices = p.tasks.filter((t) => !t.parentId && !blockedParents.has(t.id) && (!version || t.version === version));
   const curParentId = task ? (task.parentId || '') : (defaultParentId || '');
   const curKind = task ? (typeof taskKindOf === 'function' ? taskKindOf(task) : (task.kind || 'dev')) : 'dev';
   const kindsList = typeof projectTaskKinds !== 'undefined'
@@ -47,6 +48,8 @@ function taskForm(p, task, focusAgent = false, defaultParentId = '') {
       }
       const selected = f.get('account');
       const next = {
+        ...task,
+        version: task?.version || version,
         id: task?.id || newTaskId(),
         stage: task?.stage || 'planned',
         kind: String(f.get('kind') || 'dev'),
@@ -58,7 +61,7 @@ function taskForm(p, task, focusAgent = false, defaultParentId = '') {
         effort: String(f.get('effort') || ''),
         parentId: String(f.get('parentId') || ''),
         termId: '',
-        after: f.getAll('after'),
+        after: [...f.getAll('after'), ...(task?.after || []).filter((id) => !p.tasks.some((item) => item.id === id))],
       };
       return saveProject({ ...p, tasks: task ? p.tasks.map(t => t.id === task.id ? next : t) : [...p.tasks, next] });
     }, task ? '<button class="danger ghost" value="delete" formnovalidate>작업 삭제</button>' : '');

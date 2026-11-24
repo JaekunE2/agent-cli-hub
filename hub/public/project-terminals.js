@@ -21,8 +21,15 @@ function effectiveTaskConfig(p, task) {
 
 function projectTaskTerm(p, task) {
   const { agent } = effectiveTaskConfig(p, task);
-  const sameTask = (state.terms || []).filter((t) => t.exited === null && t.projectTask?.projectId === p.id && t.projectTask.taskId === task.id);
+  const workspace = p.scope?.version?.workspace;
+  const sameTask = (state.terms || []).filter((t) => t.exited === null && t.projectTask?.projectId === p.id && t.projectTask.taskId === task.id
+    && (!workspace || sameProjectFolder(t.cwd, workspace)));
   return sameTask.findLast((t) => t.agent === agent) || sameTask.at(-1) || null;
+}
+
+function sameProjectFolder(a, b) {
+  const normalize = (dir) => String(dir || '').replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
+  return normalize(a) === normalize(b);
 }
 
 function projectCliBadgeHTML(p, task) {
@@ -40,17 +47,19 @@ function projectCliBadgeHTML(p, task) {
 function projectReviewBadgeHTML(task) {
   const st = task?.reviewStatus || '';
   const wtBadge = task?.worktreePath ? `<span class="badge" title="${esc(task.worktreePath)}">🌿 격리</span>` : '';
-  if (!st && !task?.retryCount && !task?.reviewPaused) return wtBadge;
+  const versionBadge = task?.version ? `<span class="badge">v${esc(task.version)}</span>` : '';
+  if (!st && !task?.retryCount && !task?.reviewPaused) return versionBadge + wtBadge;
   const tip = task?.reviewNote ? ` title="${esc(task.reviewNote)}"` : '';
   let rev = '';
   if (st === 'reviewing') rev = `<span class="badge warn"${tip}>🔍 자동 검토 중</span>`;
-  else if (st === 'merge-blocked') rev = `<span class="badge warn"${tip}>병합 대기</span>`;
+  else if (st === 'merge-pending') rev = `<span class="badge warn"${tip}>병합 대기</span>`;
+  else if (st === 'merge-blocked') rev = `<span class="badge lim"${tip}>병합 차단</span>`;
   else if (st === 'approved') rev = `<span class="badge ok"${tip}>✓ 검토 승인</span>`;
   else if (st === 'rejected' && task.stage === 'doing' && !task.reviewPaused && task.retryCount > 0) {
     rev = `<span class="badge warn"${tip}>↻ 반려 재시도 ${task.retryCount}회</span>`;
   } else if (st === 'rejected') rev = `<span class="badge lim"${tip}>⚠ 검토 반려</span>`;
   else if (st === 'error') rev = `<span class="badge lim"${tip}>⚠ 검토 오류</span>`;
-  return `${rev}${task.reviewPaused ? '<span class="badge warn">수정 대기</span>' : ''}${wtBadge}`;
+  return `${versionBadge}${rev}${task.reviewPaused && !st.startsWith('merge-') ? '<span class="badge warn">수정 대기</span>' : ''}${wtBadge}`;
 }
 
 function projectTaskTextHTML(text) {
@@ -80,9 +89,12 @@ function projectReviewNoteHTML(task, compact = false) {
   } else if (st === 'rejected') {
     tone = 'danger';
     label = '마지막 검토 반려 사유';
-  } else if (st === 'merge-blocked') {
+  } else if (st === 'merge-pending') {
     tone = 'warn';
     label = '검토 통과 · 병합 대기';
+  } else if (st === 'merge-blocked') {
+    tone = 'danger';
+    label = '검토 통과 · 병합 차단';
   } else if (st === 'error') {
     tone = 'danger';
     label = '검토 실행 오류';
@@ -114,8 +126,9 @@ function projectLiveStatusBadgeHTML(p, task) {
 }
 
 function projectStartBtnHTML(p, task) {
+  if (p.scope?.version?.snapshotId && !p.scope.version.workspace) return '';
   const term = projectTaskTerm(p, task);
-  const action = projectStageActionHTML(task);
+  const action = projectStageActionHTML(task, p);
   if (action) return projectLiveStatusBadgeHTML(p, task) + action;
   if (!term && task.stage === 'done') return '';
   if (term) {
@@ -124,9 +137,11 @@ function projectStartBtnHTML(p, task) {
   return `<button class="btn-sm" data-start-task="${esc(task.id)}">작업 시작</button>`;
 }
 
-function projectStageActionHTML(task) {
+function projectStageActionHTML(task, p) {
+  if (p?.scope?.version?.snapshotId && !p.scope.version.workspace) return '';
   const id = esc(task.id);
   if (task.stage === 'doing') return `<button type="button" class="btn-sm primary" data-start-task="${id}">작업 다시 진행</button>`;
+  if (task.stage === 'review' && task.reviewStatus?.startsWith('merge-')) return `<button type="button" class="btn-sm" data-start-task="${id}">병합 재시도</button>`;
   if (task.stage === 'review') return `<button type="button" class="btn-sm primary" data-start-task="${id}"${task.reviewStatus === 'reviewing' ? ' disabled' : ''}>${task.reviewStatus === 'reviewing' ? '검토 중…' : '재검토'}</button>`;
   return '';
 }
@@ -135,12 +150,16 @@ async function requestProjectReview(p, task, button, drawer) {
   if (button.disabled) return;
   const label = button.textContent;
   button.disabled = true;
-  button.textContent = '검토 요청 중…';
+  const retryMerge = task.reviewStatus?.startsWith('merge-');
+  button.textContent = retryMerge ? '병합 요청 중…' : '검토 요청 중…';
   try {
-    const result = await api('/api/projects/autopilot/complete', { method: 'POST', body: { projectId: p.id, taskId: task.id, force: true, async: true } });
+    const result = await api('/api/projects/autopilot/complete', { method: 'POST', body: { projectId: p.id, taskId: task.id, force: true, async: !retryMerge, retryMerge } });
     if (result.error) throw new Error(result.error);
     drawer?.close();
-    toast('자동 재검토를 시작했습니다');
+    if (retryMerge) {
+      if (result.approved) toast('병합을 완료했습니다.');
+      else if (result.reason) toast(result.reason, 5000, 'danger');
+    } else toast('자동 재검토를 시작했습니다');
     await refreshProjects();
     if (state.sel.kind === 'projects' && state.sel.id === p.id) openProject(p.id, projectTab);
   } catch (error) {
@@ -151,6 +170,7 @@ async function requestProjectReview(p, task, button, drawer) {
 }
 
 function runProjectCardAction(p, task, button) {
+  if (p.scope?.version?.snapshotId && !p.scope.version.workspace) return toast('이 버전에서 이어 작업을 먼저 시작하세요.', 5000, 'danger');
   if (task.stage === 'review') return requestProjectReview(p, task, button);
   return startProjectTask(p, task, button, { retry: task.stage === 'doing' });
 }
@@ -187,6 +207,7 @@ function collapseBtnHTML(collapsed, taskId) {
 }
 
 async function startProjectTask(p, task, button, { retry = false } = {}) {
+  if (p.scope?.version?.snapshotId && !p.scope.version.workspace) return toast('이 버전에서 이어 작업을 먼저 시작하세요.', 5000, 'danger');
   const gen = viewGen;
   if (button) button.disabled = true;
   try {
@@ -196,7 +217,7 @@ async function startProjectTask(p, task, button, { retry = false } = {}) {
     // Auto-advance task stage from 'planned' → 'doing' when starting work
     if (!current && task.stage === 'planned') {
       const nextTasks = p.tasks.map((x) => (x.id === task.id ? { ...x, stage: 'doing' } : x));
-      api('/api/projects', { method: 'POST', body: { ...p, tasks: nextTasks } })
+      api('/api/projects', { method: 'POST', body: projectDraft({ ...p, tasks: nextTasks }) })
         .then(() => { if (typeof refreshProjects === 'function') refreshProjects(); })
         .catch(() => {});
     }
@@ -205,7 +226,7 @@ async function startProjectTask(p, task, button, { retry = false } = {}) {
     if (current || retry) {
       if (retry) await refreshProjects();
       if (gen !== viewGen) return;
-      select({ kind: 'term', id: t.id, project: p.id });
+      select({ kind: 'term', id: t.id, project: p.id, projectVersion: task.version || '', projectTab });
     } else {
       if (typeof refreshProjects === 'function') await refreshProjects();
       if (gen === viewGen && state.sel.kind === 'projects') openProject(p.id, projectTab);
@@ -216,13 +237,20 @@ async function startProjectTask(p, task, button, { retry = false } = {}) {
 }
 
 function projectTerminals(p, gen) {
-  const terms = state.terms.filter(t => t.exited === null && t.projectTask?.projectId === p.id);
+  const taskFor = (term) => {
+    if (term.projectTask) return term.projectTask.projectId === p.id
+      ? p.tasks.find((task) => task.id === term.projectTask.taskId) : null;
+    const session = resolveTermSessionId(term);
+    return session && p.tasks.find((task) => (p.subChats?.[task.id] || []).some((chat) => chat.sessionId === session));
+  };
+  const workspace = p.scope?.version?.workspace;
+  const terms = state.terms.filter(t => t.exited === null && taskFor(t) && (!workspace || sameProjectFolder(t.cwd, workspace)));
   const host = $('#projectContent');
   const stageMap = new Map(projectStages);
-  const nextTask = p.tasks.find((t) => t.stage === 'planned' && !t.parentId && (t.after || []).every((id) => p.tasks.some((prev) => prev.id === id && prev.stage === 'done')));
+  const nextTask = p.tasks.find((t) => t.stage === 'planned' && !t.parentId && (t.after || []).every((id) => (p.scope?.allTasks || p.tasks).some((prev) => prev.id === id && prev.stage === 'done')));
   host.innerHTML = terms.length
     ? `<div class="grid" style="padding:0">${terms.map((t) => {
-      const task = p.tasks.find((x) => x.id === t.projectTask?.taskId);
+      const task = taskFor(t);
       const badge = task ? `<span class="badge">${esc(stageMap.get(task.stage) || task.stage)}</span>` : '';
       return termCardHTML(t, badge);
     }).join('')}</div>`
@@ -235,7 +263,7 @@ function projectTerminals(p, gen) {
   for (const card of host.querySelectorAll('[data-term]')) {
     card.tabIndex = 0;
     card.setAttribute('role', 'button');
-    card.onclick = () => select({ kind: 'term', id: card.dataset.term, project: p.id });
+    card.onclick = () => select({ kind: 'term', id: card.dataset.term, project: p.id, projectVersion: p.scope?.number || '', projectTab: 'terms' });
     card.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); card.click(); } };
   }
   bindMiniTerminals(gen, terms, []);

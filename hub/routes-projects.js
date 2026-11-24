@@ -4,10 +4,13 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
+const gitVersion = require('util').promisify(execFile);
 
 const { resolveTaskConfig } = require('./project-harness');
 const { runProjectAutopilot, completeAutopilotTask } = require('./project-autopilot');
+const { versionFolder, copyVersion, versionWorkspace } = require('./version-files');
+const { VERSION_RE } = require('./project-validation');
 
 const projectAgents = ['codex', 'claude', 'agy', 'cursor'];
 
@@ -21,11 +24,59 @@ function createProjectRoutes(hub) {
   } = hub;
 
   const PROJECTS_DIR = path.resolve(config.projectsDir || path.join(baseDir, '..', 'projects'));
+  const VERSION_DIR = path.resolve(config.versionStorageDir || path.join(baseDir, '..', '..', 'agent-cli-hub-versions'));
+  const copyingVersions = new Set();
   let projectPlanning = false;
   let projectPlanState = { active: false, agent: '', name: '', startedAt: 0, stage: '', pct: 0, logs: [] };
   const taskChatActive = new Map();
   const pendingPlanRecords = new Map();
   const deletingProjects = new Set();
+
+  function findVersion(projectId, number) {
+    if (!number) return;
+    const version = projects.list().find((p) => p.id === projectId)?.versions?.find((item) => item.number === number);
+    if (!version) throw new Error('프로젝트 버전을 찾을 수 없습니다.');
+    return version;
+  }
+
+  async function changeVersionFiles(project, draft) {
+    if (!project || draft.revision !== project.revision) throw new Error('프로젝트가 변경되었습니다. 새로고침 후 다시 시도하세요.');
+    const versions = project.versions || [];
+    const restoring = Boolean(draft.restoreVersion);
+    const number = restoring ? draft.restoreVersion : draft.snapshotVersion;
+    if (typeof number !== 'string' || !VERSION_RE.test(number)) throw new Error('버전 번호를 확인하세요.');
+    const existing = versions.find((item) => item.number === number);
+    if (restoring && !existing?.snapshotId) throw new Error('저장된 버전 파일을 찾을 수 없습니다.');
+    if (restoring && existing.workspace) {
+      if (!fs.statSync(existing.workspace, { throwIfNoEntry: false })?.isDirectory()) throw new Error('버전 작업 폴더를 찾을 수 없습니다.');
+      return project;
+    }
+    if (!restoring && existing) throw new Error('이미 사용 중인 버전 번호입니다.');
+    const goal = existing?.goal || (typeof draft.versionGoal === 'string' && draft.versionGoal.trim()) || project.goal || project.name;
+    if (goal.length > 6000) throw new Error('버전 목표를 확인하세요.');
+    if (draft.sourceVersion && !versions.some((item) => item.number === draft.sourceVersion)) throw new Error('프로젝트 버전을 찾을 수 없습니다.');
+    const snapshotDir = versionFolder(path.join(VERSION_DIR, 'snapshots'), project.id, number);
+    const snapshotId = existing?.snapshotId || crypto.randomUUID();
+    const source = restoring ? path.join(snapshotDir, snapshotId) : versionWorkspace(project, draft.sourceVersion);
+    if (!source) throw new Error('이 버전에서 이어 작업을 먼저 시작하세요.');
+    const destination = restoring
+      ? path.join(versionFolder(path.join(VERSION_DIR, 'workspaces'), project.id, number), crypto.randomUUID())
+      : path.join(snapshotDir, snapshotId);
+    if (copyingVersions.has(project.id)) throw new Error('버전 파일을 처리 중입니다. 잠시 기다려 주세요.');
+    copyingVersions.add(project.id);
+    try {
+      await copyVersion(source, destination);
+      const version = { number, goal, createdAt: Date.now(), ...existing, snapshotId, ...(restoring ? { workspace: destination } : {}) };
+      try {
+        return projects.save({ ...project, versions: existing ? versions.map((item) => item === existing ? version : item) : [...versions, version] });
+      } catch (error) {
+        await fs.promises.rm(destination, { recursive: true, force: true });
+        throw error;
+      }
+    } finally {
+      copyingVersions.delete(project.id);
+    }
+  }
 
   function isInsideProjectsDir(dir) {
     if (!dir || !path.isAbsolute(dir)) return false;
@@ -288,12 +339,13 @@ function createProjectRoutes(hub) {
       const task = project?.tasks.find((x) => x.id === b.taskId);
       if (!project || !task) { send(res, 404, { error: 'Project 작업을 찾을 수 없습니다.' }); return true; }
       if (!project.autopilot && !b.force) { send(res, 200, { ok: true, skipped: true, started: [] }); return true; }
+      const options = { force: Boolean(b.force), retryMerge: b.retryMerge === true };
       if (b.async) {
-        completeAutopilotTask(hub, project.id, task.id, { force: Boolean(b.force) }).catch((e) => console.error('[autopilot-rereview-manual]', project.id, task.id, e?.message || e));
+        completeAutopilotTask(hub, project.id, task.id, options).catch((e) => console.error('[autopilot-rereview-manual]', project.id, task.id, e?.message || e));
         send(res, 200, { ok: true, queued: true, project: hub.projects.list().find((x) => x.id === project.id) || project });
         return true;
       }
-      const autoRes = await completeAutopilotTask(hub, project.id, task.id, { force: Boolean(b.force) });
+      const autoRes = await completeAutopilotTask(hub, project.id, task.id, options);
       send(res, 200, { ok: true, project: hub.projects.list().find((x) => x.id === project.id) || project, ...autoRes });
       return true;
     }
@@ -302,7 +354,8 @@ function createProjectRoutes(hub) {
       const pid = url.searchParams.get('projectId') || '';
       const name = url.searchParams.get('name') || '';
       try {
-        const f = hub.projectRefs?.readFile(pid, name);
+        const version = findVersion(pid, url.searchParams.get('version'));
+        const f = hub.projectRefs?.readFile(pid, name, version?.number);
         if (!f) { send(res, 404, { error: '참조 파일을 찾을 수 없습니다.' }); return true; }
         const mime = f.mime.startsWith('text/markdown') ? 'text/plain; charset=utf-8' : f.mime;
         res.writeHead(200, { 'content-type': mime, 'content-disposition': 'inline', 'cache-control': 'no-store', 'content-length': f.buf.length });
@@ -315,23 +368,26 @@ function createProjectRoutes(hub) {
       if (req.method === 'GET') {
         const pid = url.searchParams.get('projectId') || '';
         try {
-          const dir = hub.projectRefs.ensureDir(pid);
-          send(res, 200, { ok: true, dir, files: hub.projectRefs.list(pid) });
+          const version = findVersion(pid, url.searchParams.get('version'))?.number;
+          const dir = hub.projectRefs.ensureDir(pid, version);
+          send(res, 200, { ok: true, dir, files: hub.projectRefs.list(pid, version) });
         } catch (e) { send(res, 400, { error: e.message }); }
         return true;
       }
       if (req.method === 'POST') {
         const b = await body(req);
         try {
-          const file = hub.projectRefs.saveFile(b?.projectId, { name: b?.name, text: b?.text, contentBase64: b?.contentBase64 });
-          send(res, 200, { ok: true, file, dir: hub.projectRefs.dirOf(b?.projectId), files: hub.projectRefs.list(b?.projectId) });
+          const version = findVersion(b?.projectId, b?.version)?.number;
+          const file = hub.projectRefs.saveFile(b?.projectId, { name: b?.name, text: b?.text, contentBase64: b?.contentBase64 }, version);
+          send(res, 200, { ok: true, file, dir: hub.projectRefs.dirOf(b?.projectId, version), files: hub.projectRefs.list(b?.projectId, version) });
         } catch (e) { send(res, 400, { error: e.message }); }
         return true;
       }
       if (req.method === 'DELETE') {
         const b = await body(req);
         try {
-          const files = hub.projectRefs.deleteFile(b?.projectId, b?.name);
+          const version = findVersion(b?.projectId, b?.version)?.number;
+          const files = hub.projectRefs.deleteFile(b?.projectId, b?.name, version);
           send(res, 200, { ok: true, files });
         } catch (e) { send(res, 400, { error: e.message }); }
         return true;
@@ -377,16 +433,44 @@ function createProjectRoutes(hub) {
       const pid = url.searchParams.get('id') || '';
       const rawCwd = url.searchParams.get('cwd') || '';
       const proj = pid ? projects.list().find((x) => x.id === pid) : null;
-      const targetDir = rawCwd || proj?.cwd || '';
-      if (!targetDir) { send(res, 400, { error: '분석할 작업 폴더를 찾을 수 없습니다.' }); return true; }
-      send(res, 200, { ok: true, floorplan: scanFloorplan(targetDir) });
+      let temporary;
+      try {
+        const version = findVersion(pid, url.searchParams.get('version'));
+        const commit = version?.completedCommit || version?.baseCommit;
+        let targetDir = rawCwd || proj?.cwd || '';
+        if (version) {
+          targetDir = version.workspace || (version.snapshotId
+            ? path.join(versionFolder(path.join(VERSION_DIR, 'snapshots'), pid, version.number), version.snapshotId) : '');
+          if (!targetDir && commit) {
+            const tempRoot = await fs.promises.realpath(os.tmpdir());
+            temporary = await fs.promises.mkdtemp(path.join(tempRoot, 'hub-git-floorplan-'));
+            const archive = path.join(temporary, 'version.tar');
+            targetDir = path.join(temporary, 'source');
+            await fs.promises.mkdir(targetDir);
+            const options = { cwd: proj.cwd, timeout: 15000, windowsHide: true };
+            await gitVersion('git', ['archive', '--format=tar', '-o', archive, commit], options);
+            await gitVersion('tar', ['-xf', archive, '-C', targetDir], options);
+          }
+        }
+        if (!targetDir && !version) throw new Error('분석할 작업 폴더를 찾을 수 없습니다.');
+        const floorplan = scanFloorplan(targetDir);
+        if (temporary) floorplan.rootDir = `${proj.cwd} @ ${commit.slice(0, 12)}`;
+        send(res, 200, { ok: true, floorplan });
+      } catch (error) { send(res, 400, { error: error.message }); }
+      finally {
+        if (temporary) await fs.promises.rm(temporary, { recursive: true, force: true }).catch(() => {});
+      }
       return true;
     }
 
     if (p === '/api/projects/floorplan/report' && req.method === 'POST') {
       const b = await body(req);
       const proj = b.projectId ? projects.list().find((x) => x.id === b.projectId) : null;
-      const targetDir = path.resolve(String(b.cwd || proj?.cwd || ''));
+      let version;
+      try { version = findVersion(b.projectId, b.version); }
+      catch (error) { send(res, 400, { error: error.message }); return true; }
+      const directory = version ? version.workspace : (b.cwd || proj?.cwd);
+      const targetDir = directory ? path.resolve(String(directory)) : '';
       if (!targetDir || !fs.statSync(targetDir, { throwIfNoEntry: false })?.isDirectory()) {
         send(res, 400, { error: '보고서를 저장할 작업 폴더를 찾을 수 없습니다.' });
         return true;
@@ -429,8 +513,12 @@ function createProjectRoutes(hub) {
         await hub.ensureAgySwap(auth);
         dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-project-sub-'));
         const exe = effAgent === 'agy' ? hub.agyExe() : effAgent === 'claude' ? 'claude.exe' : hub.codexExe();
-        try { unifiedVault.prepareLaunch(effAgent, { resume: false }); } catch {}
-        const { tasks, sessionId } = await generateSubtasks(exe, project, task, dir, { ...hub.cleanEnv(), ...auth.env }, { agent: effAgent, model: effModel, effort: effEffort, onProgress });
+        const cwd = versionWorkspace(project, task.version);
+        if (!cwd || (cwd !== project.cwd && !fs.existsSync(cwd))) throw new Error('버전 작업 폴더를 열어주세요.');
+        const env = { ...hub.cleanEnv(), ...auth.env };
+        const prep = unifiedVault.prepareLaunch(effAgent, { env });
+        projects.recordVaultRun(project.id, [task.id], 'plan', effAgent, prep.vault);
+        const { tasks, sessionId } = await generateSubtasks(exe, { ...project, cwd }, task, dir, { ...env, ...prep.env }, { agent: effAgent, model: effModel, effort: effEffort, launchArgs: prep.extraArgs, onProgress });
         if (recordUuid(sessionId)) projects.remember([{ projectId: project.id, taskId: task.id, sessionId, agent: effAgent }]);
         projectPlanState.stage = `서브 작업 ${tasks.length}개 생성 완료`;
         projectPlanState.pct = 100;
@@ -465,9 +553,14 @@ function createProjectRoutes(hub) {
         send(res, 409, { error: '프로젝트 또는 작업 폴더가 변경되었습니다. 후속 작업 설계를 다시 열어주세요.' });
         return true;
       }
-      const draft = existing ? { ...b, existingPlan: {
-        goal: existing.goal,
-        tasks: existing.tasks.slice(-40).map(({ title, stage }) => ({ title, stage })),
+      const version = b.projectVersion && existing?.versions?.find((x) => x.number === b.projectVersion);
+      if (b.projectVersion && !version) { send(res, 400, { error: '프로젝트 버전을 찾을 수 없습니다.' }); return true; }
+      const cwd = existing ? versionWorkspace(existing, b.projectVersion) : b.cwd;
+      if (!cwd || (version?.snapshotId && !fs.existsSync(cwd))) { send(res, 409, { error: '버전 작업 폴더를 열어주세요.' }); return true; }
+      const draft = existing ? { ...b, cwd, existingPlan: {
+        goal: version?.goal || existing.goal,
+        ...(version ? { version: version.number } : {}),
+        tasks: existing.tasks.filter((task) => !version || task.version === version.number).slice(-40).map(({ title, stage }) => ({ title, stage })),
       } } : b;
       let auth;
       try { auth = hub.projectAccounts.resolve(b.agent, b.account); } catch (e) { send(res, 400, { error: e.message }); return true; }
@@ -484,13 +577,16 @@ function createProjectRoutes(hub) {
         await hub.ensureAgySwap(auth);
         dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-project-plan-'));
         const exe = b.agent === 'agy' ? hub.agyExe() : b.agent === 'claude' ? 'claude.exe' : hub.codexExe();
-        try { unifiedVault.prepareLaunch(b.agent, { resume: false }); } catch {}
-        const { tasks, sessionId } = await generatePlan(exe, draft, dir, { ...hub.cleanEnv(), ...auth.env }, { onProgress });
+        const env = { ...hub.cleanEnv(), ...auth.env };
+        const prep = unifiedVault.prepareLaunch(b.agent, { env });
+        const at = Date.now();
+        const { tasks, sessionId } = await generatePlan(exe, draft, dir, { ...env, ...prep.env }, { launchArgs: prep.extraArgs, onProgress });
         projectPlanState.stage = `작업 ${tasks.length}개 생성 완료`;
         projectPlanState.pct = 100;
         const now = Date.now();
         for (const [key, record] of pendingPlanRecords) if (record.expires <= now) pendingPlanRecords.delete(key);
-        if (recordUuid(sessionId)) pendingPlanRecords.set(tasks[0].id, { sessionId, agent: b.agent, expires: now + 60 * 60_000 });
+        const record = { sessionId: recordUuid(sessionId) ? sessionId : '', agent: b.agent, vault: prep.vault, at, expires: now + 60 * 60_000 };
+        for (const task of tasks) pendingPlanRecords.set(task.id, record);
         send(res, 200, { tasks });
       } catch (e) {
         console.error('[project-plan]', b.agent, e.message);
@@ -508,7 +604,7 @@ function createProjectRoutes(hub) {
         const projectId = url.searchParams.get('projectId') || '';
         const taskId = url.searchParams.get('taskId') || '';
         const act = taskChatActive.get(`${projectId}:${taskId}`) || null;
-        send(res, 200, { chats: projects.listSubChats(projectId, taskId), active: act ? { ...act, elapsedMs: Date.now() - act.startedAt } : null });
+        send(res, 200, { chats: projects.listSubChats(projectId, taskId), vaultRuns: projects.vaultRuns(projectId, taskId), active: act ? { ...act, elapsedMs: Date.now() - act.startedAt } : null });
         return true;
       }
       if (req.method === 'DELETE') {
@@ -540,7 +636,9 @@ function createProjectRoutes(hub) {
         try { auth = hub.projectAccounts.resolve(effAgent, effAccount); } catch (e) { send(res, 400, { error: e.message }); return true; }
 
         ensureProjectDir(project.cwd);
-        const workCwd = (project.cwd && fs.existsSync(project.cwd)) ? project.cwd : os.homedir();
+        const cwd = versionWorkspace(project, task.version);
+        if (!cwd || (cwd !== project.cwd && !fs.existsSync(cwd))) { send(res, 409, { error: '버전 작업 폴더를 열어주세요.' }); return true; }
+        const workCwd = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
         const nowIso = new Date().toISOString();
         chat = chat
           ? { ...chat, agent: effAgent, account: effAccount || '', model: effModel || '', effort: effEffort || '' }
@@ -553,11 +651,13 @@ function createProjectRoutes(hub) {
         const exe = effAgent === 'agy' ? hub.agyExe() : effAgent === 'claude' ? 'claude.exe' : hub.codexExe();
         try {
           await hub.ensureAgySwap(auth);
-          try { unifiedVault.prepareLaunch(effAgent, { resume: !!chat.sessionId }); } catch {}
+          const env = { ...hub.cleanEnv(), ...auth.env };
+          const prep = unifiedVault.prepareLaunch(effAgent, { env, resume: !!chat.sessionId });
+          projects.recordVaultRun(project.id, [task.id], 'subchat', effAgent, prep.vault);
           const resTurn = await runTaskSubChatTurn({
-            exe, agent: effAgent, cwd: workCwd, env: { ...hub.cleanEnv(), ...auth.env },
+            exe, agent: effAgent, cwd: workCwd, env: { ...env, ...prep.env }, launchArgs: prep.extraArgs,
             model: effModel, effort: effEffort, sessionId: chat.sessionId, prompt, project, task, harnessState,
-            refsBlock: hub.projectRefs?.promptBlock ? hub.projectRefs.promptBlock(project.id) : '',
+            refsBlock: hub.projectRefs?.promptBlock ? hub.projectRefs.promptBlock(project.id, task.version) : '',
             onProgress: (ev) => {
               if (ev?.stage) actState.stage = ev.stage;
               if (ev?.log) actState.logs = [...actState.logs, ev.log].slice(-5);
@@ -598,6 +698,7 @@ function createProjectRoutes(hub) {
         const project = projects.list().find((pr) => pr.id === b.id);
         if (!project || project.revision !== b.revision) { send(res, 409, { error: 'Project가 변경되었습니다. 새로고침 후 다시 삭제하세요.' }); return true; }
         if (deletingProjects.has(project.id)) { send(res, 409, { error: 'Project 기록을 삭제 중입니다.' }); return true; }
+        if (copyingVersions.has(project.id)) { send(res, 409, { error: '버전 파일을 처리 중입니다. 잠시 기다려 주세요.' }); return true; }
         deletingProjects.add(project.id);
         try { send(res, 200, { removed: await eraseProject(project, b.stopRunning) }); }
         catch (e) { send(res, 409, { error: e.message }); }
@@ -609,6 +710,53 @@ function createProjectRoutes(hub) {
           const draft = await body(req);
           if (deletingProjects.has(draft.id)) { send(res, 409, { error: 'Project 기록을 삭제 중입니다.' }); return true; }
           const previous = draft.id && projects.list().find((pr) => pr.id === draft.id);
+          if (draft.snapshotVersion || draft.restoreVersion) {
+            const project = await changeVersionFiles(previous, draft);
+            hub.overviewStale?.();
+            send(res, 200, { project, autoStarted: [] });
+            return true;
+          }
+          if (draft.editVersionGoal) {
+            const version = previous?.versions?.find((item) => item.number === draft.editVersionGoal);
+            if (!version) throw new Error('프로젝트 버전을 찾을 수 없습니다.');
+            const project = projects.save({ ...previous, revision: draft.revision,
+              versions: previous.versions.map((item) => item === version ? { ...item, goal: draft.versionGoal } : item) });
+            send(res, 200, { project, autoStarted: [] });
+            return true;
+          }
+          if (draft.finalizeVersion) {
+            const version = previous?.versions?.find((x) => x.number === draft.finalizeVersion);
+            if (!version) throw new Error('프로젝트 버전을 찾을 수 없습니다.');
+            if (version.completedCommit) { send(res, 200, { project: previous, autoStarted: [] }); return true; }
+            const versionTasks = previous.tasks.filter((task) => task.version === version.number);
+            if (!versionTasks.length || versionTasks.some((task) => task.stage !== 'done')) throw new Error('버전에 속한 작업을 모두 완료하세요.');
+            if (version.snapshotId) throw new Error('파일로 저장한 버전입니다.');
+            const gitOptions = { cwd: previous.cwd, timeout: 5000, windowsHide: true };
+            const head = await gitVersion('git', ['rev-parse', 'HEAD'], gitOptions).then((r) => r.stdout.trim(), () => '');
+            if (!head) throw new Error('버전을 확정할 Git 커밋을 찾을 수 없습니다.');
+            if (version.baseCommit && !await gitVersion('git', ['merge-base', '--is-ancestor', version.baseCommit, head], gitOptions).then(() => true, () => false)) {
+              throw new Error('현재 Git 커밋이 버전 시작 커밋을 포함하지 않습니다.');
+            }
+            const status = await gitVersion('git', ['status', '--porcelain', '--untracked-files=normal', '--ignore-submodules=none'], gitOptions);
+            if (status.stdout.trim() || head !== (await gitVersion('git', ['rev-parse', 'HEAD'], gitOptions)).stdout.trim()) {
+              throw new Error('버전을 확정하기 전에 작업 폴더의 Git 변경을 커밋하세요.');
+            }
+            const project = projects.save({ ...previous, revision: draft.revision,
+              versions: previous.versions.map((x) => x === version ? { ...x, completedCommit: head } : x) });
+            hub.overviewStale?.();
+            send(res, 200, { project, autoStarted: [] });
+            return true;
+          }
+          if (previous && Array.isArray(draft.versions)) {
+            const before = new Map((previous.versions || []).map((version) => [version.number, version]));
+            const head = draft.versions.some((version) => version && !before.has(version.number))
+              ? await gitVersion('git', ['rev-parse', 'HEAD'], { cwd: previous.cwd, timeout: 5000, windowsHide: true }).then((r) => r.stdout.trim(), () => '')
+              : '';
+            draft.versions = [...before.values(), ...draft.versions
+              .filter((version) => !version || !before.has(version.number))
+              .map((version) => version && { number: version.number, goal: version.goal, createdAt: Date.now(), baseCommit: head, completedCommit: '' })];
+          } else if (previous) draft.versions = previous.versions || [];
+          else if (Array.isArray(draft.versions)) draft.versions = draft.versions.map((version) => version && { number: version.number, goal: version.goal });
           if (previous && Array.isArray(draft.tasks)) {
             const byId = new Map(previous.tasks.map((task) => [task.id, task]));
             draft.tasks = draft.tasks.map((task) => {
@@ -618,11 +766,17 @@ function createProjectRoutes(hub) {
           }
           const project = projects.save(draft);
           ensureProjectDir(project.cwd);
+          const planRuns = new Map();
           for (const task of project.tasks) {
             const record = pendingPlanRecords.get(task.id);
             if (!record || record.expires <= Date.now()) continue;
-            projects.remember([{ projectId: project.id, sessionId: record.sessionId, agent: record.agent }]);
+            if (!planRuns.has(record)) planRuns.set(record, { taskIds: [], version: task.version });
+            planRuns.get(record).taskIds.push(task.id);
             pendingPlanRecords.delete(task.id);
+          }
+          for (const [record, { taskIds, version }] of planRuns) {
+            if (record.sessionId) projects.remember([{ projectId: project.id, sessionId: record.sessionId, version, agent: record.agent }]);
+            projects.recordVaultRun(project.id, taskIds, 'plan', record.agent, record.vault, record.at);
           }
           let autoStarted = [];
           if (project.autopilot) {

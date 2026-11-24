@@ -6,6 +6,26 @@ const { sessionStartupBlock } = require('../term-manager');
 
 const noopSleep = () => Promise.resolve();
 
+test('remote console resubmits an unchanged Codex draft without pasting it twice', async () => {
+  const text = 'Check the project';
+  const writes = [];
+  const { handleSessionRoutes } = createSessionRoutes({
+    consoleInputAt: new Map(), sleep: noopSleep, consoleSubmitDelay: () => 0,
+    helperCall: async ({ op, keys, text: payload }) => {
+      if (op === 'read') {
+        const screen = writes.length === 3 ? '• Working (esc to interrupt)' : writes.length ? '› [Pasted Content 17 chars]' : '› Ask Codex to do anything';
+        return { ok: true, lines: [screen] };
+      }
+      writes.push(payload || keys[0]);
+      return { ok: true };
+    },
+  });
+  await handleSessionRoutes('/api/console/send', null, { method: 'POST' }, null,
+    async () => ({ pid: 12, text, submit: true }),
+    (_res, status, payload) => { assert.equal(status, 200); assert.equal(payload.ok, true); }, () => true);
+  assert.deepEqual(writes, [text, 'enter', 'enter']);
+});
+
 test('chat submission sends multiline Codex text once and retries only Enter', async () => {
   const input = 'first line\nsecond line';
   const term = { id: '1', exited: null };

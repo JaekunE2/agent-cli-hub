@@ -1,6 +1,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const { VERSION_RE } = require('./project-validation');
 
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp']);
 const MIME_BY_EXT = {
@@ -36,16 +37,20 @@ function sanitizeFileName(name) {
  * usable by both users (via UI) and LLM tasks (via filesystem & prompt instructions).
  */
 function createProjectRefsStore(rootDir) {
-  const dirOf = (projectId) => path.join(rootDir, sanitizeId(projectId));
+  const dirOf = (projectId, version = '') => {
+    if (version && !VERSION_RE.test(version)) throw new Error('버전 번호를 확인하세요.');
+    const dir = path.join(rootDir, sanitizeId(projectId));
+    return version ? path.join(dir, 'versions', version) : dir;
+  };
 
-  function ensureDir(projectId) {
-    const dir = dirOf(projectId);
+  function ensureDir(projectId, version) {
+    const dir = dirOf(projectId, version);
     fs.mkdirSync(dir, { recursive: true });
     return dir;
   }
 
-  function list(projectId) {
-    const dir = dirOf(projectId);
+  function list(projectId, version) {
+    const dir = dirOf(projectId, version);
     let ents;
     try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return []; }
     const out = [];
@@ -68,8 +73,8 @@ function createProjectRefsStore(rootDir) {
     return out.sort((a, b) => b.mtime - a.mtime);
   }
 
-  function saveFile(projectId, { name, text, contentBase64 } = {}) {
-    const dir = ensureDir(projectId);
+  function saveFile(projectId, { name, text, contentBase64 } = {}, version) {
+    const dir = ensureDir(projectId, version);
     const safeName = sanitizeFileName(name);
     const dest = path.join(dir, safeName);
     if (contentBase64 != null && contentBase64 !== '') {
@@ -92,8 +97,8 @@ function createProjectRefsStore(rootDir) {
     };
   }
 
-  function readFile(projectId, name) {
-    const dir = dirOf(projectId);
+  function readFile(projectId, name, version) {
+    const dir = dirOf(projectId, version);
     const safeName = sanitizeFileName(name);
     const full = path.join(dir, safeName);
     if (!fs.existsSync(full)) return null;
@@ -106,17 +111,17 @@ function createProjectRefsStore(rootDir) {
     };
   }
 
-  function deleteFile(projectId, name) {
-    const dir = dirOf(projectId);
+  function deleteFile(projectId, name, version) {
+    const dir = dirOf(projectId, version);
     const safeName = sanitizeFileName(name);
     const full = path.join(dir, safeName);
     if (fs.existsSync(full)) fs.unlinkSync(full);
-    return list(projectId);
+    return list(projectId, version);
   }
 
-  function promptBlock(projectId) {
-    const dir = ensureDir(projectId);
-    const files = list(projectId);
+  function promptBlock(projectId, version) {
+    const dir = ensureDir(projectId, version);
+    const files = list(projectId, version);
     const fileLines = files.length
       ? files.slice(0, 25).map((f) => `- ${f.name} (${f.isImage ? '이미지' : '파일'}, ${f.size}B)`).join('\n')
       : '- (현재 저장된 참조 파일 없음)';

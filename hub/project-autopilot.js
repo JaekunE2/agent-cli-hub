@@ -6,6 +6,7 @@ const { execFile } = require('child_process');
 const { spawnCli, cliModelEffortArgs } = require('./project-plan');
 const { parseAgyJson, parseClaudeJson, parseCodexJsonl } = require('./task-subchat');
 const { resolveTaskConfig, buildTaskHarnessPrompt } = require('./project-harness');
+const { versionWorkspace } = require('./version-files');
 const { sessionStartupBlock, dismissProjectHookMenu, writeProjectTerm, dispatchCodexProjectPrompt, projectRunStarted, terminalConfirmationMessage, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE, PROJECT_START_MESSAGE } = require('./term-manager');
 
 const MAX_AUTO_RETRIES = 2;
@@ -20,7 +21,7 @@ const REVIEW_TIMEOUT_MS = 180_000;
 function execGit(cwd, args, timeout = 8000) {
   return new Promise((resolve) => {
     if (!cwd || !fs.existsSync(cwd)) return resolve({ ok: false, stdout: '', stderr: '', code: 1 });
-    execFile('git', args, { cwd, timeout, maxBuffer: 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+    execFile('git', args, { cwd, timeout, maxBuffer: 1024 * 1024, windowsHide: true, env: { ...process.env, LC_ALL: 'C' } }, (err, stdout, stderr) => {
       resolve({
         ok: !err,
         stdout: String(stdout || ''),
@@ -46,6 +47,7 @@ function findReadyTasks(project, activeTerms = []) {
 
   return project.tasks.filter((t) => {
     if (!t || t.stage !== 'planned' || t.autoExclude) return false;
+    if (t.version && !versionWorkspace(project, t.version)) return false;
     if (runningTaskIds.has(t.id)) return false;
     if (t.parentId) {
       const parent = byId.get(t.parentId);
@@ -62,6 +64,7 @@ const pendingReReview = new Map();
 const reviewErrorCounts = new Map();
 const orphanDoingTicks = new Map();
 const projectLocks = new Map();
+const mergeRetryAt = new Map();
 let watcherBusy = false;
 
 function withProjectLock(lockKey, fn) {
@@ -92,7 +95,7 @@ async function ensureTaskWorktree(projectCwd, taskId) {
   return added.ok && fs.existsSync(wtPath) ? wtPath : '';
 }
 
-async function mergeAndCleanupWorktree(projectCwd, taskId, worktreePath, { keepWorktree = false } = {}) {
+async function mergeAndCleanupWorktree(projectCwd, taskId, worktreePath, { keepWorktree = false, commitChanges = true } = {}) {
   if (!projectCwd || !worktreePath || !fs.existsSync(worktreePath)) return { ok: false, error: '격리 작업 폴더를 찾을 수 없습니다.' };
   const id8 = String(taskId).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 8) || 'task';
   const branch = `hub-task/${id8}`;
@@ -106,26 +109,80 @@ async function mergeAndCleanupWorktree(projectCwd, taskId, worktreePath, { keepW
   const st = await execGit(worktreePath, ['status', '--short'], 5000);
   if (!st.ok) return { ok: false, error: st.stderr.trim() };
   if (st.stdout.trim()) {
+    if (!commitChanges) return { ok: false, error: '격리 폴더에 검토 이후 변경된 파일이 있습니다. 다시 검토하세요.' };
     const added = await execGit(worktreePath, ['add', '-A'], 8000);
     if (!added.ok) return { ok: false, error: added.stderr.trim() };
     const committed = await execGit(worktreePath, ['commit', '-m', `hub: task ${id8}`], 10_000);
     if (!committed.ok) return { ok: false, error: (committed.stderr || committed.stdout).trim() };
   }
   const inProgress = await execGit(projectCwd, ['rev-parse', '--verify', 'MERGE_HEAD']);
-  if (inProgress.ok) return { ok: false, error: '프로젝트 폴더에 진행 중인 Git 병합이 있습니다.' };
-  const merged = await execGit(projectCwd, ['merge', '--no-ff', `refs/heads/${branch}`, '-m', `hub: merge task ${id8}`], 15_000);
+  if (inProgress.ok) return { ok: false, pending: true, error: '프로젝트 폴더에 진행 중인 Git 병합이 있습니다.' };
+  const branchRef = `refs/heads/${branch}`;
+  const integrated = await execGit(projectCwd, ['merge-base', '--is-ancestor', branchRef, 'HEAD']);
+  const merged = integrated.ok ? integrated : await execGit(projectCwd, ['merge', '--no-ff', branchRef, '-m', `hub: merge task ${id8}`], 15_000);
   if (!merged.ok) {
     const conflicts = await execGit(projectCwd, ['diff', '--name-only', '--diff-filter=U']);
     const mergeHead = await execGit(projectCwd, ['rev-parse', '--verify', 'MERGE_HEAD']);
-    if (mergeHead.ok) await execGit(projectCwd, ['merge', '--abort'], 5000);
+    if (mergeHead.ok) {
+      const abort = await execGit(projectCwd, ['merge', '--abort'], 5000);
+      if (!abort.ok) return { ok: false, error: '프로젝트 폴더에 진행 중인 Git 병합이 있습니다.' };
+    }
     const files = conflicts.stdout.trim().split(/\r?\n/).filter(Boolean);
-    return { ok: false, error: files.length ? files.map((file) => `- ${file}`).join('\n') : (merged.stderr || merged.stdout || 'Git merge failed').trim().slice(0, 500) };
+    const details = `${merged.stderr}\n${merged.stdout}`.split(/\r?\n/).filter((line) => !/^warning:/i.test(line)).join('\n').trim();
+    const pending = !files.length && /would be overwritten by merge|index\.lock|index contains uncommitted changes/i.test(details);
+    const pendingFiles = pending ? details.split(/\r?\n/).filter((line) => /^\t/.test(line)).map((line) => line.trim()) : [];
+    const message = pendingFiles.length
+      ? ['병합 대상과 겹치는 로컬 변경이 있습니다.', ...pendingFiles.map((file) => `- ${file}`)].join('\n')
+      : details || 'Git merge failed';
+    return { ok: false, pending, error: files.length ? files.map((file) => `- ${file}`).join('\n') : message.slice(0, 1800) };
   }
   if (!keepWorktree) {
     const removed = await execGit(projectCwd, ['worktree', 'remove', worktreePath], 10_000);
     if (removed.ok) await execGit(projectCwd, ['branch', '-d', branch], 5000);
   }
   return { ok: true };
+}
+
+function approvedMerge(task) {
+  return task.stage === 'review' && ['merge-pending', 'merge-blocked'].includes(task.reviewStatus);
+}
+
+async function finishApprovedTask(hub, project, task, reason, taskOut, sessionId, commitChanges = false) {
+  const { id: projectId } = project;
+  const { id: taskId } = task;
+  const key = `${projectId}:${taskId}`;
+  if (task.worktreePath) {
+    const keepWorktree = [...(hub.terms?.values() || [])].some((term) => term.exited === null
+      && term.meta?.projectTask?.projectId === projectId && term.meta.projectTask.taskId === taskId);
+    const result = await mergeAndCleanupWorktree(project.cwd, taskId, task.worktreePath, { keepWorktree, commitChanges });
+    const latest = hub.projects.list().find((p) => p.id === projectId);
+    const current = latest?.tasks.find((item) => item.id === taskId);
+    if (!current || !approvedMerge(current) || current.worktreePath !== task.worktreePath) return { skipped: true, started: [] };
+    project = latest;
+    if (!result.ok) {
+      const reviewStatus = result.pending ? 'merge-pending' : 'merge-blocked';
+      if (result.pending) mergeRetryAt.set(key, Date.now() + 30_000);
+      else mergeRetryAt.delete(key);
+      if (current.reviewStatus !== reviewStatus || current.reviewNote !== result.error) {
+        hub.projects.save({ ...project, tasks: project.tasks.map((item) => item.id === taskId
+          ? { ...item, reviewStatus, reviewPaused: !result.pending, reviewNote: result.error } : item) });
+        hub.overviewStale?.();
+      }
+      return { approved: false, mergePending: !!result.pending, mergeConflict: !result.pending, reason: result.error, started: [] };
+    }
+  }
+  mergeRetryAt.delete(key);
+  const tasks = project.tasks.map((item) => item.id === taskId
+    ? { ...item, stage: 'done', reviewStatus: 'approved', reviewPaused: false, reviewNote: reason, mergeApprovalNote: '', retryCount: 0, worktreePath: '',
+      ...(taskOut ? { lastOutput: taskOut } : {}), ...(sessionId ? { lastSessionId: sessionId } : {}) } : item);
+  hub.projects.save({ ...project, tasks });
+  hub.overviewStale?.();
+  if (hub.projectRefs?.saveFile) {
+    const gitSummary = await readGitSummary(versionWorkspace(project, task.version), 3500).catch(() => '');
+    saveTaskHandoffRef(hub, project, task, { reason, taskOut, gitSummary });
+  }
+  const autoRes = await runProjectAutopilot(hub, projectId, { autoDispatch: true });
+  return { approved: true, reason, started: autoRes.started };
 }
 
 async function runProjectAutopilot(hub, projectId, { autoDispatch = true, maxConcurrent = DEFAULT_MAX_CONCURRENT } = {}) {
@@ -140,20 +197,33 @@ async function runProjectAutopilot(hub, projectId, { autoDispatch = true, maxCon
     const slots = Math.max(0, cap - activeDoing);
     if (slots <= 0) return { started };
 
-    const ready = findReadyTasks(cur, [...hub.terms.values()]).slice(0, slots);
+    const ready = findReadyTasks(cur, [...hub.terms.values()]);
     if (!ready.length) return { started };
 
-    const projectGit = cur.cwd && await execGit(cur.cwd, ['rev-parse', '--verify', 'HEAD']);
-    const useWorktrees = cur.worktreeIsolation !== false && projectGit?.ok && (activeDoing > 0 || ready.length > 1 || ready.some((t) => t.worktreePath));
+    const occupied = new Set(cur.tasks.filter((t) => t.stage === 'doing' || t.stage === 'review').map((t) => versionWorkspace(cur, t.version)));
+    const isolated = ready.filter((task) => {
+      const cwd = versionWorkspace(cur, task.version);
+      if (!cwd || cwd === cur.cwd || occupied.has(cwd) || !fs.existsSync(cwd)) return false;
+      occupied.add(cwd);
+      return true;
+    });
+    const workingMain = cur.tasks.some((t) => t.stage === 'doing' && !t.autoExclude && !t.reviewPaused && versionWorkspace(cur, t.version) === cur.cwd);
+    const regular = ready.filter((t) => versionWorkspace(cur, t.version) === cur.cwd);
+    const projectGit = regular.length && cur.cwd && await execGit(cur.cwd, ['rev-parse', '--verify', 'HEAD']);
+    const regularEligible = cur.worktreeIsolation !== false && cur.cwd && fs.existsSync(cur.cwd) && !projectGit?.ok
+      ? regular.slice(0, workingMain ? 0 : 1) : regular;
+    const eligible = new Set([...regularEligible, ...isolated]);
+    const candidates = ready.filter((task) => eligible.has(task)).slice(0, slots);
+    const mainCandidates = candidates.filter((t) => versionWorkspace(cur, t.version) === cur.cwd);
+    const useWorktrees = cur.worktreeIsolation !== false && projectGit?.ok && (workingMain || mainCandidates.length > 1 || mainCandidates.some((t) => t.worktreePath));
     const worktreeByTask = new Map();
     if (useWorktrees && cur.cwd) {
-      for (const t of ready) {
+      for (const t of mainCandidates) {
         const wt = await ensureTaskWorktree(cur.cwd, t.id);
         if (wt) worktreeByTask.set(t.id, wt);
       }
     }
-    const launchable = useWorktrees ? ready.filter((task) => worktreeByTask.has(task.id))
-      : cur.worktreeIsolation !== false && cur.cwd && fs.existsSync(cur.cwd) && !projectGit?.ok ? ready.slice(0, activeDoing ? 0 : 1) : ready;
+    const launchable = useWorktrees ? candidates.filter((task) => !mainCandidates.includes(task) || worktreeByTask.has(task.id)) : candidates;
     if (!launchable.length) return { started };
 
     const readyIds = new Set(launchable.map((t) => t.id));
@@ -334,7 +404,7 @@ function saveTaskHandoffRef(hub, project, task, { reason = '', taskOut = '', git
       taskOut ? `\n## 에이전트 최종 출력\n${taskOut}` : '',
       gitSummary ? `\n## 변경 내역 요약\n\`\`\`\n${gitSummary.slice(0, 3500)}\n\`\`\`` : '',
     ].filter(Boolean).join('\n');
-    hub.projectRefs.saveFile(project.id, { name, text: content });
+    hub.projectRefs.saveFile(project.id, { name, text: content }, task.version);
   } catch {}
 }
 
@@ -392,13 +462,15 @@ async function defaultReviewTask(hub, project, task, onPhase) {
   const revCfg = resolveTaskConfig(project, { kind: 'review', role: 'review' }, harnessState);
   const agent = ['claude', 'codex', 'agy'].includes(revCfg.agent) ? revCfg.agent : 'claude';
   if (task.worktreePath && !fs.existsSync(task.worktreePath)) throw new Error('격리 작업 폴더를 찾을 수 없습니다.');
-  const taskCwd = task.worktreePath || project.cwd;
+  const workspace = versionWorkspace(project, task.version);
+  if (task.version && (!workspace || (workspace !== project.cwd && !fs.existsSync(workspace)))) throw new Error('버전 작업 폴더를 열어주세요.');
+  const taskCwd = (workspace === project.cwd && task.worktreePath) || workspace;
   const workCwd = (taskCwd && fs.existsSync(taskCwd)) ? taskCwd : process.cwd();
   const [gitSummary, testCheck] = await Promise.all([readGitSummary(workCwd), runPreReviewChecks(workCwd)]);
   onPhase(`${agent} 교차 검토 중 (최대 ${REVIEW_TIMEOUT_MS / 1000}초)`);
   const taskOut = extractTaskOutput(hub, project, task);
   const harnessBlock = buildTaskHarnessPrompt(project, { ...task, kind: 'review', role: 'review' }, agent, harnessState);
-  const refsBlock = hub.projectRefs?.promptBlock ? hub.projectRefs.promptBlock(project.id) : '';
+  const refsBlock = hub.projectRefs?.promptBlock ? hub.projectRefs.promptBlock(project.id, task.version) : '';
   const testBlock = testCheck.ran
     ? (testCheck.ok
       ? `[Pre-Review Automated Test Gate (${testCheck.command}): PASSED (exit 0)]\n${testCheck.output}`
@@ -422,6 +494,9 @@ async function defaultReviewTask(hub, project, task, onPhase) {
   let authEnv = {};
   try { authEnv = hub.projectAccounts?.resolve(agent, revCfg.account)?.env || {}; } catch {}
   const env = { ...(hub.cleanEnv ? hub.cleanEnv() : process.env), ...authEnv };
+  const prep = hub.unifiedVault?.prepareLaunch(agent, { env });
+  Object.assign(env, prep?.env);
+  hub.projects.recordVaultRun?.(project.id, [task.id], 'review', agent, prep?.vault);
   const rememberReview = ({ sessionId, tokens }) => {
     if (!sessionId) return;
     hub.projects.remember?.([{ projectId: project.id, taskId: task.id, agent, accountId: revCfg.account, sessionId, tokens }]);
@@ -453,7 +528,7 @@ async function defaultReviewTask(hub, project, task, onPhase) {
       fs.rmSync(outFile, { force: true });
     }
   }
-  const { stdout } = await spawnCli('claude.exe', ['--print', '--permission-mode', 'plan', ...extraME, '--output-format', 'json', '--json-schema', REVIEW_SCHEMA], { cwd: workCwd, env, timeoutMs: REVIEW_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, stdinText: prompt });
+  const { stdout } = await spawnCli('claude.exe', ['--print', '--permission-mode', 'plan', ...extraME, '--output-format', 'json', '--json-schema', REVIEW_SCHEMA, ...(prep?.extraArgs || [])], { cwd: workCwd, env, timeoutMs: REVIEW_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, stdinText: prompt });
   rememberReview(parseClaudeJson(stdout));
   return parseReviewVerdict(stdout);
 }
@@ -524,7 +599,7 @@ async function dispatchRetryFeedback(hub, projectId, task, reason, retryNum, pri
   throw new Error('수정 작업을 시작하지 못했습니다.');
 }
 
-async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_AUTO_RETRIES, force = false } = {}) {
+async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_AUTO_RETRIES, force = false, retryMerge = false } = {}) {
   const key = `${projectId}:${taskId}`;
   if (reviewInFlight.has(key)) return { skipped: true, started: [] };
   if (force) {
@@ -540,7 +615,7 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
   const taskOut = extractTaskOutput(hub, initialProject, initialTask);
   const priorSessionId = extractTaskSessionId(hub, initialProject, initialTask);
 
-  if ((!initialProject.autopilot || initialTask.kind === 'review') && !force) {
+  if (!approvedMerge(initialTask) && (!initialProject.autopilot || initialTask.kind === 'review') && !force && !initialTask.worktreePath) {
     if (initialTask.stage !== 'done') {
       const nextTasks = initialProject.tasks.map((t) => (t.id === initialTask.id
         ? { ...t, stage: 'done', reviewStatus: 'approved', ...(taskOut ? { lastOutput: taskOut } : {}), ...(priorSessionId ? { lastSessionId: priorSessionId } : {}) }
@@ -557,6 +632,10 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
     return await withProjectLock(initialProject.cwd || projectId, async () => {
       const project = hub.projects.list().find((x) => x.id === projectId) || initialProject;
       const task = project.tasks.find((x) => x.id === taskId) || initialTask;
+      if (approvedMerge(task) && (!force || retryMerge)) {
+        return finishApprovedTask(hub, project, task, task.mergeApprovalNote || '검증 기준 통과', task.lastOutput, task.lastSessionId);
+      }
+      if (retryMerge) return { skipped: true, started: [] };
       if (task.reviewPaused && !force) return { skipped: true, started: [] };
       if (task.stage !== initialTask.stage || task.reviewPaused !== initialTask.reviewPaused) return { skipped: true, started: [] };
       const isReviewing = (p) => p?.tasks.some((x) => x.id === taskId && x.stage === 'review' && x.reviewStatus === 'reviewing');
@@ -620,32 +699,11 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
 
       if (verdict?.verdict === 'APPROVE') {
         if (curTask.worktreePath) {
-          const keepWorktree = [...(hub.terms?.values() || [])].some((term) => term.exited === null
-            && term.meta?.projectTask?.projectId === projectId && term.meta.projectTask.taskId === taskId);
-          const mergeRes = await mergeAndCleanupWorktree(curP.cwd, curTask.id, curTask.worktreePath, { keepWorktree });
-          curP = hub.projects.list().find((x) => x.id === projectId);
-          if (!isReviewing(curP)) return { skipped: true, started: [] };
-          if (!mergeRes.ok) {
-            const conflictReason = mergeRes.error;
-            const conflictTasks = curP.tasks.map((t) => (t.id === task.id
-              ? { ...t, stage: 'review', reviewPaused: true, reviewStatus: 'merge-blocked', reviewNote: conflictReason }
-              : t));
-            hub.projects.save({ ...curP, tasks: conflictTasks });
-            hub.overviewStale?.();
-            return { approved: false, mergeConflict: true, reason: conflictReason, started: [] };
-          }
+          curP = hub.projects.save({ ...curP, tasks: curP.tasks.map((item) => item.id === taskId
+            ? { ...item, reviewStatus: 'merge-pending', reviewNote: '', mergeApprovalNote: reason } : item) });
+          hub.overviewStale?.();
         }
-        const doneTasks = curP.tasks.map((t) => (t.id === task.id
-          ? { ...t, stage: 'done', reviewStatus: 'approved', reviewNote: reason, retryCount: 0, worktreePath: '', ...(taskOut ? { lastOutput: taskOut } : {}), ...(priorSessionId ? { lastSessionId: priorSessionId } : {}) }
-          : t));
-        hub.projects.save({ ...curP, tasks: doneTasks });
-        hub.overviewStale?.();
-        if (hub.projectRefs?.saveFile) {
-          const gitSummary = await readGitSummary(curP.cwd, 3500).catch(() => '');
-          saveTaskHandoffRef(hub, curP, curTask, { reason, taskOut, gitSummary });
-        }
-        const autoRes = await runProjectAutopilot(hub, projectId, { autoDispatch: true });
-        return { approved: true, reason, started: autoRes.started };
+        return finishApprovedTask(hub, curP, curTask, reason, taskOut, priorSessionId, true);
       }
 
       const retries = Number(curTask.retryCount || 0);
@@ -768,6 +826,13 @@ async function checkAutopilotCompletions(hub) {
       const recoveredTasks = project.tasks.map((tk) => {
         if (tk.parentId) (byParent.get(tk.parentId) || byParent.set(tk.parentId, []).get(tk.parentId)).push(tk);
         const tkKey = `${project.id}:${tk.id}`;
+        const legacyWait = tk.reviewStatus === 'merge-blocked' && /^warning:.*LF will be replaced by CRLF/m.test(tk.reviewNote || '');
+        if (approvedMerge(tk) && (tk.reviewStatus === 'merge-pending' || legacyWait) &&
+            !reviewInFlight.has(tkKey) && now >= (mergeRetryAt.get(tkKey) || 0)) {
+          const promise = completeAutopilotTask(hub, project.id, tk.id, { force: true, retryMerge: true })
+            .catch((e) => console.error('[autopilot-merge]', project.id, tk.id, e?.message || e));
+          scheduled.push({ projectId: project.id, completedTaskId: tk.id, promise });
+        }
         if (tk.stage === 'review' && tk.reviewStatus === 'reviewing' && !reviewInFlight.has(tkKey) && !pendingReReview.has(tkKey)) {
           const pRun = completeAutopilotTask(hub, project.id, tk.id).catch((e) => console.error('[autopilot-orphan-review]', project.id, tk.id, e?.message || e));
           scheduled.push({ projectId: project.id, completedTaskId: tk.id, recoveredReview: true, promise: pRun });

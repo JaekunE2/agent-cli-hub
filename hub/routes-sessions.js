@@ -5,10 +5,11 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { resolveTaskConfig, buildTaskHarnessPrompt } = require('./project-harness');
+const { versionWorkspace } = require('./version-files');
 const { codexHistorySearchActive } = require('./immediate-send');
 const { claudeCommandNote, claudeToolResultNote } = require('./searchindex');
 const { spawnCli } = require('./project-plan');
-const { sessionStartupBlock, dismissProjectHookMenu, writeProjectTerm, dispatchCodexProjectPrompt, projectRunStarted, terminalConfirmationMessage, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE, PROJECT_START_MESSAGE } = require('./term-manager');
+const { sessionStartupBlock, dismissProjectHookMenu, writeProjectTerm, dispatchCodexProjectPrompt, projectRunStarted, terminalConfirmationMessage, codexComposerText, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE, PROJECT_START_MESSAGE } = require('./term-manager');
 
 const OV_TTL = 2500;
 
@@ -313,7 +314,15 @@ function createSessionRoutes(hub) {
       const accountId = resolved.account;
       const model = resolved.model;
       const effort = resolved.effort;
-      const existing = [...hub.terms.values()].findLast((t) => t.exited === null && t.meta.projectTask?.projectId === project.id && t.meta.projectTask.taskId === task.id && hub.agentOf(t) === kind && (t.account?.id || '') === (accountId || ''));
+      const workspace = versionWorkspace(project, task.version);
+      if (!workspace) return send(res, 409, { error: '이 버전에서 이어 작업을 먼저 시작하세요.' });
+      const isolated = workspace !== project.cwd;
+      if (isolated && !fs.statSync(workspace, { throwIfNoEntry: false })?.isDirectory()) return send(res, 409, { error: '버전 작업 폴더를 찾을 수 없습니다.' });
+      if (isolated && b.resume) {
+        const prior = index.get(b.resume);
+        if (!prior?.cwd || path.relative(workspace, prior.cwd) !== '') return send(res, 409, { error: '이 버전의 작업 폴더에서 시작한 세션만 이어갈 수 있습니다.' });
+      }
+      const existing = [...hub.terms.values()].findLast((t) => t.exited === null && t.meta.projectTask?.projectId === project.id && t.meta.projectTask.taskId === task.id && hub.agentOf(t) === kind && (t.account?.id || '') === (accountId || '') && (!isolated || (t.cwd && path.relative(workspace, t.cwd) === '')));
       if (existing) {
         const result = await existing.spawnResult;
         if (result?.error) return send(res, 502, { error: 'CLI를 시작하지 못했습니다. 설치 경로를 확인하세요.' });
@@ -325,11 +334,11 @@ function createSessionRoutes(hub) {
         return send(res, 409, { error: 'Codex 입력창에서 작업 내용이 확인되지 않았습니다.' });
       }
       if (!hub.projectAgents.includes(kind)) return send(res, 400, { error: '작업 설계에서 CLI를 다시 선택하세요.' });
-      hub.ensureProjectDir(project.cwd);
-      if (!path.isAbsolute(project.cwd) || !fs.statSync(project.cwd, { throwIfNoEntry: false })?.isDirectory()) return send(res, 400, { error: '작업 설계에서 존재하는 작업 폴더의 전체 경로를 입력하세요.' });
-      const taskWorktree = task.worktreePath && path.isAbsolute(task.worktreePath) && fs.statSync(task.worktreePath, { throwIfNoEntry: false })?.isDirectory() ? task.worktreePath : '';
-      if (task.worktreePath && !taskWorktree) return send(res, 409, { error: '격리 작업 폴더를 찾을 수 없습니다.' });
-      b = { kind, cwd: taskWorktree || project.cwd, title: parentTask ? `${parentTask.title} › ${task.title}` : task.title, skipPermissions: true, model, effort, resume: typeof b.resume === 'string' ? b.resume.trim() : '', _autoDispatch: b.autoDispatch !== false && b._autoDispatch !== false, _rawPrompt: b._rawPrompt || '' };
+      if (!isolated) hub.ensureProjectDir(workspace);
+      if (!path.isAbsolute(workspace) || !fs.statSync(workspace, { throwIfNoEntry: false })?.isDirectory()) return send(res, 400, { error: '작업 설계에서 존재하는 작업 폴더의 전체 경로를 입력하세요.' });
+      const worktree = !isolated && task.worktreePath;
+      if (worktree && (!path.isAbsolute(worktree) || !fs.statSync(worktree, { throwIfNoEntry: false })?.isDirectory())) return send(res, 409, { error: '격리 작업 폴더를 찾을 수 없습니다.' });
+      b = { kind, cwd: worktree || workspace, title: parentTask ? `${parentTask.title} › ${task.title}` : task.title, skipPermissions: true, model, effort, resume: typeof b.resume === 'string' ? b.resume.trim() : '', _autoDispatch: b.autoDispatch !== false && b._autoDispatch !== false, _rawPrompt: b._rawPrompt || '' };
       const parts = parentTask ? [`[상위 작업: ${parentTask.title}]`, parentTask.detail ? parentTask.detail.slice(0, 600) : '', `[서브 개발 작업: ${task.title}]`, task.detail] : [task.title, task.detail];
       const harnessBlock = buildTaskHarnessPrompt(project, task, kind, harnessState);
       if (harnessBlock) parts.push(harnessBlock);
@@ -339,10 +348,12 @@ function createSessionRoutes(hub) {
         .map((d) => `- [${d.title}]${d.reviewNote ? ` (검토: ${d.reviewNote.slice(0, 200)})` : ''}\n  ${String(d.lastOutput || '').slice(0, 600)}`)
         .join('\n');
       if (depNotes) parts.push(`[선행 작업 완료 결과]\n${depNotes}`);
-      projectRefsBlock = hub.projectRefs?.promptBlock ? hub.projectRefs.promptBlock(project.id) : '';
+      projectRefsBlock = hub.projectRefs?.promptBlock ? hub.projectRefs.promptBlock(project.id, task.version) : '';
       if (projectRefsBlock) parts.push(projectRefsBlock);
       const fullTaskPrompt = parts.filter(Boolean).join('\n\n');
       if (!b._rawPrompt) b._rawPrompt = fullTaskPrompt;
+      const version = project.versions?.find((item) => item.number === task.version);
+      if (version) b._rawPrompt = `[Project version: v${version.number}]\n${version.goal}\n\n${b._rawPrompt}`;
       projectPrompt = fingerprint(b._rawPrompt);
       try { launchAccount = hub.projectAccounts.resolve(kind, accountId); } catch (e) { return send(res, 400, { error: e.message }); }
     }
@@ -396,10 +407,10 @@ function createSessionRoutes(hub) {
       const workCwd = cwd || os.homedir();
       return send(res, 200, hub.launchExternalWindow({ cwd: workCwd, title, cmd, args, openMode: 'external', admin: true }));
     }
-    if ((b.kind === 'agy' || b.kind === 'codex') && b.resume) { const d = index.get(b.resume); if (d?.cwd && (b.kind !== 'agy' || d.agent === 'agy')) cwd = d.cwd; }
+    if (!projectTask && (b.kind === 'agy' || b.kind === 'codex') && b.resume) { const d = index.get(b.resume); if (d?.cwd && (b.kind !== 'agy' || d.agent === 'agy')) cwd = d.cwd; }
     if (b.kind === 'claude' && b.resume) {
       const d = index.get(b.resume);
-      if (d) { await index.updateFile(d.file); if (d.cwd) cwd = d.cwd; }
+      if (d) { await index.updateFile(d.file); if (!projectTask && d.cwd) cwd = d.cwd; }
       const live = liveSessions().find((s) => s.sessionId === b.resume);
       if (live && !b.fork) return send(res, 409, { error: `이 세션은 이미 실행 중입니다 (pid ${live.pid}). 그 창에서 이어가세요.` });
     }
@@ -413,7 +424,7 @@ function createSessionRoutes(hub) {
       const activeSwap = (hub.agySwap.getFast().accounts || []).find((a) => a.active);
       if (activeSwap) launchAccount = { ...launchAccount, account: { id: activeSwap.id, label: activeSwap.name ? `${activeSwap.name} (${activeSwap.email})` : activeSwap.email, kind: 'agy', email: activeSwap.email } };
     }
-    const t = reuseTerm || hub.createTerm({ cwd, cmd, args, title: b.title || title, ...launchAccount, model: b.model || '', effort: b.effort || '', projectTask, projectPrompt });
+    const t = reuseTerm || hub.createTerm({ cwd, cmd, args, title: b.title || title, ...launchAccount, model: b.model || '', effort: b.effort || '', projectTask, projectPrompt, agent: projectTask ? b.kind : undefined });
     if (!projectTask && ['claude', 'codex', 'agy'].includes(b.kind) && (b.model !== undefined || b.effort !== undefined || launchAccount?.account?.id)) {
       accountPrefs.save({ account: launchAccount?.account?.id || b.account || '', agent: b.kind, model: b.model || '', effort: b.effort || '' });
     }
@@ -534,7 +545,7 @@ function createSessionRoutes(hub) {
       : [];
     const harnessBlock = project && task && resolved ? buildTaskHarnessPrompt(project, task, resolved.agent, harnessState) : '';
     if (harnessBlock) rawParts.push(harnessBlock);
-    const refsBlock = project && hub.projectRefs?.promptBlock ? hub.projectRefs.promptBlock(project.id) : '';
+    const refsBlock = project && hub.projectRefs?.promptBlock ? hub.projectRefs.promptBlock(project.id, task?.version) : '';
     if (refsBlock) rawParts.push(refsBlock);
     const rawPrompt = overridePrompt || rawParts.filter(Boolean).join('\n\n');
 
@@ -844,7 +855,37 @@ function createSessionRoutes(hub) {
       const pid = Number(b.pid);
       if (b.submit || b.immediate || b.text) hub.consoleInputAt.set(pid, Date.now());
       const snap = (b.immediate || (b.submit && b.text))
-        ? await hub.helperCall({ op: 'read', pid, lines: b.immediate ? 30 : 5 }).catch(() => null) : null;
+        ? await hub.helperCall({ op: 'read', pid, lines: 60 }).catch(() => null) : null;
+      const initial = snap?.lines?.join('\n') || '';
+      const blocked = terminalConfirmationMessage(sessionStartupBlock(stripAnsi?.(initial) || initial));
+      if (blocked) { send(res, 409, { ok: false, error: blocked }); return true; }
+      const readScreen = async () => {
+        const result = await hub.helperCall({ op: 'read', pid, lines: 60 }).catch(() => null);
+        const screen = result?.lines?.join('\n') || '';
+        return stripAnsi?.(screen) || screen;
+      };
+      const submit = async () => {
+        const before = await readScreen();
+        const block = terminalConfirmationMessage(sessionStartupBlock(before));
+        if (block) return { ok: false, error: block };
+        const draft = codexComposerText(before);
+        const tail = String(b.text || '').replace(/[\s·]/g, '').slice(-64);
+        const matches = /^\s*[›❯>]\s/.test(draft) && (/^\s*[›❯>]\s*\[+pasted (?:content|text)\b/i.test(draft)
+          || (tail && draft.replace(/[\s·]/g, '').endsWith(tail)));
+        let result = await hub.helperCall({ op: 'send', pid, keys: ['enter'] });
+        if (!result.ok || !matches) return result;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          await hub.sleep(1200);
+          const after = await readScreen();
+          if (!after || sessionStartupBlock(after) || /esc to (?:interrupt|cancel)/i.test(after.split('\n').slice(-12).join('\n'))
+            || codexComposerText(after) !== draft) return result;
+          if (attempt === 0) {
+            result = await hub.helperCall({ op: 'send', pid, keys: ['enter'] });
+            if (!result.ok) return result;
+          }
+        }
+        return { ok: false, error: PROJECT_START_MESSAGE };
+      };
       const inHistorySearch = codexHistorySearchActive(snap?.lines || []);
       if (inHistorySearch) {
         const r = await hub.helperCall({ op: 'send', pid, keys: ['esc'] });
@@ -856,12 +897,12 @@ function createSessionRoutes(hub) {
         const tailScr = String((snap?.lines || []).slice(-10).join('\n')).replace(/\s+/g, ' ');
         const needle = String(b.text || '').trim().replace(/\s+/g, ' ').slice(0, 20);
         if (AGY_ALTM_RE.test(rawScr)) { send(res, 200, { ...(await hub.helperCall({ op: 'send', pid, keys: ['alt+m'] })), immediate: true, flushedQueued: true, steered: true }); return true; }
-        if (needle && (tailScr.includes(needle) || /\[pasted text/i.test(tailScr))) { send(res, 200, { ...(await hub.helperCall({ op: 'send', pid, keys: ['enter'] })), submittedExisting: true }); return true; }
+        if (needle && (tailScr.includes(needle) || /\[pasted (?:text|content)/i.test(tailScr))) { send(res, 200, { ...(await submit()), submittedExisting: true }); return true; }
         if (b.resendIfMissing && needle && rawScr.includes(needle)) { send(res, 200, { ok: true, immediate: true, alreadyRecognized: true }); return true; }
         await hub.helperCall({ op: 'send', pid, keys: ['esc'] }); await hub.sleep(500);
       }
       let r = await hub.helperCall({ op: 'send', pid, text: b.text || '', keys: b.keys || [] });
-      if (r.ok && b.submit) { await hub.sleep(hub.consoleSubmitDelay(b.text)); r = await hub.helperCall({ op: 'send', pid, keys: ['enter'] }); }
+      if (r.ok && b.submit) { await hub.sleep(hub.consoleSubmitDelay(b.text)); r = await submit(); }
       send(res, 200, r);
       return true;
     }

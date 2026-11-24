@@ -105,7 +105,7 @@
           <span class="ums" style="margin:0 0 0 8px">작업 폴더(${esc(hostDir || p.cwd)})에 아직 코드가 없어 설계 태스크 청사진을 표시합니다.</span>
         </div>
         <div class="row" style="gap:6px">
-          <button type="button" class="primary btn-sm" id="fmPickDir">${ico.folder || ''} 다른 폴더 분석</button>
+          ${!p?.scope?.version ? `<button type="button" class="primary btn-sm" id="fmPickDir">${ico.folder || ''} 다른 폴더 분석</button>` : ''}
           <button type="button" class="btn-sm" id="fmRescan">${ico.refresh || ''} 다시 스캔</button>
         </div>
       </div>
@@ -176,7 +176,9 @@
   async function renderFloorplanInto({ host, p = null, cwd = '', gen, previewCwd = '', termCtx = null }) {
     const ico = window.UI_ICO || {};
     if (!host) return;
-    const activeCwd = previewCwd || cwd || p?.cwd || '';
+    const version = p?.scope?.version;
+    const allowSave = !version || !!version.workspace;
+    let activeCwd = version ? version.workspace || '' : previewCwd || cwd || p?.cwd || '';
     host.innerHTML = '<div class="empty" style="padding:24px 8px">코드 구조와 핵심 모듈을 분석하는 중…</div>';
 
     let fp;
@@ -184,13 +186,14 @@
       fp = { exists: false, nodes: [] };
     } else {
       try {
-        const url = (previewCwd || !p?.id)
+        const url = version ? `/api/projects/floorplan?id=${encodeURIComponent(p.id)}&version=${encodeURIComponent(version.number)}` : (previewCwd || !p?.id)
           ? `/api/projects/floorplan?cwd=${encodeURIComponent(activeCwd)}`
           : `/api/projects/floorplan?id=${encodeURIComponent(p.id)}`;
         const r = await api(url);
         if (gen !== viewGen) return;
         if (r.error || !r.floorplan) throw new Error(r.error || '코드 구조를 불러올 수 없습니다.');
         fp = r.floorplan;
+        if (version) activeCwd = fp.rootDir || activeCwd;
       } catch (e) {
         if (gen !== viewGen) return;
         host.innerHTML = `<div class="pj-empty"><p role="alert">${esc(e.message)}</p><button type="button" id="fmRetry">다시 스캔</button></div>`;
@@ -341,11 +344,11 @@
         <div class="row" style="gap:6px;flex-wrap:wrap">
           <button type="button" class="btn-sm" id="fmPreviewMd" title="아키텍처 & 품질 보고서 전문 미리보기 · 산출물 저장">${ico.file || ''} 보고서 보기</button>
           <details class="fm-exports"><summary>보고서 내보내기</summary><div class="row">
-            <button type="button" class="btn-sm" id="fmSaveArtifact" title="FLOORPLAN.md" ${savingReport ? 'disabled' : ''}>${ico.plus || ''} ${saveLabel}</button>
+            ${allowSave ? `<button type="button" class="btn-sm" id="fmSaveArtifact" title="FLOORPLAN.md" ${savingReport ? 'disabled' : ''}>${ico.plus || ''} ${saveLabel}</button>` : ''}
             <button type="button" class="btn-sm" id="fmCopyMd" title="실무자 공유용 마크다운 아키텍처 보고서 복사">${ico.copy || ''} 복사</button>
             <button type="button" class="btn-sm" id="fmDownloadMd" title="아키텍처 보고서 .md 파일로 다운로드">${ico.external || ''} .md</button>
           </div></details>
-          <button type="button" class="btn-sm" id="fmPickDir" title="다른 프로젝트 폴더 스캔">${ico.folder || ''} 폴더 선택</button>
+          ${!version ? `<button type="button" class="btn-sm" id="fmPickDir" title="다른 프로젝트 폴더 스캔">${ico.folder || ''} 폴더 선택</button>` : ''}
           <button type="button" class="ghost icon-btn btn-sm" id="fmRescan" title="다시 스캔" aria-label="다시 스캔">${ico.refresh || ''}</button>
         </div>
       </div>`;
@@ -696,6 +699,7 @@
             method: 'POST',
             body: {
               projectId: p?.id || '',
+              version: version?.number || '',
               cwd: activeCwd,
               sessionId: termCtx?.sessionId || '',
               filename: 'FLOORPLAN.md',
@@ -721,13 +725,13 @@
         const d = openDrawer({
           title: '코드 아키텍처 & 품질 점검 보고서 (FLOORPLAN.md)',
           bodyHTML: `<div class="md">${rendered}</div>`,
-          footerHTML: `<button type="button" data-drw-close>닫기</button><button type="button" id="drwCopyMd">복사</button><button type="button" id="drwDlMd">.md 다운로드</button><button type="button" class="primary" id="drwSaveMd" ${savingReport ? 'disabled' : ''}>${saveLabel}</button>`,
+          footerHTML: `<button type="button" data-drw-close>닫기</button><button type="button" id="drwCopyMd">복사</button><button type="button" id="drwDlMd">.md 다운로드</button>${allowSave ? `<button type="button" class="primary" id="drwSaveMd" ${savingReport ? 'disabled' : ''}>${saveLabel}</button>` : ''}`,
           width: 680,
         });
         window.ACH_PREVIEW?.hydrateMermaid($('.drw-body', d));
         $('#drwCopyMd', d).onclick = async () => { await copyText(mdText); toast('보고서를 클립보드에 복사했습니다'); };
         $('#drwDlMd', d).onclick = () => $('#fmDownloadMd', host)?.click();
-        $('#drwSaveMd', d).onclick = saveArtifactReport;
+        $('#drwSaveMd', d)?.addEventListener('click', saveArtifactReport);
         return;
       }
       if (e.target.closest('#fmCopyMd')) {

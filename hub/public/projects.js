@@ -8,6 +8,7 @@ const projectViews = [
   ['floorplan', '코드 구조', '코드 구성과 주요 연결을 확인합니다.'],
   ['refs', '참조 데이터', '사용자와 AI 태스크가 공용으로 읽고 쓰는 레퍼런스·이미지 저장소입니다.'],
   ['terms', '터미널 모아보기', '이 프로젝트에서 열린 터미널을 확인합니다.'],
+  ['versions', '버전 이력', '작업 파일을 버전으로 저장하고 이전 버전에서 이어 작업합니다.'],
 ];
 const newTaskId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, '0')).join('');
 
@@ -31,19 +32,55 @@ function kindBadgeHTML(t) {
   return `<span class="badge kind-${esc(k)}" title="${esc(kindTip)}">${esc(label)}</span>`;
 }
 
-async function saveProject(p, tab) {
+function projectDraft({ scope, ...draft }) {
+  if (!scope) return draft;
+  const edited = new Map(draft.tasks.map((task) => [task.id, { ...task, version: scope.number }]));
+  const removed = new Set(scope.allTasks.filter((task) => (task.version || '') === scope.number && !edited.has(task.id)).map((task) => task.id));
+  draft.tasks = scope.allTasks.filter((task) => !removed.has(task.id)).map((task) => {
+    const next = edited.get(task.id) || task;
+    edited.delete(task.id);
+    if (!removed.size) return next;
+    return { ...next, parentId: removed.has(next.parentId) ? '' : next.parentId, after: next.after.filter((id) => !removed.has(id)) };
+  }).concat([...edited.values()]);
+  return draft;
+}
+
+async function saveProject(p, tab, version) {
   const gen = viewGen;
-  const r = await api('/api/projects', { method: 'POST', body: p });
+  const r = await api('/api/projects', { method: 'POST', body: projectDraft(p) });
   if (r.error) throw new Error(r.error);
   if (Array.isArray(r.autoStarted) && r.autoStarted.length) {
     toast(`자동 진행: 후속 작업 ${r.autoStarted.length}개 터미널을 시작했습니다.`);
     if (typeof refreshOverview === 'function') refreshOverview();
   }
   if (typeof refreshProjects === 'function') await refreshProjects();
-  if (gen === viewGen) openProject(r.project.id, tab || (p.id ? projectTab : 'design'));
+  if (gen === viewGen) openProject(r.project.id, tab || (p.id ? projectTab : 'design'), version);
 }
 
-function openProject(id = projectId, tab = projectTab) { return select({ kind: 'projects', id }, tab); }
+function projectVersionPreference(id, version) {
+  if (!id) return '';
+  const key = `ach.project-version:${id}`;
+  try {
+    if (version !== undefined) localStorage.setItem(key, version);
+    return localStorage.getItem(key) || '';
+  } catch { return ''; }
+}
+
+function openProject(id = projectId, tab = projectTab, version) {
+  version = version ?? (state.sel.kind === 'projects' && state.sel.id === id ? state.sel.version || '' : projectVersionPreference(id));
+  return select({ kind: 'projects', id, ...(version ? { version } : {}) }, tab);
+}
+
+function scopedProject(p, number) {
+  const version = p.versions?.find((entry) => entry.number === number);
+  return { ...p, tasks: p.tasks.filter((task) => (task.version || '') === (version?.number || '')),
+    scope: { number: version?.number || '', version, allTasks: p.tasks } };
+}
+
+function projectTokenTotals(p) {
+  if (!p.scope || !p.versions?.length) return p.tokens || {};
+  return p.tokens?.byVersion?.[p.scope.number] || {};
+}
 
 function stageBadgeHTML(stage) {
   const label = projectStages.find((x) => x[0] === stage)?.[1] || stage;
@@ -107,7 +144,7 @@ function taskTokenBadgeHTML(p, task, compact = false) {
 window.taskTokenBadgeHTML = taskTokenBadgeHTML;
 
 function openProjectTokensDrawer(p) {
-  const tk = p.tokens || { total: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, byAgent: {}, byTask: {}, rollupByTask: {}, sessions: 0 };
+  const tk = projectTokenTotals(p);
   const t = tk.total || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
   const agEntries = Object.entries(tk.byAgent || {}).filter(([, v]) => (v?.total || 0) > 0).sort((a, b) => (b[1].total || 0) - (a[1].total || 0));
   const allIds = new Set((p.tasks || []).map((x) => x.id));
@@ -155,7 +192,8 @@ function openProjectTokensDrawer(p) {
       <div>${taskRows}</div>
     </div>
     <div class="ums">하위 서브태스크 및 서브 개발 채팅에서 사용한 토큰은 모두 상위(최상위) 태스크로 자동 롤업되어 합산됩니다.</div>`;
-  openDrawer({ title: `${p.name} · 누적 토큰`, bodyHTML: body, footerHTML: '<button data-drw-close>닫기</button>', width: 500 });
+  const scope = p.versions?.length && p.scope ? ` · ${p.scope.number ? `v${p.scope.number}` : '기본 작업'}` : '';
+  openDrawer({ title: `${p.name}${scope} · 누적 토큰`, bodyHTML: body, footerHTML: '<button data-drw-close>닫기</button>', width: 500 });
 }
 
 // Unified Right Detail Drawer for any Project Task (includes embedded Chat-Based Sub-Development Workspace!)
@@ -202,7 +240,7 @@ function openProjectTaskDrawer(p, task, focusSubChat = false) {
           ${typeof projectLiveStatusBadgeHTML === 'function' ? projectLiveStatusBadgeHTML(p, task) : ''}
           ${typeof projectReviewBadgeHTML === 'function' ? projectReviewBadgeHTML(task) : ''}
         </div>
-        ${projectStageActionHTML(task)}
+        ${projectStageActionHTML(task, p)}
       </div>
       ${typeof projectReviewNoteHTML === 'function' ? projectReviewNoteHTML(task, false) : ''}
       ${task.lastOutput ? `<details class="pj-last-out"><summary>에이전트 최종 출력 요약 보기</summary><pre>${esc(task.lastOutput)}</pre></details>` : ''}
@@ -210,6 +248,10 @@ function openProjectTaskDrawer(p, task, focusSubChat = false) {
     <div class="drw-sec">
       <div class="drw-lbl">작업 지시 · 완료 기준</div>
       ${task.detail ? `<div class="pj-task-instructions">${projectTaskTextHTML(task.detail)}</div>` : '<div class="ums">아직 작성된 작업 지시가 없습니다. 아래 수정 버튼으로 추가할 수 있습니다.</div>'}
+    </div>
+    <div class="drw-sec">
+      <div class="drw-lbl">Vault 적용 기록</div>
+      <div data-vault-runs class="ums">적용 기록을 불러오는 중…</div>
     </div>
     <div class="drw-sec">
       <div class="row" style="justify-content:space-between">
@@ -306,14 +348,14 @@ function openProjectTaskDrawer(p, task, focusSubChat = false) {
           '서브 개발 단계 분해 중…',
         );
         if (!Array.isArray(r.tasks) || !r.tasks.length) throw new Error(r.error || '서브 작업을 생성하지 못했습니다.');
-        const saved = await api('/api/projects', { method: 'POST', body: { ...p, tasks: [...p.tasks, ...r.tasks] } });
+        const saved = await api('/api/projects', { method: 'POST', body: projectDraft({ ...p, tasks: [...p.tasks, ...r.tasks] }) });
         if (saved.error) throw new Error(saved.error);
         if (typeof refreshProjects === 'function') await refreshProjects();
         toast(`서브 개발 작업 ${r.tasks.length}개를 추가했습니다`);
         d.close();
         openProject(saved.project.id, projectTab);
         const freshTask = saved.project.tasks.find((x) => x.id === task.id);
-        if (freshTask) openProjectTaskDrawer(saved.project, freshTask);
+        if (freshTask) openProjectTaskDrawer(scopedProject(saved.project, freshTask.version), freshTask);
       } catch (er) {
         if (progHost) progHost.textContent = '';
         toast(er.message, 6000, 'danger');
@@ -346,6 +388,22 @@ function openProjectTaskDrawer(p, task, focusSubChat = false) {
   mountTaskSubChat(d, p, task, cfg, focusSubChat);
 }
 
+function paintTaskVaultRuns(host, runs) {
+  const areas = { terminal: '터미널', plan: '작업 설계', subchat: '서브 채팅', review: '자동 검토' };
+  const reasons = {
+    missing: '자원 파일 없음', empty: '내용 없음', disabled: '자원 비활성화',
+    'unsupported-target': 'CLI 적용 대상에서 제외', 'unsupported-cli': '지원되지 않는 CLI 실행 환경',
+    'autoload-disabled': 'Vault 자동 적용 꺼짐', 'sync-failed': 'CLI 설정 동기화 실패',
+  };
+  host.innerHTML = runs.slice().sort((a, b) => b.at - a.at).map((run) => `
+    <details>
+      <summary>${esc(areas[run.area] || run.area)} · ${esc(providerName(run.agent))} · ${esc(new Date(run.at).toLocaleString())}</summary>
+      <div>${run.applied.length ? `<span>적용 자원</span> · ${run.applied.map(esc).join(', ')}` : '적용된 자원 없음'}</div>
+      ${run.omitted.length ? `<ul>${run.omitted.map(({ id, reason }) => `<li>${esc(id)} · ${esc(reasons[reason] || reason)}</li>`).join('')}</ul>` : ''}
+      ${run.error ? `<div>${esc(reasons[run.error] || run.error)}</div>` : ''}
+    </details>`).join('') || '기록된 실행이 없습니다.';
+}
+
 function mountTaskSubChat(d, p, task, cfg, focusSubChat) {
   const ico = window.UI_ICO || {};
   const headEl = $('#subChatHead', d);
@@ -354,12 +412,14 @@ function mountTaskSubChat(d, p, task, cfg, focusSubChat) {
   const inEl = $('#subChatIn', d);
   const sendBtn = $('#subChatSend', d);
   const agPick = $('#scAgentPick', d);
+  const vaultHost = d.querySelector('[data-vault-runs]');
   if (!headEl || !msgsEl || !formEl || !inEl) return;
 
   let chats = Array.isArray(p.subChats?.[task.id]) ? [...p.subChats[task.id]] : [];
   let activeChatId = chats[chats.length - 1]?.id || '';
   let activeTurn = null;
   let pollTimer = null;
+  let vaultRunCount = -1;
 
   const curChat = () => chats.find((c) => c.id === activeChatId) || null;
   const renderMsgHTML = (txt) => (typeof md === 'function' ? md(String(txt || '')) : esc(String(txt || '')));
@@ -403,7 +463,7 @@ function mountTaskSubChat(d, p, task, cfg, focusSubChat) {
 
     msgsEl.innerHTML = rows.length
       ? rows.join('')
-      : `<div class="empty" style="margin:auto;text-align:center;padding:24px 12px"><b>이 태스크 전용 서브 개발 채팅창입니다.</b><br>코드 작성·수정·디버깅·부분 기능 실험을 아래 입력창에 바로 지시해 보세요.<br><small>작업 폴더(${esc(base(p.cwd) || p.cwd)})에서 YOLO 자동 승인 모드로 즉시 실행됩니다.</small></div>`;
+      : `<div class="empty" style="margin:auto;text-align:center;padding:24px 12px"><b>이 태스크 전용 서브 개발 채팅창입니다.</b><br>코드 작성·수정·디버깅·부분 기능 실험을 아래 입력창에 바로 지시해 보세요.</div>`;
     msgsEl.scrollTop = msgsEl.scrollHeight;
   };
 
@@ -411,6 +471,10 @@ function mountTaskSubChat(d, p, task, cfg, focusSubChat) {
     if (!d.isConnected) { clearInterval(pollTimer); return; }
     try {
       const r = await api(`/api/projects/task-chat?projectId=${encodeURIComponent(p.id)}&taskId=${encodeURIComponent(task.id)}`);
+      if (Array.isArray(r.vaultRuns) && vaultRunCount !== r.vaultRuns.length) {
+        vaultRunCount = r.vaultRuns.length;
+        paintTaskVaultRuns(vaultHost, r.vaultRuns);
+      }
       if (Array.isArray(r.chats)) {
         chats = r.chats;
         if (p.subChats) p.subChats[task.id] = chats;
@@ -418,7 +482,9 @@ function mountTaskSubChat(d, p, task, cfg, focusSubChat) {
       }
       activeTurn = r.active || null;
       paint();
-    } catch {}
+    } catch {
+      if (vaultRunCount < 0) vaultHost.textContent = 'Vault 적용 기록을 불러오지 못했습니다.';
+    }
   };
 
   headEl.onclick = async (e) => {
@@ -447,12 +513,12 @@ function mountTaskSubChat(d, p, task, cfg, focusSubChat) {
       const sid = termBtn.dataset.scOpenTerm;
       const ag = termBtn.dataset.scOpenAg || cfg.agent || 'codex';
       termBtn.disabled = true;
-      const t = await api('/api/term/new', { method: 'POST', body: { kind: ag, resume: sid, cwd: p.cwd, skipPermissions: true } });
+      const t = await api('/api/term/new', { method: 'POST', body: { kind: ag, resume: sid, cwd: p.scope?.version?.workspace || p.cwd, skipPermissions: true } });
       termBtn.disabled = false;
       if (t.error) return toast(t.error, 5000, 'danger');
       d.close();
       await refreshOverview();
-      select({ kind: 'term', id: t.id, project: p.id });
+      select({ kind: 'term', id: t.id, project: p.id, projectVersion: task.version || '', projectTab });
     }
   };
 
@@ -460,6 +526,7 @@ function mountTaskSubChat(d, p, task, cfg, focusSubChat) {
     const prompt = inEl.value.trim();
     if (!prompt || sendBtn.disabled) return;
     const chosenAgent = agPick ? agPick.value : (cfg.agent || 'codex');
+    const tokenValue = $('#projectTokens b');
     inEl.value = '';
     inEl.style.height = '';
     sendBtn.disabled = true;
@@ -502,10 +569,10 @@ function mountTaskSubChat(d, p, task, cfg, focusSubChat) {
       if (r.chat?.id) activeChatId = r.chat.id;
       if (r.tokens) {
         p.tokens = r.tokens;
-        const topTokBtn = $('#projectTokens');
-        if (topTokBtn) topTokBtn.innerHTML = `토큰 <b>${tokFmt(r.tokens.total?.total || 0)}</b>`;
+        if (tokenValue?.isConnected) tokenValue.textContent = tokFmt(projectTokenTotals(p).total?.total || 0);
       }
       paint();
+      await syncFromServer();
       if (typeof refreshProjects === 'function') refreshProjects();
     } catch (er) {
       activeTurn = null;
@@ -551,10 +618,10 @@ async function viewProjects() {
     state.projects = projectList;
     if (r.defaultCwd) state.defaultProjectCwd = r.defaultCwd;
     if (r.harness) state.projectHarness = r.harness;
-    const p = projectList.find(x => x.id === (state.sel.id || projectId)) || projectList[0];
-    if (p) { projectId = p.id; state.sel.id = p.id; }
+    const fullProject = projectList.find(x => x.id === (state.sel.id || projectId)) || projectList[0];
+    if (fullProject) { projectId = fullProject.id; state.sel.id = fullProject.id; }
     if (typeof renderSide === 'function') renderSide();
-    if (!p) {
+    if (!fullProject) {
       const ico = window.UI_ICO || {};
       $('#view').innerHTML = `<div class="pj">
         <div class="pj-top"><div class="pj-top-left"><h3>Project</h3></div><div class="pj-top-right"><button id="projectNew" class="primary">${ico.plus || ''} 새 Project</button></div></div>
@@ -563,22 +630,35 @@ async function viewProjects() {
       $('#projectNew').onclick = $('#firstProject').onclick = () => projectForm();
       return;
     }
+    const p = scopedProject(fullProject, state.sel.version);
+    const current = p.scope.version;
+    const unopened = current?.snapshotId && !current.workspace;
+    if (state.sel.version && !current) {
+      projectVersionPreference(p.id, '');
+      return openProject(p.id, projectTab, '');
+    }
+    if (current) projectVersionPreference(p.id, current.number);
+    const displayCwd = current?.workspace || (!current ? p.cwd : '');
     const total = p.tasks.length;
     const cnt = { planned: 0, doing: 0, review: 0, done: 0 };
     for (const t of p.tasks) cnt[t.stage] = (cnt[t.stage] || 0) + 1;
     const pct = total ? Math.round((cnt.done / total) * 100) : 0;
     const segW = (n) => (total ? ((n / total) * 100).toFixed(1) : 0);
     const ico = window.UI_ICO || {};
-    const totalTok = p.tokens?.total?.total || 0;
+    const totalTok = projectTokenTotals(p).total?.total || 0;
     $('#view').innerHTML = `<div class="pj">
       <h1 class="sr-only">${esc(p.name)}</h1>
       <header class="pj-top">
         <div class="pj-top-left">
           <select id="projectPick" class="pj-pick" aria-label="Project 선택">${projectList.map(x => `<option value="${esc(x.id)}" ${x.id === p.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>
-          <span class="pj-cwd" title="${esc(p.cwd)}">${ico.folder || ''}${esc(base(p.cwd) || p.cwd)}</span>
+          ${p.versions?.length ? `<select id="projectVersionPick" class="pj-version-pick" aria-label="작업 버전">
+            <option value="">기본 작업</option>
+            ${[...p.versions].reverse().map((v) => `<option value="${esc(v.number)}"${v === current ? ' selected' : ''}>v${esc(v.number)}</option>`).join('')}
+          </select>` : ''}
+          ${displayCwd ? `<span class="pj-cwd" title="${esc(displayCwd)}">${ico.folder || ''}${esc(current ? '버전 작업 폴더' : base(displayCwd) || displayCwd)}</span>` : ''}
         </div>
         <div class="pj-top-right">
-          <button id="projectTokens" class="pj-tok-pill" title="Project 누적 토큰 상세 (CLI 변경·서브 개발 포함 전체 합산)">토큰 <b>${tokFmt(totalTok)}</b></button>
+          <button id="projectTokens" class="pj-tok-pill" title="누적 토큰 상세">${current ? '버전 토큰' : '토큰'} <b>${tokFmt(totalTok)}</b></button>
           ${(() => {
             const progLabel = '작업 진행률';
             const progTip = `완료 ${cnt.done} · 검토 ${cnt.review} · 진행 ${cnt.doing} · 대기 ${cnt.planned}`;
@@ -591,10 +671,12 @@ async function viewProjects() {
             </div>
             <span class="pj-prog-lbl"><b>${pct}%</b> (${cnt.done}/${total})</span>
           </div>
-          <button id="projectAutopilot" class="btn-sm${p.autopilot ? ' primary' : ''}" title="켜면 선행 작업 완료 시 다음 대기 작업의 터미널이 자동으로 시작됩니다">${p.autopilot ? '자동 진행 ON' : '자동 진행 OFF'}</button>
+          ${!current ? `<button id="projectAutopilot" class="btn-sm${p.autopilot ? ' primary' : ''}" title="켜면 선행 작업 완료 시 다음 대기 작업의 터미널이 자동으로 시작됩니다">${p.autopilot ? '자동 진행 ON' : '자동 진행 OFF'}</button>` : ''}
           <button id="projectHarness" class="btn-sm" title="Role 프리셋 · 에이전트별 하네스 설정">Role 하네스</button>
-          <button id="projectFollowup" class="btn-sm">개선·버전업</button>
-          <button id="projectAdd" class="primary">${ico.plus || ''} 작업</button>
+          ${projectTab === 'versions' ? '' : unopened
+            ? '<button id="projectOpenWorkspace" class="primary">이 버전에서 이어 작업</button>'
+            : `<button id="projectFollowup" class="btn-sm">${current ? '버전 작업 설계' : '개선·버전업'}</button>
+              <button id="projectAdd" class="primary">${ico.plus || ''} 작업</button>`}
           <button id="projectMore" class="ghost icon-btn" aria-label="Project 메뉴" aria-haspopup="menu" aria-expanded="false" title="새 Project · 설계 수정 · 삭제">${ico.more || '⋯'}</button>
         </div>
       </header>
@@ -609,7 +691,7 @@ async function viewProjects() {
         const revN = p.tasks.filter((t) => t.reviewStatus === 'reviewing' || t.stage === 'review').length;
         const reviewNote = p.tasks.find((t) => t.stage === 'review' && t.reviewNote)?.reviewNote;
         const retryN = p.tasks.reduce((a, t) => a + (Number(t.retryCount) || 0), 0);
-        const readyN = p.tasks.filter((t) => t.stage === 'planned' && !t.autoExclude && (t.after || []).every((id) => p.tasks.find((x) => x.id === id)?.stage === 'done')).length;
+        const readyN = current ? 0 : p.tasks.filter((t) => t.stage === 'planned' && !t.autoExclude && (t.after || []).every((id) => fullProject.tasks.find((x) => x.id === id)?.stage === 'done')).length;
         const active = !!(p.autopilot || busyN || revN);
         if (!active && !readyN) return '';
         return `<div class="pj-convoy${p.autopilot ? ' on' : ''}">
@@ -625,6 +707,12 @@ async function viewProjects() {
       <div id="projectContent" role="tabpanel" aria-labelledby="project-tab-${projectTab}" tabindex="0"></div>
     </div>`;
     $('#projectPick').onchange = e => openProject(e.target.value);
+    $('#projectVersionPick')?.addEventListener('change', async (e) => {
+      const nextView = viewGen + 1;
+      projectVersionPreference(p.id, e.target.value);
+      await openProject(p.id, projectTab === 'versions' ? 'design' : projectTab, e.target.value);
+      if (viewGen === nextView && document.activeElement === document.body) $('#projectVersionPick')?.focus();
+    });
     $('#projectTokens').onclick = () => openProjectTokensDrawer(p);
     const tablist = $('.pj-toolbar [role=tablist]');
     const tabs = [...tablist.querySelectorAll('[data-pjtab]')];
@@ -657,22 +745,24 @@ async function viewProjects() {
         }
       };
     });
-    $('#projectAutopilot').onclick = () => saveProject({ ...p, autopilot: !p.autopilot }).catch((er) => toast(er.message, 5000, 'danger'));
+    $('#projectAutopilot')?.addEventListener('click', () => saveProject({ ...p, autopilot: !p.autopilot }).catch((er) => toast(er.message, 5000, 'danger')));
     $('#projectKickoff')?.addEventListener('click', () => saveProject({ ...p, autopilot: true }).catch((er) => toast(er.message, 5000, 'danger')));
     $('#projectHarness').onclick = () => openProjectHarnessDrawer();
-    $('#projectFollowup').onclick = () => projectFollowupForm(p);
-    $('#projectAdd').onclick = () => taskForm(p);
+    $('#projectFollowup')?.addEventListener('click', () => projectFollowupForm(fullProject, false, current?.number));
+    $('#projectOpenWorkspace')?.addEventListener('click', (e) => restoreProjectVersion(p, current, e.currentTarget, projectTab));
+    $('#projectAdd')?.addEventListener('click', () => taskForm(p));
     $('#projectMore').onclick = (e) => {
       e.stopPropagation();
       openMoreMenu(e.currentTarget, [
         { label: '새 Project 만들기', icon: ico.plus || '', onClick: () => projectForm() },
-        { label: '목표 · 설계 수정', icon: ico.edit || '', onClick: () => projectForm(p) },
-        { label: '작업 흐름 생성', icon: ico.swap || '', onClick: () => projectForm(p) },
+        { label: '목표 · 설계 수정', icon: ico.edit || '', onClick: () => editProjectScope(p) },
+        { label: '작업 흐름 생성', icon: ico.swap || '', onClick: () => current ? projectFollowupForm(fullProject, false, current.number) : projectForm(p) },
         { divider: true },
         { label: 'Project 삭제', icon: ico.trash || '', tone: 'danger', onClick: () => removeProject(p, $('#projectMore')) },
       ]);
     };
     if (projectTab === 'design') projectDesign(p);
+    else if (projectTab === 'versions') projectVersions(fullProject);
     else if (projectTab === 'floorplan' && typeof projectFloorplan === 'function') projectFloorplan(p, gen);
     else if (projectTab === 'refs' && typeof projectRefsView === 'function') projectRefsView(p, gen);
     else if (projectTab === 'terms') projectTerminals(p, gen);

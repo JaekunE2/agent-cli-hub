@@ -115,7 +115,7 @@ function parseAgyJson(stdout, logFile) {
 }
 
 async function runTaskSubChatTurn({
-  exe, agent, cwd, env, model = '', effort = '', sessionId = '', prompt, project, task, harnessState = null, refsBlock = '', onProgress, timeoutMs = 180_000,
+  exe, agent, cwd, env, launchArgs = [], model = '', effort = '', sessionId = '', prompt, project, task, harnessState = null, refsBlock = '', onProgress, timeoutMs = 180_000,
 }) {
   const fullPrompt = sessionId ? prompt : buildFirstTurnPrompt(project, task, prompt, agent, harnessState, refsBlock);
   const meArgs = cliModelEffortArgs(agent, model, effort);
@@ -145,6 +145,7 @@ async function runTaskSubChatTurn({
       ? ['--print', '--output-format', 'json', '--dangerously-skip-permissions', '--resume', sessionId, ...meArgs]
       : ['--print', '--output-format', 'json', '--dangerously-skip-permissions', '--session-id', assignedSid, ...meArgs];
   }
+  args = [...args, ...launchArgs];
 
   onProgress?.({ stage: `${agent.toUpperCase()} 서브 개발 실행 중…`, log: '세션 연결 중…' });
 

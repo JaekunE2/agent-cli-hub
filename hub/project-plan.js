@@ -302,7 +302,7 @@ function cliModelEffortArgs(agent, model, effort) {
   return out;
 }
 
-async function runStructuredPlan({ exe, agent, model, effort, prompt, planSchema, cwd, env, onProgress, timeoutMs = 120_000 }) {
+async function runStructuredPlan({ exe, agent, model, effort, prompt, planSchema, cwd, env, launchArgs = [], onProgress, timeoutMs = 120_000 }) {
   const run = (args) => spawnCli(exe, args, { cwd, env, timeoutMs, onProgress });
   const extraME = cliModelEffortArgs(agent, model, effort);
   const metaHint = [model, effort].filter(Boolean).join(' · ');
@@ -318,7 +318,7 @@ async function runStructuredPlan({ exe, agent, model, effort, prompt, planSchema
     } finally { fs.rmSync(log, { force: true }); }
   }
   if (agent === 'claude') {
-    const { stdout } = await run(['--print', '--no-session-persistence', '--permission-mode', 'plan', '--tools', '', ...extraME, '--output-format', 'json', '--json-schema', planSchema, prompt]);
+    const { stdout } = await run(['--print', '--no-session-persistence', '--permission-mode', 'plan', '--tools', '', ...extraME, '--output-format', 'json', '--json-schema', planSchema, ...launchArgs, '--', prompt]);
     onProgress?.({ stage: '생성된 작업 흐름 검증 중…', pct: 95 });
     return { raw: stdout };
   }
@@ -381,7 +381,7 @@ function buildSubtaskPrompt(project, task, ws) {
   ].join('\n');
 }
 
-async function generatePlan(exe, project, cwd, env, { onProgress, timeoutMs = 120_000 } = {}) {
+async function generatePlan(exe, project, cwd, env, { launchArgs, onProgress, timeoutMs = 120_000 } = {}) {
   const ws = inspectWorkspace(project.cwd);
   if (ws.isExistingProject) {
     onProgress?.({ stage: `기존 프로젝트 폴더 분석 완료 (항목 ${ws.fileCount}개${ws.markers.length ? ` · ${ws.markers.join(', ')}` : ''})`, pct: 16, log: `기존 폴더 구조 반영: ${project.cwd}` });
@@ -389,18 +389,18 @@ async function generatePlan(exe, project, cwd, env, { onProgress, timeoutMs = 12
   const prompt = buildPlanPrompt(project, ws);
   const { raw, sessionId } = await runStructuredPlan({
     exe, agent: project.agent, model: project.model, effort: project.effort,
-    prompt, planSchema: schema, cwd, env, onProgress, timeoutMs,
+    prompt, planSchema: schema, cwd, env, launchArgs, onProgress, timeoutMs,
   });
   return { tasks: readPlan(raw, project), sessionId };
 }
 
-async function generateSubtasks(exe, project, task, cwd, env, { agent, model, effort, onProgress, timeoutMs = 120_000 } = {}) {
+async function generateSubtasks(exe, project, task, cwd, env, { agent, model, effort, launchArgs, onProgress, timeoutMs = 120_000 } = {}) {
   const effAgent = agent || task.agent || project.agent || 'codex';
   const ws = inspectWorkspace(project.cwd);
   const prompt = buildSubtaskPrompt(project, task, ws);
   const { raw, sessionId } = await runStructuredPlan({
     exe, agent: effAgent, model: model || task.model || project.model, effort: effort || task.effort || project.effort,
-    prompt, planSchema: subtaskSchema, cwd, env, onProgress, timeoutMs,
+    prompt, planSchema: subtaskSchema, cwd, env, launchArgs, onProgress, timeoutMs,
   });
   return { tasks: readPlan(raw, project, { parentId: task.id, agent: effAgent, minItems: 2, maxItems: 6 }), sessionId };
 }

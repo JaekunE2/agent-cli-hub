@@ -65,6 +65,23 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
     recordAccount: (id, sid) => read().links[id]?.accounts?.[sid],
     recordTask: (id, sid) => read().links[id]?.tasks?.[sid],
     allSubChats: (projectId) => read().links[projectId]?.subChats || {},
+    vaultRuns(projectId, taskId) {
+      const byTask = read().links[projectId]?.vaultRuns;
+      return byTask && Object.hasOwn(byTask, taskId) ? byTask[taskId] : [];
+    },
+    recordVaultRun(projectId, taskIds, area, agent, vault, at = Date.now()) {
+      if (!vault) return;
+      const data = read();
+      const project = data.projects.find((p) => p.id === projectId);
+      const ids = taskIds.filter((id) => project?.tasks.some((t) => t.id === id));
+      if (!ids.length) return;
+      const link = data.links[projectId] ||= { ids: [] };
+      const byTask = link.vaultRuns = Object.assign(Object.create(null), link.vaultRuns);
+      const run = { area, agent, at, applied: vault.applied, omitted: vault.omitted.map(({ id, reason }) => ({ id, reason })) };
+      if (vault.error) run.error = vault.error;
+      for (const id of ids) (byTask[id] ||= []).push(run);
+      write(data);
+    },
     listSubChats: (projectId, taskId) => read().links[projectId]?.subChats?.[taskId] || [],
     saveSubChat(projectId, taskId, chat) {
       if (!projectId || !taskId || !chat?.id) return null;
@@ -113,7 +130,7 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
       if (!pairs.length) return;
       const data = read();
       let changed = false;
-      for (const { projectId, sessionId, taskId, agent, accountId, tokens } of pairs) {
+      for (const { projectId, sessionId, taskId, version, agent, accountId, tokens } of pairs) {
         if (!sessionId) continue;
         if (!Object.hasOwn(data.links, projectId) && !data.projects.some(p => p.id === projectId)) continue;
         const link = data.links[projectId] ||= { ids: [] };
@@ -128,6 +145,12 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
         }
         if (taskId && link.tasks?.[sessionId] !== taskId) {
           (link.tasks ||= {})[sessionId] = taskId;
+          changed = true;
+        }
+        const taskVersion = taskId ? data.projects.find((p) => p.id === projectId)?.tasks.find((task) => task.id === taskId)?.version : undefined;
+        const sessionVersion = taskVersion ?? version;
+        if (sessionVersion !== undefined && link.versions?.[sessionId] !== sessionVersion) {
+          (link.versions ||= {})[sessionId] = sessionVersion;
           changed = true;
         }
         if (tokens && typeof tokens === 'object') {
@@ -162,8 +185,11 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
       const total = emptyTok();
       const byAgent = {};
       const byTask = {};
+      const byVersion = {};
       const rollupByTask = {};
-      if (!link) return { total, byAgent, byTask, rollupByTask, sessions: 0 };
+      if (!link) return { total, byAgent, byTask, byVersion, rollupByTask, sessions: 0 };
+      const tasks = project?.tasks || [];
+      const versionsByTask = new Map(tasks.map((task) => [task.id, task.version || '']));
       const allSids = new Set([...(link.ids || []), ...Object.keys(link.tokenLedger || {})]);
       let counted = 0;
       for (const sid of allSids) {
@@ -176,6 +202,13 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
         const tid = stored?.taskId || link.tasks?.[sid] || null;
         addTok(total, tok);
         addTok(byAgent[ag] ||= emptyTok(), tok);
+        const version = versionsByTask.get(tid) ?? link.versions?.[sid];
+        if (version !== undefined) {
+          const entry = (byVersion[version] ||= { total: emptyTok(), byAgent: {}, sessions: 0 });
+          addTok(entry.total, tok);
+          addTok(entry.byAgent[ag] ||= emptyTok(), tok);
+          entry.sessions++;
+        }
         if (tid) {
           const tEntry = (byTask[tid] ||= { total: emptyTok(), byAgent: {}, sessions: 0 });
           addTok(tEntry.total, tok);
@@ -185,11 +218,10 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
       }
 
       // Build hierarchical rollup so any parent/top-level task includes its own tokens + all descendant subtasks' tokens
-      const tasks = project?.tasks || [];
       const childrenByParent = new Map();
       const taskIdSet = new Set(tasks.map((t) => t.id));
       for (const t of tasks) {
-        if (t.parentId && taskIdSet.has(t.parentId) && t.parentId !== t.id) {
+        if (t.parentId && t.parentId !== t.id && versionsByTask.get(t.parentId) === versionsByTask.get(t.id)) {
           (childrenByParent.get(t.parentId) || childrenByParent.set(t.parentId, []).get(t.parentId)).push(t.id);
         }
       }
@@ -238,7 +270,7 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
         };
       }
 
-      return { total, byAgent, byTask, rollupByTask, sessions: counted };
+      return { total, byAgent, byTask, byVersion, rollupByTask, sessions: counted };
     },
     remove(id, revision) {
       const data = read();
@@ -247,6 +279,7 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
       if (project.revision !== revision) throw new Error('다른 화면에서 변경했습니다. 새로고침 후 다시 삭제하세요.');
       const link = data.links[id] ||= { ids: [] };
       link.deleted = true;
+      delete link.vaultRuns;
       for (const sid of link.ids) add(data.hidden, sid);
       data.projects = data.projects.filter(p => p.id !== id);
       write(data);
@@ -258,6 +291,11 @@ module.exports = function projects(file = path.join(__dirname, 'data', 'projects
       if (input.id && !old) throw new Error('프로젝트를 찾을 수 없습니다.');
       if (old && input.revision !== old.revision) throw new Error('다른 화면에서 변경했습니다. 새로고침 후 다시 저장하세요.');
       const project = { ...clean, id: old?.id || randomUUID(), revision: (old?.revision || 0) + 1, updatedAt: Date.now() };
+      const vaultRuns = data.links[project.id]?.vaultRuns;
+      if (vaultRuns) {
+        const taskIds = new Set(project.tasks.map((task) => task.id));
+        for (const id of Object.keys(vaultRuns)) if (!taskIds.has(id)) delete vaultRuns[id];
+      }
       if (old) all[all.indexOf(old)] = project; else all.push(project);
       write(data);
       return project;

@@ -3,6 +3,7 @@ const agents = ['claude', 'codex', 'agy', 'cursor'];
 const kinds = ['plan', 'dev', 'test', 'review', 'ops'];
 const efforts = ['', 'minimal', 'low', 'medium', 'high', 'xhigh', 'ultra', 'max'];
 const MODEL_RE = /^[\w.\-:/\[\]]{0,120}$/;
+const VERSION_RE = /^(?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8})$/;
 
 function inferTaskKind(title = '', detail = '') {
   const t = String(title || '').trim();
@@ -26,6 +27,19 @@ function validate(p) {
   if (p.effort !== undefined && !efforts.includes(String(p.effort || ''))) fail('Project 추론 성능 설정이 올바르지 않습니다.');
   if (!Array.isArray(p.termIds) || p.termIds.length > 100 || p.termIds.some(id => !str(id, 80, true))) fail('터미널 목록이 올바르지 않습니다.');
   if (!Array.isArray(p.tasks) || p.tasks.length > 200) fail('작업은 최대 200개까지 등록할 수 있습니다.');
+  const versions = p.versions ?? [];
+  if (!Array.isArray(versions)) fail('프로젝트 버전 정보가 올바르지 않습니다.');
+  const versionNumbers = new Set();
+  const commit = (sha) => typeof sha === 'string' && /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(sha) ? sha : '';
+  const cleanVersions = versions.map((version) => {
+    if (!version || typeof version.number !== 'string' || !VERSION_RE.test(version.number) || versionNumbers.has(version.number)
+      || !str(version.goal, 6000, true)) fail('버전 번호와 목표를 확인하세요. 같은 버전 번호는 한 번만 사용할 수 있습니다.');
+    versionNumbers.add(version.number);
+    return { number: version.number, goal: version.goal.trim(), createdAt: Number(version.createdAt) || 0,
+      baseCommit: commit(version.baseCommit), completedCommit: commit(version.completedCommit),
+      ...(/^[a-f0-9-]{36}$/.test(version.snapshotId || '') ? { snapshotId: version.snapshotId } : {}),
+      ...(str(version.workspace, 1000, true) ? { workspace: version.workspace } : {}) };
+  });
   const seen = new Set();
   for (const t of p.tasks) {
     if (!t || !str(t.id, 80, true) || seen.has(t.id) || !str(t.title, 240, true) || !str(t.detail, 6000) || !stages.includes(t.stage)) fail('작업 정보가 올바르지 않습니다.');
@@ -37,6 +51,7 @@ function validate(p) {
     if (t.model !== undefined && t.model !== null && (!str(t.model, 120) || !MODEL_RE.test(String(t.model).trim()))) fail('작업 모델 이름이 올바르지 않습니다.');
     if (t.effort !== undefined && t.effort !== null && !efforts.includes(String(t.effort || ''))) fail('작업 추론 성능 설정이 올바르지 않습니다.');
     if (t.parentId !== undefined && t.parentId !== null && !str(t.parentId, 80)) fail('상위 작업 ID가 올바르지 않습니다.');
+    if (t.version && !versionNumbers.has(t.version)) fail('작업에 연결된 프로젝트 버전을 찾을 수 없습니다.');
     seen.add(t.id);
   }
   const byId = new Map(p.tasks.map(t => [t.id, t]));
@@ -63,6 +78,7 @@ function validate(p) {
     checked.add(id);
   }
   seen.forEach(visit);
+  const versionOf = (task) => task.version || (task.parentId ? versionOf(byId.get(task.parentId)) : '');
   return {
     name: p.name.trim(),
     cwd: p.cwd.trim(),
@@ -73,6 +89,7 @@ function validate(p) {
     model: String(p.model || '').trim(),
     effort: String(p.effort || ''),
     termIds: [...new Set(p.termIds)],
+    versions: cleanVersions,
     tasks: p.tasks.map(t => ({
       id: t.id,
       title: t.title.trim(),
@@ -85,8 +102,10 @@ function validate(p) {
       model: String(t.model || '').trim(),
       effort: String(t.effort || ''),
       parentId: t.parentId ? String(t.parentId) : '',
+      version: versionOf(t),
       autoExclude: !!t.autoExclude,
-      reviewStatus: ['reviewing', 'approved', 'rejected', 'error', 'merge-blocked'].includes(t.reviewStatus) ? t.reviewStatus : '',
+      reviewStatus: ['reviewing', 'approved', 'rejected', 'error', 'merge-pending', 'merge-blocked'].includes(t.reviewStatus) ? t.reviewStatus : '',
+      mergeApprovalNote: typeof t.mergeApprovalNote === 'string' ? t.mergeApprovalNote.slice(0, 2000) : '',
       reviewPaused: t.reviewPaused === true,
       reviewNote: typeof t.reviewNote === 'string' ? t.reviewNote.slice(0, 2000) : '',
       lastOutput: typeof t.lastOutput === 'string' ? t.lastOutput.slice(0, 2000) : '',
@@ -98,4 +117,4 @@ function validate(p) {
     })),
   };
 }
-module.exports = { validate, stages, agents, kinds, efforts, MODEL_RE, inferTaskKind };
+module.exports = { validate, stages, agents, kinds, efforts, MODEL_RE, VERSION_RE, inferTaskKind };

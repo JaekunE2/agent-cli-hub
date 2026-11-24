@@ -4,7 +4,7 @@ let TOKEN = qs.get('t') || '';
 try { if (TOKEN) localStorage.setItem('ccd-token', TOKEN); else TOKEN = localStorage.getItem('ccd-token') || ''; } catch {}
 // opened on this PC (127.0.0.1/localhost): the server put the token into the page — any browser profile works
 if (window.__CCD_LOCAL_TOKEN && TOKEN !== window.__CCD_LOCAL_TOKEN) { TOKEN = window.__CCD_LOCAL_TOKEN; try { localStorage.setItem('ccd-token', TOKEN); } catch {} }
-if (qs.get('t')) { qs.delete('t'); history.replaceState(null, '', '/' + (qs.toString() ? '?' + qs : '')); }
+if (qs.get('t')) { qs.delete('t'); history.replaceState(null, '', '/' + (qs.toString() ? '?' + qs : '') + location.hash); }
 
 const $ = (s, el = document) => el.querySelector(s);
 const uiLocale = () => (document.documentElement.lang === 'en' ? 'en-US' : 'ko-KR');

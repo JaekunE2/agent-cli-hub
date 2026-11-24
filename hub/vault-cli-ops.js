@@ -133,7 +133,7 @@ function createVaultCliOps(ctx) {
     return { ok: true, addedSkills, addedMcps, addedRules, state: getState() };
   };
 
-  const syncToClis = ({ clis = ALL_CLIS } = {}) => {
+  const syncToClis = ({ clis = ALL_CLIS } = {}, launch = {}) => {
     const l = ensureVaultDirs();
     const p = cliPaths();
     const manifest = readManifest();
@@ -145,11 +145,11 @@ function createVaultCliOps(ctx) {
     const sharedText = fs.readFileSync(l.sharedHarnessFile, 'utf8').trim();
 
     for (const cli of targets) {
-      const cliCfg = p[cli];
+      const cliCfg = { ...p[cli], ...launch.paths };
       const summary = { skillsLinked: 0, skillsRemoved: 0, mcpsWritten: 0, harnessUpdated: false };
 
       for (const sk of skills) {
-        const active = sk.enabled && sk.targets.includes(cli);
+        const active = launch.skills ? launch.skills.includes(sk.name) : sk.enabled && sk.targets.includes(cli);
         for (const sdir of cliCfg.skillDirs) {
           fs.mkdirSync(sdir, { recursive: true });
           const dst = path.join(sdir, sk.name);
@@ -161,6 +161,7 @@ function createVaultCliOps(ctx) {
             summary.skillsRemoved++;
           }
         }
+        if (active) launch.applied?.push(`skill:${sk.name}`);
       }
 
       const activeMcps = {};
@@ -189,7 +190,7 @@ function createVaultCliOps(ctx) {
         summary.mcpsWritten = Object.keys(activeMcps).length;
       }
 
-      const enabledRules = rules.filter((r) => r.enabled && r.targets.includes(cli));
+      const enabledRules = rules.filter((r) => launch.rules ? launch.rules.includes(r.name) : r.enabled && r.targets.includes(cli));
       const combined = [sharedText, ...enabledRules.map((r) => `\n## [규칙: ${r.name}]\n${r.content.trim()}`)].filter(Boolean).join('\n').trim();
       if (cliCfg.harnessFile) summary.harnessUpdated = upsertManagedMarkdownBlock(cliCfg.harnessFile, combined);
       if (cli === 'agy' && cliCfg.rulesDir) {
@@ -199,13 +200,17 @@ function createVaultCliOps(ctx) {
         const curRule = fs.existsSync(agyHarnessRule) ? fs.readFileSync(agyHarnessRule, 'utf8') : '';
         if (curRule !== nextRule) fs.writeFileSync(agyHarnessRule, nextRule, 'utf8');
       }
+      if (cliCfg.harnessFile) {
+        if (sharedText) launch.applied?.push('shared');
+        launch.applied?.push(...enabledRules.map((r) => `rule:${r.name}`));
+      }
       report.clis[cli] = summary;
     }
 
     manifest.lastSyncAt = Date.now();
     manifest.lastSyncSummary = report.clis;
     writeManifest(manifest);
-    return { ok: true, report, state: getState() };
+    return { ok: true, report, ...(launch.applied ? {} : { state: getState() }) };
   };
 
   const inspectCli = (cliKey) => {
@@ -393,22 +398,65 @@ function createVaultCliOps(ctx) {
     return { ok: true, importedSkills, movedSkills, importedMcps, importedRules, importedHarness, cliData: inspectCli(cli), state: getState() };
   };
 
-  const prepareLaunch = (cliKey, { resume = false } = {}) => {
-    if (!ALL_CLIS.includes(cliKey)) return { extraArgs: [], env: {}, synced: false };
-    const manifest = readManifest();
-    if (manifest.autoLoad === false) return { extraArgs: [], env: {}, synced: false };
-    syncToClis({ clis: [cliKey] });
-    if (cliKey !== 'claude') return { extraArgs: [], env: {}, synced: true };
+  const prepareLaunch = (cliKey, { resume = false, env = {}, native = true } = {}) => {
+    const vault = { applied: [], omitted: [] };
+    const result = { extraArgs: [], env: {}, synced: false, vault };
+    const selection = { applied: vault.applied, skills: [], rules: [] };
+    const pending = [];
+    try {
+      const manifest = readManifest();
+      const commonReason = !native || !ALL_CLIS.includes(cliKey) ? 'unsupported-cli'
+        : manifest.autoLoad === false ? 'autoload-disabled' : '';
+      const select = (kind, resources, available) => {
+        const found = new Map(resources.map((r) => [r.name, r]));
+        return [...new Set([...found.keys(), ...Object.keys(manifest[`${kind}s`])])].filter((name) => {
+          const id = `${kind}:${name}`;
+          const resource = found.get(name);
+          const reason = commonReason || (!resource ? 'missing' : !resource.enabled ? 'disabled'
+            : !resource.targets.includes(cliKey) ? 'unsupported-target' : available(resource));
+          if (reason) vault.omitted.push({ id, reason });
+          else pending.push(id);
+          return !reason;
+        });
+      };
+      const l = ensureVaultDirs();
+      const skills = listSkills();
+      const rules = listRules();
+      const sharedText = fs.readFileSync(l.sharedHarnessFile, 'utf8').trim();
+      if (commonReason || !sharedText) vault.omitted.push({ id: 'shared', reason: commonReason || 'empty' });
+      else pending.push('shared');
+      selection.skills = select('skill', skills, (sk) => sk.hasSkillMd ? '' : 'missing');
+      selection.rules = select('rule', rules, (rule) => rule.content.trim() ? '' : 'empty');
+      if (commonReason) return result;
 
-    const l = ensureVaultDirs();
+      if (cliKey === 'codex' && env.CODEX_HOME) {
+        const root = path.resolve(env.CODEX_HOME);
+        selection.paths = { skillDirs: [path.join(root, 'skills')], harnessFile: path.join(root, 'AGENTS.md') };
+      } else if (cliKey === 'claude' && env.CLAUDE_CONFIG_DIR) {
+        const root = path.resolve(env.CLAUDE_CONFIG_DIR);
+        selection.paths = { skillDirs: [path.join(root, 'skills')], harnessFile: path.join(root, 'CLAUDE.md') };
+      }
+      syncToClis({ clis: [cliKey] }, selection);
+      if (cliKey !== 'claude') return { ...result, synced: true };
+      return { ...prepareClaude(l, { resume, skills, rules, sharedText, selection }), vault };
+    } catch (error) {
+      console.error('[vault-launch]', cliKey, error.code || error.name, (error.stack || '').split('\n')[1]?.trim());
+      for (const id of pending) {
+        if (!vault.applied.includes(id)) vault.omitted.push({ id, reason: 'sync-failed' });
+      }
+      vault.error = 'sync-failed';
+      return result;
+    }
+  };
+
+  const prepareClaude = (l, { resume, skills, rules, sharedText, selection }) => {
     const runtimeDir = path.join(l.root, '.runtime', 'claude');
     const rtSkillsDir = path.join(runtimeDir, '.claude', 'skills');
     fs.mkdirSync(rtSkillsDir, { recursive: true });
 
-    const activeSkillNames = new Set();
-    for (const sk of listSkills()) {
-      if (sk.enabled && sk.targets.includes('claude')) {
-        activeSkillNames.add(sk.name);
+    const activeSkillNames = new Set(selection.skills);
+    for (const sk of skills) {
+      if (activeSkillNames.has(sk.name)) {
         linkOrCopySkillDir(sk.path, path.join(rtSkillsDir, sk.name), path.join(l.backupDir, 'rt-claude'));
       }
     }
@@ -427,8 +475,7 @@ function createVaultCliOps(ctx) {
     if (hasMcps) writeJsonAtomic(mcpFile, { mcpServers: activeMcps });
     else if (fs.existsSync(mcpFile)) fs.rmSync(mcpFile, { force: true });
 
-    const sharedText = fs.readFileSync(l.sharedHarnessFile, 'utf8').trim();
-    const enabledRules = listRules().filter((r) => r.enabled && r.targets.includes('claude'));
+    const enabledRules = rules.filter((r) => selection.rules.includes(r.name));
     const combined = [sharedText, ...enabledRules.map((r) => `\n## [규칙: ${r.name}]\n${r.content.trim()}`)].filter(Boolean).join('\n').trim();
     const harnessFile = path.join(runtimeDir, 'CLAUDE.md');
     const nextHarness = combined ? `${combined}\n` : '';

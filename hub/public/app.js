@@ -70,7 +70,8 @@ function select(sel, tab, persistTab = false) {
     const payload = { sel, tab: state.tab };
     try { localStorage.setItem('ach-last-sel', JSON.stringify(payload)); } catch {}
     try {
-      const h = sel.id ? `#${sel.kind}:${sel.id}:${state.tab}` : `#${sel.kind}`;
+      const version = sel.kind === 'projects' && sel.version ? `:${sel.version}` : '';
+      const h = sel.id ? `#${sel.kind}:${sel.id}:${state.tab}${version}` : `#${sel.kind}`;
       if (location.hash !== h) history.replaceState(null, '', h);
     } catch {}
   }
@@ -601,9 +602,14 @@ $('#btnSideMore').onclick = (e) => {
   else {
     let restored = null;
     try {
-      const hm = /^#([a-z]+)(?::([^:]+)(?::([a-z]+))?)?$/.exec(location.hash || '');
-      const fromHash = hm ? { sel: hm[2] ? { kind: hm[1], id: hm[2] } : { kind: hm[1] }, tab: hm[3] || undefined } : null;
-      const saved = fromHash || JSON.parse(localStorage.getItem('ach-last-sel') || 'null');
+      const hm = /^#([a-z]+)(?::([^:]+)(?::([a-z]+)(?::(\d+\.\d+\.\d+))?)?)?$/.exec(location.hash || '');
+      const version = hm?.[1] === 'projects' && hm[4];
+      const fromHash = hm ? { sel: { kind: hm[1], ...(hm[2] ? { id: hm[2] } : {}), ...(version ? { version } : {}) }, tab: hm[3] || undefined } : null;
+      const previous = JSON.parse(localStorage.getItem('ach-last-sel') || 'null');
+      if (fromHash?.sel.kind === 'term' && previous?.sel?.kind === 'term' && previous.sel.id === fromHash.sel.id) {
+        fromHash.sel = { ...previous.sel, ...fromHash.sel };
+      }
+      const saved = fromHash || previous;
       const s = saved?.sel;
       if (s && ['home', 'terms', 'projects', 'usage', 'calendar', 'gpu', 'vault', 'recent', 'research'].includes(s.kind)) restored = saved;
       else if (s?.kind === 'term' && state.terms.some((t) => String(t.id) === String(s.id))) restored = saved;

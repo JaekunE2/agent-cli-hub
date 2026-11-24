@@ -13,7 +13,9 @@ async function projectRefsView(project, gen) {
   host.innerHTML = '<div class="empty">참조 데이터를 불러오는 중…</div>';
 
   const authTok = () => (typeof TOKEN !== 'undefined' ? TOKEN : (window.TOKEN || ''));
-  const fileUrl = (name) => `/api/projects/refs/file?projectId=${encodeURIComponent(project.id)}&name=${encodeURIComponent(name)}&t=${encodeURIComponent(authTok())}&_t=${Date.now()}`;
+  const scope = { projectId: project.id, version: project.scope?.number || '' };
+  const query = new URLSearchParams(scope);
+  const fileUrl = (name) => `/api/projects/refs/file?${query}&name=${encodeURIComponent(name)}&t=${encodeURIComponent(authTok())}&_t=${Date.now()}`;
 
   const uploadFileObj = async (file) => {
     const b64 = await new Promise((resolve, reject) => {
@@ -24,7 +26,7 @@ async function projectRefsView(project, gen) {
     });
     const r = await api('/api/projects/refs', {
       method: 'POST',
-      body: { projectId: project.id, name: file.name, contentBase64: b64 },
+      body: { ...scope, name: file.name, contentBase64: b64 },
     });
     if (r?.error) throw new Error(r.error);
     return r;
@@ -117,7 +119,7 @@ async function projectRefsView(project, gen) {
       const text = $('#refNoteText', host).value || '';
       if (!text.trim()) return toast('내용을 입력하세요');
       try {
-        const r = await api('/api/projects/refs', { method: 'POST', body: { projectId: project.id, name, text } });
+        const r = await api('/api/projects/refs', { method: 'POST', body: { ...scope, name, text } });
         if (r?.error) throw new Error(r.error);
         paint(r);
         toast('참조 텍스트를 저장했습니다');
@@ -146,7 +148,7 @@ async function projectRefsView(project, gen) {
       btn.onclick = async () => {
         const nm = btn.dataset.refDel;
         if (!confirm(`참조 파일 "${nm}"을(를) 삭제할까요?`)) return;
-        const r = await api('/api/projects/refs', { method: 'DELETE', body: { projectId: project.id, name: nm } });
+        const r = await api('/api/projects/refs', { method: 'DELETE', body: { ...scope, name: nm } });
         if (r?.error) return toast(r.error, 4000, 'danger');
         paint({ dir, files: r.files });
       };
@@ -154,7 +156,7 @@ async function projectRefsView(project, gen) {
   };
 
   try {
-    const r = await api(`/api/projects/refs?projectId=${encodeURIComponent(project.id)}`);
+    const r = await api(`/api/projects/refs?${query}`);
     if (r?.error) throw new Error(r.error);
     paint(r);
   } catch (e) {

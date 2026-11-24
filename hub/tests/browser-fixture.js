@@ -52,6 +52,7 @@ module.exports = async function fixture(store, handleRoute) {
       const agent = task.agent || p.agent;
       const account = task.account ?? (agent === p.agent ? p.account : '');
       const t = { ...terms[1], id: String(terms.length + 1), title: task.title, agent, agy: agent === 'agy',
+        cwd: p.versions?.find((item) => item.number === task.version)?.workspace || p.cwd,
         account: account ? { id: account, label: account === 'agy-b' ? 'AGY B' : 'AGY A' } : null, projectTask: { projectId, taskId } };
       terms.push(t);
       if (t.agy) setTimeout(() => { t.sessionId = 'aaaaaaaa-bbbb-cccc-dddd-000000000002'; }, 300);
@@ -60,7 +61,7 @@ module.exports = async function fixture(store, handleRoute) {
     if (url.pathname === '/api/projects/task-chat') {
       const projectId = url.searchParams.get('projectId') || '';
       const taskId = url.searchParams.get('taskId') || '';
-      if (req.method === 'GET') return json({ chats: store.listSubChats(projectId, taskId), active: null });
+      if (req.method === 'GET') return json({ chats: store.listSubChats(projectId, taskId), vaultRuns: store.vaultRuns(projectId, taskId), active: null });
     }
     if (url.pathname === '/api/fs/dirs') {
       const reqP = url.searchParams.get('path') || 'D:\\demo';

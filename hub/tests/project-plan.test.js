@@ -10,6 +10,57 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+test('version history captures starting and final Git commits and keeps ordinary tasks separate', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-version-test-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const cwd = path.join(dir, 'workspace');
+  fs.mkdirSync(cwd);
+  const git = (...args) => require('child_process').execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+  git('init', '-q');
+  const file = path.join(cwd, 'tracked.txt');
+  fs.writeFileSync(file, 'initial');
+  git('add', 'tracked.txt');
+  const commit = (message) => git('-c', 'user.name=Hub Test', '-c', 'user.email=hub@example.test', 'commit', '-qam', message);
+  commit('base');
+  const base = git('rev-parse', 'HEAD');
+  const projects = projectsStore(path.join(dir, 'projects.json'));
+  let project = projects.save({ name: 'Demo', cwd, goal: 'Original', termIds: [], tasks: [] });
+  const { handleProjectRoutes } = require('../routes-projects').createProjectRoutes({ baseDir: dir, config: {}, projects, scanFloorplan });
+  const post = async (draft) => {
+    let response;
+    await handleProjectRoutes('/api/projects', new URL('http://test/api/projects'), { method: 'POST' }, null, async () => draft,
+      (_res, code, payload) => { response = { code, ...payload }; }, () => true);
+    return response;
+  };
+  const task = { title: 'Task', detail: '', termId: '', after: [] };
+  project = (await post({ ...project, versions: [{ number: '1.1.0', goal: 'Improve' }], tasks: [
+    { ...task, id: 'first', stage: 'done' }, { ...task, id: 'version', stage: 'doing', version: '1.1.0' },
+    { ...task, id: 'child', stage: 'done', parentId: 'version' },
+  ] })).project;
+  assert.equal(project.versions[0].baseCommit, base);
+  assert.deepEqual(project.tasks.map((x) => x.version), ['', '1.1.0', '1.1.0']);
+  const finish = () => post({ id: project.id, revision: project.revision, finalizeVersion: '1.1.0' });
+  assert.equal((await finish()).code, 400);
+  project = (await post({ ...project, tasks: project.tasks.map((x) => ({ ...x, stage: 'done' })) })).project;
+  fs.writeFileSync(file, 'changed');
+  assert.equal((await finish()).code, 400);
+  const codeFile = path.join(cwd, 'version.js');
+  fs.writeFileSync(codeFile, 'module.exports = 1;');
+  git('add', 'version.js');
+  commit('complete version');
+  project = (await finish()).project;
+  assert.equal(project.versions[0].completedCommit, git('rev-parse', 'HEAD'));
+  assert.equal((await finish()).project.revision, project.revision);
+  fs.unlinkSync(codeFile);
+  let structure;
+  const url = new URL(`http://test/api/projects/floorplan?id=${project.id}&version=1.1.0`);
+  await handleProjectRoutes(url.pathname, url, { method: 'GET' }, null, null,
+    (_res, code, payload) => { structure = { code, ...payload }; }, () => true);
+  assert.equal(structure.code, 200, structure.error);
+  assert.deepEqual(structure.floorplan.nodes.map((node) => node.relPath), ['version.js']);
+  assert.equal(fs.existsSync(codeFile), false);
+});
+
 test('follow-up plan separates the new goal from existing work', () => {
   const prompt = buildPlanPrompt({ name: 'App', goal: 'Add CSV export', existingPlan: {
     goal: 'Publish a dashboard', tasks: [{ title: 'Build the dashboard', stage: 'done' }],
@@ -17,6 +68,62 @@ test('follow-up plan separates the new goal from existing work', () => {
   assert.match(prompt, /do not duplicate/);
   assert.match(prompt, /Add CSV export/);
   assert.match(prompt, /Build the dashboard/);
+});
+
+test('local versions keep a reusable snapshot and route tasks to the restored files', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-local-version-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const cwd = path.join(dir, 'workspace');
+  fs.mkdirSync(path.join(cwd, 'node_modules'), { recursive: true });
+  fs.writeFileSync(path.join(cwd, 'notes.txt'), 'first draft');
+  const projects = projectsStore(path.join(dir, 'projects.json'));
+  let project = projects.save({ name: 'Local', cwd, goal: 'Original', termIds: [], tasks: [] });
+  const { handleProjectRoutes } = require('../routes-projects').createProjectRoutes({
+    baseDir: dir, config: { versionStorageDir: path.join(dir, 'versions') }, projects,
+  });
+  const post = async (action) => {
+    let response;
+    const draft = { id: project.id, revision: project.revision, ...action };
+    await handleProjectRoutes('/api/projects', new URL('http://test/api/projects'), { method: 'POST' }, null, async () => draft,
+      (_res, code, payload) => { response = { code, ...payload }; }, () => true);
+    assert.equal(response.code, 200, response.error);
+    project = response.project;
+  };
+  const { versionWorkspace } = require('../version-files');
+  await post({ snapshotVersion: '1.0.0' });
+  assert.equal(versionWorkspace(project, '1.0.0'), '');
+  fs.writeFileSync(path.join(cwd, 'notes.txt'), 'original changed');
+  await post({ restoreVersion: '1.0.0' });
+  const workspace = versionWorkspace(project, '1.0.0');
+  assert.equal(fs.readFileSync(path.join(workspace, 'notes.txt'), 'utf8'), 'first draft');
+  assert.equal(fs.existsSync(path.join(workspace, 'node_modules')), false);
+  fs.writeFileSync(path.join(workspace, 'notes.txt'), 'version changed');
+  await post({ restoreVersion: '1.0.0' });
+  assert.equal(versionWorkspace(project, '1.0.0'), workspace);
+
+  const launches = [];
+  const sessionHub = {
+    config: {}, projects, index: { get: () => ({ cwd }) }, deletingProjects: new Set(),
+    terms: new Map(), projectAgents: ['codex'], cliModelEffortArgs: () => [], fingerprint: () => '',
+    projectAccounts: { resolve: () => ({}) }, codexLaunch: () => ({ cmd: 'codex', args: [] }),
+    ensureProjectDir: () => {}, termInfo: (term) => term,
+    createTerm: (options) => { launches.push(options.cwd); return { id: '1', spawnResult: Promise.resolve({}) }; },
+  };
+  project = projects.save({ ...project, tasks: [{ id: 'task', title: 'Work', detail: '', termId: '', after: [], stage: 'planned', version: '1.0.0' }] });
+  await post({ snapshotVersion: '1.0.1', sourceVersion: '1.0.0' });
+  const { runProjectAutopilot } = require('../project-autopilot');
+  require('../routes-sessions').createSessionRoutes(sessionHub);
+  assert.ok((await sessionHub.startProjectTaskById(project.id, 'task', { resume: 'from-original', autoDispatch: false })).error);
+  project = projects.save({ ...project, autopilot: true, maxConcurrent: 3, tasks: [
+    ...project.tasks, { ...project.tasks[0], id: 'second' }, { ...project.tasks[0], id: 'unopened', version: '1.0.1' },
+  ] });
+  assert.equal((await runProjectAutopilot(sessionHub, project.id, { autoDispatch: false })).started.length, 1);
+  assert.deepEqual(launches, [workspace]);
+  assert.equal((await runProjectAutopilot(sessionHub, project.id, { autoDispatch: false })).started.length, 0);
+  project = projects.list()[0];
+  await post({ restoreVersion: '1.0.1' });
+  assert.equal(fs.readFileSync(path.join(versionWorkspace(project, '1.0.1'), 'notes.txt'), 'utf8'), 'version changed');
+  assert.equal(fs.readFileSync(path.join(cwd, 'notes.txt'), 'utf8'), 'original changed');
 });
 
 test('spawnCli reports its configured deadline when a CLI runs too long', async () => {

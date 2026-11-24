@@ -583,7 +583,11 @@ function viewTerm() {
     if (openSessionOrigin(e.target)) return;
     if (e.target.closest('#btnRenameTerm')) return doRenameTerm();
     const bp = e.target.closest('#btnBackProject');
-    if (bp) return openProject(bp.dataset.projId || state.sel.project);
+    if (bp) {
+      const project = state.sel.project || pj?.id || t?.projectTask?.projectId;
+      const version = state.sel.projectVersion ?? pj?.tasks.find((task) => task.id === t?.projectTask?.taskId)?.version;
+      return openProject(project, state.sel.projectTab || (version ? 'terms' : undefined), version);
+    }
     const dt = e.target.closest('[data-dock-toggle]');
     if (dt) {
       const p = dt.dataset.dockToggle;

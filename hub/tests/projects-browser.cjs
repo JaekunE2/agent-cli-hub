@@ -42,6 +42,22 @@ const { chromium } = require(process.env.HUB_PLAYWRIGHT || 'playwright');
     await page.locator('.pj-task').first().waitFor();
     assert.equal(await page.locator('.pj-task').count(), 3);
     const designCard = () => page.locator('.pj-task').filter({ hasText: 'Design' });
+    const { id: projectId, tasks } = store.list()[0];
+    store.recordVaultRun(projectId, [tasks[0].id], 'review', 'claude', {
+      applied: ['skill:demo'], omitted: [{ id: 'rule:missing.md', reason: 'missing' }],
+    });
+    const checkVaultRun = async () => {
+      await designCard().click();
+      const history = page.locator('[data-vault-runs]');
+      await history.getByText(/자동 검토/).click();
+      await history.getByText('skill:demo', { exact: false }).waitFor();
+      await history.getByText('rule:missing.md · 자원 파일 없음').waitFor();
+      await page.keyboard.press('Escape');
+    };
+    await checkVaultRun();
+    await page.reload();
+    await clickTab('칸반 보드');
+    await checkVaultRun();
     const designMenu = async () => {
       await designCard().hover();
       await designCard().getByRole('button', { name: 'Design 메뉴', exact: true }).click();

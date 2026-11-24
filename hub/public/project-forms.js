@@ -391,37 +391,173 @@ function projectForm(p) {
   bindProjectAccounts(dialog, p?.account || '', null, p?.model || '', p?.effort || '');
 }
 
-function projectFollowupForm(p) {
+function projectFollowupForm(p, versionMode = false, existingVersion = '') {
   const agent = p.agent === 'cursor' ? 'codex' : p.agent || 'codex';
   let generated, planKey;
   const dialog = projectDialog('후속 작업 설계', `
-    <p class="ums">${esc(p.name)} · ${esc(p.cwd)}</p>
+    <p class="ums">${esc(p.name)} · ${esc(p.versions?.find((item) => item.number === existingVersion)?.workspace || p.cwd)}</p>
+    ${existingVersion ? `<p><strong>v${esc(existingVersion)}</strong></p>` : `<label>작업 구분<select name="mode"><option value="followup">일반 후속 작업</option><option value="version"${versionMode ? ' selected' : ''}>버전업</option></select></label>
+    <label data-version-field${versionMode ? '' : ' hidden'}>버전 번호<input name="version" maxlength="29" placeholder="1.2.0"${versionMode ? ' required' : ' disabled'}></label>`}
     <label>개선·버전업 목표<textarea name="goal" required maxlength="6000" rows="4" placeholder="추가할 기능과 완료 기준을 적어주세요"></textarea></label>
     ${projectAgentField('설계에 사용할 CLI', agent)}${projectAccountField}${projectModelEffortFields}
     <p class="ums">기존 목표와 작업 기록을 보존합니다. 자동 진행이 켜져 있으면 추가 후 실행 가능한 작업이 시작됩니다.</p>
     <div data-plan-preview role="status"></div>`, async (f) => {
+    const number = existingVersion || (f.get('mode') === 'version' ? String(f.get('version') || '').trim().replace(/^v/i, '') : '');
+    if (f.get('mode') === 'version' && !/^(?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8})$/.test(number)) {
+      throw new Error('버전 번호를 1.2.0 형식으로 입력하세요.');
+    }
+    if (number && !existingVersion && p.versions?.some((version) => version.number === number)) throw new Error('이미 등록된 버전 번호입니다.');
     const selectedAgent = f.get('agent');
     const draft = { projectId: p.id, name: p.name, cwd: p.cwd, goal: f.get('goal').trim(), agent: selectedAgent,
       account: f.get('account') === 'inherit' ? p.account || '' : f.get('account'),
-      model: String(f.get('model') || ''), effort: String(f.get('effort') || '') };
-    const key = JSON.stringify(draft);
+      model: String(f.get('model') || ''), effort: String(f.get('effort') || ''), ...(existingVersion ? { projectVersion: existingVersion } : {}) };
+    const key = JSON.stringify([draft, number]);
     if (!generated || planKey !== key) {
       generated = await previewProjectPlan(dialog, draft, true);
       planKey = key;
-      $('.dlg-foot .primary', dialog).textContent = '후속 작업 추가';
+      $('.dlg-foot .primary', dialog).textContent = number ? '버전 작업 등록' : '후속 작업 추가';
       return false;
     }
     const r = await api('/api/projects');
     if (r.error) throw new Error(r.error);
     const latest = r.projects?.find((x) => x.id === p.id);
     if (!latest || latest.cwd !== draft.cwd) throw new Error('프로젝트 또는 작업 폴더가 변경되었습니다. 후속 작업 설계를 다시 열어주세요.');
-    await saveProject({ ...latest, tasks: [...latest.tasks, ...generated] }, 'flow');
+    if (number && !existingVersion && latest.versions?.some((version) => version.number === number)) throw new Error('이미 등록된 버전 번호입니다.');
+    const versions = latest.versions || [];
+    const tasks = number ? generated.map((task) => ({ ...task, version: number })) : generated;
+    await saveProject({ ...latest, versions: number && !existingVersion ? [...versions, { number, goal: draft.goal }] : versions, tasks: [...latest.tasks, ...tasks] }, 'flow', number);
   }, '', '작업 흐름 생성');
+  dialog.querySelector('[name=mode]')?.addEventListener('change', (e) => {
+    const version = e.target.value === 'version';
+    const field = dialog.querySelector('[data-version-field]');
+    field.hidden = !version;
+    const input = field.querySelector('input');
+    input.required = version;
+    input.disabled = !version;
+    $('.dlg-foot .primary', dialog).textContent = '작업 흐름 생성';
+  });
   bindProjectAccounts(dialog, agent === p.agent ? p.account || '' : '', p,
     agent === p.agent ? p.model || '' : '', agent === p.agent ? p.effort || '' : '');
 }
 
+function projectSnapshotForm(p, selected) {
+  const versions = p.versions || [];
+  const last = (selected || versions.at(-1))?.number.split('.').map(Number);
+  let number = '1.0.0';
+  if (last) {
+    do { last[2]++; number = last.join('.'); }
+    while (versions.some((item) => item.number === number));
+    if (last[2] > 999999999) number = '';
+  }
+  return projectDialog('버전 저장', `
+    <p class="ums">현재 작업 파일을 이 버전의 보관본으로 저장합니다.</p>
+    <label>버전 번호<input name="version" value="${esc(number)}" placeholder="1.2.0" maxlength="29" required autofocus></label>
+    <label>버전 메모<textarea name="goal" maxlength="6000" rows="3"></textarea></label>`, async (form, button) => {
+    const version = form.get('version').trim().replace(/^v/i, '');
+    if (!/^(?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8})$/.test(version)) throw new Error('버전 번호를 1.2.0 형식으로 입력하세요.');
+    button.textContent = '저장 중…';
+    try {
+      await saveProject({ id: p.id, revision: p.revision, snapshotVersion: version,
+        sourceVersion: selected?.number, versionGoal: form.get('goal') }, 'versions', version);
+      toast('버전 파일을 저장했습니다.');
+    } finally { button.textContent = '저장'; }
+  });
+}
+
+function editProjectScope(p) {
+  const version = p.scope?.version;
+  if (!version) return projectForm(p);
+  return projectDialog('버전 목표 수정',
+    `<label>목표 · 완료 기준<textarea name="goal" required maxlength="6000" rows="5">${esc(version.goal)}</textarea></label>`,
+    (form) => saveProject({ id: p.id, revision: p.revision, editVersionGoal: version.number, versionGoal: form.get('goal').trim() }));
+}
+
+async function restoreProjectVersion(p, version, button, tab = 'versions') {
+  button.disabled = true;
+  button.textContent = '작업 폴더 준비 중…';
+  try {
+    await saveProject({ id: p.id, revision: p.revision, restoreVersion: version.number }, tab, version.number);
+    toast('이 버전의 작업 폴더를 열었습니다.');
+  } catch (error) { toast(error.message, 6000, 'danger'); }
+  finally { button.disabled = false; button.textContent = '이 버전에서 이어 작업'; }
+}
+
+function projectVersions(p) {
+  const view = $('#projectContent');
+  const versions = p.versions || [];
+  const selected = versions.find((version) => version.number === state.sel.version);
+  const needsWorkspace = selected?.snapshotId && !selected.workspace;
+  const canSave = !needsWorkspace;
+  const list = selected ? [selected] : [...versions].reverse();
+  view.innerHTML = `<div class="row pj-version-actions">
+      ${selected ? `<button type="button" class="btn-sm" id="projectVersionBack">← 버전 목록</button>` : ''}
+      ${selected ? '<button type="button" class="btn-sm" id="projectVersionDesign">버전 설계 보기</button>' : ''}
+      ${!selected ? '<button type="button" id="projectNewVersion">버전업 설계</button>' : ''}
+      ${canSave ? `<button type="button" class="${selected ? 'btn-sm' : 'primary'}" id="projectSaveSnapshot">버전 저장</button>` : ''}
+      ${selected && canSave ? `
+      <button type="button" class="btn-sm" id="projectVersionPlan">버전 작업 설계</button>
+      <button type="button" class="primary" id="projectVersionTask">이 버전에 작업 추가</button>` : ''}
+      ${needsWorkspace ? '<button type="button" class="primary" id="projectRestoreVersion">이 버전에서 이어 작업</button>' : ''}
+    </div>
+    ${list.length ? list.map((version) => {
+      const tasks = p.tasks.filter((task) => task.version === version.number);
+      const done = tasks.filter((task) => task.stage === 'done').length;
+      const stateLabel = version.snapshotId ? (version.workspace ? '작업 폴더 열림' : '파일 저장됨')
+        : version.completedCommit ? (done < tasks.length ? '확정 후 작업 중' : '확정') : tasks.length && done === tasks.length && version.baseCommit ? '확정 가능' : '작업 중';
+      return `<section class="pj-version">
+        <div class="row" style="justify-content:space-between;flex-wrap:wrap">
+          <h3>${selected ? `v${esc(version.number)}` : `<button type="button" class="ghost" data-open-version="${esc(version.number)}">v${esc(version.number)}</button>`} <span class="badge">${stateLabel}</span></h3>
+          ${tasks.length ? `<span class="ums">완료 ${done}/${tasks.length}</span>` : ''}
+        </div>
+        <p class="pj-version-goal">${esc(version.goal)}</p>
+        ${version.baseCommit ? `<div class="ums">시작 커밋 <code title="${esc(version.baseCommit)}">${esc(version.baseCommit.slice(0, 12))}</code></div>` : ''}
+        ${version.completedCommit ? `<div class="ums">확정 커밋 <code title="${esc(version.completedCommit)}">${esc(version.completedCommit.slice(0, 12))}</code></div>` : ''}
+        ${selected && tasks.length ? `<ul class="pj-version-task-list">${tasks.map((task) => `<li><div class="pj-version-task">
+          <button type="button" class="ghost btn-sm" data-version-task="${esc(task.id)}">${esc(task.title)}</button>
+          <div class="row">${stageBadgeHTML(task.stage)} ${needsWorkspace ? '' : projectStartBtnHTML(p, task)}</div>
+        </div></li>`).join('')}</ul>` : ''}
+        ${selected && !version.snapshotId && version.baseCommit && !version.completedCommit && tasks.length && done === tasks.length ? `<button type="button" class="btn-sm" data-finalize-version="${esc(version.number)}">현재 Git 커밋으로 확정</button>` : ''}
+      </section>`;
+    }).join('') : '<div class="pj-empty">등록된 버전이 없습니다.</div>'}`;
+  view.onclick = async (event) => {
+    const version = event.target.closest('[data-open-version]')?.dataset.openVersion;
+    if (version) return openProject(p.id, 'design', version);
+    if (event.target.closest('#projectVersionBack')) return openProject(p.id, 'versions', '');
+    if (event.target.closest('#projectVersionDesign')) return openProject(p.id, 'design', selected.number);
+    if (event.target.closest('#projectNewVersion')) return projectFollowupForm(p, true);
+    if (event.target.closest('#projectSaveSnapshot')) return projectSnapshotForm(p, selected);
+    const restore = event.target.closest('#projectRestoreVersion');
+    if (restore && selected) return restoreProjectVersion(p, selected, restore);
+    if (event.target.closest('#projectVersionPlan') && selected) return projectFollowupForm(p, false, selected.number);
+    if (event.target.closest('#projectVersionTask') && selected) return taskForm(p, null, false, '', selected.number);
+    const action = event.target.closest('[data-start-task]');
+    if (action) return runProjectCardAction(scopedProject(p, selected.number), p.tasks.find((task) => task.id === action.dataset.startTask), action);
+    const id = event.target.closest('[data-version-task]')?.dataset.versionTask;
+    if (id) return openProjectTaskDrawer(scopedProject(p, selected.number), p.tasks.find((task) => task.id === id));
+    const button = event.target.closest('[data-finalize-version]');
+    if (!button) return;
+    button.disabled = true;
+    try { await saveProject({ id: p.id, revision: p.revision, finalizeVersion: button.dataset.finalizeVersion }, 'versions'); }
+    catch (error) { toast(error.message, 6000, 'danger'); }
+    finally { button.disabled = false; }
+  };
+}
+
 // Scannable Task List: Task Kind Color Badge + Stage Badge + 1-Click Embedded Sub-Dev Chat (`💬 서브 개발`)
+function showProjectGoal(goal) {
+  const d = document.createElement('dialog');
+  d.className = 'pj-dialog pj-goal-dialog';
+  d.setAttribute('aria-labelledby', 'projectGoalTitle');
+  d.innerHTML = `<div class="dlg-head">
+    <h3 id="projectGoalTitle">목표 · 완료 기준</h3>
+    <button type="button" class="ghost icon-btn btn-sm" aria-label="닫기" autofocus>${window.UI_ICO?.close || '✕'}</button>
+  </div><div class="pj-goal-body">${esc(goal)}</div>`;
+  document.body.append(d);
+  d.querySelector('button').onclick = () => d.close();
+  d.addEventListener('close', () => d.remove(), { once: true });
+  d.showModal();
+}
+
 function projectDesign(p) {
   const ico = window.UI_ICO || {};
   const host = $('#projectContent');
@@ -476,11 +612,12 @@ function projectDesign(p) {
   };
 
   const defCfg = [providerName(p.agent || 'codex'), p.model || '', p.effort ? `추론 ${p.effort}` : ''].filter(Boolean).join(' · ');
+  const goal = (p.scope?.version?.goal ?? p.goal) || '작업 설계에서 목표와 완료 기준을 입력하세요.';
   host.innerHTML = `<div class="pj-design-wrap">
     <section class="pj-objective">
       <div class="pj-objective-body">
         <span class="pj-objective-lbl">목표 · 완료 기준 <span class="badge" style="margin-left:6px;text-transform:none;letter-spacing:0">${esc(defCfg)}</span></span>
-        <p class="pj-goal">${esc(p.goal || '작업 설계에서 목표와 완료 기준을 입력하세요.')}</p>
+        <button id="projectGoalPreview" type="button" class="pj-goal" aria-haspopup="dialog"><span>${esc(goal)}</span><small>전체 보기</small></button>
       </div>
       <button id="projectEdit" class="ghost btn-sm">${ico.edit || ''} 수정</button>
     </section>
@@ -488,7 +625,8 @@ function projectDesign(p) {
       ${topTasks.length ? topTasks.map((t, idx) => rowHTML(t, t.stage === 'done' ? '✓' : String(idx + 1), false)).join('') : '<div class="empty" style="padding:28px 16px;text-align:center">상단 ＋ 작업 버튼으로 첫 작업을 추가하세요.</div>'}
     </section>
   </div>`;
-  $('#projectEdit').onclick = () => projectForm(p);
+  $('#projectEdit').onclick = () => editProjectScope(p);
+  $('#projectGoalPreview').onclick = () => showProjectGoal(goal);
   host.onclick = (e) => {
     const colBtn = e.target.closest('[data-toggle-collapse]');
     if (colBtn) {
