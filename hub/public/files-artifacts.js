@@ -453,18 +453,24 @@ function addArtifactDialog(sid, done) {
   };
 }
 async function openArtifact(sid, it, url = artUrl(sid, it.path)) {
-  const d = document.createElement('div');
-  d.className = 'dlg';
-  d.innerHTML = `<div class="box wide aview" role="dialog" aria-labelledby="avTitle"><div class="artifact-preview-head"><h2 id="avTitle" title="${esc(it.path)}">${ART_ICON[it.kind] || ''} ${esc(it.title || it.name)}</h2><button type="button" class="ghost icon-btn btn-sm" id="avClose" aria-label="닫기">${ICO.close}</button></div>
+  const d = document.createElement('dialog');
+  d.className = 'dlg artifact-dialog';
+  d.setAttribute('aria-labelledby', 'avTitle');
+  d.innerHTML = `<div class="box wide aview"><div class="artifact-preview-head"><h2 id="avTitle" title="${esc(it.path)}">${ART_ICON[it.kind] || ''} ${esc(it.title || it.name)}</h2><button type="button" class="ghost icon-btn btn-sm" id="avClose" aria-label="닫기">${ICO.close}</button></div>
     <div class="ums mono" style="word-break:break-all">${esc(it.path)} · ${fmtSize(it.size)}</div>
     <div class="row a-view-actions"><a class="btnlike btn-sm" href="${url}" target="_blank" rel="noopener">${ICO.external} 새 탭</a><a class="btnlike btn-sm" href="${url}&dl=1" download="${esc(it.name)}">다운로드</a><button type="button" class="btn-sm" id="avSend" title="이 파일 경로를 세션에 보내기">${ICO.arrowUpRight} 세션에</button></div>
     <div id="avBody" class="avbody">불러오는 중…</div></div>`;
   const previousFocus = document.activeElement;
   document.body.appendChild(d);
-  $('#avClose', d).focus({ preventScroll: true });
-  const close = () => { d.remove(); previousFocus?.focus({ preventScroll: true }); };
-  d.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
-  d.onclick = (e) => { if (e.target === d || e.target.closest('#avClose')) close(); if (e.target.closest('#avSend')) sendPathDialog(it.abs || it.path); };
+  d.addEventListener('close', () => { d.remove(); previousFocus?.focus({ preventScroll: true }); }, { once: true });
+  d.onclick = (e) => {
+    if (e.target === d || e.target.closest('#avClose')) d.close();
+    if (e.target.closest('#avSend')) {
+      d.close();
+      sendPathDialog(it.abs || it.path);
+    }
+  };
+  d.showModal();
   const body = $('#avBody', d);
   if (it.kind === 'video') body.innerHTML = `<video controls autoplay playsinline src="${url}" style="max-width:100%;max-height:72vh;background:#000"></video>`;
   else if (it.kind === 'audio') body.innerHTML = `<audio controls autoplay src="${url}" style="width:100%"></audio>`;
@@ -482,11 +488,14 @@ async function openArtifact(sid, it, url = artUrl(sid, it.path)) {
     if (it.size > 3e6) { body.innerHTML = '<div class="empty">파일이 커서 미리보기를 생략합니다 — 새 탭이나 다운로드로 여세요.</div>'; return; }
     let txt;
     try {
-      const r = await fetch(url);
-      if (!r.ok) throw new Error(String(r.status));
-      txt = await r.text();
-    } catch {
-      body.innerHTML = '<div class="empty" role="alert">파일 미리보기를 불러오지 못했습니다.</div>';
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      txt = await response.text();
+    } catch (error) {
+      const message = document.createElement('div');
+      message.setAttribute('role', 'alert');
+      message.textContent = `미리보기를 불러오지 못했습니다. (${error.message})`;
+      body.replaceChildren(message);
       return;
     }
     if (it.kind === 'markdown') {

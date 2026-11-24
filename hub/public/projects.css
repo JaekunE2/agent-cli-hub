@@ -252,6 +252,7 @@
 
 /* Folder Browser Modal & Existing Folder Status */
 .fp-mode-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.pj-dialog .fp-mode-bar { margin-bottom: 5px; }
 .fp-input-row { display: flex; align-items: center; gap: 6px; }
 .fp-input-row input { flex: 1; min-width: 0; }
 .fp-status { font-size: 12px; padding: 7px 10px; border-radius: var(--radius-sm); background: var(--bg); border: 1px solid var(--line); color: var(--muted); line-height: 1.45; word-break: keep-all; }
@@ -266,6 +267,10 @@
 .fp-dir-name { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 
 /* Codebase Architecture Brief & Clean Macro Layer View (Astryx-aligned) */
+button.m-row[data-fm-open-node] { width: 100%; height: auto; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; text-align: start; }
+button.m-row[data-fm-open-node]:first-child { border-top: 0; }
+button.m-row[data-fm-open-node]:hover { background: color-mix(in srgb, var(--panel2) 55%, transparent); }
+button.m-row[data-fm-open-node]:focus-visible { outline-offset: -2px; }
 .fm-wrap { display: flex; flex-direction: column; gap: 16px; }
 .fm-wrap .seg { flex-wrap: wrap; max-width: 100%; }
 .fm-stat-pair { grid-template-columns: repeat(2, minmax(0, 1fr)); }

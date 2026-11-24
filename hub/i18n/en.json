@@ -2830,5 +2830,9 @@
   "작업 지시를 제출했지만 CLI가 실행을 시작했다는 신호가 없습니다.": "The task was submitted, but the CLI did not signal that it started.",
   "작업 시작 확인 중": "Confirming task start",
   "미제출 입력": "Unsubmitted input",
-  "입력 대기": "Waiting for input"
+  "입력 대기": "Waiting for input",
+  "Role · 에이전트 하네스를 불러오지 못했습니다.": "Could not load the role and agent harness.",
+  "Role · 에이전트 하네스를 복원하지 못했습니다.": "Could not reset the role and agent harness.",
+  "Role · 에이전트 하네스를 저장하지 못했습니다.": "Could not save the role and agent harness.",
+  "미리보기를 불러오지 못했습니다. (": "Could not load the preview. ("
 }

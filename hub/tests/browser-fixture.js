@@ -2,14 +2,21 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { WebSocketServer } = require('ws');
-module.exports = async function fixture(store) {
+module.exports = async function fixture(store, handleRoute) {
   const root = path.resolve(__dirname, '..');
+  const assets = {
+    '/': path.join(root, 'public/index.html'),
+    '/xterm.js': require.resolve('@xterm/xterm'),
+    '/addon-fit.js': require.resolve('@xterm/addon-fit'),
+    '/xterm.css': require.resolve('@xterm/xterm/css/xterm.css'),
+  };
   const terms = [{ id: '1', title: 'AGY test', agent: 'agy', agy: true, pid: 999999, cwd: 'D:\\demo', exited: null, cols: 80, rows: 24 }, { id: '2', title: 'Codex test', agent: 'codex', cwd: 'D:\\demo', exited: null, cols: 80, rows: 24 }];
   terms[0].liveTitle = 'D:/tools/agy.exe';
   terms[0].title = 'agy';
   const sessions = [{ sessionId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001', agent: 'agy', title: '<environment_context>fixture</environment_context>', firstPrompt: 'AGY test history', mtime: Date.now() }];
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
+    if (handleRoute && await handleRoute(url, req, res)) return;
     const json = obj => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(obj)); };
     if (url.pathname === '/api/recent/hide') {
       let body = ''; for await (const chunk of req) body += chunk;
@@ -47,7 +54,7 @@ module.exports = async function fixture(store) {
       const t = { ...terms[1], id: String(terms.length + 1), title: task.title, agent, agy: agent === 'agy',
         account: account ? { id: account, label: account === 'agy-b' ? 'AGY B' : 'AGY A' } : null, projectTask: { projectId, taskId } };
       terms.push(t);
-      if (t.agy) setTimeout(() => { t.sessionId = sessions[0].sessionId; }, 300);
+      if (t.agy) setTimeout(() => { t.sessionId = 'aaaaaaaa-bbbb-cccc-dddd-000000000002'; }, 300);
       return json(t);
     }
     if (url.pathname === '/api/projects/task-chat') {
@@ -84,8 +91,7 @@ module.exports = async function fixture(store) {
       '/api/transcript': { messages: [{ role: 'user', text: 'AGY test history' }, { role: 'assistant', text: 'History displayed' }], size: 2, total: 2 },
     };
     if (url.pathname.startsWith('/api/')) return json(responses[url.pathname] || {});
-    const assets = { '/': 'public/index.html', '/xterm.js': 'node_modules/@xterm/xterm/lib/xterm.js', '/addon-fit.js': 'node_modules/@xterm/addon-fit/lib/addon-fit.js', '/xterm.css': 'node_modules/@xterm/xterm/css/xterm.css' };
-    const file = path.join(root, assets[url.pathname] || 'public/' + path.basename(url.pathname));
+    const file = assets[url.pathname] || path.join(root, 'public', path.basename(url.pathname));
     res.setHeader('content-type', file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html');
     fs.createReadStream(file).on('error', () => { res.statusCode = 404; res.end(); }).pipe(res);
   });

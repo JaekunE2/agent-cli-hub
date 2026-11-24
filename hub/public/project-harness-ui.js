@@ -3,8 +3,9 @@ async function openProjectHarnessDrawer() {
   if (!state.projectHarness?.roles) {
     try {
       const res = await api('/api/projects/harness');
-      if (res?.harness) state.projectHarness = res.harness;
-    } catch {}
+      if (res.error || !res.ok || !res.harness) throw new Error(res.error || 'Role · 에이전트 하네스를 불러오지 못했습니다.');
+      state.projectHarness = res.harness;
+    } catch (e) { toast(e.message, 5000, 'danger'); return; }
   }
   const harness = state.projectHarness || { roles: {}, adapters: {} };
   const roles = JSON.parse(JSON.stringify(harness.roles || {}));
@@ -140,7 +141,8 @@ async function openProjectHarnessDrawer() {
     if (!confirm('universal-agent-harness 기반 기본 Role 프리셋과 에이전트 어댑터로 초기화할까요?')) return;
     try {
       const r = await api('/api/projects/harness', { method: 'POST', body: { action: 'reset' } });
-      if (r.harness) state.projectHarness = r.harness;
+      if (r.error || !r.ok || !r.harness) throw new Error(r.error || 'Role · 에이전트 하네스를 복원하지 못했습니다.');
+      state.projectHarness = r.harness;
       d.close();
       toast('Role · 에이전트 하네스를 기본값으로 복원했습니다.');
       if (typeof viewProjects === 'function' && state.sel?.kind === 'projects') viewProjects();
@@ -173,7 +175,8 @@ async function openProjectHarnessDrawer() {
     }
     try {
       const r = await api('/api/projects/harness', { method: 'POST', body: { roles: cleanRoles, adapters: cleanAdapters } });
-      if (r.harness) state.projectHarness = r.harness;
+      if (r.error || !r.ok || !r.harness) throw new Error(r.error || 'Role · 에이전트 하네스를 저장하지 못했습니다.');
+      state.projectHarness = r.harness;
       d.close();
       toast('Role · 에이전트 하네스를 저장했습니다.');
       if (typeof viewProjects === 'function' && state.sel?.kind === 'projects') viewProjects();
