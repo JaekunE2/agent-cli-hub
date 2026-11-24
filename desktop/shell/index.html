@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Agent CLI Hub</title>
+  </head>
+  <body style="font: 1rem system-ui; color-scheme: light dark; margin: 3rem">
+    <main>
+      <h1>Agent CLI Hub</h1>
+      <p id="status" role="status">Connecting to the local hub…</p>
+      <button id="retry" type="button" hidden>Retry</button>
+    </main>
+    <script>
+      const message = document.getElementById('status');
+      const retry = document.getElementById('retry');
+      async function connect() {
+        retry.hidden = true;
+        message.textContent = 'Connecting to the local hub…';
+        try {
+          await window.__TAURI_INTERNALS__.invoke('connect_hub');
+        } catch (error) {
+          message.textContent = String(error);
+          retry.hidden = false;
+          retry.focus();
+        }
+      }
+      retry.addEventListener('click', connect);
+      connect();
+    </script>
+  </body>
+</html>

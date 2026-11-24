@@ -80,7 +80,7 @@ function createAccountSwitchService(hub) {
   }
 
   function ensureTrayMonitor() {
-    if (process.platform !== 'win32') return false;
+    if (process.platform !== 'win32' || process.env.CCD_DESKTOP_LAUNCHER === '1') return false;
     const trayScript = path.resolve(baseDir, '..', 'tray.ps1');
     if (!fs.existsSync(trayScript)) return false;
     try {

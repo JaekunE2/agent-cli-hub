@@ -1,0 +1,48 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod backend;
+mod hub;
+mod overview;
+mod service;
+mod tray;
+
+type Server = tauri::async_runtime::Mutex<Option<std::process::Child>>;
+
+#[tauri::command]
+async fn connect_hub(
+    window: tauri::WebviewWindow,
+    server: tauri::State<'_, Server>,
+) -> Result<(), String> {
+    let mut server = server
+        .try_lock()
+        .map_err(|_| "A connection attempt is already running.")?;
+    let url = hub::connect(&mut server, None).await?;
+    window
+        .navigate(url)
+        .map_err(|_| "Could not open the hub dashboard.".into())
+}
+
+fn main() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            tray::restore(app)
+        }))
+        .manage(Server::default())
+        .setup(|app| {
+            tray::install(app.handle())?;
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    if let Err(error) = window.hide() {
+                        eprintln!("Could not hide the hub window: {error}");
+                    }
+                }
+            }
+        })
+        .invoke_handler(tauri::generate_handler![connect_hub])
+        .run(tauri::generate_context!())
+        .expect("Could not run Agent CLI Hub");
+}

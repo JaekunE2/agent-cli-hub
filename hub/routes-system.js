@@ -8,6 +8,9 @@ const { parseAgyQuotaTui } = require('./agy-quota');
 /** Create system, usage, account-switching, subsystem proxy, and Unified Vault routes. */
 function createSystemRoutes(hub) {
   const { baseDir, token, config, I18N, unifiedVault, accountPrefs, index } = hub;
+  const localDesktop = (req) => !req.headers.origin &&
+    req.socket.localAddress === '127.0.0.1' && req.socket.remoteAddress === '127.0.0.1';
+  let desktopStopping = false;
 
   async function handleSystemRoutes(p, url, req, res, body, send, authed) {
     if (!authed(req, url)) { send(res, 401, { error: 'bad token' }); return true; }
@@ -118,10 +121,43 @@ function createSystemRoutes(hub) {
       spawn(process.execPath, [path.join(baseDir, 'ccd.js'), 'restart'], { cwd: baseDir, detached: true, stdio: 'ignore', windowsHide: true }).unref();
       return true;
     }
-    if (p === '/api/shutdown' && req.method === 'POST') {
+    if (p === '/api/desktop/identity' && req.method === 'GET') {
+      if (!localDesktop(req)) send(res, 403, { error: 'Local launcher only.' });
+      else send(res, 200, { pid: process.pid, ptyPid: hub.getPtyHostPid(), ptyPort: hub.ptyPort });
+      return true;
+    }
+    if ((p === '/api/shutdown' || p === '/api/desktop/shutdown') && req.method === 'POST') {
+      if (p === '/api/desktop/shutdown') {
+        const expectedPid = req.headers['x-ccd-desktop-pid'];
+        if (!localDesktop(req) || expectedPid !== String(process.pid)) {
+          send(res, 409, { error: 'The verified Hub process no longer owns the connection.' });
+          return true;
+        }
+        if (desktopStopping) {
+          send(res, 409, { error: 'Hub shutdown is already in progress.' });
+          return true;
+        }
+        desktopStopping = true;
+        try {
+          const { ptyPid, stopPty } = await body(req);
+          if (typeof stopPty !== 'boolean') throw new Error('Invalid shutdown mode.');
+          const current = await hub.ptyCall('/info');
+          if (!Number.isSafeInteger(ptyPid) || ptyPid !== current.pid || ptyPid !== hub.getPtyHostPid()) {
+            throw new Error('The verified PTY host changed. Retry after it reconnects.');
+          }
+          if (stopPty === true) {
+            const result = await hub.ptyCall('/shutdown-if-idle', { expectedPid: ptyPid });
+            if (!result.ok) throw new Error(result.error || 'The PTY host refused shutdown.');
+          }
+        } catch (error) {
+          desktopStopping = false;
+          send(res, 200, { ok: false, error: error.message });
+          return true;
+        }
+      }
       send(res, 200, { ok: true, terms: hub.terms.size });
-      index.save(true);
       setTimeout(() => process.exit(0), 300);
+      try { index.save(true); } catch (error) { console.error('[shutdown] search cache:', error.message); }
       return true;
     }
     if (p === '/api/locate' && req.method === 'POST') {
