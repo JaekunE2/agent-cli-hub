@@ -94,7 +94,8 @@ async function openAgyUsage(btn) {
   }
 }
 // ---------- reusable right-side Drawer (Astryx Drawer surface) ----------
-function openDrawer({ title, bodyHTML = '', footerHTML = '', width = 460 } = {}) {
+function openDrawer({ title, bodyHTML = '', footerHTML = '', width = 460, focus = false, parent = document.body, onClose } = {}) {
+  const trigger = focus ? document.activeElement : null;
   const d = document.createElement('div');
   d.className = 'drw-backdrop';
   d.innerHTML = `<div class="drw-panel" style="--drw-w:${width}px" role="dialog" aria-label="${esc(title || '')}">
@@ -102,11 +103,22 @@ function openDrawer({ title, bodyHTML = '', footerHTML = '', width = 460 } = {})
     <div class="drw-body">${bodyHTML}</div>
     ${footerHTML ? `<div class="drw-foot">${footerHTML}</div>` : ''}
   </div>`;
-  const close = () => { document.removeEventListener('keydown', onKey); d.remove(); };
-  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  const close = () => {
+    if (!d.isConnected) return;
+    document.removeEventListener('keydown', onKey);
+    d.remove();
+    onClose?.();
+    trigger?.focus();
+  };
+  const onKey = (e) => {
+    if (e.key !== 'Escape' || e.defaultPrevented) return;
+    if (parent !== document.body) e.preventDefault();
+    close();
+  };
   document.addEventListener('keydown', onKey);
   d.addEventListener('click', (e) => { if (e.target === d || e.target.closest('[data-drw-close]')) close(); });
-  document.body.appendChild(d);
+  parent.appendChild(d);
+  if (focus) $('[data-drw-close]', d).focus();
   d.close = close;
   return d;
 }

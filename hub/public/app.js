@@ -11,7 +11,7 @@ function stopView() {
   minis = [];
   window.onresize = null; window.onfocus = null; document.onvisibilitychange = null;
   $('#view').onclick = null; $('#bar').onclick = null;
-  document.body.classList.remove('drawer');
+  setSidebarOpen(false);
 }
 const TERM_TABS = new Set(['screen', 'split', 'chat', 'dock', 'files', 'floorplan']);
 const RECENT_TABS = new Set(['chat', 'dock', 'files', 'floorplan']);
@@ -76,7 +76,7 @@ function select(sel, tab, persistTab = false) {
   }
   renderSide();
   window.ACH_PREVIEW?.setActiveController(null);
-  ({ home: viewHome, terms: viewTerms, projects: window.viewProjects || (() => { setBar('<h2>Project</h2>'); $('#view').textContent = 'Project 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }), console: viewConsole, recent: viewTranscript, term: viewTerm, search: viewSearch, usage: viewUsage, research: viewResearch, gpu: viewGpu, calendar: viewCalendar, vault: window.viewVault || (() => { setBar('<h2>공통 자원</h2>'); $('#view').textContent = '공통 자원 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }) })[sel.kind]?.();
+  return ({ home: viewHome, terms: viewTerms, projects: window.viewProjects || (() => { setBar('<h2>Project</h2>'); $('#view').textContent = 'Project 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }), console: viewConsole, recent: viewTranscript, term: viewTerm, search: viewSearch, usage: viewUsage, research: viewResearch, gpu: viewGpu, calendar: viewCalendar, vault: window.viewVault || (() => { setBar('<h2>공통 자원</h2>'); $('#view').textContent = '공통 자원 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }) })[sel.kind]?.();
 }
 
 function setBar(html) {
@@ -170,6 +170,7 @@ function viewSearch() {
 // ---------- Instant Command Palette ----------
 function openCommandPalette() {
   if ($('.cmdk-backdrop')) return;
+  const trigger = document.activeElement;
   const wrap = document.createElement('div');
   wrap.className = 'cmdk-backdrop';
   wrap.innerHTML = `<div class="cmdk-box" role="dialog" aria-label="빠른 이동 및 검색">
@@ -180,7 +181,11 @@ function openCommandPalette() {
   document.body.appendChild(wrap);
   const inp = $('#cmdkIn', wrap), listEl = $('#cmdkList', wrap);
   let items = [], idx = 0;
-  const close = () => { document.removeEventListener('keydown', onKey, true); wrap.remove(); };
+  const close = () => {
+    document.removeEventListener('keydown', onKey, true);
+    wrap.remove();
+    trigger?.focus();
+  };
 
   const buildItems = (raw) => {
     const q = raw.trim();
@@ -279,6 +284,14 @@ function openCommandPalette() {
   render();
   inp.focus();
 }
+
+document.addEventListener('keydown', e => {
+  if (e.defaultPrevented || e.isComposing || e.repeat || e.altKey || e.shiftKey ||
+      !(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'k' ||
+      $('dialog[open], .drw-backdrop, .dlg')) return;
+  e.preventDefault();
+  openCommandPalette();
+});
 
 // calendar counts in the TopNav (todo.md changes come from other sessions too)
 loadCalendar();
@@ -480,8 +493,19 @@ $('#btnSideNew').onclick = () => openNewTermDrawer();
 $('#mBtnNew').onclick = () => openNewTermDrawer();
 $('#btnSideCollapse').onclick = () => setSideCollapsed(true);
 $('#btnSideReopen').onclick = () => setSideCollapsed(false);
-$('#btnMenu').onclick = () => document.body.classList.toggle('drawer');
-$('#backdrop').onclick = () => document.body.classList.remove('drawer');
+function setSidebarOpen(open) {
+  const button = $('#btnMenu');
+  if (!open && document.body.classList.contains('drawer') && $('.side').contains(document.activeElement)) button.focus();
+  document.body.classList.toggle('drawer', open);
+  button.setAttribute('aria-expanded', String(open));
+  if (open) $('#brandHome').focus();
+}
+$('#btnMenu').onclick = () => setSidebarOpen(!document.body.classList.contains('drawer'));
+$('#backdrop').onclick = () => setSidebarOpen(false);
+$('.side').addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !e.defaultPrevented && document.body.classList.contains('drawer')) setSidebarOpen(false);
+});
+matchMedia('(max-width: 760px)').addEventListener('change', () => setSidebarOpen(false));
 $('#btnTheme').onclick = () => cycleTheme();
 $('#btnLang').onclick = () => toggleLang();
 $('#btnPhone').onclick = () => openPhoneDrawer();

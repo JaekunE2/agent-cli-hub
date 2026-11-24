@@ -150,6 +150,7 @@
       bodyHTML: body,
       footerHTML: `<button type="button" data-drw-close>닫기</button><button type="button" class="primary" id="drwNodeAct">${primaryLbl}</button>`,
       width: 500,
+      focus: true,
     });
     $('#drwNodeAct', d).onclick = async () => {
       d.close();
@@ -414,17 +415,17 @@
             n.calls.length ? `호출 ${n.calls.length}건` : '',
             `${n.lines.toLocaleString()}줄`,
           ].filter(Boolean).join(' · ');
-          return `<div class="m-row" data-fm-open-node="${esc(n.id)}">
-            <div class="m-row-main">
-              <div class="m-row-t" style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
+          return `<button type="button" class="m-row" data-fm-open-node="${esc(n.id)}">
+            <span class="m-row-main">
+              <span class="m-row-t" style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
                 ${impBadgeHTML(n)}
                 <b class="mono">${esc(n.relPath)}</b>
                 ${n.hasIssue ? '<span class="badge warn">점검 필요</span>' : ''}
-              </div>
-              <div class="m-row-s">${esc(n.summary)} · ${esc(metaParts)}</div>
-            </div>
-            <div class="m-row-end"><span class="ico">${ico.chevRight || ''}</span></div>
-          </div>`;
+              </span>
+              <span class="m-row-s">${esc(n.summary)} · ${esc(metaParts)}</span>
+            </span>
+            <span class="m-row-end"><span class="ico">${ico.chevRight || ''}</span></span>
+          </button>`;
         }).join('') || '<div class="empty" style="padding:20px 16px">조건에 맞는 모듈이 없습니다.</div>';
 
         body = `${keyHTML}

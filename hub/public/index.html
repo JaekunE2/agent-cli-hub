@@ -16,7 +16,7 @@
 </head>
 <body>
 <div class="mtop">
-  <button id="btnMenu" class="ghost icon-btn" aria-label="목록 열기"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+  <button id="btnMenu" class="ghost icon-btn" aria-label="목록 열기" aria-controls="sidebar" aria-expanded="false"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
   <button id="mBrandHome" class="brand" style="flex:1">
     <span class="brand-mark st-ok" id="mBrandMark" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 11.5 L6.5 6.8 M12 11.5 L17.5 6.8 M12 11.5 L12 18.2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="6.5" cy="6.8" r="2" fill="currentColor"/><circle cx="17.5" cy="6.8" r="2" fill="currentColor"/><circle cx="12" cy="18.2" r="2" fill="currentColor"/><circle cx="12" cy="11.5" r="2.8" fill="#e5835f" stroke="#161922" stroke-width="1"/></svg><span class="brand-led" id="mBrandLed"></span></span>
     <span class="brand-txt"><span class="brand-name">Agent CLI Hub</span><span class="brand-sub" id="mBrandSub"><span class="srv-pip ok"><i></i>허브</span><span>·</span><span class="srv-pip ok"><i></i>사용량</span></span></span>
@@ -24,7 +24,7 @@
   <button id="mBtnNew" class="ghost icon-btn" aria-label="새 터미널"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
 </div>
 <div id="backdrop"></div>
-<aside class="side" aria-label="워크스페이스 목록">
+<aside class="side" id="sidebar" aria-label="워크스페이스 목록">
   <div class="side-hd">
     <button id="brandHome" class="brand" title="허브 및 사용량 서버 상태 확인">
       <span class="brand-mark st-ok" id="brandMark" aria-hidden="true">

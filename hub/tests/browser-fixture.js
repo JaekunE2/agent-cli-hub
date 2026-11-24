@@ -47,7 +47,7 @@ module.exports = async function fixture(store) {
       const t = { ...terms[1], id: String(terms.length + 1), title: task.title, agent, agy: agent === 'agy',
         account: account ? { id: account, label: account === 'agy-b' ? 'AGY B' : 'AGY A' } : null, projectTask: { projectId, taskId } };
       terms.push(t);
-      if (t.agy) setTimeout(() => { t.sessionId = sessions[0].sessionId; }, 300);
+      if (t.agy) setTimeout(() => { t.sessionId = 'aaaaaaaa-bbbb-cccc-dddd-000000000002'; }, 300);
       return json(t);
     }
     if (url.pathname === '/api/projects/task-chat') {

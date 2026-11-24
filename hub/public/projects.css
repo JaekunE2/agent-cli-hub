@@ -29,6 +29,7 @@
 
 .pj-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
 .pj-toolbar .tablist { border-bottom: 0; max-width: 100%; flex-wrap: wrap; }
+.pj-toolbar .tablist button:focus-visible, #projectContent:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
 .pj-view-description { margin: -10px 0 0; color: var(--muted); font-size: 13px; }
 
 /* Tab 1: Goal Strip + Readable Task List (Title + Stage Badge + 1-Line Summary) */
@@ -176,7 +177,7 @@
 .pj-dialog.est-dialog { width: min(380px, 92vw); }
 .pj-dialog::backdrop { background: rgba(0,0,0,.42); }
 .pj-dialog form { display: flex; flex-direction: column; gap: 12px; min-width: 0; max-width: 100%; }
-.pj-dialog label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; min-width: 0; max-width: 100%; }
+.pj-dialog label, .pj-folder-field { display: flex; flex-direction: column; gap: 5px; font-size: 13px; min-width: 0; max-width: 100%; }
 .pj-dialog label:has(input[type=checkbox]), .pj-dialog label:has(input[type=radio]) { flex-direction: row; align-items: center; gap: 8px; cursor: pointer; }
 .pj-dialog input[type=checkbox], .pj-dialog input[type=radio] { width: auto; flex: none; margin: 0; }
 .pj-dialog select, .pj-dialog input:not([type=checkbox]):not([type=radio]) { width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; }
@@ -216,6 +217,18 @@
 .pj-hr-field { display: flex; flex-direction: column; align-items: stretch; gap: 5px; font-size: 12px; font-weight: 600; color: var(--muted); }
 .pj-hr-field input, .pj-hr-field select, .pj-hr-field textarea { width: 100%; box-sizing: border-box; font-weight: 400; color: var(--text); }
 .pj-hr-field textarea { min-height: 128px; resize: vertical; font-size: 12.5px; line-height: 1.55; padding: 9px 10px; }
+.drw-foot:has(#hrSaveBtn) { flex-wrap: wrap; }
+.pj-hr-save-error { flex: 0 0 100%; color: var(--danger); font-size: 13px; overflow-wrap: anywhere; margin: 0; }
+.pj-hr-save-error:empty { position: absolute; }
+@media (max-width: 520px) {
+  .pj-hr-pill { flex-direction: column; align-items: flex-start; gap: 4px; }
+  .pj-hr-pill-meta { white-space: normal; overflow-wrap: anywhere; }
+}
+.fm-wrap button.m-row { width: 100%; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; text-align: start; }
+.fm-wrap button.m-row:first-child { border-top: 0; }
+.fm-wrap button.m-row:hover { background: color-mix(in srgb, var(--panel2) 55%, transparent); }
+.fm-wrap button.m-row:focus-visible { outline-offset: -3px; }
+.fm-wrap button.m-row :is(.m-row-t, .m-row-s) { white-space: normal; overflow-wrap: anywhere; }
 .pj-eff-tag { font-style: normal; font-size: 11px; color: var(--muted); padding: 0 4px; border-radius: 4px; background: color-mix(in srgb, var(--panel2) 85%, transparent); margin-left: 2px; }
 .pj-sublist { margin: -2px 0 6px 26px; padding-left: 12px; border-left: 2px solid color-mix(in srgb, var(--accent) 28%, var(--line)); display: flex; flex-direction: column; gap: 6px; }
 .pj-row.is-sub { padding: 8px 12px; background: color-mix(in srgb, var(--panel2) 35%, var(--panel)); }

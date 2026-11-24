@@ -265,14 +265,14 @@ const rAbs = (dir, rel) => `${String(dir || '').replace(/[\\/]+$/, '')}\\${Strin
 
 // A PC file (session output, research output) → a running dashboard terminal: the path goes into its
 // input (with a message: sent). Sessions open the path themselves — nothing is copied.
-function sendPathDialog(abs) {
+function sendPathDialog(abs, drawerOptions = {}) {
   const targets = state.terms.filter((t) => t.exited === null).map((t) => ({ id: t.id, label: termLabel(t) }));
   const cur = state.sel.kind === 'term' ? String(state.sel.id) : null;
   const body = `
     <div class="mono" style="word-break:break-all">${esc(abs)}</div>
     <label>보낼 세션<br>${targets.length ? `<select id="spT" style="width:100%">${targets.map((t) => `<option value="${esc(t.id)}" ${String(t.id) === cur ? 'selected' : ''}>t:${esc(t.id)} ${esc(t.label)}</option>`).join('')}</select>` : '<div class="empty">열려 있는 대시보드 터미널이 없습니다</div>'}</label>
     <label>함께 보낼 말 (비우면 경로만 입력칸에 넣고 전송하지 않음)<br><textarea id="spM" rows="3" style="width:100%" placeholder="예: 이 결과 보고 다음 실험 계획 세워줘"></textarea></label>`;
-  const d = openDrawer({ title: '세션에 보내기', bodyHTML: body, footerHTML: `<button data-drw-close>취소</button><button class="primary" id="spOk" ${targets.length ? '' : 'disabled'}>보내기</button>`, width: 440 });
+  const d = openDrawer({ title: '세션에 보내기', bodyHTML: body, footerHTML: `<button data-drw-close>취소</button><button class="primary" id="spOk" ${targets.length ? '' : 'disabled'}>보내기</button>`, width: 440, ...drawerOptions });
   $('#spOk', d).onclick = async () => {
     $('#spOk', d).disabled = true;
     const msg = $('#spM', d).value.trim();
@@ -371,10 +371,11 @@ async function renderArtifacts(sid, gen) {
     const card = ([it, i]) => {
       const location = String(it.path || '').split(/[\\/]/).slice(0, -1).filter(Boolean).slice(-2).join('/');
       return `<div class="acard" data-ai="${i}">
-        <div class="athumb">${it.kind === 'image' ? `<img loading="lazy" src="${artUrl(sid, it.path)}" alt="">` : `<span>${ART_ICON[it.kind] || ART_ICON.file}</span>`}</div>
-        <div class="ameta"><b title="${esc(it.path)}">${esc(it.title || it.name)}</b>
+        <button class="artifact-open" type="button">
+        <span class="athumb">${it.kind === 'image' ? `<img loading="lazy" src="${artUrl(sid, it.path)}" alt="">` : `<span>${ART_ICON[it.kind] || ART_ICON.file}</span>`}</span>
+        <span class="ameta"><b title="${esc(it.path)}">${esc(it.title || it.name)}</b>
           <span class="artifact-location" title="${esc(it.path)}">${esc(location)}</span>
-          <span class="ums">${esc(it.ext.toUpperCase())} · ${fmtSize(it.size)} · ${relTime(it.mtime)}${it.source === 'pinned' ? ' · 지정됨' : ''}</span></div>
+          <span class="ums">${esc(it.ext.toUpperCase())} · ${fmtSize(it.size)} · ${relTime(it.mtime)}${it.source === 'pinned' ? ' · 지정됨' : ''}</span></span></button>
         <button class="ahide" data-ahide="${i}" aria-label="목록에서 숨기기" title="목록에서 숨기기">${ICO.close}</button><button class="asend" data-asend="${i}" aria-label="세션에 보내기" title="이 파일을 세션에 보내기 (경로 멘션)">${ICO.arrowUpRight}</button></div>`;
     };
     $('#view').innerHTML = `<div class="subtoolbar">
@@ -443,16 +444,38 @@ function addArtifactDialog(sid, done) {
   };
 }
 async function openArtifact(sid, it, url = artUrl(sid, it.path)) {
-  const d = document.createElement('div');
-  d.className = 'dlg';
-  d.innerHTML = `<div class="box wide aview"><div class="row"><b style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(it.path)}">${ART_ICON[it.kind] || ''} ${esc(it.title || it.name)}</b>
-      <a class="btnlike btn-sm" href="${url}" target="_blank" rel="noopener">${ICO.external} 새 탭</a><a class="btnlike btn-sm" href="${url}&dl=1" download="${esc(it.name)}">다운로드</a><button class="primary btn-sm" id="avSend" title="이 파일 경로를 세션에 보내기">${ICO.arrowUpRight} 세션에</button><button class="ghost icon-btn btn-sm" id="avClose" aria-label="닫기">${ICO.close}</button></div>
+  const d = document.createElement('dialog');
+  d.className = 'dlg artifact-preview';
+  d.setAttribute('aria-labelledby', 'avTitle');
+  d.innerHTML = `<span class="sr-only" tabindex="0" data-av-edge="start"></span>
+    <div class="box wide aview"><div class="row avhead"><b id="avTitle" title="${esc(it.path)}">${ART_ICON[it.kind] || ''} ${esc(it.title || it.name)}</b>
+      <a class="btnlike btn-sm" href="${url}" target="_blank" rel="noopener">${ICO.external} 새 탭</a><a class="btnlike btn-sm" href="${url}&dl=1" download="${esc(it.name)}">다운로드</a><button class="primary btn-sm" id="avSend" title="이 파일 경로를 세션에 보내기">${ICO.arrowUpRight} 세션에</button><button class="ghost icon-btn btn-sm" id="avClose" autofocus aria-label="닫기">${ICO.close}</button></div>
     <div class="ums mono" style="word-break:break-all">${esc(it.path)} · ${fmtSize(it.size)}</div>
-    <div id="avBody" class="avbody">불러오는 중…</div></div>`;
-  document.body.appendChild(d);
-  const close = () => d.remove();
-  d.onclick = (e) => { if (e.target === d || e.target.closest('#avClose')) close(); if (e.target.closest('#avSend')) sendPathDialog(it.abs || it.path); };
+    <div id="avBody" class="avbody" tabindex="0" role="region" aria-label="미리보기 내용">불러오는 중…</div></div>
+    <span class="sr-only" tabindex="0" data-av-edge="end"></span>`;
+  const box = $('.aview', d);
+  const send = $('#avSend', d);
   const body = $('#avBody', d);
+  const end = $('[data-av-edge=end]', d);
+  d.addEventListener('focusin', e => {
+    const edge = e.target.dataset.avEdge;
+    if (!edge) return;
+    const controls = [...(box.inert ? $('.drw-panel', d) : box).querySelectorAll(
+      'a[href], button, input, select, textarea, iframe, audio[controls], video[controls], [tabindex="0"]'
+    )].filter(el => !el.matches(':disabled, [tabindex="-1"]') && el.getClientRects().length);
+    (edge === 'start' ? controls.at(-1) : controls[0])?.focus();
+  });
+  document.body.appendChild(d);
+  d.onclose = () => d.remove();
+  d.onclick = (e) => {
+    if (e.target === d || e.target.closest('#avClose')) d.close();
+    if (e.target.closest('#avSend')) {
+      sendPathDialog(it.abs || it.path, { parent: d, focus: true, onClose: () => { box.inert = false; send.focus(); } });
+      box.inert = true;
+      d.append(end);
+    }
+  };
+  d.showModal();
   if (it.kind === 'video') body.innerHTML = `<video controls autoplay playsinline src="${url}" style="max-width:100%;max-height:72vh;background:#000"></video>`;
   else if (it.kind === 'audio') body.innerHTML = `<audio controls autoplay src="${url}" style="width:100%"></audio>`;
   else if (it.kind === 'image') body.innerHTML = `<img src="${url}" style="max-width:100%;max-height:74vh;object-fit:contain">`;
