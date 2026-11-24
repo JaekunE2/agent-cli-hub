@@ -10,7 +10,8 @@ test('remote console resubmits an unchanged Codex draft without pasting it twice
   const text = 'Check the project';
   const writes = [];
   const { handleSessionRoutes } = createSessionRoutes({
-    consoleInputAt: new Map(), sleep: noopSleep, consoleSubmitDelay: () => 0,
+    PTY_KEYS, consoleInputAt: new Map(), sleep: noopSleep, consoleSubmitDelay: () => 0,
+    waitFor: async (check) => check(),
     helperCall: async ({ op, keys, text: payload }) => {
       if (op === 'read') {
         const screen = writes.length === 3 ? '• Working (esc to interrupt)' : writes.length ? '› [Pasted Content 17 chars]' : '› Ask Codex to do anything';
@@ -22,7 +23,7 @@ test('remote console resubmits an unchanged Codex draft without pasting it twice
   });
   await handleSessionRoutes('/api/console/send', null, { method: 'POST' }, null,
     async () => ({ pid: 12, text, submit: true }),
-    (_res, status, payload) => { assert.equal(status, 200); assert.equal(payload.ok, true); }, () => true);
+    (_res, status, payload) => { assert.equal(status, 200, payload.error); assert.equal(payload.ok, true); }, () => true);
   assert.deepEqual(writes, [text, 'enter', 'enter']);
 });
 

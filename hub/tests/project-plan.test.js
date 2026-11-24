@@ -104,7 +104,7 @@ test('local versions keep a reusable snapshot and route tasks to the restored fi
   const launches = [];
   const sessionHub = {
     config: {}, projects, index: { get: () => ({ cwd }) }, deletingProjects: new Set(),
-    terms: new Map(), projectAgents: ['codex'], cliModelEffortArgs: () => [], fingerprint: () => '',
+    terms: new Map(), agentOf: () => 'codex', projectAgents: ['codex'], cliModelEffortArgs: () => [], fingerprint: () => '',
     projectAccounts: { resolve: () => ({}) }, codexLaunch: () => ({ cmd: 'codex', args: [] }),
     ensureProjectDir: () => {}, termInfo: (term) => term,
     createTerm: (options) => { launches.push(options.cwd); return { id: '1', spawnResult: Promise.resolve({}) }; },
