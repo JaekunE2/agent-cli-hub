@@ -720,29 +720,51 @@ function createTermManager(hub) {
       if (!inf) { console.error('[pty] host did not start; see ptyhost.log'); return setTimeout(connectPtyHost, 5000); }
       fresh = true;
     }
-    ptyHostPid = inf.pid;
-    for (const x of inf.terms) {
-      if (terms.has(x.id)) continue;
+    const restore = (x, buf) => {
+      if (terms.has(x.id)) return;
       const t = makeMirror(x);
+      t.pid = x.pid;
       t.startedAt = x.startedAt || null;
       if (!t.lastInputAt) t.lastInputAt = t.startedAt || Date.now();
-      const { buf = '' } = await ptyCall(`/buf?id=${encodeURIComponent(x.id)}`).catch(() => ({}));
       if (buf) {
         t.buf = buf.slice(-400_000);
         t.vt.write(t.buf, () => { try { termMonitor?.inspect(t); } catch {} });
       }
+    };
+    if (!inf.snapshot) {
+      for (const x of inf.terms) {
+        if (terms.has(x.id)) continue;
+        const { buf } = await ptyCall(`/buf?id=${encodeURIComponent(x.id)}`).catch(() => ({}));
+        restore(x, buf);
+      }
     }
     const WebSocketClient = require('ws');
-    const ev = new WebSocketClient(`ws://127.0.0.1:${PTY_PORT}/events?t=${token}`);
+    const eventUrl = new URL(`ws://127.0.0.1:${PTY_PORT}/events`);
+    eventUrl.searchParams.set('t', token);
+    if (inf.snapshot) eventUrl.searchParams.set('snapshot', '1');
+    const ev = new WebSocketClient(eventUrl, { handshakeTimeout: 5000 });
+    let attached;
+    const ready = new Promise((resolve) => { attached = resolve; });
+    const markReady = () => { ptyHostPid = inf.pid; attached(true); };
+    ev.on('open', () => { if (!inf.snapshot) markReady(); });
     ev.on('message', (m) => {
       let e; try { e = JSON.parse(m); } catch { return; }
+      if (e.type === 'snapshot') return restore(e.term, e.buf);
+      if (e.type === 'snapshot-ready') return markReady();
       const t = terms.get(e.id);
+      if (e.type === 'spawned' && !terms.has(e.term.id)) restore(e.term);
       if (e.type === 'data' && t) mirrorData(t, e.data);
       else if (e.type === 'exit' && t) { t.exited = e.code; for (const ws of t.clients) ws.send(JSON.stringify({ type: 'exit', code: e.code })); }
       else if (e.type === 'resize' && t && (t.cols !== e.cols || t.rows !== e.rows)) { t.cols = e.cols; t.rows = e.rows; t.vt.resize(e.cols, e.rows); }
     });
-    ev.on('close', () => { console.error('[pty] event stream closed; reconnecting'); setTimeout(connectPtyHost, 2000); });
+    ev.on('close', () => {
+      ptyHostPid = 0;
+      attached(false);
+      console.error('[pty] event stream closed; reconnecting');
+      setTimeout(connectPtyHost, 2000);
+    });
     ev.on('error', () => {});
+    if (!await ready) return;
     console.log(`pty host pid ${ptyHostPid} (${fresh ? 'started' : 'reattached'}), ${inf.terms.length} terminal(s)`);
     if (fresh) (async () => {
       const saved = savedTermSessions();
@@ -870,6 +892,7 @@ function createTermManager(hub) {
   return {
     terms,
     getPtyHostPid: () => ptyHostPid,
+    ptyPort: PTY_PORT,
     isMatchBusy: () => matchBusy,
     setMatchBusy: (v) => { matchBusy = !!v; },
     consoleInputAt,

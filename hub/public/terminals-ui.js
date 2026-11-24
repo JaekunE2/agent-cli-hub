@@ -444,12 +444,12 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
     xterm?.write(`\r\n\x1b[90m[프로세스 종료: ${code}]\x1b[0m\r\n`);
   };
   const poll = async () => {
-    if (!current() || exited || pollInFlight) return;
+    if (!current() || exited || !polling || pollInFlight) return;
     pollInFlight = true;
     try {
       const qs = new URLSearchParams({ id: termId, cursor });
       const reply = await api(`${streamPath}?${qs}`, { requireOk: true, signal: AbortSignal.timeout(5000) });
-      if (!current()) return;
+      if (!current() || !polling) return;
       const needsResize = !httpReady;
       httpReady = true;
       cursor = reply.cursor;
@@ -461,10 +461,10 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
       if (needsResize) resize();
     } catch (error) {
       httpReady = false;
-      if (current()) showConnection(error.message);
+      if (current() && polling) showConnection(error.message);
     } finally {
       pollInFlight = false;
-      if (current() && !exited) {
+      if (current() && !exited && polling) {
         const delay = !httpReady ? 2000 : refreshAfterPoll ? 0 : Date.now() - lastHttpInputAt < 1200 ? 80 : 750;
         refreshAfterPoll = false;
         pollTimer = setTimeout(poll, delay);
@@ -472,7 +472,7 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
     }
   };
   const connect = () => {
-    if (!current()) return;
+    if (!current() || exited || httpReady) return;
     const socket = ws = xws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/term?id=${termId}&t=${TOKEN}`);
     const timeout = setTimeout(() => { if (socket.readyState === WebSocket.CONNECTING) socket.close(); }, 3500);
     let opened = false;
@@ -480,6 +480,9 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
       clearTimeout(timeout);
       if (!current()) return;
       opened = true;
+      polling = false;
+      httpReady = false;
+      clearTimeout(pollTimer);
       if (connected) xterm?.write('\x1bc');
       connected = true;
       showConnection('');
@@ -496,8 +499,8 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
       clearTimeout(timeout);
       if (!current() || exited) return;
       showConnection('터미널 연결이 끊겼습니다. 재연결 중…');
-      if (opened) setTimeout(connect, 500);
-      else if (!polling) { polling = true; poll(); }
+      setTimeout(connect, opened ? 500 : 1500);
+      if (!opened && !polling) { polling = true; poll(); }
     };
   };
   connect();

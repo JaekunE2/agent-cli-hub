@@ -19,18 +19,27 @@ pub fn port() -> Result<u16, String> {
         .ok_or_else(|| "CCD_PORT must be between 1 and 65535.".into())
 }
 
-pub async fn connect(server: &mut Option<Child>) -> Result<Url, String> {
-    let dir = backend::directory()?;
+pub fn base_url() -> Result<Url, String> {
     let port = port()?;
-    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-    let mut page = Url::parse(&format!("http://{address}/")).expect("valid loopback URL");
-    let endpoint = page.join("api/overview").expect("valid overview URL");
-    let client = Client::builder()
+    Ok(Url::parse(&format!("http://127.0.0.1:{port}/")).expect("valid loopback URL"))
+}
+
+pub fn client() -> Result<Client, String> {
+    Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(3))
         .build()
-        .map_err(|_| "Could not configure the loopback connection.")?;
+        .map_err(|_| "Could not configure the loopback connection.".into())
+}
+
+pub async fn connect(server: &mut Option<Child>, pty_port: Option<u16>) -> Result<Url, String> {
+    let dir = backend::directory()?;
+    let mut page = base_url()?;
+    let port = page.port_or_known_default().expect("HTTP port");
+    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let endpoint = page.join("api/overview").expect("valid overview URL");
+    let client = client()?;
     let collision = format!("Port {port} is in use but did not respond as Agent CLI Hub.");
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut pending = "The hub HTTP server did not become ready.".to_owned();
@@ -51,7 +60,7 @@ pub async fn connect(server: &mut Option<Child>) -> Result<Url, String> {
                         return Err(format!("Node.js exited before the hub was ready ({status}). Check that Node supports --use-system-ca and hub dependencies are installed."));
                     }
                 } else {
-                    *server = Some(backend::start(&dir, port)?);
+                    *server = Some(backend::start(&dir, port, pty_port)?);
                 }
             }
             Err(error) => return Err(format!("Could not connect to {address} ({error}).")),

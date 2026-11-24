@@ -58,7 +58,7 @@ pub fn token(dir: &Path, base: &Url) -> Option<String> {
         .map(|(_, value)| value.into_owned())
 }
 
-pub fn start(dir: &Path, port: u16) -> Result<Child, String> {
+pub fn start(dir: &Path, port: u16, pty_port: Option<u16>) -> Result<Child, String> {
     let node = env::var_os("PATH")
         .iter()
         .flat_map(env::split_paths)
@@ -72,9 +72,13 @@ pub fn start(dir: &Path, port: u16) -> Result<Child, String> {
         .arg(dir.join("server.js"))
         .current_dir(dir)
         .env("CCD_PORT", port.to_string())
+        .env("CCD_DESKTOP_LAUNCHER", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    if let Some(port) = pty_port {
+        command.env("CCD_PTY_PORT", port.to_string());
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
