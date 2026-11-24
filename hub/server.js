@@ -13,7 +13,7 @@ const { WebSocketServer } = require('ws');
 const { SearchIndex } = require('./searchindex');
 const CA = require('./codex-accounts');
 const codexRecoveryArgs = require('./terminal-recovery');
-const { PTY_KEYS, dispatchImmediatePrompt, AGY_ALTM_RE } = require('./immediate-send');
+const { PTY_KEYS } = require('./immediate-send');
 const { readSession: readAgySession, agyStatusFromScreen, stripAnsi } = require('./agy-session');
 const projects = require('./projects')();
 const { efforts, MODEL_RE } = require('./project-validation');
@@ -134,7 +134,7 @@ const hub = {
   fingerprint, projectSession, validSessionId, generatePlan, generateSubtasks, inspectWorkspace, scanFloorplan,
   runTaskSubChatTurn, deleteCliRecord, recordUuid, ownedRoots, verifiedRoot, probeRoot, stopTerminal, pickDirectory,
   forkClaudeJsonlAt, editClaudeJsonlAt, editCodexJsonlAt, writeBranchContextFile,
-  PTY_KEYS, dispatchImmediatePrompt, AGY_ALTM_RE, agyStatusFromScreen, readAgySession, stripAnsi,
+  PTY_KEYS, agyStatusFromScreen, readAgySession, stripAnsi,
   helperCall, refreshIndex, getLastIndexAt: () => lastIndexAt, getHelperMissing: () => helperMissing,
   setConsoleTitleCache: (m) => { consoleTitleCache = m; },
 };
@@ -365,7 +365,7 @@ server.on('upgrade', (req, sock, head) => {
     ws.on('message', (m) => {
       let msg; try { msg = JSON.parse(m); } catch { return; }
       if (t.exited !== null) return;
-      if (msg.type === 'input') { hub.termMonitor?.onInput(t, msg.data); t.proc.write(msg.data); if (/[\r\n]/.test(String(msg.data || ''))) hub.touchUserInput(t); }
+      if (msg.type === 'input') { t._interactiveInputSeq = (t._interactiveInputSeq || 0) + 1; hub.termMonitor?.onInput(t, msg.data); t.proc.write(msg.data); if (/[\r\n]/.test(String(msg.data || ''))) hub.touchUserInput(t); }
       if (msg.type === 'resize' && msg.cols > 0 && msg.rows > 0 && hub.resizeTerm(t, msg.cols, msg.rows)) {
         for (const c of t.clients) if (c !== ws) c.send(JSON.stringify({ type: 'resize', cols: t.cols, rows: t.rows }));
       }

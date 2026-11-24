@@ -1,5 +1,7 @@
 'use strict';
 
+const { composerText, isPlaceholder } = require('./prompt-submission');
+
 const PTY_KEYS = {
   enter: '\r',
   esc: '\x1b',
@@ -20,17 +22,16 @@ function codexHistorySearchActive(lines) {
   return /^reverse-i-search:/i.test(lines.findLast((line) => line.trim())?.trimStart() || '');
 }
 
-/** Check whether the pending prompt (or pasted placeholder) appears in normalized screen text. */
-function hasPromptOnScreen(scr, rawMsg) {
-  if (!scr) return false;
-  const head = rawMsg.slice(0, 20);
-  const tail = rawMsg.length > 20 ? rawMsg.slice(-20) : '';
-  return !!((head && scr.includes(head)) || (tail && scr.includes(tail)) || /\[pasted text/i.test(scr));
-}
-
 const AGY_ALTM_RE = /alt\s*\+\s*m\s*(?:to\s*)?send(?:\s*immediately)?|queued.*alt\s*\+\s*m/i;
-const CODEX_QUEUE_RE = /tab to (?:queue|steer)|queued/i;
-const CLAUDE_QUEUE_RE = /up to edit|queued/i;
+const CODEX_QUEUE_RE = /tab to (?:queue|steer)/i;
+const CLAUDE_QUEUE_RE = /up to edit|^\s*queued:/im;
+
+async function flushNewAgyQueue(view, baseline, write) {
+  const hasQueue = ({ screen }) => AGY_ALTM_RE.test(screen.split('\n').slice(-12).join('\n'));
+  if (hasQueue(baseline) || !hasQueue(view)) return false;
+  await write(PTY_KEYS['alt+m']);
+  return true;
+}
 
 /**
  * CLI-aware immediate / duplicate-free prompt dispatch for running PTY terminals.
@@ -44,94 +45,40 @@ async function dispatchImmediatePrompt({
   sleep,
   text = '',
   resendIfMissing = false,
-  submitDelay = 350,
 }) {
   const rawMsg = normScreenText(text);
-  const bottomBox = normScreenText(readNormLines(5));
-  const bottom12 = normScreenText(readNormLines(12));
-  const screen40 = normScreenText(readNormLines(40));
+  const bottom = await readNormLines(12);
+  const screen = await readNormLines(40);
+  const busy = await isBusy();
+  const matches = (view) => !!rawMsg && normScreenText(composerText(view)) === rawMsg;
+  const draft = composerText(bottom);
+  if (draft && !isPlaceholder(draft) && !matches(bottom)) return { handled: false };
+  const seen = !!rawMsg && normScreenText(screen).includes(rawMsg);
+  const handled = (result) => ({ handled: true, result: { ok: true, immediate: true, ...result } });
 
-  // AGY shows "alt+m to send immediately" while a prompt is queued; send Alt+M directly without duplicating text.
-  if (cli === 'agy' && AGY_ALTM_RE.test(screen40)) {
-    write(PTY_KEYS['alt+m']);
-    return { handled: true, result: { ok: true, immediate: true, flushedQueued: true, steered: true } };
+  if (cli === 'agy' && AGY_ALTM_RE.test(bottom)) {
+    await write(PTY_KEYS['alt+m']);
+    return handled({ flushedQueued: true, steered: true });
   }
-
-  // 1) Already sitting unsubmitted in the bottom input box -> submit/steer without re-typing text.
-  if (hasPromptOnScreen(bottomBox, rawMsg)) {
-    if (cli === 'codex' && isBusy() && CODEX_QUEUE_RE.test(bottom12)) {
-      write(PTY_KEYS.tab);
-      return { handled: true, result: { ok: true, immediate: true, steered: true } };
-    }
-    if (cli === 'claude' && isBusy() && CLAUDE_QUEUE_RE.test(bottom12)) {
-      write(PTY_KEYS.esc);
-      await sleep(450);
-      if (hasPromptOnScreen(normScreenText(readNormLines(12)), rawMsg)) write('\r');
-      return { handled: true, result: { ok: true, immediate: true, flushedQueued: true } };
-    }
-    write('\r');
-    if (cli === 'agy' && isBusy()) {
-      await sleep(320);
-      if (AGY_ALTM_RE.test(normScreenText(readNormLines(40)))) {
-        write(PTY_KEYS['alt+m']);
-        return { handled: true, result: { ok: true, immediate: true, steered: true, submittedExisting: true } };
-      }
-    }
-    return { handled: true, result: { ok: true, immediate: true, submittedExisting: true } };
+  if (busy && cli === 'codex' && (matches(bottom) || resendIfMissing && seen) && CODEX_QUEUE_RE.test(bottom)) {
+    await write(PTY_KEYS.tab);
+    return handled({ steered: true });
   }
-
-  // 2) Already accepted/visible in CLI queue or scrollback -> steer per CLI, never duplicate text.
-  if (resendIfMissing && hasPromptOnScreen(screen40, rawMsg)) {
-    if (cli === 'codex' && isBusy() && CODEX_QUEUE_RE.test(screen40)) {
-      write(PTY_KEYS.tab);
-      return { handled: true, result: { ok: true, immediate: true, steered: true } };
-    }
-    if (cli === 'claude' && isBusy() && CLAUDE_QUEUE_RE.test(screen40)) {
-      write(PTY_KEYS.esc);
-      await sleep(450);
-      if (hasPromptOnScreen(normScreenText(readNormLines(12)), rawMsg)) write('\r');
-      return { handled: true, result: { ok: true, immediate: true, flushedQueued: true } };
-    }
-    return { handled: true, result: { ok: true, immediate: true, alreadyRecognized: true } };
+  if (busy && cli === 'claude' && (matches(bottom) || resendIfMissing && seen) && CLAUDE_QUEUE_RE.test(bottom)) {
+    await write(PTY_KEYS.esc);
+    await sleep(450);
+    if (!matches(await readNormLines(12))) return { handled: false };
+    await write(PTY_KEYS.enter);
+    return handled({ flushedQueued: true });
   }
+  if (busy && resendIfMissing && seen && !composerText(bottom)) return handled({ alreadyRecognized: true });
 
-  // 3) CLI did not receive the prompt yet -> submit + Alt+M on busy AGY, or Esc-interrupt before normal write.
-  if (isBusy()) {
-    if (cli === 'agy') {
-      if (text) {
-        write(text);
-        await sleep(submitDelay);
-        write('\r');
-        await sleep(320);
-        const afterScr = normScreenText(readNormLines(40));
-        if (AGY_ALTM_RE.test(afterScr)) {
-          write(PTY_KEYS['alt+m']);
-          return { handled: true, result: { ok: true, immediate: true, steered: true, flushedQueued: true } };
-        }
-        if (hasPromptOnScreen(afterScr, rawMsg)) {
-          return { handled: true, result: { ok: true, immediate: true } };
-        }
-      }
-      write(PTY_KEYS.esc);
-      await sleep(500);
-      return { handled: false };
-    }
-    if (cli !== 'codex') {
-      write(PTY_KEYS.esc);
-      await sleep(500);
-      const afterBottom = normScreenText(readNormLines(12));
-      const afterScr = normScreenText(readNormLines(40));
-      if (hasPromptOnScreen(afterBottom, rawMsg)) {
-        write('\r');
-        return { handled: true, result: { ok: true, immediate: true, submittedExisting: true } };
-      }
-      if (resendIfMissing && hasPromptOnScreen(afterScr, rawMsg)) {
-        return { handled: true, result: { ok: true, immediate: true, alreadyRecognized: true } };
-      }
-    }
+  if (busy && cli === 'claude' && rawMsg) {
+    await write(PTY_KEYS.esc);
+    await sleep(450);
   }
 
   return { handled: false };
 }
 
-module.exports = { PTY_KEYS, dispatchImmediatePrompt, hasPromptOnScreen, normScreenText, AGY_ALTM_RE, codexHistorySearchActive };
+module.exports = { PTY_KEYS, dispatchImmediatePrompt, flushNewAgyQueue, normScreenText, AGY_ALTM_RE, codexHistorySearchActive };

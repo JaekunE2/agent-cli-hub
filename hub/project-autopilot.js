@@ -6,7 +6,7 @@ const { execFile } = require('child_process');
 const { spawnCli, cliModelEffortArgs } = require('./project-plan');
 const { parseAgyJson, parseClaudeJson, parseCodexJsonl } = require('./task-subchat');
 const { resolveTaskConfig, buildTaskHarnessPrompt } = require('./project-harness');
-const { sessionStartupBlock, dismissProjectHookMenu, writeProjectTerm, dispatchCodexProjectPrompt, projectRunStarted, terminalConfirmationMessage, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE, PROJECT_START_MESSAGE } = require('./term-manager');
+const { sessionStartupBlock, dismissProjectHookMenu, dispatchTerminalPrompt, terminalConfirmationMessage, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE } = require('./term-manager');
 
 const MAX_AUTO_RETRIES = 2;
 const MAX_REVIEW_ERROR_RETRIES = 2;
@@ -481,33 +481,10 @@ async function dispatchRetryFeedback(hub, projectId, task, reason, retryNum, pri
       await dismissProjectHookMenu(hub, liveTerm, screen);
       if (!await hub.waitFor?.(() => liveTerm.exited === null && hub.inputReady?.(liveTerm), 5000, 300)) throw new Error(HOOK_MENU_MESSAGE);
     }
-    if (hub.agentOf?.(liveTerm) === 'codex') {
-      const dispatchedAt = Date.now();
-      liveTerm._projectDispatchPending = true;
-      try {
-        liveTerm._projectBusySeen = await dispatchCodexProjectPrompt(hub, liveTerm, retryPrompt);
-        liveTerm._idleStreak = 0;
-        liveTerm._projectDispatchedAt = dispatchedAt;
-      } finally {
-        liveTerm._projectDispatchPending = false;
-      }
-      return;
-    }
-    const write = async (data) => {
-      const block = sessionStartupBlock(readScreen());
-      if (block === 'hooks-menu') throw new Error(HOOK_MENU_MESSAGE);
-      const confirmation = terminalConfirmationMessage(block);
-      if (confirmation) throw new Error(confirmation);
-      await writeProjectTerm(hub, liveTerm, data);
-    };
     const dispatchedAt = Date.now();
     liveTerm._projectDispatchPending = true;
     try {
-      await write(retryPrompt);
-      await (hub.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(400);
-      await write('\r');
-      if (!await hub.waitFor(() => projectRunStarted(hub, liveTerm, dispatchedAt), 8000, 200)) throw new Error(PROJECT_START_MESSAGE);
-      liveTerm._projectBusySeen = true;
+      liveTerm._projectBusySeen = await dispatchTerminalPrompt(hub, liveTerm, retryPrompt);
       liveTerm._idleStreak = 0;
       liveTerm._projectDispatchedAt = dispatchedAt;
       return;

@@ -7,7 +7,8 @@ const crypto = require('crypto');
 const { spawn, execFile } = require('child_process');
 const { Terminal: HeadlessTerminal } = require('@xterm/headless');
 const { createTermScreenMonitor } = require('./term-events');
-const { codexHistorySearchActive, normScreenText } = require('./immediate-send');
+const { codexHistorySearchActive, flushNewAgyQueue } = require('./immediate-send');
+const { hasCodexPasteDraft, submitPrompt } = require('./prompt-submission');
 const { agyStatusFromScreen: explicitAgyStatus } = require('./agy-session');
 
 const SESSION_ENV = /^(CLAUDECODE|CLAUDE_PID|CLAUDE_EFFORT|CLAUDE_CODE_(CHILD_SESSION|SESSION_ID|SESSION_ATTENDED|MESSAGING_SOCKET|MESSAGING_TOKEN|ENTRYPOINT|EXECPATH))$/;
@@ -29,6 +30,7 @@ function sessionStartupBlock(screen) {
   if (/(?:Sign in with (?:ChatGPT|Google)|Login with Google|Select an authentication method)/i.test(bottom)) return 'login';
   if (/^\s*(?:[│┃?❯›>─ -]+\s*)?(?:Do you want to (?:proceed|make this edit|create|allow|run)|Allow Codex to)\b/im.test(bottom)) return 'permission';
   if (/^\s*(?:[│┃?❯›>─ -]+\s*)?Press Enter to continue[.!…]*\s*$/im.test(lines.at(-1))) return 'confirmation';
+  if (/(?:enter to (?:confirm|select)|esc to (?:cancel|deny|reject)|arrow keys to select)/i.test(lines.at(-1)) && /^\s*[›❯>]\s+\S/m.test(bottom)) return 'confirmation';
   if (/\brunning\b[^\n]*\bSessionStart\b|\bSessionStart hooks?\b[^\n]*\b(?:running|pending)\b/i.test(bottom)) return 'hooks-running';
   return '';
 }
@@ -56,70 +58,73 @@ async function writeProjectTerm(hub, term, data) {
   if (!result?.ok || term.exited !== null) throw new Error(result?.error || '터미널 입력을 확인하지 못했습니다.');
 }
 
-const CODEX_PASTE_DRAFT = /^\s*(?:[›❯>]\s*)?\[+pasted (?:content|text)\b/i;
-const CODEX_DRAFT_MESSAGE = 'Codex 입력창에 제출되지 않은 내용이 있습니다. 터미널에서 내용을 확인하세요.';
-const PROJECT_START_MESSAGE = '작업 지시를 제출했지만 CLI가 실행을 시작했다는 신호가 없습니다.';
-
-function codexComposerText(screen) {
-  const lines = screen.trimEnd().split('\n');
-  const start = lines.findLastIndex((line) => /^\s*[›❯>]\s/.test(line));
-  return lines.slice(Math.max(0, start)).join('\n').split(/\n\s*[^\n]+ · (?:[A-Z]:[\\/]|~|\/)/i, 1)[0].trim();
+function submissionBlockMessage(screen) {
+  const block = sessionStartupBlock(screen);
+  if (block === 'hooks-menu') return HOOK_MENU_MESSAGE;
+  if (block === 'term-dumb') return DUMB_TERMINAL_MESSAGE;
+  if (block === 'hooks-running') return 'CLI 시작 훅이 실행 중입니다.';
+  return terminalConfirmationMessage(block);
 }
 
-function projectRunStarted(hub, term, since) {
-  if (term.exited !== null) return false;
-  const cli = hub.agentOf?.(term) || 'codex';
-  const busy = cli === 'codex' ? hub.codexStatus?.(term)
-    : cli === 'agy' ? explicitAgyStatus(hub.readTerm(term, 16).join('\n')) : hub.claudeStatus?.(term);
-  if (busy === 'busy') return true;
-  const sid = hub.index && (hub.termSessionId?.(term) || term.meta?.sessionId);
-  return Boolean(sid && hub.index.get?.(sid)?.msgs?.slice(-15).some((m) => m.role === 'assistant'
-    && String(m.text || '').trim() && !String(m.text).startsWith('⚙') && Number(new Date(m.ts)) >= since));
-}
-
-async function dispatchCodexProjectPrompt(hub, term, text, { submitDraft = false } = {}) {
-  const read = () => {
-    const screen = hub.readTerm(term, Math.max(40, term.rows || 0)).join('\n');
-    return hub.stripAnsi?.(screen) || screen;
-  };
-  const busy = () => hub.codexStatus(term) === 'busy';
-  const originalInputAt = term.lastInputAt;
-  const expected = normScreenText(text);
-  const tail = expected.replace(/[\s·]/g, '').slice(-64);
-  const hasDraft = () => {
-    const composer = codexComposerText(read());
-    return CODEX_PASTE_DRAFT.test(composer) || (tail && composer.replace(/[\s·]/g, '').endsWith(tail));
-  };
-  const write = async (data) => {
-    const screen = read();
-    const block = sessionStartupBlock(screen);
-    if (block === 'hooks-menu') throw new Error(HOOK_MENU_MESSAGE);
-    const confirmation = terminalConfirmationMessage(block);
-    if (confirmation) throw new Error(confirmation);
-    if (block === 'term-dumb') throw new Error(DUMB_TERMINAL_MESSAGE);
-    if (term.lastInputAt !== originalInputAt || busy() || block || codexHistorySearchActive(screen.split('\n'))) throw new Error(CODEX_DRAFT_MESSAGE);
-    await writeProjectTerm(hub, term, data);
-  };
-  if (hasDraft()) {
-    if (!submitDraft && (!term._projectDraft || term._projectDraft.inputAt !== originalInputAt || term._projectDraft.composer !== codexComposerText(read()))) throw new Error(CODEX_DRAFT_MESSAGE);
-  } else {
-    if (submitDraft) throw new Error('Codex 입력창에서 작업 내용이 확인되지 않았습니다.');
-    await write(`\x1b[200~${text}\x1b[201~`);
-    if (!await hub.waitFor(hasDraft, 5000, 150)) throw new Error('Codex 입력창에서 작업 내용이 확인되지 않았습니다.');
-    await (hub.sleep || sleep)(500);
+async function dispatchTerminalPrompt(hub, term, text, { submitDraft = false, cli, immediate = false, resend = false } = {}) {
+  if (term._promptSubmission) throw new Error('터미널 입력을 전송 중입니다.');
+  term._promptSubmission = true;
+  try {
+    cli ||= hub.agentOf?.(term) || (hub.isCodexTerm?.(term) === false ? 'claude' : 'codex');
+    const inputAt = term.lastInputAt;
+    const inputSeq = term._interactiveInputSeq;
+    const read = () => {
+      const raw = hub.readTerm(term, Math.max(40, term.rows || 0)).join('\n');
+      const screen = hub.stripAnsi?.(raw) || raw;
+      const busy = (cli === 'codex' ? hub.codexStatus?.(term) : cli === 'agy'
+        ? explicitAgyStatus(screen.split('\n').slice(-16).join('\n')) : hub.claudeStatus?.(term)) === 'busy';
+      const cursorLine = cli === 'codex' ? hub.termCursorLine?.(term, Math.max(40, term.rows || 0)) : undefined;
+      return { screen, busy, cursorLine };
+    };
+    const sessionTurn = () => {
+      const sid = hub.index && (hub.termSessionId?.(term) || term.meta?.sessionId);
+      return sid && hub.index.get?.(sid)?.msgs?.findLast((m) => m.role === 'user');
+    };
+    const priorTurn = sessionTurn();
+    const initial = read();
+    if (term.meta?.projectTask && sessionStartupBlock(initial.screen) === 'hooks-menu') {
+      await dismissProjectHookMenu(hub, term, initial.screen);
+      if (!await (hub.waitFor || waitFor)(() => sessionStartupBlock(read().screen) !== 'hooks-menu', 5000, 150)) {
+        throw new Error(HOOK_MENU_MESSAGE);
+      }
+    }
+    const guard = ({ screen }) => {
+      const message = submissionBlockMessage(screen);
+      if (message) throw new Error(message);
+      if (term.exited !== null || term.lastInputAt !== inputAt || term._interactiveInputSeq !== inputSeq
+        || codexHistorySearchActive(screen.split('\n'))) throw new Error('전송 중 터미널 입력 상태가 바뀌었습니다.');
+    };
+    text = text.replace(/\r\n?/g, '\n');
+    if (resend && term._lastSubmittedPrompt === text) return true;
+    term._lastSubmittedPrompt = undefined;
+    await submitPrompt({
+      text, read, guard, explicitDraft: submitDraft, waitFor: hub.waitFor || waitFor, sleep: hub.sleep || sleep,
+      paste: cli === 'codex' || /[\n\t]/.test(text) ? `\x1b[200~${text}\x1b[201~` : text,
+      pasteMarker: cli,
+      write: (data) => {
+        guard(read());
+        hub.termMonitor?.onInput(term, data);
+        return writeProjectTerm(hub, term, data);
+      },
+      queueKey: ({ busy, screen }) => immediate && cli === 'codex' && busy && /tab to (?:queue|steer)/i.test(screen) ? '\t' : '',
+      flushQueue: immediate && cli === 'agy' ? flushNewAgyQueue : undefined,
+      started: (view, baseline, since) => {
+        if (!baseline.busy && view.busy && view.screen !== baseline.screen) return true;
+        const turn = sessionTurn();
+        return turn && turn !== priorTurn && Number(new Date(turn.ts)) >= since
+          && turn.text?.trim() === text.trim();
+      },
+    });
+    term._lastSubmittedPrompt = text;
+    return true;
+  } finally {
+    term._promptSubmission = false;
   }
-  if (!hasDraft()) throw new Error('Codex 입력창에서 작업 내용이 확인되지 않았습니다.');
-  const pasted = codexComposerText(read());
-  term._projectDraft = { inputAt: originalInputAt, composer: pasted };
-  const submittedAt = Date.now();
-  const accepted = () => projectRunStarted(hub, term, submittedAt);
-  await write('\r');
-  if (!await hub.waitFor(accepted, 2500, 150) && !accepted() && codexComposerText(read()) === pasted) {
-    await write('\r');
-  }
-  if (!await hub.waitFor(accepted, 8000, 150)) throw new Error(hasDraft() ? CODEX_DRAFT_MESSAGE : PROJECT_START_MESSAGE);
-  delete term._projectDraft;
-  return true;
 }
 
 function pidAlive(pid) {
@@ -201,12 +206,14 @@ function createTermManager(hub) {
     },
   }) : null;
 
-  function readTerm(t, n = 60) {
+  function readTerm(t, n = 60, cursorOnly = false) {
     const b = t.vt.buffer.active, lines = [];
     const text = (i) => b.getLine(i)?.translateToString(true) ?? '';
     let last = b.length - 1;
     while (last > 0 && !text(last).trim()) last--;
-    for (let i = Math.max(0, last - n + 1); i <= last; i++) lines.push(text(i));
+    const start = Math.max(0, last - n + 1);
+    if (cursorOnly) return b.baseY + b.cursorY - start;
+    for (let i = start; i <= last; i++) lines.push(text(i));
     return lines;
   }
 
@@ -352,6 +359,11 @@ function createTermManager(hub) {
     return t.meta?.sessionId || null;
   }
 
+  function hasTermInputDraft(t) {
+    const lines = Math.max(40, t.rows || 0);
+    return hasCodexPasteDraft(stripAnsi(readTerm(t, lines).join('\n')), readTerm(t, lines, true));
+  }
+
   const termInfo = (t) => ({
     id: t.id, title: t.title, customTitle: t.meta?.customTitle || '', liveTitle: t.liveTitle, account: t.account, agent: agentOf(t), operator: !!t.meta?.operator,
     claude: /claude(\.exe)?$/i.test(t.meta?.cmd || ''), codex: isCodexTerm(t), agy: isAgyTerm(t),
@@ -361,7 +373,7 @@ function createTermManager(hub) {
     ...(t.exited === null ? { startupBlock: sessionStartupBlock(stripAnsi(readTerm(t, 40).join('\n'))) } : {}),
     ...(t.meta?.projectTask ? {
       dispatchPending: !!t._projectDispatchPending,
-      inputDraft: t.exited === null && isCodexTerm(t) && CODEX_PASTE_DRAFT.test(codexComposerText(readTerm(t, Math.max(40, t.rows || 0)).join('\n'))),
+      inputDraft: t.exited === null && isCodexTerm(t) && hasTermInputDraft(t),
     } : {}),
     lastOutputAt: t.lastOutputAt || 0,
     lastInputAt: t.lastInputAt || t.meta?.lastInputAt || t.startedAt || t.meta?.spawnedAt || 0,
@@ -820,6 +832,7 @@ function createTermManager(hub) {
     isAgyTerm,
     agentOf,
     readTerm,
+    termCursorLine: (t, n) => readTerm(t, n, true),
     sleep,
     SUBMIT_DELAY,
     consoleSubmitDelay,
@@ -853,4 +866,4 @@ function createTermManager(hub) {
   };
 }
 
-module.exports = { createTermManager, sessionStartupBlock, dismissProjectHookMenu, writeProjectTerm, dispatchCodexProjectPrompt, projectRunStarted, terminalConfirmationMessage, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE, PROJECT_START_MESSAGE };
+module.exports = { createTermManager, sessionStartupBlock, dismissProjectHookMenu, writeProjectTerm, dispatchTerminalPrompt, submissionBlockMessage, terminalConfirmationMessage, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE };

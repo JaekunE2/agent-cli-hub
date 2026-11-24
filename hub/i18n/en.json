@@ -2842,5 +2842,16 @@
   "프로젝트 폴더에 진행 중인 Git 병합이 있습니다.": "A Git merge is already in progress in the project folder.",
   "터미널 입력을 전송 중입니다.": "Terminal input is being submitted.",
   "병합 대기": "Awaiting merge",
-  "검토 통과 · 병합 대기": "Review passed · awaiting merge"
+  "검토 통과 · 병합 대기": "Review passed · awaiting merge",
+  "CLI 입력창에 제출되지 않은 다른 내용이 있습니다. 터미널에서 내용을 확인하세요.": "The CLI composer contains a different draft. Check the draft in the terminal.",
+  "CLI 메시지에 제어 문자를 보낼 수 없습니다.": "CLI messages cannot contain control characters.",
+  "CLI 입력창을 확인하지 못했습니다.": "Could not identify the CLI composer.",
+  "CLI 입력창에서 전송한 내용을 확인하지 못했습니다.": "Could not verify the message in the CLI composer.",
+  "콘솔 화면을 읽지 못했습니다.": "Could not read the console screen.",
+  "콘솔에 입력하지 못했습니다.": "Could not write to the console.",
+  "전송 중 CLI 입력창이 기록 검색으로 바뀌었습니다.": "The CLI composer switched to history search during submission.",
+  "콘솔 기록 검색을 닫지 못했습니다.": "Could not close console history search.",
+  "CLI 시작 훅이 실행 중입니다.": "CLI startup hooks are running.",
+  "전송 중 터미널 입력 상태가 바뀌었습니다.": "Terminal input state changed during submission.",
+  "여러 줄 또는 탭이 포함된 메시지는 Hub 관리 터미널에서 보내세요.": "Send messages containing newlines or tabs through a Hub-managed terminal."
 }

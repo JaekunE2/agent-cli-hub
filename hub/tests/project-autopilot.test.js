@@ -110,6 +110,7 @@ test('completeAutopilotTask approves on APPROVE verdict and retries on REJECT up
   const ptyWrites = [];
   let verdictMode = 'REJECT';
   let hookMenu = true;
+  let inputLine = '› Ask anything';
 
   const fakeHub = {
     terms: new Map([['1', { id: '1', exited: null, meta: { projectTask: { projectId: 'p1', taskId: 't1' } } }]]),
@@ -117,7 +118,7 @@ test('completeAutopilotTask approves on APPROVE verdict and retries on REJECT up
       list: () => [savedProject],
       save: (next) => { savedProject = next; return savedProject; },
     },
-    readTerm: () => hookMenu ? ['SessionStart hooks', 'space/enter toggle · esc back'] : ['› Ask anything'],
+    readTerm: () => hookMenu ? ['SessionStart hooks', 'space/enter toggle · esc back'] : [inputLine],
     inputReady: () => !hookMenu,
     codexStatus: () => ptyWrites.at(-1)?.data === '\r' ? 'busy' : 'idle',
     sleep: async () => {},
@@ -125,6 +126,8 @@ test('completeAutopilotTask approves on APPROVE verdict and retries on REJECT up
     ptyPost: async (id, _op, body) => {
       ptyWrites.push({ id, data: body.data });
       if (body.data === '\x1b') hookMenu = false;
+      else if (body.data === '\r') inputLine = 'Esc to interrupt';
+      else inputLine = '› ' + body.data.slice(6, -6);
       return { ok: true };
     },
     startProjectTaskById: async (pid, tid) => { dispatched.push({ pid, tid }); return { id: 'term-2' }; },
@@ -171,7 +174,8 @@ test('completeAutopilotTask approves on APPROVE verdict and retries on REJECT up
   assert.deepEqual(await checkAutopilotCompletions(fakeHub), []);
   assert.equal(savedProject.tasks[0].stage, 'doing');
   delete fakeHub.agentOf;
-  fakeHub.codexStatus = () => ptyWrites.at(-1)?.data === '\r' ? 'busy' : 'idle';
+  inputLine = '› Ask anything';
+  fakeHub.codexStatus = () => inputLine === 'Esc to interrupt' ? 'busy' : 'idle';
 
   const r4 = await completeAutopilotTask(fakeHub, 'p1', 't1', { maxRetries: 2, force: true });
   assert.equal(r4.retried, true);

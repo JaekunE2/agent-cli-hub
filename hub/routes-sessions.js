@@ -5,10 +5,11 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { resolveTaskConfig, buildTaskHarnessPrompt } = require('./project-harness');
-const { codexHistorySearchActive } = require('./immediate-send');
+const { AGY_ALTM_RE, codexHistorySearchActive, dispatchImmediatePrompt, flushNewAgyQueue } = require('./immediate-send');
+const { composerText, submitPrompt } = require('./prompt-submission');
 const { claudeCommandNote, claudeToolResultNote } = require('./searchindex');
 const { spawnCli } = require('./project-plan');
-const { sessionStartupBlock, dismissProjectHookMenu, writeProjectTerm, dispatchCodexProjectPrompt, projectRunStarted, terminalConfirmationMessage, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE, PROJECT_START_MESSAGE } = require('./term-manager');
+const { sessionStartupBlock, dismissProjectHookMenu, dispatchTerminalPrompt, submissionBlockMessage, terminalConfirmationMessage, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE } = require('./term-manager');
 
 const OV_TTL = 2500;
 
@@ -18,7 +19,7 @@ function createSessionRoutes(hub) {
     baseDir, port, config, buildId, claudeDir, index, projects, accountPrefs, conversationBranches, termEvents,
     sessionDisplayTitle, branchBackupDir, forkClaudeJsonlAt, editClaudeJsonlAt, editCodexJsonlAt,
     writeBranchContextFile, validSessionId, cleanModelEffort, cliModelEffortArgs, fingerprint,
-    PTY_KEYS, dispatchImmediatePrompt, AGY_ALTM_RE, stripAnsi,
+    PTY_KEYS, stripAnsi,
   } = hub;
 
   const transcriptIndex = new Map();
@@ -329,7 +330,7 @@ function createSessionRoutes(hub) {
       if (!path.isAbsolute(project.cwd) || !fs.statSync(project.cwd, { throwIfNoEntry: false })?.isDirectory()) return send(res, 400, { error: '작업 설계에서 존재하는 작업 폴더의 전체 경로를 입력하세요.' });
       const taskWorktree = task.worktreePath && path.isAbsolute(task.worktreePath) && fs.statSync(task.worktreePath, { throwIfNoEntry: false })?.isDirectory() ? task.worktreePath : '';
       if (task.worktreePath && !taskWorktree) return send(res, 409, { error: '격리 작업 폴더를 찾을 수 없습니다.' });
-      b = { kind, cwd: taskWorktree || project.cwd, title: parentTask ? `${parentTask.title} › ${task.title}` : task.title, skipPermissions: true, model, effort, resume: typeof b.resume === 'string' ? b.resume.trim() : '', _autoDispatch: b.autoDispatch !== false && b._autoDispatch !== false, _rawPrompt: b._rawPrompt || '' };
+      b = { kind, cwd: taskWorktree || project.cwd, title: parentTask ? `${parentTask.title} › ${task.title}` : task.title, skipPermissions: b.skipPermissions !== false, model, effort, resume: typeof b.resume === 'string' ? b.resume.trim() : '', _autoDispatch: b.autoDispatch !== false && b._autoDispatch !== false, _rawPrompt: b._rawPrompt || '' };
       const parts = parentTask ? [`[상위 작업: ${parentTask.title}]`, parentTask.detail ? parentTask.detail.slice(0, 600) : '', `[서브 개발 작업: ${task.title}]`, task.detail] : [task.title, task.detail];
       const harnessBlock = buildTaskHarnessPrompt(project, task, kind, harnessState);
       if (harnessBlock) parts.push(harnessBlock);
@@ -471,38 +472,7 @@ function createSessionRoutes(hub) {
           t._projectHookEscapeSent = false;
           const cli = hub.agentOf(t) || 'claude';
           const dispatchedAt = Date.now();
-          if (cli === 'codex') {
-            t._projectBusySeen = await dispatchCodexProjectPrompt(hub, t, rawPrompt, { submitDraft });
-            t._projectDispatchedAt = dispatchedAt;
-            return;
-          }
-          const writes = [];
-          const write = (data) => {
-            const block = sessionStartupBlock(stripAnsi(hub.readTerm(t, 40).join('\n')));
-            if (block === 'hooks-menu') throw new Error(HOOK_MENU_MESSAGE);
-            const confirmation = terminalConfirmationMessage(block);
-            if (confirmation) throw new Error(confirmation);
-            const pending = writeProjectTerm(hub, t, data).catch((e) => e.message || String(e));
-            writes.push(pending);
-          };
-          const outcome = await dispatchImmediatePrompt({
-            cli,
-            isBusy: () => (cli === 'agy' ? hub.agyStatus(t) : hub.claudeStatus(t)) === 'busy',
-            readNormLines: (n) => stripAnsi(hub.readTerm(t, n).join('\n')),
-            write,
-            sleep: hub.sleep,
-            text: rawPrompt,
-            submitDelay: hub.SUBMIT_DELAY,
-          });
-          if (!outcome?.handled && t.exited === null) {
-            write(rawPrompt);
-            await hub.sleep(hub.SUBMIT_DELAY + Math.min(2500, Math.floor(rawPrompt.length / 2)));
-            if (t.exited === null) write('\r');
-          }
-          const error = (await Promise.all(writes)).find(Boolean);
-          if (error || t.exited !== null) throw new Error(error || 'CLI가 작업 입력 중 종료되었습니다.');
-          if (!await hub.waitFor(() => projectRunStarted(hub, t, dispatchedAt), 8000, 200)) throw new Error(PROJECT_START_MESSAGE);
-          t._projectBusySeen = true;
+          t._projectBusySeen = await dispatchTerminalPrompt(hub, t, rawPrompt, { cli, submitDraft });
           t._projectDispatchedAt = dispatchedAt;
         })().catch((e) => {
           const latest = projects.list().find((p) => p.id === projectTask.projectId);
@@ -670,6 +640,9 @@ function createSessionRoutes(hub) {
     overviewStale();
     return send(res, 200, { ok: true, mode, native: false, term: hub.termInfo(term), branch, childSessionId: null });
   }
+
+  const consoleSubmissions = new Set();
+  const consoleLastSubmission = new Map();
 
   async function handleSessionRoutes(p, url, req, res, body, send, authed) {
     if (!authed(req, url)) { send(res, 401, { error: 'bad token' }); return true; }
@@ -842,26 +815,100 @@ function createSessionRoutes(hub) {
     if (p === '/api/console/send' && req.method === 'POST') {
       const b = await body(req);
       const pid = Number(b.pid);
+      const textSubmission = b.submit && typeof b.text === 'string' && b.text.trim() && !b.keys?.length;
       if (b.submit || b.immediate || b.text) hub.consoleInputAt.set(pid, Date.now());
-      const snap = (b.immediate || (b.submit && b.text))
-        ? await hub.helperCall({ op: 'read', pid, lines: b.immediate ? 30 : 5 }).catch(() => null) : null;
-      const inHistorySearch = codexHistorySearchActive(snap?.lines || []);
-      if (inHistorySearch) {
-        const r = await hub.helperCall({ op: 'send', pid, keys: ['esc'] });
-        if (!r.ok) { send(res, 200, r); return true; }
-        await hub.sleep(hub.SUBMIT_DELAY);
+      const call = (args) => hub.helperCall({ pid, ...args });
+      const read = async () => {
+        const snapshot = await call({ op: 'read', lines: 40 });
+        if (snapshot.ok === false || !Array.isArray(snapshot.lines)) throw new Error(snapshot.error || '콘솔 화면을 읽지 못했습니다.');
+        const screen = snapshot.lines.join('\n').trimEnd();
+        const busy = /esc to (?:cancel|interrupt)|ctrl\+c to (?:cancel|interrupt|stop)/i.test(snapshot.lines.filter((line) => line.trim()).slice(-12).join('\n'));
+        const title = snapshot.title || '';
+        const codex = /\bcodex\b/i.test(title) || /› Ask Codex to do anything/.test(screen);
+        return { screen, busy, title, codex, cursorLine: codex ? snapshot.cursor?.[1] : undefined };
+      };
+      if (b.submit || b.immediate) {
+        if (consoleSubmissions.has(pid)) {
+          send(res, 409, { ok: false, error: '터미널 입력을 전송 중입니다.' });
+          return true;
+        }
+        consoleSubmissions.add(pid);
+        try {
+          const initial = await read();
+          const guard = ({ screen }) => {
+            const message = submissionBlockMessage(screen);
+            if (message) throw new Error(message);
+            if (codexHistorySearchActive(screen.split('\n'))) throw new Error('전송 중 CLI 입력창이 기록 검색으로 바뀌었습니다.');
+          };
+          const write = async (data, key) => {
+            if (!key && /[\r\n\t]/.test(data)) throw new Error('여러 줄 또는 탭이 포함된 메시지는 Hub 관리 터미널에서 보내세요.');
+            guard(await read());
+            const result = await call(key ? { op: 'send', keys: [key] } : { op: 'send', text: data, keys: [] });
+            if (!result.ok) throw new Error(result.error || '콘솔에 입력하지 못했습니다.');
+          };
+          const writeKey = (data) => write(data, Object.keys(PTY_KEYS).find((key) => PTY_KEYS[key] === data));
+          const inSearch = codexHistorySearchActive(initial.screen.split('\n'));
+          if (inSearch) {
+            const result = await call({ op: 'send', keys: ['esc'] });
+            if (!result.ok) throw new Error(result.error || '콘솔 기록 검색을 닫지 못했습니다.');
+            await hub.sleep(hub.SUBMIT_DELAY);
+          } else guard(initial);
+          const cli = inSearch || initial.codex ? 'codex'
+            : AGY_ALTM_RE.test(initial.screen) || /\b(?:agy|antigravity)\b/i.test(initial.title) ? 'agy'
+              : /claude/i.test(initial.title + initial.screen) ? 'claude' : undefined;
+          const isAgent = cli || /\bcursor agent\b/i.test(initial.title)
+            || composerText(initial.screen, initial.cursorLine) !== null;
+          if (b.immediate && !inSearch && cli) {
+            const outcome = await dispatchImmediatePrompt({
+              cli, isBusy: async () => (await read()).busy,
+              readNormLines: async (n) => {
+                const view = await read();
+                guard(view);
+                return view.screen.split('\n').slice(-n).join('\n');
+              },
+              write: writeKey, sleep: hub.sleep, text: b.text, resendIfMissing: b.resendIfMissing,
+            });
+            if (outcome.handled) { send(res, 200, outcome.result); return true; }
+          }
+          if (textSubmission && isAgent) {
+            const last = consoleLastSubmission.get(pid);
+            if (b.resendIfMissing && last?.text === b.text && last.title === initial.title) {
+              send(res, 200, { ok: true, alreadyRecognized: true });
+              return true;
+            }
+            consoleLastSubmission.delete(pid);
+            await submitPrompt({
+              text: b.text, read, guard, waitFor: hub.waitFor, sleep: hub.sleep,
+              write: (data) => data === PTY_KEYS.enter || b.immediate && [PTY_KEYS.tab, PTY_KEYS['alt+m']].includes(data)
+                ? writeKey(data) : write(data),
+              delay: hub.consoleSubmitDelay(b.text), pasteMarker: cli,
+              queueKey: ({ busy, screen }) => b.immediate && cli === 'codex' && busy && /tab to (?:queue|steer)/i.test(screen) ? PTY_KEYS.tab : '',
+              flushQueue: b.immediate && cli === 'agy' ? flushNewAgyQueue : undefined,
+              started: (view, baseline) => !baseline.busy && view.busy && view.screen !== baseline.screen,
+            });
+            consoleLastSubmission.set(pid, { text: b.text, title: initial.title });
+            send(res, 200, { ok: true, immediate: !!b.immediate });
+            return true;
+          }
+          consoleLastSubmission.delete(pid);
+          if (b.text || b.keys?.length) {
+            const result = await call({ op: 'send', text: b.text || '', keys: b.keys || [] });
+            if (!result.ok) throw new Error(result.error || '콘솔에 입력하지 못했습니다.');
+          }
+          if (b.submit) {
+            await hub.sleep(hub.consoleSubmitDelay(b.text));
+            await writeKey(PTY_KEYS.enter);
+          }
+          send(res, 200, { ok: true });
+        } catch (e) {
+          send(res, 409, { ok: false, error: e.message });
+        } finally {
+          consoleSubmissions.delete(pid);
+        }
+        return true;
       }
-      if (b.immediate && !inHistorySearch) {
-        const rawScr = String((snap?.lines || []).join('\n')).replace(/\s+/g, ' ');
-        const tailScr = String((snap?.lines || []).slice(-10).join('\n')).replace(/\s+/g, ' ');
-        const needle = String(b.text || '').trim().replace(/\s+/g, ' ').slice(0, 20);
-        if (AGY_ALTM_RE.test(rawScr)) { send(res, 200, { ...(await hub.helperCall({ op: 'send', pid, keys: ['alt+m'] })), immediate: true, flushedQueued: true, steered: true }); return true; }
-        if (needle && (tailScr.includes(needle) || /\[pasted text/i.test(tailScr))) { send(res, 200, { ...(await hub.helperCall({ op: 'send', pid, keys: ['enter'] })), submittedExisting: true }); return true; }
-        if (b.resendIfMissing && needle && rawScr.includes(needle)) { send(res, 200, { ok: true, immediate: true, alreadyRecognized: true }); return true; }
-        await hub.helperCall({ op: 'send', pid, keys: ['esc'] }); await hub.sleep(500);
-      }
-      let r = await hub.helperCall({ op: 'send', pid, text: b.text || '', keys: b.keys || [] });
-      if (r.ok && b.submit) { await hub.sleep(hub.consoleSubmitDelay(b.text)); r = await hub.helperCall({ op: 'send', pid, keys: ['enter'] }); }
+      if (b.text || b.keys?.length) consoleLastSubmission.delete(pid);
+      const r = await call({ op: 'send', text: b.text || '', keys: b.keys || [] });
       send(res, 200, r);
       return true;
     }
@@ -897,7 +944,7 @@ function createSessionRoutes(hub) {
     if (p === '/api/term/send' && req.method === 'POST') {
       const b = await body(req); const t = hub.terms.get(String(b.id));
       if (!t || t.exited !== null) { send(res, 404, { ok: false, error: 'no such running terminal' }); return true; }
-      if (t._chatSubmitPending || t._projectDispatchPending && (b.text || b.immediate)) {
+      if ((t._promptSubmission || t._projectDispatchPending) && (b.text || b.immediate || b.submit)) {
         send(res, 409, { ok: false, error: '터미널 입력을 전송 중입니다.' }); return true;
       }
       if (b.submit || b.immediate || b.text) {
@@ -907,6 +954,7 @@ function createSessionRoutes(hub) {
           send(res, 409, { ok: false, error: confirmation }); return true;
         }
       }
+      if (b.keys?.length) t._interactiveInputSeq = (t._interactiveInputSeq || 0) + 1;
       if (b.submit || b.immediate || b.text) hub.touchUserInput(t);
       const inHistorySearch = (b.immediate || (b.submit && b.text)) && hub.isCodexTerm(t)
         && codexHistorySearchActive(hub.readTerm(t, 5));
@@ -914,25 +962,46 @@ function createSessionRoutes(hub) {
         await t.proc.write(PTY_KEYS.esc);
         await hub.sleep(hub.SUBMIT_DELAY);
       }
-      if (b.submit && !b.resendIfMissing && typeof b.text === 'string' && b.text.trim() && !b.keys?.length
-        && hub.isCodexTerm(t) && hub.codexStatus?.(t) === 'idle') {
-        t._chatSubmitPending = true;
+      const agent = hub.agentOf?.(t) || (hub.isCodexTerm(t) ? 'codex' : hub.isAgyTerm?.(t) ? 'agy' : null);
+      if (b.immediate && !inHistorySearch && agent) {
+        const inputSeq = t._interactiveInputSeq;
+        const read = (n) => {
+          if (t.exited !== null || t._interactiveInputSeq !== inputSeq) throw new Error('전송 중 터미널 입력 상태가 바뀌었습니다.');
+          const raw = hub.readTerm(t, 40).join('\n');
+          const screen = stripAnsi?.(raw) || raw;
+          const message = submissionBlockMessage(screen);
+          if (message) throw new Error(message);
+          if (codexHistorySearchActive(screen.split('\n'))) throw new Error('전송 중 CLI 입력창이 기록 검색으로 바뀌었습니다.');
+          return screen.trimEnd().split('\n').slice(-n).join('\n');
+        };
+        t._promptSubmission = true;
         try {
-          await dispatchCodexProjectPrompt(hub, t, b.text.replace(/\r\n/g, '\n'));
+          const outcome = await dispatchImmediatePrompt({
+            cli: agent, isBusy: () => (agent === 'codex' ? hub.codexStatus?.(t) : agent === 'agy' ? hub.agyStatus?.(t) : hub.claudeStatus?.(t)) === 'busy',
+            readNormLines: read,
+            write: async (data) => {
+              read(40);
+              const result = await t.proc.write(data);
+              if (!result?.ok) throw new Error(result?.error || '터미널 입력을 확인하지 못했습니다.');
+            },
+            sleep: hub.sleep, text: b.text, resendIfMissing: b.resendIfMissing,
+          });
+          if (outcome.handled) { send(res, 200, outcome.result); return true; }
+        } catch (e) {
+          send(res, 409, { ok: false, error: e.message });
+          return true;
+        } finally {
+          t._promptSubmission = false;
+        }
+      }
+      if (b.submit && typeof b.text === 'string' && b.text.trim() && !b.keys?.length && agent) {
+        try {
+          await dispatchTerminalPrompt(hub, t, b.text, { cli: agent, immediate: b.immediate, resend: b.resendIfMissing });
           send(res, 200, { ok: true, immediate: !!b.immediate });
         } catch (e) {
           send(res, 409, { ok: false, error: e.message });
-        } finally { t._chatSubmitPending = false; }
+        }
         return true;
-      }
-      if (b.immediate && !inHistorySearch) {
-        const cli = hub.isCodexTerm(t) ? 'codex' : hub.isAgyTerm(t) ? 'agy' : 'claude';
-        const outcome = await dispatchImmediatePrompt({
-          cli, isBusy: () => (cli === 'codex' ? hub.codexStatus(t) : cli === 'agy' ? hub.agyStatus(t) : hub.claudeStatus(t)) === 'busy',
-          readNormLines: (n) => stripAnsi(hub.readTerm(t, n).join('\n')), write: (d) => t.proc.write(d),
-          sleep: hub.sleep, text: b.text || '', resendIfMissing: !!b.resendIfMissing, submitDelay: hub.SUBMIT_DELAY,
-        });
-        if (outcome.handled) { send(res, 200, outcome.result); return true; }
       }
       if (b.text) {
         hub.termMonitor?.onInput(t, b.text);
