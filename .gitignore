@@ -6,6 +6,7 @@ hub/url.txt
 hub/config.json
 hub/data/
 hub/*.log
+.agy-review-*.log
 hub/*.out
 hub/.search-cache.json.gz
 hub/favorites.json
