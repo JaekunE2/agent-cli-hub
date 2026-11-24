@@ -382,9 +382,21 @@ async function refreshOverview() {
   updateDocTitle();
   paintActiveTermStatus();
   renderSide();
-  if (booted && state.sel.kind === 'projects' && !$('.pj-dialog[open], .drw-backdrop')) {
+  if (booted && state.sel.kind === 'projects' && !$('.pj-dialog[open]')) {
     const project = state.projects.find((p) => p.id === state.sel.id);
-    if (projTermChanged || (project && projectRevisions?.[project.id] > project.revision)) {
+    const revision = projectRevisions?.[project?.id];
+    const drawer = $('.drw-backdrop');
+    const badge = drawer?.querySelector('[data-handoff-task]');
+    if (badge && revision > Number(badge.dataset.handoffRevision)) {
+      try {
+        const { projects } = await api('/api/projects');
+        const latest = projects.find((p) => p.id === project.id);
+        if (badge.isConnected && latest?.revision > Number(badge.dataset.handoffRevision)) {
+          badge.innerHTML = projectHandoffBadgeHTML(latest.tasks.find((t) => t.id === badge.dataset.handoffTask));
+          badge.dataset.handoffRevision = latest.revision;
+        }
+      } catch (e) { console.warn('[project-handoff]', e.message); }
+    } else if (!drawer && (projTermChanged || revision > project?.revision)) {
       if (typeof openProject === 'function') openProject(state.sel.id, projectTab);
     }
   }

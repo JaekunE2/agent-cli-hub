@@ -230,7 +230,9 @@ function openProjectTaskDrawer(p, task, focusSubChat = false) {
     ${parent ? `<div class="drw-sec"><div class="drw-lbl">상위 작업</div><button type="button" class="ghost btn-sm" data-drw-open-sub="${esc(parent.id)}">↳ ${esc(parent.title)}</button></div>` : ''}
     <div class="drw-sec">
       <div class="row" style="justify-content:space-between">
-        <div class="row" style="gap:6px"><span class="drw-lbl" style="margin:0">작업 종류 · 진행 단계</span>${kindBadgeHTML(task)}</div>
+        <div class="row" style="gap:6px"><span class="drw-lbl" style="margin:0">작업 종류 · 진행 단계</span>${kindBadgeHTML(task)}
+          <span aria-live="polite" data-handoff-task="${esc(task.id)}" data-handoff-revision="${esc(p.revision)}">${projectHandoffBadgeHTML(task)}</span>
+        </div>
       </div>
       <div class="seg" role="tablist" aria-label="작업 단계 선택">${stageSeg}</div>
     </div>
@@ -239,7 +241,7 @@ function openProjectTaskDrawer(p, task, focusSubChat = false) {
         <div class="row" style="gap:6px;flex-wrap:wrap">
           <span class="drw-lbl" style="margin:0">진행 · 검토 상태 및 사유</span>
           ${typeof projectLiveStatusBadgeHTML === 'function' ? projectLiveStatusBadgeHTML(p, task) : ''}
-          ${typeof projectReviewBadgeHTML === 'function' ? projectReviewBadgeHTML(task) : ''}
+          ${projectReviewBadgeHTML(task, false)}
         </div>
         ${projectStageActionHTML(task, p)}
       </div>

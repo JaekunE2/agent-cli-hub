@@ -15,6 +15,7 @@ const DEFAULT_REVIEW_ERROR_BACKOFF_MS = 15_000;
 const DEFAULT_MAX_CONCURRENT = 2;
 const IDLE_STREAK_REQUIRED = 2;
 const OUTPUT_QUIET_MS = 4500;
+const RESULT_INDEX_GRACE_MS = 15_000;
 const DISPATCH_IDLE_LIMIT_MS = 90_000;
 const REVIEW_TIMEOUT_MS = 180_000;
 
@@ -235,7 +236,9 @@ async function runProjectAutopilot(hub, projectId, { autoDispatch = true, maxCon
     for (const task of launchable) {
       let ok = false;
       try {
-        const res = await hub.startProjectTaskById(cur.id, task.id, { autoDispatch });
+        const res = await hub.startProjectTaskById(cur.id, task.id, {
+          autoDispatch, trackHandoff: autoDispatch && !!task.after?.length,
+        });
         if (res && !res.error) {
           started.push({ taskId: task.id, title: task.title, termId: res.id });
           ok = true;
@@ -363,20 +366,18 @@ function findTaskTerminal(hub, projectId, taskId, { liveOnly = false } = {}) {
   return terms.findLast((x) => (!liveOnly || x.exited === null) && x.meta?.projectTask?.projectId === projectId && x.meta?.projectTask?.taskId === taskId) || null;
 }
 
-function extractTaskSessionId(hub, project, task) {
-  const t = findTaskTerminal(hub, project.id, task.id);
+function extractTaskSessionId(hub, project, task, t = findTaskTerminal(hub, project.id, task.id)) {
   const sid = t ? (hub.termSessionId?.(t) || t.meta?.sessionId || '') : '';
   return String(sid || task?.lastSessionId || '').trim();
 }
 
-function extractTaskOutput(hub, project, task) {
+function extractTaskOutput(hub, project, task, t = findTaskTerminal(hub, project.id, task.id), since = 0) {
   try {
-    const t = findTaskTerminal(hub, project.id, task.id);
     if (t) {
       const sid = hub.termSessionId?.(t) || t.meta?.sessionId;
       const doc = sid ? hub.index?.get?.(sid) : null;
       if (doc?.msgs?.length) {
-        const lastAsst = [...doc.msgs].reverse().find((m) => m.role === 'assistant' && !String(m.text || '').startsWith('⚙'));
+        const lastAsst = doc.msgs.findLast((m) => isTaskReply(m, since));
         if (lastAsst?.text) return String(lastAsst.text).trim().slice(0, 3000);
       }
       if (hub.readTerm) {
@@ -386,6 +387,11 @@ function extractTaskOutput(hub, project, task) {
     }
   } catch {}
   return String(task?.lastOutput || '').trim().slice(0, 3000);
+}
+
+function isTaskReply(m, since) {
+  return m.role === 'assistant' && String(m.text || '').trim() && !String(m.text).startsWith('⚙')
+    && !String(m.text).startsWith('❓') && (!since || Number(new Date(m.ts)) >= since);
 }
 
 function saveTaskHandoffRef(hub, project, task, { reason = '', taskOut = '', gitSummary = '' } = {}) {
@@ -457,7 +463,7 @@ const REVIEW_SCHEMA = JSON.stringify({
   },
 });
 
-async function defaultReviewTask(hub, project, task, onPhase) {
+async function defaultReviewTask(hub, project, task, onPhase, taskOut) {
   const harnessState = hub.projectHarness?.get ? hub.projectHarness.get() : null;
   const revCfg = resolveTaskConfig(project, { kind: 'review', role: 'review' }, harnessState, { preferProject: false });
   const agent = ['claude', 'codex', 'agy'].includes(revCfg.agent) ? revCfg.agent : 'claude';
@@ -468,7 +474,6 @@ async function defaultReviewTask(hub, project, task, onPhase) {
   const workCwd = (taskCwd && fs.existsSync(taskCwd)) ? taskCwd : process.cwd();
   const [gitSummary, testCheck] = await Promise.all([readGitSummary(workCwd), runPreReviewChecks(workCwd)]);
   onPhase(`${agent} 교차 검토 중 (최대 ${REVIEW_TIMEOUT_MS / 1000}초)`);
-  const taskOut = extractTaskOutput(hub, project, task);
   const harnessBlock = buildTaskHarnessPrompt(project, { ...task, kind: 'review', role: 'review' }, agent, harnessState);
   const refsBlock = hub.projectRefs?.promptBlock ? hub.projectRefs.promptBlock(project.id, task.version) : '';
   const testBlock = testCheck.ran
@@ -576,7 +581,7 @@ async function dispatchRetryFeedback(hub, projectId, task, reason, retryNum, pri
   throw new Error('수정 작업을 시작하지 못했습니다.');
 }
 
-async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_AUTO_RETRIES, force = false, retryMerge = false } = {}) {
+async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_AUTO_RETRIES, force = false, retryMerge = false, terminal, dispatchedAt } = {}) {
   const key = `${projectId}:${taskId}`;
   if (reviewInFlight.has(key)) return { skipped: true, started: [] };
   if (force) {
@@ -589,8 +594,8 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
   if (!initialProject || !initialTask) return { started: [] };
   if (initialTask.reviewPaused && !force) return { skipped: true, started: [] };
 
-  const taskOut = extractTaskOutput(hub, initialProject, initialTask);
-  const priorSessionId = extractTaskSessionId(hub, initialProject, initialTask);
+  const taskOut = extractTaskOutput(hub, initialProject, initialTask, terminal, dispatchedAt);
+  const priorSessionId = extractTaskSessionId(hub, initialProject, initialTask, terminal);
 
   if (!approvedMerge(initialTask) && (!initialProject.autopilot || initialTask.kind === 'review') && !force && !initialTask.worktreePath) {
     if (initialTask.stage !== 'done') {
@@ -631,7 +636,7 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
           if (!isReviewing(latest)) return;
           hub.projects.save({ ...latest, tasks: latest.tasks.map((x) => x.id === taskId ? { ...x, reviewNote: phaseNote(reviewNote) } : x) });
           hub.overviewStale?.();
-        }));
+        }, taskOut));
         verdict = await reviewer(project, task);
       } catch (e) {
         const curP = hub.projects.list().find((x) => x.id === projectId);
@@ -764,35 +769,48 @@ async function checkAutopilotCompletions(hub) {
       t._idleStreak = (t._idleStreak || 0) + 1;
       const stalled = dispatchedAt && (status === 'exited' || now - dispatchedAt >= DISPATCH_IDLE_LIMIT_MS);
       const settled = status === 'exited' || (status === 'idle' && t._idleStreak >= IDLE_STREAK_REQUIRED) || (startup && stalled);
-      if (!settled) continue;
-      const sid = dispatchedAt && !t._projectBusySeen ? hub.termSessionId?.(t) || t.meta?.sessionId : '';
-      const reply = sid && hub.index?.get?.(sid)?.msgs?.slice(-15).some((m) => m.role === 'assistant'
-        && String(m.text || '').trim() && !String(m.text).startsWith('⚙') && Number(new Date(m.ts)) > dispatchedAt);
-      const doneNow = !startup && (t._projectBusySeen || reply);
-      if (!doneNow && !stalled) continue;
-
+      if (!settled || (!dispatchedAt && !t._projectBusySeen)) continue;
       const project = hub.projects.list().find((x) => x.id === pt.projectId);
       const task = project?.tasks?.find((x) => x.id === pt.taskId);
       if (!project || !project.autopilot || !task || task.stage !== 'doing' || task.autoExclude || task.reviewPaused) continue;
+      if (task.lastRun && task.lastRun.termId !== t.id) continue;
+      const handoff = task.handoff;
+      const deliveredAt = handoff?.termId === t.id ? handoff.history[1].at : 0;
+      const tracked = deliveredAt && deliveredAt === dispatchedAt;
+      if (tracked && handoff.history.at(-1).phase !== 'confirmed') continue;
+      if (deliveredAt && (!dispatchedAt || dispatchedAt < deliveredAt)) continue;
+      const sid = dispatchedAt && (hub.termSessionId?.(t) || t.meta?.sessionId);
+      const reply = sid && hub.index?.get?.(sid)?.msgs?.findLast((m) => isTaskReply(m, dispatchedAt));
+      const terminalResult = t._projectBusySeen && (!tracked || (!sid && t.lastOutputAt >= dispatchedAt
+        && (status === 'idle' || t.exited === 0)));
+      const doneNow = !startup && (reply || terminalResult);
+      if (!doneNow && !stalled) continue;
+      if (!doneNow && tracked && now - Math.max(dispatchedAt, t.lastOutputAt || 0) < RESULT_INDEX_GRACE_MS) continue;
 
+      if (doneNow && tracked) {
+        if (!hub.projects.advanceHandoff(pt, t.id, dispatchedAt, 'received')) continue;
+        hub.overviewStale?.();
+      }
       t._projectBusySeen = false;
       t._idleStreak = 0;
       t._projectDispatchedAt = 0;
       if (!doneNow) {
         const problem = { 'hooks-menu': HOOK_MENU_MESSAGE, 'term-dumb': DUMB_TERMINAL_MESSAGE }[startup]
-          || '작업 실행이 확인되지 않았습니다. 터미널의 시작 화면과 입력 상태를 확인하세요.';
+          || (tracked ? '후속 작업의 실행은 확인됐지만 결과를 받지 못했습니다.'
+            : '작업 실행이 확인되지 않았습니다. 터미널의 시작 화면과 입력 상태를 확인하세요.');
         hub.projects.save({ ...project, tasks: project.tasks.map((x) => x.id === task.id
           ? { ...x, stage: 'doing', reviewPaused: true, reviewStatus: 'error', reviewNote: [problem, x.reviewNote].filter(Boolean).join('\n\n') } : x) });
         hub.overviewStale?.();
         continue;
       }
-      const pRun = completeAutopilotTask(hub, project.id, task.id).catch((e) => console.error('[autopilot-review]', project.id, task.id, e?.message || e));
+      const pRun = completeAutopilotTask(hub, project.id, task.id, { terminal: t, dispatchedAt }).catch((e) => console.error('[autopilot-review]', project.id, task.id, e?.message || e));
       scheduled.push({ projectId: project.id, completedTaskId: task.id, promise: pRun });
     }
 
     // Subtask rollup & orphan recovery (e.g. after server restart)
+    const terms = [...hub.terms.values()];
     const activeTermTaskKeys = new Set(
-      [...hub.terms.values()]
+      terms
         .filter((t) => t.meta?.projectTask?.projectId && t.meta?.projectTask?.taskId)
         .map((t) => `${t.meta.projectTask.projectId}:${t.meta.projectTask.taskId}`)
     );
@@ -829,10 +847,10 @@ async function checkAutopilotCompletions(hub) {
         }
         return tk;
       });
-      if (recoveredDoing) {
-        hub.projects.save({ ...project, tasks: recoveredTasks });
-        const pAuto = runProjectAutopilot(hub, project.id, { autoDispatch: true }).catch((e) => console.error('[autopilot-orphan-doing]', project.id, e?.message || e));
-        scheduled.push({ projectId: project.id, recoveredDoing: true, promise: pAuto });
+      if (recoveredDoing) hub.projects.save({ ...project, tasks: recoveredTasks });
+      if (recoveredDoing || (!inFlight.has(project.id) && findReadyTasks(project, terms).some((task) => task.after?.length))) {
+        const pAuto = runProjectAutopilot(hub, project.id, { autoDispatch: true }).catch((e) => console.error('[autopilot-dispatch]', project.id, e?.message || e));
+        scheduled.push({ projectId: project.id, recoveredDoing, promise: pAuto });
       }
       for (const [parentId, subs] of byParent) {
         const parent = project.tasks.find((x) => x.id === parentId);
