@@ -84,6 +84,14 @@ function createAttachmentStrip(stripEl, cwd) {
 
   return {
     addFiles,
+    addPaths: (paths) => {
+      for (const path of paths) {
+        const name = path.split(/[\\/]/).pop();
+        const ext = /\.([a-z0-9]+)$/i.exec(name)?.[1].toUpperCase() || 'FILE';
+        items.push({ id: ++seq, name, ext, path });
+      }
+      paint();
+    },
     hasItems: () => items.length > 0,
     isLoading: () => items.some((x) => x.loading),
     takePaths: () => {
@@ -146,6 +154,10 @@ if (!window.__achDropGuard) {
 }
 function attachFileInput(el, insert, cwd, opts = {}) {
   el.dataset.fileInput = '1';
+  if (desktopBridge) el.addEventListener('hub-file-paths', ({ detail: paths }) => {
+    if (opts.onPaths && opts.onPaths(paths) !== false) return;
+    insert?.(paths.map(quotePath).join(' ') + ' ');
+  });
   const handle = async (dt) => {
     const files = clipFiles(dt);
     const items = [...(dt.items || [])];
@@ -185,21 +197,53 @@ function attachFileInput(el, insert, cwd, opts = {}) {
 }
 // every other text box in the dashboard (new-session prompt, research message ...): a pasted
 // image or file becomes its path (uploaded into hub/uploads), inserted at the cursor
+const filePasteSelector = 'textarea, input:not([type]), input[type=text], input[type=search]';
+const desktopBridge = typeof window.__TAURI_INTERNALS__?.invoke === 'function' ? (() => {
+  let picking = false;
+  window.addEventListener('hub-native-drop', ({ detail: { paths, x, y } }) => {
+    const scale = window.devicePixelRatio;
+    const target = document.elementFromPoint(x / scale, y / scale);
+    const dropZone = target?.closest('[data-file-input]');
+    if (dropZone) {
+      dropZone.dispatchEvent(new CustomEvent('hub-file-paths', { detail: paths }));
+      return;
+    }
+    const box = target?.closest(filePasteSelector);
+    if (box && !box.disabled && !box.readOnly) insertFilePaths(box, paths);
+  });
+
+  return {
+    async pickFolder(initialPath) {
+      if (picking) return null;
+      picking = true;
+      try {
+        return await window.__TAURI_INTERNALS__.invoke('pick_folder', { initialPath });
+      } finally {
+        picking = false;
+      }
+    },
+  };
+})() : null;
+
 document.addEventListener('paste', async (e) => {
-  const box = e.target.closest?.('textarea, input:not([type]), input[type=text], input[type=search]');
+  const box = e.target.closest?.(filePasteSelector);
   if (!box || box.closest('[data-file-input]') || box.classList.contains('xterm-helper-textarea')) return;
   const files = clipFiles(e.clipboardData);
   if (!files.length) return;
   e.preventDefault();
   const paths = [];
-  for (const f of files) { const p = await fileToPath(f, null).catch(() => null); if (p) paths.push(quotePath(p)); }
+  for (const f of files) { const p = await fileToPath(f, null).catch(() => null); if (p) paths.push(p); }
   if (!paths.length) return toast('붙여넣은 파일을 올리지 못했습니다');
-  const txt = paths.join(' ') + ' ', a = box.selectionStart ?? box.value.length, b = box.selectionEnd ?? a;
+  insertFilePaths(box, paths);
+});
+
+function insertFilePaths(box, paths) {
+  const txt = paths.map(quotePath).join(' ') + ' ', a = box.selectionStart ?? box.value.length, b = box.selectionEnd ?? a;
   box.value = box.value.slice(0, a) + txt + box.value.slice(b);
   box.selectionStart = box.selectionEnd = a + txt.length;
   box.dispatchEvent(new Event('input', { bubbles: true }));
   box.focus();
-});
+}
 
 
 // ---------- per-session outputs (artifacts) ----------
@@ -447,7 +491,10 @@ function addArtifactDialog(sid, done) {
     <label>파일 경로<br><input id="apPath" style="width:100%" placeholder="예: C:\\work\\project\\out\\result.mp4 — 파일을 여기로 끌어놓아도 됩니다"></label>
     <label>이름 (선택)<br><input id="apTitle" style="width:100%" placeholder="예: 최종 비교 영상"></label>`;
   const d = openDrawer({ title: '산출물 지정', bodyHTML: body, footerHTML: '<button data-drw-close>취소</button><button class="primary" id="apOk">추가</button>', width: 440 });
-  attachFileInput($('.drw-body', d), (txt) => { $('#apPath', d).value = txt.trim().replace(/^"|"$/g, ''); }, null);
+  const pathInput = $('#apPath', d);
+  attachFileInput($('.drw-body', d), (txt) => { pathInput.value = txt.trim().replace(/^"|"$/g, ''); }, null, {
+    onPaths: ([path]) => { pathInput.value = path; },
+  });
   $('#apOk', d).onclick = async (e) => {
     const button = e.currentTarget;
     button.disabled = true;

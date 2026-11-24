@@ -49,6 +49,14 @@ function isLocalHostSession() {
 
 // Host PC Folder Browser Modal (works on Remote, Mobile, and Local PC; also triggers native Windows Folder Dialog on Local PC)
 function openFolderPickerDialog(initialPath, onPick) {
+  if (desktopBridge) {
+    return desktopBridge.pickFolder(initialPath).then((path) => {
+      if (path) return onPick(path);
+    }).catch((error) => {
+      console.error('Native folder picker failed', error);
+      toast(String(error), 4000, 'danger');
+    });
+  }
   const ico = window.UI_ICO || {};
   const isLocal = isLocalHostSession();
   const d = document.createElement('dialog');
@@ -374,7 +382,10 @@ function projectForm(p) {
       const prevHTML = winBtn.innerHTML;
       winBtn.textContent = '열림…';
       try {
-        const r = await api('/api/fs/pick-dir', { method: 'POST', body: { path: cwdIn.value.trim() } });
+        const initialPath = cwdIn.value.trim();
+        const r = desktopBridge
+          ? { ok: true, path: await desktopBridge.pickFolder(initialPath) }
+          : await api('/api/fs/pick-dir', { method: 'POST', body: { path: initialPath } });
         if (r.ok && r.path) {
           cwdEdited = true;
           setFolderMode('existing');
@@ -385,7 +396,8 @@ function projectForm(p) {
           toast(r.error, 4000, 'danger');
         }
       } catch (e) {
-        toast(e.message, 4000, 'danger');
+        if (desktopBridge) console.error('Native folder picker failed', e);
+        toast(e.message || String(e), 4000, 'danger');
       } finally {
         if (winBtn.isConnected) { winBtn.disabled = false; winBtn.innerHTML = prevHTML; }
       }

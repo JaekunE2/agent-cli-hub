@@ -614,7 +614,7 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
 
   const chatAttCtl = createAttachmentStrip($('[data-chat-atts]', barHost), cwd);
   const dropZone = barHost.closest('.chat-shell') || barHost;
-  attachFileInput(dropZone, null, cwd, { onFiles: (fl, it) => chatAttCtl.addFiles(fl, it) });
+  attachFileInput(dropZone, null, cwd, { onFiles: chatAttCtl.addFiles, onPaths: chatAttCtl.addPaths });
   bindFilePick(barHost, null, cwd, { onFiles: (fl, it) => chatAttCtl.addFiles(fl, it) });
 
   const sendReply = async (retry = false) => {

@@ -161,7 +161,10 @@ function mountConsoleScreen(hostEl, { pid, gen, s, chatHost = null }) {
   tick();
   const addPath = (txt) => { setConsoleInput(true); inp.value += (inp.value && !inp.value.endsWith(' ') ? ' ' : '') + txt; fitInp(); inp.focus(); };
   const addFiles = (fl, it) => { setConsoleInput(true); return cAttCtl.addFiles(fl, it); };
-  attachFileInput(fullEl, addPath, s?.cwd, { onFiles: addFiles });
+  attachFileInput(fullEl, addPath, s?.cwd, {
+    onFiles: addFiles,
+    onPaths: (paths) => { setConsoleInput(true); cAttCtl.addPaths(paths); },
+  });
   bindFilePick(fullEl, addPath, s?.cwd, { onFiles: addFiles });
   if (!chatHost) inp.focus();
   return { syncChatPane(next) {
@@ -560,6 +563,10 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
   };
   attachFileInput(fullEl, insert, t?.cwd, {
     onFiles: onTermFiles,
+    onPaths: (paths) => {
+      if (dockCollapsed) return false;
+      tAttCtl.addPaths(paths);
+    },
     shouldPassCtrlV: (e, dt, files) => {
       const shifted = pasteWithShift;
       pasteWithShift = false;
