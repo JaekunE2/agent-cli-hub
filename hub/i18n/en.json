@@ -3265,5 +3265,13 @@
   "이 폴더에서 cmd 열기": "Open cmd in this folder",
   "cmd를 열지 못했습니다": "Failed to open cmd",
   "Antigravity IDE 전용 세션 (입력 시 새 CLI 세션으로 자동 인계)": "Antigravity IDE-only session (auto-hands off to a new CLI session on input)",
-  "Antigravity IDE 전용 기록 · 입력 시 새 CLI 세션으로 맥락을 자동 인계합니다": "Antigravity IDE-only history · auto-hands off context to a new CLI session on input"
+  "Antigravity IDE 전용 기록 · 입력 시 새 CLI 세션으로 맥락을 자동 인계합니다": "Antigravity IDE-only history · auto-hands off context to a new CLI session on input",
+  "선택이 필요합니다": "Selection required",
+  "직접 입력할 내용을 작성하세요…": "Type your custom response…",
+  "Esc 건너뛰기": "Esc Skip",
+  "선택 대기 중": "Waiting for selection",
+  "연결된 터미널을 찾을 수 없습니다": "No connected terminal found",
+  "선택 전달에 실패했습니다.": "Failed to send selection.",
+  "직접 입력 전달에 실패했습니다.": "Failed to send custom input.",
+  "전송": "Send"
 }

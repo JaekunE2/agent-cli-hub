@@ -32,7 +32,7 @@ function sessionStartupBlock(screen) {
   if (/^\s*(?:[│┃?❯›>─ -]+\s*)?(?:Do you want to (?:proceed|make this edit|create|allow|run)|Allow Codex to)\b/im.test(bottom)) return 'permission';
   if (/^\s*(?:[│┃?❯›>─ -]+\s*)?Press Enter to continue[.!…]*\s*$/im.test(lines.at(-1))) return 'confirmation';
   if (/enter select · esc back/i.test(lines.at(-1)) && /\bKeep current model\b/i.test(bottom)) return 'confirmation';
-  if (/(?:enter to (?:confirm|select)|esc to (?:deny|reject)|arrow keys to select|\benter\b[^\n]*\besc to cancel\b|\besc to cancel\b[^\n]*\benter\b)/i.test(lines.at(-1)) && /^\s*[›❯>]\s+\S/m.test(bottom)) return 'confirmation';
+  if (/(?:enter to (?:confirm|select)|enter\s+select|esc to (?:deny|reject|skip)|esc\s+skip|arrow keys to select|\/\s*navigate\b|\benter\b[^\n]*\besc to (?:cancel|skip)\b|\besc to (?:cancel|skip)\b[^\n]*\benter\b)/i.test(lines.slice(-3).join('\n')) && /^\s*[›❯>]\s+(?:\d+[.)]\s+)?\S/m.test(bottom)) return 'confirmation';
   if (/\brunning\b[^\n]*\bSessionStart\b|\bSessionStart hooks?\b[^\n]*\b(?:running|pending)\b/i.test(bottom)) return 'hooks-running';
   return '';
 }

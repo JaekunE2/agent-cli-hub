@@ -124,6 +124,53 @@ function formatLiveTermPreview(lines, maxLines = 14) {
   return cleaned.slice(-maxLines).join('\n');
 }
 
+function parseInteractivePrompt(lines) {
+  if (!Array.isArray(lines) || !lines.length) return null;
+  const cleaned = lines
+    .map((l) => String(l ?? '').replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\s+$/, ''))
+    .slice(-32);
+  while (cleaned.length && !cleaned[cleaned.length - 1].trim()) cleaned.pop();
+  if (cleaned.length < 3) return null;
+
+  const tailText = cleaned.slice(-4).join('\n');
+  const hasNavFooter = /(?:navigate.*(?:select|enter)|enter\s+(?:to\s+)?(?:confirm|select)|arrow keys to select|esc\s+(?:to\s+)?(?:skip|cancel|deny|reject))/i.test(tailText);
+  const hasQuestionHdr = cleaned.some((l) => /^\s*(?:Question\s+\d+\/\d+:|Do you want to (?:proceed|allow|make this edit|create|run)|Allow Codex to|Trust (?:this|the) (?:folder|workspace))/i.test(l));
+  if (!hasNavFooter && !hasQuestionHdr) return null;
+
+  // Strip footer hint lines from bottom
+  let end = cleaned.length;
+  while (end > 0 && /(?:navigate|enter\s+(?:to\s+)?(?:confirm|select)|esc\s+(?:to\s+)?(?:skip|cancel|deny|reject)|arrow keys|^[\s─━═·]+$)/i.test(cleaned[end - 1].trim())) {
+    end--;
+  }
+  const body = cleaned.slice(0, end);
+  const choices = [];
+  let firstChoiceIdx = -1;
+  for (let i = 0; i < body.length; i++) {
+    const raw = body[i];
+    const mNum = /^\s*([›❯>])?\s*(\d+)[.)]\s+(.+)$/.exec(raw);
+    if (mNum) {
+      if (firstChoiceIdx < 0) firstChoiceIdx = i;
+      const label = mNum[3].trim();
+      choices.push({
+        num: Number(mNum[2]),
+        label,
+        selected: !!mNum[1],
+        isWriteIn: /write-in|type (?:your|something|custom)/i.test(label),
+      });
+      continue;
+    }
+    if (firstChoiceIdx >= 0 && choices.length && /^\s{3,}\S/.test(raw) && !/^\s*[›❯>]/.test(raw)) {
+      choices[choices.length - 1].label += ' ' + raw.trim();
+    }
+  }
+  if (choices.length < 2) return null;
+  const selectedIndex = Math.max(0, choices.findIndex((c) => c.selected));
+  const qLines = body.slice(Math.max(0, firstChoiceIdx - 6), firstChoiceIdx).map((l) => l.trim()).filter(Boolean);
+  const question = qLines.join('\n') || '선택이 필요합니다';
+  const key = `${question}|${selectedIndex}|${choices.map((c) => `${c.num}:${c.label}`).join('|')}`;
+  return { question, choices, selectedIndex, key };
+}
+
 let chatPollTimer = null;
 async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
   clearTimeout(chatPollTimer);
@@ -371,7 +418,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
     const { lt, liveProc, conPid } = resolveLiveTarget();
     let termRead = null;
     if (lt) {
-      termRead = await api(`/api/term/read?id=${encodeURIComponent(lt.id)}&lines=20`).catch(() => null);
+      termRead = await api(`/api/term/read?id=${encodeURIComponent(lt.id)}&lines=30`).catch(() => null);
       if (gen !== viewGen || !container.isConnected) return false;
     }
     const procBusy = liveProc?.status === 'busy';
@@ -402,14 +449,19 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
       hint = null;
     }
 
+    let conLines = null;
     let conPreview = '';
-    if (!lt && conPid && (rawBusy || wasWorking || hint)) {
+    if (!lt && conPid) {
       const cr = await api(`/api/console/read?pid=${encodeURIComponent(conPid)}`).catch(() => null);
       if (gen !== viewGen || !container.isConnected) return false;
-      if (cr?.ok && Array.isArray(cr.lines)) conPreview = formatLiveTermPreview(cr.lines, 14);
+      if (cr?.ok && Array.isArray(cr.lines)) {
+        conLines = cr.lines;
+        if (rawBusy || wasWorking || hint) conPreview = formatLiveTermPreview(cr.lines, 14);
+      }
     }
 
-    const activeWorking = rawBusy || wasWorking || !!hint;
+    const interactive = parseInteractivePrompt(termRead?.ok ? termRead.lines : conLines);
+    const activeWorking = rawBusy || wasWorking || !!hint || !!interactive;
     if (!activeWorking) {
       if (liveHost.innerHTML) liveHost.innerHTML = '';
       lastLiveMode = '';
@@ -434,7 +486,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
     const canImmediate = !!(showPendingUser && (lt || conPid));
     const hasScreen = !!(showLiveScreen && preview);
     const hasToggle = !!preview;
-    const modeKey = `${showPendingUser ? hint.pendingText : ''}|${canImmediate ? 'imm1' : 'imm0'}|${hasScreen ? 'pre' : 'dots'}|${hasToggle ? '1' : '0'}`;
+    const modeKey = `${showPendingUser ? hint.pendingText : ''}|${canImmediate ? 'imm1' : 'imm0'}|${hasScreen ? 'pre' : 'dots'}|${hasToggle ? '1' : '0'}|${interactive?.key || ''}`;
     const wasNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 120;
 
     if (modeKey === lastLiveMode && hasScreen) {
@@ -460,18 +512,85 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
       ? `<pre class="chat-live-pre">${esc(preview)}</pre>`
       : `<div class="chat-typing-row"><span class="typing-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>터미널에서 응답을 생성하고 있습니다</span></div>`;
 
+    const promptHtml = interactive ? `<div class="chat-prompt-card" data-prompt-card>
+      <div class="chat-prompt-q">${esc(interactive.question)}</div>
+      <div class="chat-prompt-opts">${interactive.choices.map((c, idx) => `<button type="button" class="chat-prompt-opt${c.selected ? ' on' : ''}" data-prompt-idx="${idx}">
+        <span class="chat-prompt-num">${c.num}</span>
+        <span class="chat-prompt-lbl">${esc(c.label)}</span>
+      </button>`).join('')}</div>
+      <div class="chat-prompt-write" data-prompt-write hidden>
+        <input type="text" data-prompt-write-in placeholder="직접 입력할 내용을 작성하세요…">
+        <button type="button" class="primary btn-sm" data-prompt-write-send>전송</button>
+      </div>
+      <div class="chat-prompt-foot">
+        <button type="button" class="ghost btn-sm" data-prompt-esc>Esc 건너뛰기</button>
+      </div>
+    </div>` : '';
+
     liveHost.innerHTML = `${userHtml}<div class="msg assistant msg-live" aria-live="polite">
       <div class="msg-av">${agentIcon(ag || 'claude')}</div>
       <div class="msg-col">
         <div class="msg-hd">
           <span class="w-role">${esc(who)}</span>
-          <span class="chat-working-pill">작업 중 <span class="typing-dots" aria-hidden="true"><i></i><i></i><i></i></span></span>
+          <span class="chat-working-pill">${interactive ? '선택 대기 중' : '작업 중 <span class="typing-dots" aria-hidden="true"><i></i><i></i><i></i></span>'}</span>
           <span style="flex:1"></span>
           ${toggleBtn}
         </div>
-        <div class="msg-bubble">${bodyHtml}</div>
+        <div class="msg-bubble">${promptHtml || bodyHtml}</div>
       </div>
     </div>`;
+
+    if (interactive) {
+      const sendKeys = async (keys, writeText = '') => {
+        const target = resolveLiveTarget();
+        if (!target.lt && !target.conPid) return toast('연결된 터미널을 찾을 수 없습니다', 4000, 'danger');
+        liveHost.querySelectorAll('button, input').forEach((el) => { el.disabled = true; });
+        try {
+          const endpoint = target.lt ? '/api/term/send' : '/api/console/send';
+          const baseBody = target.lt ? { id: target.lt.id } : { pid: target.conPid };
+          const r = await api(endpoint, { method: 'POST', body: { ...baseBody, keys } });
+          if (r && r.ok === false) throw new Error(r.error || '선택 전달에 실패했습니다.');
+          if (writeText) {
+            await new Promise((res) => setTimeout(res, 180));
+            const r2 = await api(endpoint, { method: 'POST', body: { ...baseBody, text: writeText, submit: true } });
+            if (r2 && r2.ok === false) throw new Error(r2.error || '직접 입력 전달에 실패했습니다.');
+          }
+          lastLiveMode = '';
+          container._triggerPoll?.();
+        } catch (err) {
+          toast(err.message, 4000, 'danger');
+          liveHost.querySelectorAll('button, input').forEach((el) => { el.disabled = false; });
+        }
+      };
+      liveHost.querySelectorAll('[data-prompt-idx]').forEach((btn) => {
+        btn.onclick = () => {
+          const idx = Number(btn.dataset.promptIdx);
+          const choice = interactive.choices[idx];
+          if (!choice) return;
+          const delta = idx - interactive.selectedIndex;
+          const arrows = Array.from({ length: Math.abs(delta) }, () => (delta > 0 ? 'down' : 'up'));
+          if (choice.isWriteIn) {
+            const box = $('[data-prompt-write]', liveHost);
+            const inp = $('[data-prompt-write-in]', liveHost);
+            const sendBtn = $('[data-prompt-write-send]', liveHost);
+            if (box && inp && sendBtn) {
+              box.hidden = false;
+              inp.focus();
+              const submitWrite = () => {
+                const val = inp.value.trim();
+                if (!val) return;
+                sendKeys([...arrows, 'enter'], val);
+              };
+              sendBtn.onclick = submitWrite;
+              inp.onkeydown = (ev) => { if (ev.key === 'Enter' && !ev.isComposing) { ev.preventDefault(); submitWrite(); } };
+              return;
+            }
+          }
+          sendKeys([...arrows, 'enter']);
+        };
+      });
+      $('[data-prompt-esc]', liveHost)?.addEventListener('click', () => sendKeys(['esc']));
+    }
 
     const tgl = $('[data-live-toggle]', liveHost);
     if (tgl) {
