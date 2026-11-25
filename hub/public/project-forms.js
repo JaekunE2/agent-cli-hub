@@ -411,24 +411,29 @@ function projectForm(p) {
 function projectFollowupForm(p, versionMode = false, existingVersion = '') {
   const agent = p.agent === 'cursor' ? 'codex' : p.agent || 'codex';
   let generated, planKey;
-  const dialog = projectDialog('후속 작업 설계', `
+  const modeOptions = existingVersion
+    ? `<option value="existing" selected>현재 버전 (v${esc(existingVersion)})에 작업 추가</option><option value="version">새 버전으로 버전업</option><option value="followup">기본 작업에 추가</option>`
+    : `<option value="followup">일반 후속 작업</option><option value="version"${versionMode ? ' selected' : ''}>버전업</option>`;
+  const showVersionInput = !existingVersion && versionMode;
+  const dialog = projectDialog('후속 작업 · 버전업 설계', `
     <p class="ums">${esc(p.name)} · ${esc(p.versions?.find((item) => item.number === existingVersion)?.workspace || p.cwd)}</p>
-    ${existingVersion ? `<p><strong>v${esc(existingVersion)}</strong></p>` : `<label>작업 구분<select name="mode"><option value="followup">일반 후속 작업</option><option value="version"${versionMode ? ' selected' : ''}>버전업</option></select></label>
-    <label data-version-field${versionMode ? '' : ' hidden'}>버전 번호<input name="version" maxlength="29" placeholder="1.2.0"${versionMode ? ' required' : ' disabled'}></label>`}
+    <label>작업 구분<select name="mode">${modeOptions}</select></label>
+    <label data-version-field${showVersionInput ? '' : ' hidden'}>버전 번호<input name="version" maxlength="29" placeholder="1.4.0"${showVersionInput ? ' required' : ' disabled'}></label>
     <label>개선·버전업 목표<textarea name="goal" required maxlength="6000" rows="4" placeholder="추가할 기능과 완료 기준을 적어주세요"></textarea></label>
     ${projectAgentField('설계에 사용할 CLI', agent)}${projectAccountField}${projectModelEffortFields}
     <p class="ums">기존 목표와 작업 기록을 보존합니다. 자동 진행이 켜져 있으면 추가 후 실행 가능한 작업이 시작됩니다.</p>
     <div data-plan-preview role="status"></div>`, async (f) => {
-    const number = existingVersion || (f.get('mode') === 'version' ? String(f.get('version') || '').trim().replace(/^v/i, '') : '');
-    if (f.get('mode') === 'version' && !/^(?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8})$/.test(number)) {
+    const mode = f.get('mode') || (existingVersion ? 'existing' : 'followup');
+    const number = mode === 'existing' ? existingVersion : mode === 'version' ? String(f.get('version') || '').trim().replace(/^v/i, '') : '';
+    if (mode === 'version' && !/^(?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8})$/.test(number)) {
       throw new Error('버전 번호를 1.2.0 형식으로 입력하세요.');
     }
-    if (number && !existingVersion && p.versions?.some((version) => version.number === number)) throw new Error('이미 등록된 버전 번호입니다.');
+    if (mode === 'version' && p.versions?.some((version) => version.number === number)) throw new Error('이미 등록된 버전 번호입니다.');
     const selectedAgent = f.get('agent');
     const draft = { projectId: p.id, name: p.name, cwd: p.cwd, goal: f.get('goal').trim(), agent: selectedAgent,
       account: f.get('account') === 'inherit' ? p.account || '' : f.get('account'),
-      model: String(f.get('model') || ''), effort: String(f.get('effort') || ''), ...(existingVersion ? { projectVersion: existingVersion } : {}) };
-    const key = JSON.stringify([draft, number]);
+      model: String(f.get('model') || ''), effort: String(f.get('effort') || ''), ...(mode === 'existing' ? { projectVersion: existingVersion } : {}) };
+    const key = JSON.stringify([draft, mode, number]);
     if (!generated || planKey !== key) {
       generated = await previewProjectPlan(dialog, draft, true);
       planKey = key;
@@ -443,10 +448,10 @@ function projectFollowupForm(p, versionMode = false, existingVersion = '') {
     if (r.error) throw new Error(r.error);
     const latest = r.projects?.find((x) => x.id === p.id);
     if (!latest || latest.cwd !== draft.cwd) throw new Error('프로젝트 또는 작업 폴더가 변경되었습니다. 후속 작업 설계를 다시 열어주세요.');
-    if (number && !existingVersion && latest.versions?.some((version) => version.number === number)) throw new Error('이미 등록된 버전 번호입니다.');
+    if (mode === 'version' && latest.versions?.some((version) => version.number === number)) throw new Error('이미 등록된 버전 번호입니다.');
     const versions = latest.versions || [];
     const tasks = number ? generated.map((task) => ({ ...task, version: number })) : generated;
-    await saveProject({ ...latest, versions: number && !existingVersion ? [...versions, { number, goal: draft.goal }] : versions, tasks: [...latest.tasks, ...tasks] }, 'flow', number);
+    await saveProject({ ...latest, versions: mode === 'version' ? [...versions, { number, goal: draft.goal }] : versions, tasks: [...latest.tasks, ...tasks] }, 'flow', number);
   }, '', '작업 흐름 생성');
   dialog.querySelector('[name=mode]')?.addEventListener('change', (e) => {
     const version = e.target.value === 'version';

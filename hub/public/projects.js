@@ -703,7 +703,7 @@ async function viewProjects() {
           <button id="projectHarness" class="btn-sm" title="Role 프리셋 · 에이전트별 하네스 설정">Role 하네스</button>
           ${projectTab === 'versions' ? '' : unopened
             ? '<button id="projectOpenWorkspace" class="primary">이 버전에서 이어 작업</button>'
-            : `<button id="projectFollowup" class="btn-sm">${current ? '버전 작업 설계' : '개선·버전업'}</button>
+            : `<button id="projectFollowup" class="btn-sm">개선·버전업</button>
               <button id="projectAdd" class="primary">${ico.plus || ''} 작업</button>`}
           <button id="projectMore" class="ghost icon-btn" aria-label="Project 메뉴" aria-haspopup="menu" aria-expanded="false" title="새 Project · 설계 수정 · 삭제">${ico.more || '⋯'}</button>
         </div>
