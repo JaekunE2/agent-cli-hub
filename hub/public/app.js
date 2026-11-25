@@ -551,8 +551,15 @@ $('#mBrandHome').onclick = (e) => {
   e.stopPropagation();
   toggleServerStatusPopover(e.currentTarget);
 };
-$('#btnSideNew').onclick = () => openNewTermDrawer();
-$('#mBtnNew').onclick = () => openNewTermDrawer();
+function currentViewCwd() {
+  const s = state.sel || {};
+  if (s.kind === 'term') return state.terms.find((x) => String(x.id) === String(s.id))?.cwd || '';
+  if (s.kind === 'recent' || s.kind === 'session') return recentSession(s.id)?.cwd || '';
+  if (s.kind === 'projects') return (state.projects || []).find((x) => x.id === s.id)?.cwd || '';
+  return '';
+}
+$('#btnSideNew').onclick = () => openNewTermDrawer(currentViewCwd());
+$('#mBtnNew').onclick = () => openNewTermDrawer(currentViewCwd());
 $('#btnSideCollapse').onclick = () => setSideCollapsed(true);
 $('#btnSideReopen').onclick = () => setSideCollapsed(false);
 function setSidebarOpen(open) {

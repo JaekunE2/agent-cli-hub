@@ -706,7 +706,8 @@ function viewTerm() {
         : '대기';
   const isContentTab = state.tab === 'files' || state.tab === 'floorplan';
   let initialPanels = window.ACH_DOCK ? window.ACH_DOCK.getDockOpen('term', isContentTab ? null : state.tab) : ['term', 'chat'];
-  if (!initialPanels.length) initialPanels = ['term'];
+  if (!ag && !sid) initialPanels = ['term'];
+  else if (!initialPanels.length) initialPanels = ['term'];
 
   const title = esc(t ? termLabel(t) : '터미널');
   const projectName = esc(pj?.name || 'Project');
@@ -780,6 +781,16 @@ function viewTerm() {
               },
             }
           : { label: `작업 폴더 복사 (${base(t.cwd) || t.cwd})`, icon: ICO.folder, onClick: () => copyText(t.cwd) }) : null,
+        t?.cwd ? {
+          label: '이 폴더에서 cmd 열기',
+          icon: ICO.terminal,
+          onClick: async () => {
+            const nt = await api('/api/term/new', { method: 'POST', body: { kind: 'cmd', cwd: t.cwd } }).catch((er) => ({ error: er.message }));
+            if (nt?.error || !nt?.id) return toast(nt?.error || 'cmd를 열지 못했습니다', 4000, 'danger');
+            await refreshOverview();
+            select({ kind: 'term', id: nt.id });
+          },
+        } : null,
         { divider: true },
         {
           label: '터미널 종료',
