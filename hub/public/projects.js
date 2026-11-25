@@ -680,8 +680,8 @@ async function viewProjects() {
         <div class="pj-top-left">
           <select id="projectPick" class="pj-pick" aria-label="Project 선택">${projectList.map(x => `<option value="${esc(x.id)}" ${x.id === p.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>
           ${p.versions?.length ? `<select id="projectVersionPick" class="pj-version-pick" aria-label="작업 버전">
-            <option value="">기본 작업</option>
             ${[...p.versions].reverse().map((v) => `<option value="${esc(v.number)}"${v === current ? ' selected' : ''}>v${esc(v.number)}</option>`).join('')}
+            <option value=""${!current ? ' selected' : ''}>기본 작업</option>
           </select>` : ''}
           ${displayCwd ? `<span class="pj-cwd" title="${esc(displayCwd)}">${ico.folder || ''}${esc(current ? '버전 작업 폴더' : base(displayCwd) || displayCwd)}</span>` : ''}
         </div>
