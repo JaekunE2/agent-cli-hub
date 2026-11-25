@@ -5,8 +5,8 @@
 // session id), and parking on usage limits until the real reset time.
 const fs = require('fs');
 const path = require('path');
-const P = require('../research-harness/lib/project');
-const RG = require('../research-harness/lib/reviewgate');
+const P = require('./harness').lib('project');
+const RG = require('./harness').lib('reviewgate');
 const { serve: serveFile, kindOf } = require('./artifacts');
 
 module.exports = function research(d) {
@@ -161,10 +161,10 @@ module.exports = function research(d) {
   // A director whose Claude account is at the usage limit used to sleep until the reset (a weekly limit = days).
   // Instead: pick the account with the most headroom (both 5 h and weekly under the soft limit), close the
   // director cleanly (/exit — the transcript is on disk), and resume the same conversation under that account.
-  // Opt-in: harness config autopilot.auto_switch_account = true (your own accounts only). At most every 10 min per project.
+  // Off with harness config autopilot.auto_switch_account = false. At most every 10 min per project.
   const switchTried = new Map();
   async function autoSwitch(dir, st, loc, usage) {
-    if (hc().autopilot?.auto_switch_account !== true || !switchCandidates) return false;
+    if (hc().autopilot?.auto_switch_account === false || !switchCandidates) return false;
     const now = Date.now();
     if (now - (switchTried.get(dir) || 0) < 10 * 60e3) return false;
     switchTried.set(dir, now);
@@ -235,8 +235,16 @@ module.exports = function research(d) {
   }
 
   let timer = null;
-  function start() { if (!timer) timer = setInterval(() => tick().catch(() => {}), 60e3); }
-  function stop() { if (timer) { clearInterval(timer); timer = null; } }
+  // Optional machine-local drive jobs (hub/local/drivejobs.js, not in the repo: workflows driven by files
+  // dropped on a drive) ride on this hot-reloadable module so adding them needs no server restart.
+  // Fresh require so `ccd reload --modules research` picks up edits.
+  let drive = null;
+  const localJobs = require('path').join(__dirname, 'local', 'drivejobs.js');
+  if (require('fs').existsSync(localJobs)) {
+    try { delete require.cache[require.resolve(localJobs)]; drive = require(localJobs)(d); } catch (e) { console.error('[drivejobs]', e.message); }
+  }
+  function start() { if (!timer) timer = setInterval(() => tick().catch(() => {}), 60e3); drive?.start(); }
+  function stop() { if (timer) { clearInterval(timer); timer = null; } drive?.stop(); }
 
   // ---------- API ----------
   const tailFile = (f, n) => { try { return fs.readFileSync(f, 'utf8').trimEnd().split('\n').slice(-n).join('\n'); } catch { return ''; } };
