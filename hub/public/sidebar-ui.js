@@ -171,17 +171,27 @@ function renderSide() {
   const pjFolded = folded.has('projects') && !fTerms.length;
   const activePid = curKind === 'projects' ? (state.sel.id || (typeof projectId !== 'undefined' ? projectId : '') || projects[0]?.id) : '';
   const pjRows = pjFolded ? '' : (projects.map((p) => {
-    const done = (p.tasks || []).filter((t) => t.stage === 'done').length;
-    const total = (p.tasks || []).length;
+    const tasks = p.tasks || [];
+    const done = tasks.filter((t) => t.stage === 'done').length;
+    const total = tasks.length;
+    const versions = p.versions || [];
+    const workingVer = [...versions].reverse().find((v) => tasks.some((t) => (t.version || '') === v.number && t.stage !== 'done'));
+    const ver = workingVer || versions.at(-1) || null;
+    const verTasks = ver ? tasks.filter((t) => (t.version || '') === ver.number) : [];
+    const verDone = verTasks.filter((t) => t.stage === 'done').length;
     const hasBusy = (state.terms || []).some((t) => termStateOf(t) === 'busy' && projectOfTerm(t)?.id === p.id);
     const isSel = curKind === 'projects' && activePid === p.id;
     const fk = `proj:${p.id}`, isStar = favs.has(fk);
-    return `<div class="srow${isSel ? ' sel' : ''}" data-key="project:${esc(p.id)}" title="${esc(p.name)}">
+    const metaLabel = ver
+      ? (verDone < verTasks.length ? `v${ver.number} · ${verDone}/${verTasks.length}` : `v${ver.number}`)
+      : `${done}/${total}`;
+    const rowTitle = `${p.name}${ver ? ` · v${ver.number}` : ''} (${done}/${total})`;
+    return `<div class="srow${isSel ? ' sel' : ''}" data-key="project:${esc(p.id)}" title="${esc(rowTitle)}">
       <span class="${hasBusy ? 'dot busy' : 'pj-dot'}"></span>
       <div class="srow-main"><div class="srow-t">${esc(p.name)}</div></div>
       <span class="srow-end">
         <span class="fav${isStar ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${isStar ? '즐겨찾기 해제' : '즐겨찾기'}">${isStar ? ICO.starFill : ICO.star}</span>
-        ${hasBusy ? '<span class="srow-tag busy">실행 중</span>' : `<span class="srow-meta">${done}/${total}</span>`}
+        ${hasBusy ? `<span class="srow-tag busy">${ver ? `v${esc(ver.number)} · ` : ''}실행 중</span>` : `<span class="srow-meta">${esc(metaLabel)}</span>`}
       </span>
     </div>`;
   }).join('') || '<div class="srow-empty">Project 없음</div>');
