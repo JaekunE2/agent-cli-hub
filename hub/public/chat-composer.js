@@ -513,6 +513,8 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       connEl.innerHTML = `<span class="dot ${dotCls}" style="width:7px;height:7px"></span><span>터미널 t:${esc(lt.id)} 연결됨 · ${esc(stTxt)}${meBadge ? ` · ${esc(meBadge)}` : ''}</span>`;
     } else if (activeConsolePid) {
       connEl.innerHTML = `<span class="dot idle" style="width:7px;height:7px"></span><span>콘솔 pid:${esc(activeConsolePid)} 연결됨</span>`;
+    } else if (sid && typeof recentSession === 'function' && recentSession(sid)?.ideOnly) {
+      connEl.innerHTML = `<span class="badge">IDE</span> <span class="ums" style="margin:0">Antigravity IDE 전용 기록 · 입력 시 새 CLI 세션으로 맥락을 자동 인계합니다</span>`;
     } else {
       connEl.innerHTML = `<span class="ums" style="margin:0">연결된 터미널 없음 · 입력 시 세션을 이어 열어 전송합니다</span>`;
     }
@@ -551,9 +553,10 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       saveCliDefaults(cfg.agent, { account: cfg.account, model: cfg.model, effort: cfg.effort });
     }
     const lt = findLiveTerm();
-    const needsSwitch = !!lt || cfg.agent !== baseAgent || (!!cfg.account && !cfg.account.startsWith('__cli__:'));
+    const isIdeOnly = !!(sid && typeof recentSession === 'function' && recentSession(sid)?.ideOnly);
+    const needsSwitch = !!lt || cfg.agent !== baseAgent || isIdeOnly || (!!cfg.account && !cfg.account.startsWith('__cli__:'));
     if (needsSwitch) {
-      const isCrossPlatform = cfg.agent !== (lt?.agent || baseAgent);
+      const isCrossPlatform = cfg.agent !== (lt?.agent || baseAgent) || isIdeOnly;
       const payload = {
         sessionId: sid || undefined,
         termId: lt?.id || undefined,

@@ -319,6 +319,7 @@ function renderSide() {
     const delRecTitle = '기록 삭제';
     const delRecAria = `기록 삭제: ${sessionLabel(r)}`;
     const subHTML = [
+      r.ideOnly ? '<span class="badge" title="Antigravity IDE 전용 세션 (입력 시 새 CLI 세션으로 자동 인계)">IDE</span>' : '',
       branchTagHTML(r.branch, true),
       liveProc ? sideLiveStateTag(liveProc.status === 'busy' ? 'busy' : 'idle') : '',
       `<span>${esc(ago(r.mtime))}</span>`,

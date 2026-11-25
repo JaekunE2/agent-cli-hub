@@ -1001,7 +1001,8 @@ function createSessionRoutes(hub) {
         const customTitle = conversationBranches.getTitle(s.sessionId);
         const fallbackBranchTitle = branch?.isBranch ? (branch.branchTitle || (branch.parentTitle ? `(분기) ${String(branch.parentTitle).slice(0, 36)}` : null)) : null;
         const owner = owners.get(s.sessionId) || owners.get(branch?.parentSessionId);
-        return { ...s, title: customTitle || fallbackBranchTitle || conversationBranches.baseTitle(s.sessionId, s.title), projectId: owner?.projectId, ...(branch ? { branch } : {}) };
+        const ideOnly = (s.agent || 'claude') === 'agy' && !hasAgyCliConversation(s.sessionId);
+        return { ...s, title: customTitle || fallbackBranchTitle || conversationBranches.baseTitle(s.sessionId, s.title), projectId: owner?.projectId, ...(branch ? { branch } : {}), ...(ideOnly ? { ideOnly: true } : {}) };
       });
       send(res, 200, { sessions });
       return true;
@@ -1029,6 +1030,7 @@ function createSessionRoutes(hub) {
       if (d) await index.updateFile(d.file);
       const out = transcriptFromIndex(id, at) || transcript(id);
       if (out && !out.lineage && id) out.lineage = conversationBranches.lineageFor(id, (sid) => sessionDisplayTitle(sid, index.get(sid)));
+      if (out && !out.error && (d?.agent === 'agy' || out.agent === 'agy') && id && !hasAgyCliConversation(id)) out.ideOnly = true;
       send(res, 200, out);
       return true;
     }

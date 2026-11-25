@@ -3263,5 +3263,7 @@
   "서브에이전트를 찾을 수 없습니다.": "Subagent not found.",
   "대상 브랜치 반영 확인 완료 (": "Verified in target branch (",
   "이 폴더에서 cmd 열기": "Open cmd in this folder",
-  "cmd를 열지 못했습니다": "Failed to open cmd"
+  "cmd를 열지 못했습니다": "Failed to open cmd",
+  "Antigravity IDE 전용 세션 (입력 시 새 CLI 세션으로 자동 인계)": "Antigravity IDE-only session (auto-hands off to a new CLI session on input)",
+  "Antigravity IDE 전용 기록 · 입력 시 새 CLI 세션으로 맥락을 자동 인계합니다": "Antigravity IDE-only history · auto-hands off context to a new CLI session on input"
 }
