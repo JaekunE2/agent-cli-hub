@@ -143,29 +143,43 @@ function parseInteractivePrompt(lines) {
     end--;
   }
   const body = cleaned.slice(0, end);
-  const choices = [];
+  // Walk backward from the bottom to isolate ONLY the active choice menu (ignoring earlier numbered lists in scrollback)
+  const choicesReversed = [];
   let firstChoiceIdx = -1;
-  for (let i = 0; i < body.length; i++) {
+  let pendingWrap = [];
+  for (let i = body.length - 1; i >= 0; i--) {
     const raw = body[i];
     const mNum = /^\s*([›❯>])?\s*(\d+)[.)]\s+(.+)$/.exec(raw);
     if (mNum) {
-      if (firstChoiceIdx < 0) firstChoiceIdx = i;
-      const label = mNum[3].trim();
-      choices.push({
+      const label = [mNum[3].trim(), ...pendingWrap].join(' ').trim();
+      pendingWrap = [];
+      choicesReversed.push({
         num: Number(mNum[2]),
         label,
         selected: !!mNum[1],
         isWriteIn: /write-in|type (?:your|something|custom)/i.test(label),
       });
+      firstChoiceIdx = i;
+      if (Number(mNum[2]) === 1) break;
       continue;
     }
-    if (firstChoiceIdx >= 0 && choices.length && /^\s{3,}\S/.test(raw) && !/^\s*[›❯>]/.test(raw)) {
-      choices[choices.length - 1].label += ' ' + raw.trim();
+    if (choicesReversed.length === 0 && !raw.trim()) continue;
+    if (/^\s{3,}\S/.test(raw) && !/^\s*[›❯>]/.test(raw)) {
+      pendingWrap.unshift(raw.trim());
+      continue;
     }
+    if (choicesReversed.length > 0) break;
   }
+  const choices = choicesReversed.reverse();
   if (choices.length < 2) return null;
   const selectedIndex = Math.max(0, choices.findIndex((c) => c.selected));
-  const qLines = body.slice(Math.max(0, firstChoiceIdx - 6), firstChoiceIdx).map((l) => l.trim()).filter(Boolean);
+  const qStart = (() => {
+    for (let i = firstChoiceIdx - 1; i >= Math.max(0, firstChoiceIdx - 8); i--) {
+      if (/^\s*(?:Question\s+\d+\/\d+:|Do you want to|Allow Codex to|Trust (?:this|the))/i.test(body[i])) return i;
+    }
+    return Math.max(0, firstChoiceIdx - 4);
+  })();
+  const qLines = body.slice(qStart, firstChoiceIdx).map((l) => l.trim()).filter(Boolean);
   const question = qLines.join('\n') || '선택이 필요합니다';
   const key = `${question}|${selectedIndex}|${choices.map((c) => `${c.num}:${c.label}`).join('|')}`;
   return { question, choices, selectedIndex, key };
