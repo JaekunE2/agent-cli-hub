@@ -1,16 +1,18 @@
 // Project Role Presets (plan / dev / test / review / ops) & Per-CLI Agent Adapters UI
 async function openProjectHarnessDrawer() {
-  if (!state.projectHarness?.roles) {
-    try {
-      const res = await api('/api/projects/harness');
-      if (res.error || !res.ok || !res.harness) throw new Error(res.error || 'Role · 에이전트 하네스를 불러오지 못했습니다.');
-      state.projectHarness = res.harness;
-    } catch (e) { toast(e.message, 5000, 'danger'); return; }
+  let stats = {};
+  try {
+    const res = await api('/api/projects/harness');
+    if (res.error || !res.ok || !res.harness) throw new Error(res.error || 'Role · 에이전트 하네스를 불러오지 못했습니다.');
+    state.projectHarness = res.harness;
+    stats = res.stats || {};
+  } catch (e) {
+    if (!state.projectHarness?.roles) { toast(e.message, 5000, 'danger'); return; }
   }
   const harness = state.projectHarness || { roles: {}, adapters: {} };
   const roles = JSON.parse(JSON.stringify(harness.roles || {}));
   const adapters = JSON.parse(JSON.stringify(harness.adapters || {}));
-  const roleOrder = ['plan', 'dev', 'test', 'review', 'ops'];
+  const roleOrder = ['plan', 'dev', 'test', 'review', 'merge', 'ops'];
   const adapterOrder = ['codex', 'claude', 'agy'];
   const effortOpts = [
     ['', 'CLI 기본값'],
@@ -34,7 +36,7 @@ async function openProjectHarnessDrawer() {
   const bodyHTML = `
     <div class="ums" style="margin:0"><b>universal-agent-harness</b> 표준 기반 Role 프리셋과 에이전트 어댑터입니다. 태스크 시작 및 서브 개발 채팅 첫 턴에 자동 주입됩니다.</div>
     <div class="pj-hr-tabs" role="group" aria-label="Role · 에이전트 하네스 설정">
-      <button type="button" class="on" data-hr-tab="roles">Role 프리셋 (5)</button>
+      <button type="button" class="on" data-hr-tab="roles">Role 프리셋 (6)</button>
       <button type="button" data-hr-tab="adapters">CLI 어댑터 (3)</button>
     </div>
     <div id="hrBody"></div>`;
@@ -60,6 +62,8 @@ async function openProjectHarnessDrawer() {
         effort: roleCard.querySelector('[data-hr-field="effort"]').value,
         model: roleCard.querySelector('[data-hr-field="model"]').value.trim(),
         account: roleCard.querySelector('[data-hr-field="account"]').value.trim(),
+        readOnly: !!roleCard.querySelector('[data-hr-field="readOnly"]')?.checked,
+        writableGlobs: roleCard.querySelector('[data-hr-field="writableGlobs"]')?.value.trim() || '',
         template: roleCard.querySelector('[data-hr-field="template"]').value,
       };
     }
@@ -90,10 +94,13 @@ async function openProjectHarnessDrawer() {
         </button>`;
       }).join('');
 
-      const r = roles[activeRole] || { id: activeRole, label: activeRole, agent: '', account: '', model: '', effort: '', template: '' };
+      const r = roles[activeRole] || { id: activeRole, label: activeRole, agent: '', account: '', model: '', effort: '', readOnly: false, writableGlobs: '', template: '' };
+      const rs = stats[activeRole];
+      const statBadge = rs?.done ? `<span class="badge">완료 ${rs.done} · 1차 통과 ${Math.round((rs.firstPass / rs.done) * 100)}%</span>` : '';
       const editorHTML = `<section class="pj-hr-card" data-hr-role="${esc(activeRole)}">
         <div class="row" style="justify-content:space-between">
           <span class="row" style="gap:8px"><span class="badge kind-${esc(activeRole)}">${esc(activeRole)}</span><b>${esc(r.label || activeRole)}</b></span>
+          ${statBadge}
         </div>
         <div class="pj-me-grid">
           <label class="pj-hr-field">기본 추천 CLI<select data-hr-field="agent">${cliOpts.map(([v, l]) => `<option value="${esc(v)}" ${r.agent === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
@@ -102,6 +109,10 @@ async function openProjectHarnessDrawer() {
         <div class="pj-me-grid">
           <label class="pj-hr-field">추천 모델 ID<input data-hr-field="model" value="${esc(r.model || '')}" placeholder="예: opus, gpt-5.4, gemini-4-argon-high"></label>
           <label class="pj-hr-field">기본 계정 ID (선택)<input data-hr-field="account" value="${esc(r.account || '')}" placeholder="비워두면 현재/Project 계정"></label>
+        </div>
+        <div class="pj-me-grid" style="align-items:center">
+          <label class="row" style="gap:6px;cursor:pointer"><input type="checkbox" data-hr-field="readOnly"${r.readOnly ? ' checked' : ''}><span>읽기 전용 Role (코드 수정 제한)</span></label>
+          <label class="pj-hr-field">쓰기 허용 경로 (쉼표 구분, 선택)<input data-hr-field="writableGlobs" value="${esc(r.writableGlobs || '')}" placeholder="예: docs/**, *.md"></label>
         </div>
         <label class="pj-hr-field">행동 제약 · 완료 기준 템플릿<textarea data-hr-field="template" rows="6">${esc(r.template || '')}</textarea></label>
       </section>`;

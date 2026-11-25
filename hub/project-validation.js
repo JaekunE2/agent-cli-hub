@@ -85,6 +85,7 @@ function validate(p) {
     cwd: p.cwd.trim(),
     goal: p.goal,
     autopilot: !!p.autopilot,
+    autoCloseDoneTerms: !!p.autoCloseDoneTerms,
     agent: p.agent || 'codex',
     ...(p.mcpFallbackAgent ? { mcpFallbackAgent: p.mcpFallbackAgent } : {}),
     account: p.account || '',

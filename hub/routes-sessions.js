@@ -684,13 +684,17 @@ function createSessionRoutes(hub) {
   };
 
   hub.startProjectMergeSession = async (project, queue, result) => {
-    const agent = ['claude', 'codex', 'agy', 'cursor'].includes(project?.agent) ? project.agent : 'codex';
-    const model = String(project?.model || '').trim();
-    const effort = String(project?.effort || '').trim();
+    const harnessState = hub.projectHarness?.get?.();
+    const mergeRole = harnessState?.roles?.merge;
+    const rawAgent = mergeRole?.agent || project?.agent || 'codex';
+    const agent = ['claude', 'codex', 'agy', 'cursor'].includes(rawAgent) ? rawAgent : 'codex';
+    const model = String(mergeRole?.model || project?.model || '').trim();
+    const effort = String(mergeRole?.effort || project?.effort || '').trim();
+    const rawAccount = mergeRole?.account || project?.account || '';
     let launchAccount = null;
-    if (project?.account && !/^(__cli__:|default$|agy-cli$)/.test(String(project.account))) {
-      try { launchAccount = hub.projectAccounts.resolve(agent, String(project.account)); }
-      catch (e) { if (String(project.account) !== 'auto-codex') return { error: e.message }; }
+    if (rawAccount && !/^(__cli__:|default$|agy-cli$)/.test(String(rawAccount))) {
+      try { launchAccount = hub.projectAccounts.resolve(agent, String(rawAccount)); }
+      catch (e) { if (String(rawAccount) !== 'auto-codex') return { error: e.message }; }
     }
     if (launchAccount?.switchAgySwap) {
       try { await hub.ensureAgySwap(launchAccount); }
@@ -743,6 +747,7 @@ function createSessionRoutes(hub) {
       '2. 만약 `hub: auto-stash before target merge` 스태시가 남아 있다면(`git stash list`), 충돌 여부를 확인해 안전하게 복원·정리합니다.',
       '3. 프로젝트의 핵심 테스트/빌드 검증을 실행해 최종 병합 상태에 이상이 없는지 확인합니다.',
       '4. 확인이 끝나면 검증 결과를 간략히 요약하고 작업을 마칩니다.',
+      ...(mergeRole?.template ? ['', `[Role 하네스 · ${mergeRole.label || 'merge'}]`, mergeRole.template] : []),
     ].join('\n');
 
     t._projectDispatchPending = true;

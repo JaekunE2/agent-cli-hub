@@ -249,7 +249,8 @@ function projectForm(p) {
     `<label>필수 MCP 대체 CLI<select name="mcpFallbackAgent">
       <option value="">대체 CLI 없음</option>
       ${['claude', 'codex', 'agy'].map((id) => `<option value="${id}" ${p?.mcpFallbackAgent === id ? 'selected' : ''}>${esc(providerName(id))}</option>`).join('')}
-    </select></label>` +
+    </select></label>
+    <label class="row" style="gap:6px;cursor:pointer;margin-top:4px"><input type="checkbox" name="autoCloseDoneTerms"${p?.autoCloseDoneTerms ? ' checked' : ''}><span>병합·완료된 태스크 터미널 자동 닫기 (메모리 절약)</span></label>` +
     genRow +
     '<div data-plan-preview role="status"></div>',
     async (f, button) => {
@@ -262,6 +263,7 @@ function projectForm(p) {
         account: f.get('account'),
         model: String(f.get('model') || '').trim(),
         effort: String(f.get('effort') || ''),
+        autoCloseDoneTerms: f.get('autoCloseDoneTerms') === 'on',
       };
       const key = JSON.stringify(draft);
       if (!p) {

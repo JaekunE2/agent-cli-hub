@@ -159,6 +159,29 @@ function mergeQueue(project) {
     Number(!!b.mergeRun?.ids) - Number(!!a.mergeRun?.ids) || (a.mergeRun?.queuedAt || 0) - (b.mergeRun?.queuedAt || 0));
 }
 
+const SECRET_LEAK_RE = /(?:sk-ant-[A-Za-z0-9_-]{12,}|sk-proj-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)/;
+
+function lintEvidence(gitSummary = '', taskOut = '') {
+  const combined = `${gitSummary}\n${taskOut}`;
+  if (SECRET_LEAK_RE.test(combined)) {
+    return { ok: false, reason: '보안 위생 검사 경고: 출력 또는 변경사항에 API 키·비밀키 패턴이 감지되어 자동 검토를 일시 정지했습니다.' };
+  }
+  return { ok: true };
+}
+
+function cleanupDoneTerminals(hub, project, taskIds = []) {
+  if (!project?.autoCloseDoneTerms || !hub?.terms || !hub?.forgetTerm) return;
+  const idSet = new Set(taskIds);
+  for (const t of [...hub.terms.values()]) {
+    if (t.exited !== null || t.meta?.operator) continue;
+    const pt = t.meta?.projectTask;
+    const ptm = t.meta?.projectMerge;
+    if ((pt?.projectId === project.id && idSet.has(pt.taskId)) || (ptm?.projectId === project.id && ptm.taskIds?.some((id) => idSet.has(id)))) {
+      hub.forgetTerm(t);
+    }
+  }
+}
+
 async function finishApprovedTask(hub, project, task, reason, taskOut, sessionId) {
   const { id: projectId } = project;
   const { id: taskId } = task;
@@ -167,6 +190,7 @@ async function finishApprovedTask(hub, project, task, reason, taskOut, sessionId
       ...(taskOut ? { lastOutput: taskOut } : {}), ...(sessionId ? { lastSessionId: sessionId } : {}) } : item);
   const saved = hub.projects.save({ ...project, tasks });
   await finishFileRun(hub, saved, taskId);
+  cleanupDoneTerminals(hub, saved, [taskId]);
   hub.overviewStale?.();
   if (hub.projectRefs?.saveFile) {
     const gitSummary = await readGitSummary(versionWorkspace(project, task.version), 3500).catch(() => '');
@@ -803,6 +827,14 @@ async function completeAutopilotTask(hub, projectId, taskId, { maxRetries = MAX_
         && x.reviewStatus === 'reviewing' && !x.reviewPaused && x.reviewRun?.id === run.id);
       const project = getProject();
       if (!isReviewing(project)) return { skipped: true, started: [] };
+      const wsDir = reviewWorkspace(project, taskOut ? initialTask : (project.tasks.find((x) => x.id === taskId) || initialTask));
+      const lint = lintEvidence(await readGitSummary(wsDir, 4000).catch(() => ''), taskOut || '');
+      if (!lint.ok) {
+        hub.projects.save({ ...project, tasks: project.tasks.map((t) => t.id === taskId
+          ? { ...t, stage: 'doing', reviewPaused: true, reviewStatus: 'error', reviewNote: lint.reason } : t) });
+        hub.overviewStale?.();
+        return { approved: false, error: lint.reason, started: [] };
+      }
       const task = project.tasks.find((x) => x.id === taskId);
       const assertReviewWorkspace = (p) => {
         if (folderKey(reviewWorkspace(p, p.tasks.find((item) => item.id === taskId))) !== run.workspace) {
@@ -1000,6 +1032,7 @@ async function checkAutopilotCompletions(hub) {
                           mergeApprovalNote: '', mergeCommit: '', mergeTip: '', mergeTermId: '', worktreePath: '',
                         } : task),
                       });
+                      cleanupDoneTerminals(hub, saved, [...targetSet]);
                       hub.overviewStale?.();
                       for (const task of targets) saveTaskHandoffRef(hub, saved, task, { reason: task.mergeApprovalNote, taskOut: task.lastOutput });
                       if (saved.autopilot) {
@@ -1014,6 +1047,7 @@ async function checkAutopilotCompletions(hub) {
                           reviewNote: '병합 세션이 완료 신호 없이 종료되었습니다. 터미널을 확인 후 통합 재시도하세요.',
                         } : task),
                       });
+                      cleanupDoneTerminals(hub, saved, [...targetSet]);
                       hub.overviewStale?.();
                     }
                   }

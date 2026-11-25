@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { kinds, agents, efforts, MODEL_RE, inferTaskKind } = require('./project-validation');
 
-const ROLE_IDS = ['plan', 'dev', 'test', 'review', 'ops'];
+const ROLE_IDS = ['plan', 'dev', 'test', 'review', 'merge', 'ops'];
 const ADAPTER_CLIS = ['codex', 'claude', 'agy'];
 
 /**
@@ -67,12 +67,32 @@ const DEFAULT_ROLE_PRESETS = {
     account: '',
     model: 'gemini-4-argon-high',
     effort: 'high',
+    readOnly: true,
+    writableGlobs: '',
     template: [
       '[행동 제약]',
       '- 구현과 독립된 관점에서 숨은 결함(경계값, 동시성, 트랜잭션/에러 삼킴)과 전제 가정을 검증합니다.',
       '- 불필요한 중복·과도한 추상화·변경 범위 밖 사이드 이펙트를 점검합니다.',
       '[완료 기준]',
       '- Blocker / Warning / Note 순으로 우선순위를 나누고 파일 경로·라인 근거를 반드시 붙입니다.',
+    ].join('\n'),
+  },
+  merge: {
+    id: 'merge',
+    label: '병합 · 최종 검증 (Merge Verifier)',
+    agent: '',
+    account: '',
+    model: '',
+    effort: 'medium',
+    readOnly: false,
+    writableGlobs: '',
+    template: [
+      '[행동 제약]',
+      '- 대상 브랜치 반영 시 기존 작업과 충돌하는 변경을 임의로 덮어쓰지 않고 양쪽 의도를 보존합니다.',
+      '- `hub: auto-stash`가 남아 있으면 충돌 여부를 확인해 안전하게 복원·정리합니다.',
+      '- `.token`, 비밀번호, API 키 등 민감 정보가 커밋·산출물에 섞이지 않았는지 확인합니다.',
+      '[완료 기준]',
+      '- `git status`, `git log -n 3 --oneline` 및 핵심 테스트/빌드 통과 결과를 요약해 보고합니다.',
     ].join('\n'),
   },
   ops: {
@@ -142,6 +162,8 @@ function normalizeRoleEntry(id, raw, fallback) {
     account: String(r.account ?? base.account ?? '').trim().slice(0, 160),
     model: m && MODEL_RE.test(m) ? m : '',
     effort: efforts.includes(ef) ? ef : '',
+    readOnly: r.readOnly !== undefined ? !!r.readOnly : !!base.readOnly,
+    writableGlobs: String(r.writableGlobs ?? base.writableGlobs ?? '').trim().slice(0, 500),
     template: String(r.template ?? base.template ?? '').trim().slice(0, 3000),
   };
 }
@@ -270,6 +292,47 @@ function buildTaskHarnessPrompt(project, task, effectiveAgent, harnessState) {
   return parts.join('\n\n');
 }
 
+function globToRegex(glob) {
+  const esc = String(glob || '').trim().replace(/\\/g, '/').replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^${esc.replace(/\*\*/g, '::DBL::').replace(/\*/g, '[^/]*').replace(/::DBL::/g, '.*')}$`, 'i');
+}
+
+function checkRoleWriteScope(rolePreset, changedFiles = []) {
+  if (!rolePreset || !Array.isArray(changedFiles) || !changedFiles.length) return { ok: true, violations: [] };
+  const files = changedFiles.map((f) => String(f || '').trim().replace(/\\/g, '/')).filter(Boolean);
+  if (!files.length) return { ok: true, violations: [] };
+  if (rolePreset.readOnly) return { ok: false, reason: '읽기 전용 Role에서 파일이 수정되었습니다.', violations: files };
+  const globs = String(rolePreset.writableGlobs || '').split(/[,\n]+/).map((s) => s.trim()).filter(Boolean);
+  if (!globs.length) return { ok: true, violations: [] };
+  const matchers = globs.map(globToRegex);
+  const violations = files.filter((file) => !matchers.some((rx) => rx.test(file)));
+  return violations.length
+    ? { ok: false, reason: `허용된 쓰기 범위(${globs.join(', ')}) 외 파일이 수정되었습니다.`, violations }
+    : { ok: true, violations: [] };
+}
+
+function computeHarnessStats(projectsList = []) {
+  const byRole = {};
+  for (const project of projectsList) {
+    for (const task of project?.tasks || []) {
+      if (task.stage !== 'done') continue;
+      const roleId = resolveTaskRole(task);
+      const agent = task.lastRun?.agent || task.agent || project.agent || 'codex';
+      const model = task.model || project.model || 'default';
+      const row = (byRole[roleId] ||= { roleId, done: 0, firstPass: 0, retries: 0, models: {} });
+      row.done++;
+      const retried = Number(task.retryCount || 0) > 0 || /수정 재시도/.test(task.reviewNote || '');
+      if (!retried) row.firstPass++;
+      row.retries += Number(task.retryCount || 0);
+      const mk = `${agent}/${model}`;
+      const mRow = (row.models[mk] ||= { agent, model, done: 0, firstPass: 0 });
+      mRow.done++;
+      if (!retried) mRow.firstPass++;
+    }
+  }
+  return byRole;
+}
+
 module.exports = {
   ROLE_IDS,
   ADAPTER_CLIS,
@@ -279,4 +342,6 @@ module.exports = {
   resolveTaskRole,
   resolveTaskConfig,
   buildTaskHarnessPrompt,
+  checkRoleWriteScope,
+  computeHarnessStats,
 };

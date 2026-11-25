@@ -7,7 +7,7 @@ const crypto = require('crypto');
 const { spawn, execFile } = require('child_process');
 const gitVersion = require('util').promisify(execFile);
 
-const { resolveTaskConfig } = require('./project-harness');
+const { resolveTaskConfig, computeHarnessStats } = require('./project-harness');
 const { runProjectAutopilot, completeAutopilotTask } = require('./project-autopilot');
 const { versionFolder, copyVersion, versionWorkspace, scanVersion } = require('./version-files');
 const { createFileRuns, fileRunPath } = require('./project-file-runs');
@@ -423,7 +423,7 @@ function createProjectRoutes(hub) {
 
     if (p === '/api/projects/harness') {
       if (req.method === 'GET') {
-        send(res, 200, { ok: true, harness: hub.projectHarness.get() });
+        send(res, 200, { ok: true, harness: hub.projectHarness.get(), stats: computeHarnessStats(projects.list()) });
         return true;
       }
       if (req.method === 'POST') {

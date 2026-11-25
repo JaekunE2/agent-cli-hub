@@ -3172,5 +3172,21 @@
   "프로젝트 ·": "Project ·",
   "대상": "Target",
   "표시할 산출물이 없습니다.": "No artifacts to display.",
-  "공지를 실행·대기 중인 터미널(Claude·Codex·AGY)에 자동 입력": "Auto-send notices to active/idle terminals (Claude, Codex, AGY)"
+  "공지를 실행·대기 중인 터미널(Claude·Codex·AGY)에 자동 입력": "Auto-send notices to active/idle terminals (Claude, Codex, AGY)",
+  "Role 프리셋 (6)": "Role Presets (6)",
+  "완료": "Done",
+  "· 1차 통과": "· 1st-pass",
+  "읽기 전용 Role (코드 수정 제한)": "Read-only Role (disallow code edits)",
+  "쓰기 허용 경로 (쉼표 구분, 선택)": "Allowed write paths (comma-separated, optional)",
+  "예: docs/**, *.md": "e.g. docs/**, *.md",
+  "병합·완료된 태스크 터미널 자동 닫기 (메모리 절약)": "Auto-close completed task terminals (save memory)",
+  "병합 · 최종 검증 (Merge Verifier)": "Merge & Final Verification (Merge Verifier)",
+  "읽기 전용 Role에서 파일이 수정되었습니다.": "Files were modified in a read-only Role.",
+  "보안 위생 검사 경고: 출력 또는 변경사항에 API 키·비밀키 패턴이 감지되어 자동 검토를 일시 정지했습니다.": "Security lint warning: API/private key pattern detected in output or diff; auto-review paused.",
+  "- 대상 브랜치 반영 시 기존 작업과 충돌하는 변경을 임의로 덮어쓰지 않고 양쪽 의도를 보존합니다.": "- Preserve both sides' intent without blindly overwriting conflicting target-branch changes.",
+  "- `hub: auto-stash`가 남아 있으면 충돌 여부를 확인해 안전하게 복원·정리합니다.": "- If `hub: auto-stash` remains, check for conflicts before safely restoring or cleaning it up.",
+  "- `.token`, 비밀번호, API 키 등 민감 정보가 커밋·산출물에 섞이지 않았는지 확인합니다.": "- Verify that `.token`, passwords, API keys, or other secrets are not leaked into commits or artifacts.",
+  "- `git status`, `git log -n 3 --oneline` 및 핵심 테스트/빌드 통과 결과를 요약해 보고합니다.": "- Summarize `git status`, `git log -n 3 --oneline`, and core test/build results.",
+  "허용된 쓰기 범위(": "Modified files outside allowed write scope (",
+  ") 외 파일이 수정되었습니다.": ")."
 }
