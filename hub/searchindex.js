@@ -103,6 +103,9 @@ const codexIdOf = (f) => { const m = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
 // injected context, not something the user typed
 const codexNoise = (t) => /^\s*<(environment_context|user_instructions|skills_instructions|permissions|collaboration_mode|turn_aborted|subagent|external_codex_apps_|in-app-browser|system_instruction|tools)/.test(t)
   || /^\s*(# AGENTS\.md|# Files mentioned by the user:|## Referenced ChatGPT conversation:|\[\{"questionItemId":)/i.test(t);
+// Bulk automation folders (headless `claude -p` workers such as llm3d-work-slot0..5) hold thousands of
+// transcripts; stat-ing them froze the server on 11-18. Same rule as routes-sessions.js recentSessions.
+const BULK_TRANSCRIPT_DIR = /-work-slot\d+$/i;
 function cleanPromptTitle(raw) {
   let s = String(raw || '').replace(/<external_codex_apps_[^>]*>[\s\S]*?<\/external_codex_apps_[^>]*>/gi, '').trim();
   const lines = s.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
@@ -284,6 +287,7 @@ class SearchIndex {
     const out = [];
     let dirs; try { dirs = await fs.promises.readdir(this.root); } catch { dirs = []; }
     for (const d of dirs) {
+      if (BULK_TRANSCRIPT_DIR.test(d)) continue; // bulk headless workers (thousands of transcripts, slow stat)
       const dir = path.join(this.root, d);
       let ents; try { ents = await fs.promises.readdir(dir); } catch { continue; }
       for (const f of ents) if (f.endsWith('.jsonl')) out.push(path.join(dir, f));
@@ -314,6 +318,7 @@ class SearchIndex {
     const out = [];
     // a fresh Claude Code install has no projects folder yet
     for (const d of fs.existsSync(this.root) ? fs.readdirSync(this.root) : []) {
+      if (BULK_TRANSCRIPT_DIR.test(d)) continue;
       const dir = path.join(this.root, d);
       let ents; try { ents = fs.readdirSync(dir); } catch { continue; }
       for (const f of ents) if (f.endsWith('.jsonl')) out.push(path.join(dir, f));
@@ -486,7 +491,7 @@ class SearchIndex {
           if (cmdNote) doc.msgs.push({ role: 'assistant', text: cmdNote, ts: e.timestamp });
           return;
         }
-        if (e.type === 'user' && !doc.firstPrompt && !e.isCompactSummary && !text.startsWith('This session is being continued') && !text.startsWith('⚙')) doc.firstPrompt = text.slice(0, 160);
+        if (e.type === 'user' && !doc.firstPrompt && !e.isCompactSummary && !text.startsWith('This session is being continued') && !text.startsWith('⚙')) { const c = cleanPromptTitle(text); if (c && !isNoise(c)) doc.firstPrompt = c; }
         pushMsg({ role: e.type, text, ts: e.timestamp });
       };
       stream.on('data', (chunk) => {
@@ -581,4 +586,4 @@ function snippet(text, low, terms) {
   return (a > 0 ? '…' : '') + text.slice(a, b).replace(/\s+/g, ' ') + (b < text.length ? '…' : '');
 }
 
-module.exports = { SearchIndex, textOf, isNoise, claudeCommandNote, claudeToolResultNote, isCodexFile, codexIdOf, codexLine, CODEX_ROOT, isAgyFile, agyIdOf, agyLine, AGY_ROOT };
+module.exports = { SearchIndex, textOf, isNoise, claudeCommandNote, claudeToolResultNote, isCodexFile, codexIdOf, codexLine, CODEX_ROOT, isAgyFile, agyIdOf, agyLine, AGY_ROOT, cleanPromptTitle, BULK_TRANSCRIPT_DIR };

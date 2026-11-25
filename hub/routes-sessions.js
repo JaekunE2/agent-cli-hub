@@ -170,10 +170,15 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
     };
   }
 
+  // Bulk automation folders (headless `claude -p` workers such as llm3d-work-slot0..5 hold thousands of
+  // transcripts) are skipped: stat-ing every file there took 0.2-1.7 s each on 11-18 and froze the server
+  // for minutes (event loop blocked in statSync). Their sessions are not interactive anyway.
+  const BULK_TRANSCRIPT_DIR = /-work-slot\d+$/i;
   function recentSessions(limit = 40) {
     const root = path.join(claudeDir, 'projects');
     const files = [];
     for (const d of fs.existsSync(root) ? fs.readdirSync(root) : []) {
+      if (BULK_TRANSCRIPT_DIR.test(d)) continue;
       const dir = path.join(root, d);
       let ents; try { ents = fs.readdirSync(dir); } catch { continue; }
       for (const f of ents) {
@@ -318,7 +323,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       helper: { ok: !hub.getHelperMissing(), error: hub.getHelperMissing() || null },
     };
     const projectRevisions = Object.fromEntries(projects.list().map((p) => [p.id, p.revision]));
-    return { live, consoles, terms: termsOut, consoleError: cons.error, favs: hub.liveFavs(), sessionGroups: hub.loadSessionGroups ? hub.loadSessionGroups() : { version: 1, groups: [], assignments: {} }, disk: diskLow, consolesOff: config.consoles === false, services, buildId, accountPrefs: accountPrefs.get(), projectRevisions };
+    return { ...(hub.integrations?.overviewFields() || {}), features: { agy: !!hub.agyEnabled }, live, consoles, terms: termsOut, consoleError: cons.error, favs: hub.liveFavs(), sessionGroups: hub.loadSessionGroups ? hub.loadSessionGroups() : { version: 1, groups: [], assignments: {} }, disk: diskLow, consolesOff: config.consoles === false, services, buildId, accountPrefs: accountPrefs.get(), projectRevisions };
   }
 
   function overviewSnapshot() {
@@ -542,6 +547,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       if (b.resume && /^[\w-]+$/.test(b.resume)) args.push('--resume', b.resume);
       title = 'Cursor agent';
     } else if (b.kind === 'agy') {
+      if (hub.agyEnabled === false) return send(res, 400, { error: 'Antigravity 지원이 꺼져 있습니다 (config.json "antigravity": true)' });
       cmd = hub.agyExe();
       if (b.resume && /^[\w-]+$/.test(b.resume) && hasAgyCliConversation(b.resume)) args.push('--conversation', b.resume);
       else if (b.continue) args.push('--continue');
@@ -574,6 +580,17 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
     if (!launchAccount && b.account && !/^(__cli__:|default$|agy-cli$)/.test(String(b.account))) {
       try { launchAccount = hub.projectAccounts.resolve(b.kind, String(b.account)); }
       catch (e) { if (String(b.account) !== 'auto-codex') return send(res, 400, { error: e.message }); }
+    }
+    // several ChatGPT logins and no account chosen: a new codex terminal starts on the one with the most quota left
+    if (!launchAccount && !reuseTerm && !projectTask && b.kind === 'codex' && !b.account && hub.config.codexAutoPick !== false) {
+      try {
+        const list = hub.CA.accounts(hub.USAGE_DIR);
+        if (list.length > 1) {
+          const pick = (await hub.codexCandidates(null)).candidates.filter((c) => c.usable).sort((x, y) => y.score - x.score)[0];
+          const acc = pick && list.find((x) => x.id === pick.id);
+          if (acc && !acc.main) launchAccount = { env: hub.CA.envFor(acc), account: { id: acc.id, label: pick.label, kind: 'codex' } };
+        }
+      } catch {}
     }
     if (!reuseTerm && launchAccount?.switchAgySwap) {
       try { await hub.ensureAgySwap(launchAccount); } catch (e) { return send(res, 502, { error: `Antigravity 계정 전환 실패: ${e.message}` }); }

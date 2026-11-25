@@ -248,6 +248,8 @@ function createSystemRoutes(hub) {
       send(res, 200, hub.termInfo(t));
       return true;
     }
+    if (p === '/api/agy/quota' && req.method === 'GET' && hub.agyEnabled === false) { send(res, 200, { ok: true, disabled: true }); return true; }
+    if (p.startsWith('/api/agy/') && hub.agyEnabled === false) { send(res, 404, { error: 'Antigravity 지원이 꺼져 있습니다 (config.json "antigravity": true)' }); return true; }
     if (p === '/api/agy/add' && req.method === 'POST') {
       const swapExe = hub.agySwapExe();
       if (!swapExe) { send(res, 400, { error: 'agy-swap이 설치되어 있지 않습니다.' }); return true; }

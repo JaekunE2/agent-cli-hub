@@ -112,8 +112,24 @@ function createAccountSwitchService(hub) {
       usageCache = { at: Date.now(), data };
       return data;
     } catch (e) {
+      restartUsageServer(e);
       return usageCache.data ? { ...usageCache.data, stale: true } : { available: false, error: `AI 사용량 대시보드(${USAGE_URL})에 연결할 수 없음: ${e.message}` };
     }
+  }
+  // The usage server has no supervisor of its own: if it is not listening (it died, or never came up at
+  // logon), relaunch it with its own autostart script (else startUsageServer), at most every 2 minutes.
+  // Only for a local URL and only on "connection refused", so a slow-but-alive server is left alone.
+  let usageRestartAt = 0;
+  function restartUsageServer(err) {
+    const code = err?.cause?.code || err?.code;
+    if (hub.instance && !hub.instance.usageRestart) return;
+    if (code !== 'ECONNREFUSED' || !/^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(USAGE_URL)) return;
+    if (Date.now() - usageRestartAt < 120_000) return;
+    usageRestartAt = Date.now();
+    const vbs = path.join(USAGE_DIR, 'autostart', 'run-dashboard.vbs');
+    console.log(`[usage] ${USAGE_URL} not listening; relaunching ${fs.existsSync(vbs) ? vbs : 'server.js'}`);
+    if (fs.existsSync(vbs)) { try { spawn('wscript.exe', [vbs], { detached: true, stdio: 'ignore', windowsHide: true }).unref(); } catch {} }
+    else startUsageServer().catch(() => {});
   }
 
   function readUsageAccounts() {
@@ -160,11 +176,19 @@ function createAccountSwitchService(hub) {
 
   const meterPct = (acc, re) => { const m = (acc?.meters || []).find((x) => re.test(x.name)); return m ? m.usedPercent : null; };
 
-  async function switchCandidates(currentId) {
+  // claude reads ~/.claude/.credentials.json at start and keeps that token in memory. When the PC login
+  // changes later (/login, another account), a process started before that is not on today's "default":
+  // resuming it re-reads the file, so the PC login is a real switch target for it, not "current".
+  const CRED_FILE = path.join(os.homedir(), '.claude', '.credentials.json');
+  function onOldLogin(startedAt) {
+    try { return !!startedAt && startedAt < fs.statSync(CRED_FILE).mtimeMs - 5000; } catch { return false; }
+  }
+  async function switchCandidates(currentId, { oldLogin = false } = {}) {
+    if (oldLogin && currentId === 'default') currentId = 'default@old';
     const u = await aiUsage(false);
     const usageById = new Map((u.accounts || []).map((a) => [a.id, a]));
     const localUsage = (u.accounts || []).find((a) => a.provider === 'Claude' && a.live && /Claude Code/.test(a.label));
-    const list = [{ id: 'default', label: 'Claude Code (이 PC)', usage: localUsage },
+    const list = [{ id: 'default', label: oldLogin ? 'Claude Code (이 PC, 새 로그인)' : 'Claude Code (이 PC)', usage: localUsage },
       ...tokenAccounts().map((a) => ({ id: a.id, label: a.label, usage: usageById.get(a.id) }))];
     const emailOf = (c) => (c.usage?.email || (c.id === 'default' ? null : c.label) || '').toLowerCase() || null;
     const curEmail = list.find((c) => c.id === currentId) && emailOf(list.find((c) => c.id === currentId));
@@ -173,7 +197,8 @@ function createAccountSwitchService(hub) {
       const weekly = meterPct(c.usage, /^(?:주간(?: \(전체 모델\)| 한도)?|weekly(?: \(all models\)| limit)?)$/i);
       const known = c.usage?.ok && (fiveH !== null || weekly !== null);
       const score = known ? Math.min(100 - (fiveH ?? 0), 100 - (weekly ?? 0)) : 50;
-      const reset = (c.usage?.meters || []).find((m) => /5시간|5-hour/i.test(m.name))?.resetsAt || null;
+      const reset = (c.usage?.meters || []).find((m) => /5시간|5-hour/i.test(m.name))?.resetsAt
+        || (c.usage?.meters || []).find((m) => /주간 \(전체|주간|weekly/i.test(m.name))?.resetsAt || null;
       const current = !!currentId && (c.id === currentId || (!!curEmail && emailOf(c) === curEmail));
       return { id: c.id, agent: 'claude', provider: 'Claude', label: c.label, fiveH, weekly, score, reset, current, sameAccount: current && c.id !== currentId, usable: c.usage?.ok !== false && score > 0 };
     });
@@ -215,9 +240,10 @@ function createAccountSwitchService(hub) {
     const curAgyId = isLive && sourceAgent === 'agy' ? (tt?.account?.id || 'agy-cli') : null;
     const curAgyEmail = isLive && sourceAgent === 'agy' ? (tt?.account?.email || null) : null;
 
-    const [clRes, cxRes, u] = await Promise.all([switchCandidates(curClaudeId), codexCandidates(curCodexId), aiUsage(false)]);
-    let swapAccounts = agySwap.getFast().accounts || [];
-    if (agySwap.available() && !swapAccounts.length) {
+    const oldLogin = curClaudeId === 'default' && !tt && !!loc.live && onOldLogin(loc.s?.startedAt);
+    const [clRes, cxRes, u] = await Promise.all([switchCandidates(curClaudeId, { oldLogin }), codexCandidates(curCodexId), aiUsage(false)]);
+    let swapAccounts = hub.agyEnabled !== false ? (agySwap.getFast().accounts || []) : [];
+    if (hub.agyEnabled !== false && agySwap.available() && !swapAccounts.length) {
       try { swapAccounts = (await agySwap.refresh({ force: false })).accounts || []; } catch {}
     }
     const agyQ = agyQuota.get();
@@ -261,14 +287,14 @@ function createAccountSwitchService(hub) {
     const groups = {
       claude: clRes.candidates.map((c) => ({ ...c, best: false })),
       codex: cxRes.candidates.map((c) => ({ ...c, best: false })),
-      agy: agyCands.map((c) => ({ ...c, best: false })),
+      agy: hub.agyEnabled !== false ? agyCands.map((c) => ({ ...c, best: false })) : [],
     };
     const order = sourceAgent === 'codex' ? ['codex', 'claude', 'agy'] : sourceAgent === 'agy' ? ['agy', 'codex', 'claude'] : ['claude', 'codex', 'agy'];
     const all = order.flatMap((k) => groups[k]);
     const bestSame = groups[sourceAgent].filter((c) => c.usable && !c.current).sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
     const bestAny = all.filter((c) => c.usable && !c.current).sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
     if (bestSame) bestSame.best = true;
-    else if (bestAny) bestAny.best = true;
+    else if (bestAny && config.switchCrossAgentAuto === true) bestAny.best = true;
 
     return {
       candidates: all, sourceAgent, stale: !!(clRes.stale || cxRes.stale), usageAvailable: clRes.usageAvailable,
@@ -522,7 +548,7 @@ function createAccountSwitchService(hub) {
 
     let project = null;
     if (samePlatform && targetAgent === 'claude' && sid) {
-      try { project = require('../research-harness/lib/project').listProjects().find((p) => p.state.director_session_id === sid) || null; } catch {}
+      try { project = require('./harness').lib('project').listProjects().find((p) => p.state.director_session_id === sid) || null; } catch {}
       if (project) Object.assign(env, { RESEARCH_ROLE: 'director', CLAUDE_CODE_STOP_HOOK_BLOCK_CAP: '200' });
     }
     workspaceLaunch = await workspacePlan();
@@ -541,7 +567,7 @@ function createAccountSwitchService(hub) {
     }
     if (project) {
       t.research = project.dir;
-      require('../research-harness/lib/project').updateState(project.dir, (s) => {
+      require('./harness').lib('project').updateState(project.dir, (s) => {
         s.director_account = pick.id === 'default' ? null : pick.id;
         s.status = 'running'; s.wake_at = null; s.wait_reason = ''; s.limited = false; s.limit_notice_at = null;
       });
@@ -747,7 +773,7 @@ function createAccountSwitchService(hub) {
       { id: 'claude-sonnet-5-5-low', label: 'Claude Sonnet 5.5 (Low)' },
       { id: 'gpt-oss-120b-medium', label: 'GPT-OSS 120B (Medium)' },
     ];
-    if (!agyModelsCache.models || Date.now() - agyModelsCache.at > 15 * 60_000) {
+    if (hub.agyEnabled !== false && (!agyModelsCache.models || Date.now() - agyModelsCache.at > 15 * 60_000)) {
       refreshAgyModelsCache().catch(() => {});
     }
     const agyCfg = readAgyConfigDefaults();
@@ -759,17 +785,36 @@ function createAccountSwitchService(hub) {
     return {
       codex: { models: cxModels, efforts: mapEff(cxEffortIds), defaultModel: cx.model, defaultEffort: cx.effort },
       claude: { models: claudeModels, efforts: mapEff(['', 'low', 'medium', 'high', 'xhigh', 'max']), defaultModel: '', defaultEffort: '' },
+      ...(hub.agyEnabled !== false ? {} : { agyDisabled: true }),
       agy: { models: agyModels, efforts: mapEff(['', 'low', 'medium', 'high', 'xhigh', 'max']), defaultModel: agyCfg.model, defaultEffort: agyCfg.effort },
       cursor: { models: [], efforts: [{ id: '', label: EFFORT_LABELS[''] }], defaultModel: '', defaultEffort: '' },
     };
   }
+
+  const CODEX_LIMIT_SCREEN = /you['’]ve hit your usage limit|hit your usage limit|usage limit (reached|exceeded)|reached your usage limit/i;
+  async function codexLimitWatch() {
+    if (config.codexAutoSwitch === false || (hub.instance && !hub.instance.codexAutoSwitch)) return;
+    for (const t of [...hub.terms.values()]) {
+      if (t.exited !== null || !hub.isCodexTerm(t) || t.meta?.projectTask || Date.now() - (t.codexSwitchedAt || t.meta?.spawnedAt || 0) < 10 * 60e3) continue;
+      let screen = ''; try { screen = hub.readTerm(t, 30).join('\n'); } catch { continue; }
+      if (!CODEX_LIMIT_SCREEN.test(screen)) continue;
+      t.codexSwitchedAt = Date.now();
+      const best = (await codexCandidates(t.account?.id || 'auto-codex').catch(() => ({ candidates: [] }))).candidates.find((c) => c.best);
+      const r = best ? await switchAccount({ termId: t.id, account: best.id, cont: true }).catch((e) => ({ ok: false, error: e.message }))
+        : { ok: false, error: '여유 있는 다른 Codex 계정이 없습니다' };
+      const msg = r.ok ? `🔁 codex t:${t.id} 한도 도달 → <b>${best.label}</b> 계정으로 같은 대화를 이어서 실행${r.term ? ` (t:${r.term.id})` : ''}` : `⚠ codex t:${t.id} 한도 도달, 전환 못 함: ${r.error}`;
+      console.log(msg.replace(/<[^>]+>/g, ''));
+      try { fs.mkdirSync(path.join(baseDir, 'notify'), { recursive: true }); fs.writeFileSync(path.join(baseDir, 'notify', `codex-switch-${Date.now()}.json`), JSON.stringify({ html: msg })); } catch {}
+    }
+  }
+  setInterval(() => codexLimitWatch().catch((e) => console.error('[codex-switch]', e.message)), 30_000).unref?.();
 
   return {
     USAGE_URL, USAGE_DIR, agyExe, agyQuota, agySwapExe, agySwap, codexExe, codexLaunch,
     checkUsageServer, startUsageServer, ensureTrayMonitor, aiUsage,
     clearUsageCache: () => { usageCache = { at: 0, data: null }; },
     tokenAccounts, geminiAccounts, ensureAgySwap, projectAccounts,
-    switchCandidates, codexCandidates, locateSession, allSwitchCandidates,
+    switchCandidates, codexCandidates, locateSession, allSwitchCandidates, onOldLogin,
     launchExternalWindow, switchAccount, projectCliOptions,
   };
 }

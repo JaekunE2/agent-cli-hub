@@ -54,6 +54,8 @@ const { createScheduleEngine } = require('./schedules');
 const { createScheduleRoutes } = require('./routes-schedules');
 const { createScheduleTransport } = require('./schedule-transport');
 const { error: scheduleError } = require('./schedule-fields');
+const INSTANCE = require('./instance');
+const { createIntegrations } = require('./integrations');
 
 const cleanModelEffort = (model, effort) => {
   const m = String(model || '').trim();
@@ -81,7 +83,9 @@ const projectHarness = createProjectHarnessStore();
 const projectRefs = createProjectRefsStore(path.join(__dirname, 'data', 'project-refs'));
 const conversationBranches = createBranchStore(BRANCH_STORE_FILE);
 const termEvents = createTermEventStore(path.join(__dirname, 'data', 'term-events.json'));
-const index = new SearchIndex(path.join(CLAUDE_DIR, 'projects'));
+// Antigravity (agy) support stays in the code but is off unless config "antigravity": true
+const AGY_ON = CONFIG.antigravity === true;
+const index = new SearchIndex(path.join(CLAUDE_DIR, 'projects'), undefined, AGY_ON ? undefined : []);
 const sessionDisplayTitle = (id, doc) => conversationBranches.getTitle(id) || conversationBranches.baseTitle(id, doc?.title) || null;
 const unifiedVault = createUnifiedVault({
   repoRoot: path.resolve(__dirname, '..'),
@@ -148,7 +152,7 @@ const watchAutopilot = () => checkAutopilotCompletions(hub).catch((e) => console
 
 let consoleTitleCache = new Map();
 const hub = {
-  baseDir: __dirname, port: PORT, token: TOKEN, hookToken: HOOK_TOKEN, config: CONFIG, buildId: SERVER_BUILD_ID, claudeDir: CLAUDE_DIR, I18N,
+  baseDir: __dirname, port: PORT, token: TOKEN, hookToken: HOOK_TOKEN, config: CONFIG, instance: INSTANCE, agyEnabled: AGY_ON, buildId: SERVER_BUILD_ID, claudeDir: CLAUDE_DIR, I18N,
   index, projects, accountPrefs, projectHarness, projectRefs, unifiedVault, conversationBranches, termEvents, sessionDisplayTitle, branchBackupDir: BRANCH_BACKUP_DIR,
   CA, codexRecoveryArgs, cliModelEffortArgs, buildRecoveryLaunchArgs, cleanModelEffort,
   fingerprint, projectSession, validSessionId, generatePlan, generateSubtasks, inspectWorkspace, scanFloorplan,
@@ -173,6 +177,7 @@ hub.rememberProjectTerm = (t) => {
 };
 
 Object.assign(hub, createTermManager(hub));
+hub.integrations = createIntegrations(hub);
 Object.assign(hub, createAccountSwitchService(hub));
 
 function describePid(pid) {
@@ -192,12 +197,12 @@ async function procTable() {
 
 const artifactsMod = require('./artifacts')({ dir: __dirname, index, terms: hub.terms });
 const notifier = require('./notify')(CONFIG);
-const watchdogOn = PORT === 7777 || process.env.CCD_WATCHDOG === '1';
+const watchdogOn = INSTANCE.watchdog;
 
 function makeGpuQ() {
   const config = (() => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { return CONFIG; } })();
   return require('./gpu')({
-    dir: __dirname, file: PORT === 7777 ? 'gpu-queue.json' : `gpu-queue-${PORT}.json`, config, pidAlive: hub.pidAlive, describePid,
+    dir: __dirname, file: PORT === 7777 ? 'gpu-queue.json' : `gpu-queue-${PORT}.json`, config, pidAlive: hub.pidAlive, describePid, readOnly: !INSTANCE.gpuGrant,
     procTable: async () => {
       const t = await procTable();
       if (t) {
@@ -220,7 +225,7 @@ function makeResearch() {
 }
 function makeCalendar() {
   const config = (() => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { return CONFIG; } })();
-  return require('./calendar')({ config, port: PORT });
+  return require('./calendar')({ config, port: PORT, readOnly: !INSTANCE.calendarWrite });
 }
 function makeDrive() {
   const config = (() => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { return CONFIG; } })();
@@ -379,8 +384,8 @@ if (watchdogOn) {
   codexTokenLedger.watchCodexTokens({
     usageDir: hub.USAGE_DIR, getUsage: () => hub.aiUsage(true), onError: tokenLedgerError,
   }).catch(tokenLedgerError);
-  setTimeout(() => { if (hub.agyQuota.ageMs() >= 180_000) hub.agyQuota.refresh({ force: true }).catch(() => {}); }, 3000).unref();
-  setInterval(() => { if (hub.agyQuota.ageMs() >= 4 * 60_000) hub.agyQuota.refresh({ force: true }).catch(() => {}); }, 5 * 60_000).unref();
+  if (AGY_ON) setTimeout(() => { if (hub.agyQuota.ageMs() >= 180_000) hub.agyQuota.refresh({ force: true }).catch(() => {}); }, 3000).unref();
+  if (AGY_ON) setInterval(() => { if (hub.agyQuota.ageMs() >= 4 * 60_000) hub.agyQuota.refresh({ force: true }).catch(() => {}); }, 5 * 60_000).unref();
 }
 
 function reloadModules(which) {
@@ -390,7 +395,7 @@ function reloadModules(which) {
   if (which.includes('calendar')) { fresh('./calendar'); const next = makeCalendar(); calendarMod.stop(); calendarMod = next; if (watchdogOn) calendarMod.start(); done.push('calendar'); }
   if (which.includes('apps')) { fresh('./apps'); const next = makeApps(); appsMod.stop(); appsMod = next; done.push('apps'); }
   if (which.includes('research')) {
-    fresh('./research'); try { fresh('../research-harness/lib/project'); } catch {}
+    fresh('./research'); try { fresh(require('./harness').libPath('project')); } catch {}
     const next = makeResearch();
     if (next) { research?.stop?.(); research = next; if (watchdogOn) research.start(); done.push('research'); }
   }
@@ -410,7 +415,7 @@ async function postNotice({ text, to = 'all', boardOnly = false, fromPid = 0 }) 
   fs.mkdirSync(path.dirname(NOTICE_FILE), { recursive: true });
   if (!fs.existsSync(NOTICE_FILE)) fs.writeFileSync(NOTICE_FILE, '# 허브 공지\n\n');
   fs.appendFileSync(NOTICE_FILE, `- [${stamp}] ${text.replace(/\n+/g, ' ')}\n`);
-  if (boardOnly || CONFIG.operator?.noticeDeliver !== true) return { ok: true, sent: [] };
+  if (boardOnly || CONFIG.operator?.noticeDeliver !== true || !INSTANCE.notices) return { ok: true, sent: [] };
   const want = String(to).split(',').map((x) => x.trim()).filter(Boolean);
   const now = Date.now();
   const DORMANT_MS = 60 * 60 * 1000;
@@ -466,7 +471,7 @@ function saveOperatorConfig(patch = {}) {
 function ensureOperator(force = false) {
   const oc = CONFIG.operator || {};
   if (operatorTerm()) return Promise.resolve(operatorTerm());
-  if ((oc.enabled === false && !force) || operatorStarting) return Promise.resolve(null);
+  if ((oc.enabled === false && !force) || (!INSTANCE.operator && !force) || operatorStarting) return Promise.resolve(null);
   operatorStarting = (async () => {
     const agent = ['claude', 'codex', 'agy'].includes(oc.agent) ? oc.agent : 'claude';
     const me = cleanModelEffort(oc.model, oc.effort);
@@ -523,6 +528,7 @@ const STATIC = {
   '/project-harness-ui.js': 'public/project-harness-ui.js', '/project-refs-ui.js': 'public/project-refs-ui.js', '/project-floorplan.js': 'public/project-floorplan.js', '/project-git.js': 'public/project-git.js', '/project-terminals.js': 'public/project-terminals.js', '/projects.css': 'public/projects.css',
   '/xterm.js': 'node_modules/@xterm/xterm/lib/xterm.js', '/xterm.css': 'node_modules/@xterm/xterm/css/xterm.css',
   '/addon-fit.js': 'node_modules/@xterm/addon-fit/lib/addon-fit.js', '/mermaid.js': 'node_modules/mermaid/dist/mermaid.min.js',
+  '/drive.js': 'public/drive.js', '/delta.js': 'public/delta.js', '/integrations-ui.js': 'public/integrations-ui.js',
   '/icon-claude.png': 'public/icon-claude.png', '/icon-openai.png': 'public/icon-openai.png',
 };
 
@@ -583,6 +589,7 @@ const server = http.createServer(async (req, res) => {
     }
     return fs.createReadStream(path.join(__dirname, file)).pipe(res);
   }
+  if (hub.integrations.handlePage(p, url, req, res, send)) return;
   if (!p.startsWith('/api/')) return send(res, 404, { error: 'not found' });
   if (p === '/api/session/subagent-hook' && req.method === 'POST') {
     return hookTransport.handleNativeHook(req, res, body, send);
@@ -595,6 +602,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST') hub.overviewStale();
 
   try {
+    if (await hub.integrations.handleApi(p, url, req, res, body, send)) return;
     if (await projectRoutes.handleProjectRoutes(p, url, req, res, body, send, authed)) return;
     if (await sessionRoutes.handleSessionRoutes(p, url, req, res, body, send, authed)) return;
     if (await systemRoutes.handleSystemRoutes(p, url, req, res, body, send, authed)) return;
@@ -678,8 +686,8 @@ function remoteInfo() {
   const ips = [...remote.keys()];
   const ipv4 = ips.filter((ip) => !ip.includes(':')).map(remoteUrl);
   const ipv6 = ips.filter((ip) => ip.includes(':')).map(remoteUrl);
-  const urls = [...ipv4, ...(dns ? [remoteUrl(dns)] : []), ...ipv6];
-  return { enabled: CONFIG.remote !== 'off', listening: ips, urls, tailscaleInstalled: fs.existsSync('C:\\Program Files\\Tailscale\\tailscale.exe') };
+  const urls = [...hub.integrations.remoteUrls(), ...ipv4, ...(dns ? [remoteUrl(dns)] : []), ...ipv6];
+  return { enabled: CONFIG.remote !== 'off', listening: ips, urls, homelink: hub.integrations.homelink, tailscaleInstalled: fs.existsSync('C:\\Program Files\\Tailscale\\tailscale.exe') };
 }
 hub.remoteInfo = remoteInfo;
 
@@ -689,7 +697,7 @@ setInterval(() => {
   catch (err) { logServerError('workspace-folder-link', err); }
 }, 15000).unref?.();
 setInterval(() => {
-  const every = Number((CONFIG.operator || {}).checkEveryMin ?? 180);
+  const every = INSTANCE.operator ? Number((CONFIG.operator || {}).checkEveryMin ?? 180) : 0;
   const t = operatorTerm();
   if (!every || !t || Date.now() - (t.lastCheckAt || t.meta?.spawnedAt || 0) < every * 60e3) return;
   let scr = ''; try { scr = hub.readTerm(t, 15).join('\n'); } catch { return; }
@@ -717,8 +725,11 @@ server.listen(PORT, HOST, () => {
   const u = `http://${HOST}:${PORT}/?t=${TOKEN}`;
   fs.writeFileSync(path.join(__dirname, 'url.txt'), u + '\n');
   console.log('Agent CLI Hub:', u);
-  watchAutopilot();
-  setInterval(watchAutopilot, 3500).unref?.();
+  hub.integrations.startDeltaUi();
+  if (INSTANCE.autopilot) {
+    watchAutopilot();
+    setInterval(watchAutopilot, 3500).unref?.();
+  } else console.log('[instance] side instance on port', PORT, '— watchdog/operator/autopilot/recovery/GPU grants off (see instance.js)');
 });
 syncRemoteListeners();
 setInterval(syncRemoteListeners, 15000).unref?.();
