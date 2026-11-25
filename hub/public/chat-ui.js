@@ -134,8 +134,7 @@ function parseInteractivePrompt(lines) {
 
   const tailText = cleaned.slice(-4).join('\n');
   const hasNavFooter = /(?:navigate.*(?:select|enter)|enter\s+(?:to\s+)?(?:confirm|select)|arrow keys to select|esc\s+(?:to\s+)?(?:skip|cancel|deny|reject))/i.test(tailText);
-  const hasQuestionHdr = cleaned.some((l) => /^\s*(?:Question\s+\d+\/\d+:|Do you want to (?:proceed|allow|make this edit|create|run)|Allow Codex to|Trust (?:this|the) (?:folder|workspace))/i.test(l));
-  if (!hasNavFooter && !hasQuestionHdr) return null;
+  if (!hasNavFooter) return null;
 
   // Strip footer hint lines from bottom
   let end = cleaned.length;
@@ -171,8 +170,8 @@ function parseInteractivePrompt(lines) {
     if (choicesReversed.length > 0) break;
   }
   const choices = choicesReversed.reverse();
-  if (choices.length < 2) return null;
-  const selectedIndex = Math.max(0, choices.findIndex((c) => c.selected));
+  if (choices.length < 2 || !choices.some((c) => c.selected)) return null;
+  const selectedIndex = choices.findIndex((c) => c.selected);
   const qStart = (() => {
     for (let i = firstChoiceIdx - 1; i >= Math.max(0, firstChoiceIdx - 8); i--) {
       if (/^\s*(?:Question\s+\d+\/\d+:|Do you want to|Allow Codex to|Trust (?:this|the))/i.test(body[i])) return i;
