@@ -33,3 +33,17 @@ dist/
 hub/.branches.json
 hub/__pycache__/
 vault/
+
+# machine/organization-specific scripts, docs and job definitions (never committed)
+hub/local/
+hub/telegram-bridge-state.json
+hub/drivejobs*.json
+hub/drive-cache/
+hub/llm-tools/
+hub/mailcollect.log
+hub/terms-state*.json
+hub/url.txt
+hub/crash-recovery.log
+hub/delta-session.json
+hub/cwatch.pid
+hub/telegram-bridge.pid
