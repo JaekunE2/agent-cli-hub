@@ -6,6 +6,14 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const CRASH_LOG = path.join(__dirname, 'server.log');
+const logServerError = (tag, err) => {
+  const msg = `[${new Date().toISOString()}] [${tag}] ${err?.stack || err?.message || err}\n`;
+  try { fs.appendFileSync(CRASH_LOG, msg, 'utf8'); } catch {}
+  console.error(msg.trimEnd());
+};
+process.on('uncaughtException', (err) => logServerError('uncaughtException', err));
+process.on('unhandledRejection', (err) => logServerError('unhandledRejection', err));
 try { os.setPriority(os.constants.priority.PRIORITY_ABOVE_NORMAL); } catch {}
 const crypto = require('crypto');
 const { spawn } = require('child_process');
@@ -425,12 +433,15 @@ const server = http.createServer(async (req, res) => {
 });
 
 const wss = new WebSocketServer({ noServer: true });
+wss.on('error', (err) => logServerError('wss', err));
 server.on('upgrade', (req, sock, head) => {
+  sock.on('error', () => {});
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (hookTransport.handleUpgrade(wss, req, sock, head, url, authed)) return;
   const t = hub.terms.get(url.searchParams.get('id') || '');
   if (url.pathname !== '/ws/term' || !authed(req, url) || !t) return sock.destroy();
   wss.handleUpgrade(req, sock, head, (ws) => {
+    ws.on('error', () => t.clients.delete(ws));
     t.clients.add(ws);
     ws.send(JSON.stringify({ type: 'resize', cols: t.cols, rows: t.rows }));
     ws.send(JSON.stringify({ type: 'data', data: t.buf }));

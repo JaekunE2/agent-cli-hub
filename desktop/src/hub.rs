@@ -43,6 +43,7 @@ pub async fn connect(server: &mut Option<Child>, pty_port: Option<u16>) -> Resul
     let collision = format!("Port {port} is in use but did not respond as Agent CLI Hub.");
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut pending = "The hub HTTP server did not become ready.".to_owned();
+    let mut spawned_here = false;
 
     while Instant::now() < deadline {
         // Windows can report a closed loopback port just after two seconds.
@@ -57,10 +58,15 @@ pub async fn connect(server: &mut Option<Child>, pty_port: Option<u16>) -> Resul
                         .map_err(|e| format!("Could not check Node.js ({e})."))?
                     {
                         *server = None;
-                        return Err(format!("Node.js exited before the hub was ready ({status}). Check that Node supports --use-system-ca and hub dependencies are installed."));
+                        if spawned_here {
+                            return Err(format!("Node.js exited before the hub was ready ({status}). Check that Node supports --use-system-ca and hub dependencies are installed."));
+                        }
+                        *server = Some(backend::start(&dir, port, pty_port)?);
+                        spawned_here = true;
                     }
                 } else {
                     *server = Some(backend::start(&dir, port, pty_port)?);
+                    spawned_here = true;
                 }
             }
             Err(error) => return Err(format!("Could not connect to {address} ({error}).")),

@@ -33,7 +33,14 @@ pub async fn change(server: &mut Option<Child>, restart: bool) -> Result<Option<
     let dir = backend::directory()?;
     let base = hub::base_url()?;
     let port = base.port_or_known_default().unwrap();
-    let server_pid = check(&dir.join("server.js"), port, None).await?;
+    let server_pid = match check(&dir.join("server.js"), port, None).await {
+        Ok(pid) => pid,
+        Err(_) if restart => {
+            *server = None;
+            return hub::connect(server, None).await.map(Some);
+        }
+        Err(e) => return Err(e),
+    };
     let token = backend::token(&dir, &base).ok_or("Could not read the local Hub token.")?;
     let client = hub::client()?;
     let info = identity(&client, &base, &token).await?;
