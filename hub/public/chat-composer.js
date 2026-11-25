@@ -330,6 +330,10 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       <button type="button" class="btn-sm primary" data-chat-apply hidden>변경 적용</button>
     </div>
     <div class="att-strip" data-chat-atts hidden></div>
+    <div class="chat-quote-bar" data-chat-quote hidden>
+      <span class="chat-quote-lbl" data-chat-quote-txt></span>
+      <button type="button" class="ghost icon-btn btn-sm" data-chat-quote-clear aria-label="참조 해제" title="참조 해제">${ICO.close}</button>
+    </div>
     <div class="chat-reply-in">
       <label class="ghost icon-btn btn-sm filebtn" title="파일 · 이미지 첨부 (드래그&드롭 / 붙여넣기)" style="flex:none;height:38px;min-height:38px;width:36px;justify-content:center;border-radius:10px;border:1px solid var(--line-strong)">${ICO.clip}<input type="file" class="fpick" multiple hidden></label>
       <textarea rows="1" aria-label="대화 프롬프트" placeholder="대화 프롬프트 · Enter 전송"></textarea>
@@ -640,6 +644,24 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
   };
 
   const chatAttCtl = createAttachmentStrip($('[data-chat-atts]', barHost), cwd);
+  const quoteBar = $('[data-chat-quote]', barHost);
+  const quoteTxtEl = $('[data-chat-quote-txt]', barHost);
+  let quotedMsg = null;
+  const setQuotedMsg = (info) => {
+    quotedMsg = info && info.text ? info : null;
+    if (!quoteBar || !quoteTxtEl) return;
+    if (!quotedMsg) {
+      quoteBar.hidden = true;
+      quoteTxtEl.textContent = '';
+      return;
+    }
+    const preview = String(quotedMsg.text).replace(/\s+/g, ' ').trim().slice(0, 90);
+    quoteTxtEl.textContent = `참조 · #${quotedMsg.index} (${quotedMsg.author}): ${preview}`;
+    quoteBar.hidden = false;
+    repIn?.focus();
+  };
+  barHost._setQuote = setQuotedMsg;
+  $('[data-chat-quote-clear]', barHost)?.addEventListener('click', () => setQuotedMsg(null));
   const dropZone = barHost.closest('.chat-shell') || barHost;
   attachFileInput(dropZone, null, cwd, { onFiles: chatAttCtl.addFiles, onPaths: chatAttCtl.addPaths });
   bindFilePick(barHost, null, cwd, { onFiles: (fl, it) => chatAttCtl.addFiles(fl, it) });
@@ -649,8 +671,17 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
     if (chatAttCtl.isLoading()) return toast('첨부 파일을 준비하는 중입니다…');
     const attPaths = chatAttCtl.takePaths();
     const typed = repIn.value.trim();
-    const text = [...attPaths, typed].filter(Boolean).join(' ');
-    if (!text) return;
+    const bodyText = [...attPaths, typed].filter(Boolean).join(' ');
+    if (!bodyText) return;
+    let quotePrefix = '';
+    if (quotedMsg) {
+      const snippet = String(quotedMsg.text).trim().slice(0, 800);
+      const lines = snippet.split('\n').slice(0, 12).map((l) => `> ${l}`);
+      if (quotedMsg.text.length > 800 || quotedMsg.text.split('\n').length > 12) lines.push('> …');
+      quotePrefix = `> [참조 #${quotedMsg.index} · ${quotedMsg.author}]\n${lines.join('\n')}\n\n`;
+      setQuotedMsg(null);
+    }
+    const text = `${quotePrefix}${bodyText}`;
     repIn.value = ''; fitRep();
     repBtn.disabled = true;
     try {

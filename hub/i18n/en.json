@@ -3188,5 +3188,9 @@
   "- `.token`, 비밀번호, API 키 등 민감 정보가 커밋·산출물에 섞이지 않았는지 확인합니다.": "- Verify that `.token`, passwords, API keys, or other secrets are not leaked into commits or artifacts.",
   "- `git status`, `git log -n 3 --oneline` 및 핵심 테스트/빌드 통과 결과를 요약해 보고합니다.": "- Summarize `git status`, `git log -n 3 --oneline`, and core test/build results.",
   "허용된 쓰기 범위(": "Modified files outside allowed write scope (",
-  ") 외 파일이 수정되었습니다.": ")."
+  ") 외 파일이 수정되었습니다.": ").",
+  "이 메시지 참조": "Reference this message",
+  "참조 해제": "Clear reference",
+  "참조 · #": "Ref · #",
+  "[참조 #": "[Ref #"
 }

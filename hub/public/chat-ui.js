@@ -624,6 +624,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
         }
         const when = dt && !Number.isNaN(dt.getTime()) ? dt.toLocaleTimeString(uiLocale(), { hour: '2-digit', minute: '2-digit' }) : '';
         const copyBtn = `<button class="ghost icon-btn btn-sm" data-copy-mi="${k}" aria-label="이 메시지 복사" title="이 메시지 복사">${ICO.copy}</button>`;
+        const quoteBtn = `<button class="ghost icon-btn btn-sm" data-quote-mi="${k}" aria-label="이 메시지 참조" title="이 메시지 참조"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/></svg></button>`;
         const forkBtn = `<button class="ghost icon-btn btn-sm" data-fork-mi="${k}" aria-label="이 지점에서 분기 만들기" title="이 지점에서 분기 만들기">${ICO.branch}</button>`;
         const editBtn = m.role === 'user' ? `<button class="ghost icon-btn btn-sm" data-edit-mi="${k}" aria-label="이 메시지 수정" title="이 메시지 수정 · 재실행">${ICO.edit}</button>` : '';
         const editedBadge = m.edited ? `<span class="badge">수정됨</span>` : '';
@@ -634,10 +635,10 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
           parts.push(`<div class="msg tool${tgt ? ' target' : ''}" data-mi="${k}">${linkPaths(hl(rawTxt, terms))}</div>${branchChipsHTML(gi)}`);
         } else if (m.role === 'user') {
           const bodyHtml = linkPaths(hl(rawTxt, terms));
-          parts.push(`<div class="msg user${tgt ? ' target' : ''}" data-mi="${k}">${branchOriginNote}<div class="msg-bubble"><div class="msg-body">${bodyHtml}</div></div><div class="msg-meta">${editedBadge}<span class="msg-acts">${editBtn}${forkBtn}${copyBtn}</span>${when ? `<span>${esc(when)}</span>` : ''}</div>${branchChipsHTML(gi)}</div>`);
+          parts.push(`<div class="msg user${tgt ? ' target' : ''}" data-mi="${k}">${branchOriginNote}<div class="msg-bubble"><div class="msg-body">${bodyHtml}</div></div><div class="msg-meta">${editedBadge}<span class="msg-acts">${quoteBtn}${editBtn}${forkBtn}${copyBtn}</span>${when ? `<span>${esc(when)}</span>` : ''}</div>${branchChipsHTML(gi)}</div>`);
         } else {
           const bodyHtml = !terms.length ? md(rawTxt) : `<div class="msg-body" style="white-space:pre-wrap">${linkPaths(hl(rawTxt, terms))}</div>`;
-          parts.push(`<div class="msg assistant${tgt ? ' target' : ''}" data-mi="${k}"><div class="msg-av">${agentIcon(ag || 'claude')}</div><div class="msg-col"><div class="msg-hd"><span class="w-role">${esc(who)}</span>${when ? `<span class="w-ts">${esc(when)}</span>` : ''}${editedBadge}<span style="flex:1"></span><span class="msg-acts">${forkBtn}${copyBtn}</span></div><div class="msg-bubble">${bodyHtml}</div>${branchChipsHTML(gi)}</div></div>`);
+          parts.push(`<div class="msg assistant${tgt ? ' target' : ''}" data-mi="${k}"><div class="msg-av">${agentIcon(ag || 'claude')}</div><div class="msg-col"><div class="msg-hd"><span class="w-role">${esc(who)}</span>${when ? `<span class="w-ts">${esc(when)}</span>` : ''}${editedBadge}<span style="flex:1"></span><span class="msg-acts">${quoteBtn}${forkBtn}${copyBtn}</span></div><div class="msg-bubble">${bodyHtml}</div>${branchChipsHTML(gi)}</div></div>`);
         }
       });
       flushTools();
@@ -645,6 +646,21 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
       window.ACH_PREVIEW?.hydrateMermaid(msgsHost);
       window.ACH_PREVIEW?.scanChatBlocks(msgsHost);
       msgsHost.onclick = (e) => {
+        const qb = e.target.closest('[data-quote-mi]');
+        if (qb) {
+          const k = Number(qb.dataset.quoteMi);
+          const m = d.messages[k];
+          if (m) {
+            const shell = msgsHost.closest('.chat-shell') || document;
+            const compHost = shell.querySelector('.chat-comp-host') || document.querySelector('.chat-comp-host');
+            compHost?._setQuote?.({
+              index: b + k + 1,
+              author: m.role === 'user' ? '사용자' : (who || 'Assistant'),
+              text: String(m.text || ''),
+            });
+          }
+          return;
+        }
         const cb = e.target.closest('[data-copy-mi]');
         if (cb) { const m = d.messages[Number(cb.dataset.copyMi)]; if (m) copyText(m.text); return; }
         const fb = e.target.closest('[data-fork-mi]');

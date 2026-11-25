@@ -403,6 +403,9 @@ body.side-collapsed .side-float-btn { display: inline-flex; }
 .chat-me-bar [data-chat-acc] { flex: 1 1 175px; min-width: 125px; }
 .chat-me-bar [data-chat-model-pick] { flex: 1 1 150px; min-width: 115px; }
 .chat-me-bar [data-chat-model] { flex: 1 1 130px; min-width: 100px; }
+.chat-quote-bar { width: 100%; max-width: 880px; margin: 0 auto 7px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 10px; border-left: 3px solid var(--accent); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; background: var(--bg); font-size: 12px; color: var(--muted); }
+.chat-reply-bar.compact .chat-quote-bar { max-width: 100%; }
+.chat-quote-lbl { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chat-me-bar [data-chat-effort] { flex: 0 1 135px; min-width: 105px; }
 .chat-me-bar [data-chat-apply] { height: 28px; min-height: 28px; padding: 0 10px; font-size: 12px; flex: none; }
 .chat-reply-bar.compact .chat-me-bar { gap: 4px; margin-bottom: 6px; padding: 5px 6px; }
