@@ -265,21 +265,52 @@ async function postNotice({ text, to = 'all', boardOnly = false, fromPid = 0 }) 
 const OPERATOR_DIR = path.join(__dirname, '..', 'operator');
 const operatorTerm = () => [...hub.terms.values()].find((t) => t.meta?.operator && t.exited === null);
 let operatorStarting = null;
+function saveOperatorConfig(patch = {}) {
+  const prev = CONFIG.operator && typeof CONFIG.operator === 'object' ? CONFIG.operator : {};
+  const next = { ...prev };
+  if (patch.agent !== undefined) {
+    next.agent = ['claude', 'codex', 'agy'].includes(patch.agent) ? patch.agent : 'claude';
+    delete next.command;
+  }
+  if (patch.model !== undefined || patch.effort !== undefined) {
+    const me = cleanModelEffort(patch.model ?? next.model, patch.effort ?? next.effort);
+    if (me.model) next.model = me.model; else delete next.model;
+    if (me.effort) next.effort = me.effort; else delete next.effort;
+  }
+  if (patch.enabled !== undefined) next.enabled = !!patch.enabled;
+  if (patch.skipPermissions !== undefined) next.skipPermissions = !!patch.skipPermissions;
+  if (patch.checkEveryMin !== undefined) {
+    const mins = Number(patch.checkEveryMin);
+    if (Number.isFinite(mins) && mins >= 0) next.checkEveryMin = Math.min(1440, Math.round(mins));
+  }
+  CONFIG.operator = next;
+  const tmp = CONFIG_FILE + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(CONFIG, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, CONFIG_FILE);
+  return next;
+}
 function ensureOperator(force = false) {
   const oc = CONFIG.operator || {};
   if (operatorTerm()) return Promise.resolve(operatorTerm());
   if ((oc.enabled === false && !force) || operatorStarting) return Promise.resolve(null);
   operatorStarting = (async () => {
-    const agent = oc.agent === 'codex' ? 'codex' : 'claude';
+    const agent = ['claude', 'codex', 'agy'].includes(oc.agent) ? oc.agent : 'claude';
+    const me = cleanModelEffort(oc.model, oc.effort);
     const dirKey = path.resolve(OPERATOR_DIR).toLowerCase();
     const prior = [...index.docs.values()].some((d) => (d.agent || 'claude') === agent && d.cwd && path.resolve(d.cwd).toLowerCase() === dirKey)
       || (agent === 'claude' && fs.existsSync(path.join(CLAUDE_DIR, 'projects', path.resolve(OPERATOR_DIR).replace(/[^A-Za-z0-9]/g, '-'))));
     const kickoff = '운영 매뉴얼을 읽고 "시작 점검"을 해 주세요.';
     let cmd, args;
     if (Array.isArray(oc.command) && oc.command.length) { cmd = oc.command[0]; args = oc.command.slice(1); }
-    else if (agent === 'codex') ({ cmd, args } = hub.codexLaunch(prior ? ['resume', '--last'] : [kickoff]));
-    else { cmd = 'claude.exe'; args = [...(prior ? ['--continue'] : []), ...(oc.skipPermissions === false ? [] : ['--dangerously-skip-permissions']), ...(prior ? [] : [kickoff])]; }
-    const t = hub.createTerm({ cwd: OPERATOR_DIR, cmd, args, title: '🛰 관제 세션', operator: true });
+    else if (agent === 'codex') ({ cmd, args } = hub.codexLaunch([...(hub.cliModelEffortArgs?.('codex', me.model, me.effort) || []), ...(prior ? ['resume', '--last'] : [kickoff])]));
+    else if (agent === 'agy') {
+      cmd = hub.agyExe();
+      args = [...(prior ? ['--continue'] : []), ...(oc.skipPermissions === false ? [] : ['--dangerously-skip-permissions']), ...(hub.cliModelEffortArgs?.('agy', me.model, me.effort) || []), ...(prior ? [] : ['--prompt-interactive', kickoff])];
+    } else {
+      cmd = 'claude.exe';
+      args = [...(prior ? ['--continue'] : []), ...(oc.skipPermissions === false ? [] : ['--dangerously-skip-permissions']), ...(hub.cliModelEffortArgs?.('claude', me.model, me.effort) || []), ...(prior ? [] : [kickoff])];
+    }
+    const t = hub.createTerm({ cwd: OPERATOR_DIR, cmd, args, title: '🛰 관제 세션', operator: true, agent, model: me.model, effort: me.effort });
     const favs = hub.loadFavs();
     if (!favs.includes(`term:${t.id}`)) fs.writeFileSync(hub.FAV_FILE, JSON.stringify([`term:${t.id}`, ...favs.filter((k) => !/^term:/.test(k) || hub.terms.has(k.slice(5)))]));
     console.log(`[operator] ${agent} started as t:${t.id}${prior ? ' (continuing its last conversation)' : ''}`);
@@ -287,7 +318,7 @@ function ensureOperator(force = false) {
   })().catch((e) => { console.error('[operator]', e.message); return null; }).finally(() => { setTimeout(() => { operatorStarting = null; }, 5000); });
   return operatorStarting;
 }
-Object.assign(hub, { readNotices, postNotice, OPERATOR_DIR, operatorTerm, ensureOperator });
+Object.assign(hub, { readNotices, postNotice, OPERATOR_DIR, operatorTerm, ensureOperator, saveOperatorConfig });
 
 // ---------- HTTP & WebSocket ----------
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png' };

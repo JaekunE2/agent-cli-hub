@@ -448,7 +448,7 @@ $('#side')?.addEventListener('click', async (e) => {
   if (k === 'home') return select({ kind: 'home' });
   if (k === 'cmdk') return openCommandPalette();
   if (k === 'search') return select({ kind: 'search' });
-  if (k === 'system') return select({ kind: ['usage', 'gpu', 'vault'].includes(state.sysTab) ? state.sysTab : 'usage' });
+  if (k === 'system') return select({ kind: ['usage', 'gpu', 'vault', 'operator'].includes(state.sysTab) ? state.sysTab : 'usage' });
   if (k === 'calendar') return select({ kind: 'calendar' });
   if (k === 'terms') { state.termsTab = 'active'; return select({ kind: 'terms' }); }
   if (k === 'terms-recent') { state.termsTab = 'recent'; return select({ kind: 'terms' }); }

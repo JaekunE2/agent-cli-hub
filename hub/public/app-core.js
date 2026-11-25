@@ -690,7 +690,7 @@ function branchTagHTML(br, compact = false) {
 
 // ---------- Linear-Style Minimal Workspace Sidebar (Projects + Terminals + Recent; System Grouped) ----------
 function systemTopHTML(activeTab, actionsHTML = '') {
-  state.sysTab = ['usage', 'gpu', 'vault'].includes(activeTab) ? activeTab : 'usage';
+  state.sysTab = ['usage', 'gpu', 'vault', 'operator'].includes(activeTab) ? activeTab : 'usage';
   const gpuWait = state.gpu?.waiting?.length || 0;
   const tab = (id, icon, label, badge = '') =>
     `<button role="tab" data-systab="${id}" aria-selected="${activeTab === id}" class="${activeTab === id ? 'on' : ''}">${icon} ${label}${badge}</button>`;
@@ -699,6 +699,7 @@ function systemTopHTML(activeTab, actionsHTML = '') {
       ${tab('usage', ICO.chart, 'AI 사용량')}
       ${tab('gpu', ICO.gpu, 'GPU 대기열', gpuWait ? ` <span class="badge lim" style="margin-left:3px">${gpuWait}</span>` : '')}
       ${tab('vault', ICO.layers, '공통 자원')}
+      ${tab('operator', ICO.settings, '관제 세션')}
     </div>
     ${actionsHTML ? `<div class="sys-acts">${actionsHTML}</div>` : ''}
   </div>`;

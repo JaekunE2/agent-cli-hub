@@ -84,7 +84,7 @@ function select(sel, tab, persistTab = false) {
   }
   renderSide();
   window.ACH_PREVIEW?.setActiveController(null);
-  return ({ home: viewHome, terms: viewTerms, projects: window.viewProjects || (() => { setBar('<h2>Project</h2>'); $('#view').textContent = 'Project 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }), console: viewConsole, recent: viewTranscript, term: viewTerm, search: viewSearch, usage: viewUsage, research: viewResearch, gpu: viewGpu, calendar: viewCalendar, vault: window.viewVault || (() => { setBar('<h2>공통 자원</h2>'); $('#view').textContent = '공통 자원 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }) })[sel.kind]?.();
+  return ({ home: viewHome, terms: viewTerms, projects: window.viewProjects || (() => { setBar('<h2>Project</h2>'); $('#view').textContent = 'Project 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }), console: viewConsole, recent: viewTranscript, term: viewTerm, search: viewSearch, usage: viewUsage, research: viewResearch, gpu: viewGpu, operator: window.viewOperator || (() => { setBar('<h2>관제 세션</h2>'); }), calendar: viewCalendar, vault: window.viewVault || (() => { setBar('<h2>공통 자원</h2>'); $('#view').textContent = '공통 자원 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }) })[sel.kind]?.();
 }
 
 function setBar(html) {
@@ -251,6 +251,7 @@ function openCommandPalette() {
       { icon: ICO.gpu, title: 'GPU 대기열', sub: '설정', keys: 'gpu vram 대기열 설정 settings', run: () => select({ kind: 'gpu' }) },
       { icon: ICO.calendar, title: '캘린더', sub: '일정 · 할 일', keys: 'calendar 캘린더 일정', run: () => select({ kind: 'calendar' }) },
       { icon: ICO.layers, title: '공통 자원', sub: '설정 · 스킬/MCP/하네스', keys: 'vault shared resources skills mcp harness 공통 자원 통합 볼트 스킬 하네스 설정 settings', run: () => select({ kind: 'vault' }) },
+      { icon: ICO.settings, title: '관제 세션', sub: '설정 · CLI/주기', keys: 'operator 관제 세션 cli claude codex agy 설정 settings', run: () => select({ kind: 'operator' }) },
       { icon: ICO.sun, title: '테마 전환 (시스템 · 라이트 · 다크)', sub: '화면 밝기 변경', keys: 'theme dark light 테마 다크 라이트', run: () => cycleTheme() },
     ].filter((a) => hit(a.title, a.sub, a.keys));
     pushGrp('빠른 이동 · 작업', actions);
@@ -646,6 +647,7 @@ if (desktopInvoke) window.addEventListener('hashchange', () => {
   else if (open.startsWith('switch:')) { const sid = open.slice(7); select({ kind: 'recent', id: sid }); setTimeout(() => openSwitch(sid), 900); } // from the phone alert
   else if (open === 'gpu') select({ kind: 'gpu' });
   else if (open === 'vault') select({ kind: 'vault' });
+  else if (open === 'operator') select({ kind: 'operator' });
   else if (open.startsWith('research:')) { state.rtab = { [open.slice(9)]: qs.get('tab') || 'overview' }; select({ kind: 'research', id: open.slice(9) }); }
   else if (qs.get('q')) { runSearch(qs.get('q')); }
   else {
@@ -658,7 +660,7 @@ if (desktopInvoke) window.addEventListener('hashchange', () => {
       }
       const saved = fromHash || previous;
       const s = saved?.sel;
-      if (s && ['home', 'terms', 'projects', 'usage', 'calendar', 'gpu', 'vault', 'recent', 'research'].includes(s.kind)) restored = saved;
+      if (s && ['home', 'terms', 'projects', 'usage', 'calendar', 'gpu', 'vault', 'operator', 'recent', 'research'].includes(s.kind)) restored = saved;
       else if (s?.kind === 'term' && terminalExists(s.id)) restored = saved;
       else if (s?.kind === 'console' && state.consoles.some((c) => String(c.id) === String(s.id))) restored = saved;
     } catch {}

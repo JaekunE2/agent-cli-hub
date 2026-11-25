@@ -36,13 +36,42 @@ function createSystemRoutes(hub) {
       return true;
     }
     if (p === '/api/operator') {
+      const oc = config.operator || {};
+      const payload = (t) => ({
+        enabled: oc.enabled !== false,
+        agent: ['claude', 'codex', 'agy'].includes(oc.agent) ? oc.agent : 'claude',
+        model: oc.model || '',
+        effort: oc.effort || '',
+        checkEveryMin: Number(oc.checkEveryMin ?? 180),
+        skipPermissions: oc.skipPermissions !== false,
+        hasCustomCommand: Array.isArray(oc.command) && oc.command.length > 0,
+        term: t ? hub.termInfo(t) : null,
+        dir: hub.OPERATOR_DIR,
+      });
       if (req.method === 'POST') {
+        const b = await body(req);
+        if (b && ['agent', 'model', 'effort', 'enabled', 'checkEveryMin', 'skipPermissions'].some((k) => Object.hasOwn(b, k))) {
+          hub.saveOperatorConfig?.(b);
+        }
+        const cur = hub.operatorTerm();
+        if (b?.action === 'stop') {
+          if (cur) await hub.stopTerminal?.(cur).catch(() => {});
+          send(res, 200, { ok: true, ...payload(hub.operatorTerm()) });
+          return true;
+        }
+        if ((b?.restart || b?.action === 'restart') && cur) {
+          await hub.stopTerminal?.(cur).catch(() => {});
+          await new Promise((r) => setTimeout(r, 350));
+        }
+        if (b?.action === 'save') {
+          send(res, 200, { ok: true, ...payload(hub.operatorTerm()) });
+          return true;
+        }
         const t = await hub.ensureOperator(true);
-        send(res, t ? 200 : 500, t ? { ok: true, term: hub.termInfo(t) } : { error: '관제 세션을 시작하지 못했습니다 (claude / codex CLI 설치 확인)' });
+        send(res, t ? 200 : 500, t ? { ok: true, ...payload(t) } : { error: '관제 세션을 시작하지 못했습니다 (선택한 CLI 설치 경로를 확인하세요)' });
         return true;
       }
-      const t = hub.operatorTerm();
-      send(res, 200, { enabled: (config.operator || {}).enabled !== false, term: t ? hub.termInfo(t) : null, dir: hub.OPERATOR_DIR });
+      send(res, 200, payload(hub.operatorTerm()));
       return true;
     }
     if (p === '/api/usage') {

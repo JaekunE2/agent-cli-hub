@@ -413,3 +413,123 @@ function paintGpu() {
   }
   $('#view').innerHTML = `<div class="sys-shell">${sysTop}<div class="sys-body"><div class="page-wrap">${tabs}${content}</div></div></div>`;
 }
+
+async function viewOperator() {
+  setBar('');
+  const render = (data, cliOpts) => {
+    const sysTop = systemTopHTML('operator');
+    const t = data.term;
+    const optsMap = cliOpts?.options || {};
+    const agents = [['claude', 'Claude Code'], ['codex', 'Codex CLI'], ['agy', 'Antigravity (AGY)']];
+    const fillModels = (agent, selectedModel, selectedEffort) => {
+      const o = optsMap[agent] || {};
+      const models = o.models || [];
+      const efforts = o.efforts || [];
+      const modelHtml = [`<option value="">CLI 기본 모델</option>`,
+        ...models.map((m) => `<option value="${esc(m.id)}"${m.id === selectedModel ? ' selected' : ''}>${esc(m.label || m.id)}</option>`)].join('');
+      const effortHtml = [`<option value="">기본 추론</option>`,
+        ...efforts.map((ef) => `<option value="${esc(ef.id)}"${ef.id === selectedEffort ? ' selected' : ''}>${esc(ef.label || ef.id)}</option>`)].join('');
+      return { modelHtml, effortHtml };
+    };
+    const { modelHtml, effortHtml } = fillModels(data.agent, data.model, data.effort);
+    const statusBadge = t
+      ? `<span class="badge ok">실행 중 · t:${esc(t.id)} (${esc(t.agent || data.agent)})</span>`
+      : '<span class="badge">실행 중 아님</span>';
+    $('#view').innerHTML = `<div class="sys-shell">${sysTop}<div class="sys-body"><div class="page-wrap">
+      <section class="sheet">
+        <div class="sheet-hd">
+          <div>
+            <h2>🛰 관제 세션 설정</h2>
+            <div class="ums" style="margin:4px 0 0">PC 환경·GPU·계정 한도·디스크를 점검하고 다른 세션에 공지를 전달하는 관제 세션의 CLI와 주기를 설정합니다.</div>
+          </div>
+          ${statusBadge}
+        </div>
+        <div style="display:flex;flex-direction:column;gap:14px;padding:14px 16px">
+          <div class="row" style="gap:10px;flex-wrap:wrap;align-items:center">
+            <span class="ums" style="margin:0">작업 폴더: <code class="mono">${esc(data.dir || '')}</code></span>
+            ${t ? `<button type="button" class="btn-sm" id="opOpenTerm">관제 터미널 열기 ↗</button><button type="button" class="btn-sm danger ghost" id="opStop">중지</button>` : ''}
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
+            <label style="display:flex;flex-direction:column;gap:5px">
+              <span class="ums" style="margin:0">관제 CLI</span>
+              <select id="opAgent">${agents.map(([id, lbl]) => `<option value="${id}"${data.agent === id ? ' selected' : ''}>${esc(lbl)}</option>`).join('')}</select>
+            </label>
+            <label style="display:flex;flex-direction:column;gap:5px">
+              <span class="ums" style="margin:0">모델</span>
+              <select id="opModel">${modelHtml}</select>
+            </label>
+            <label style="display:flex;flex-direction:column;gap:5px">
+              <span class="ums" style="margin:0">추론 성능</span>
+              <select id="opEffort">${effortHtml}</select>
+            </label>
+            <label style="display:flex;flex-direction:column;gap:5px">
+              <span class="ums" style="margin:0">정기 점검 주기 (분, 0=끔)</span>
+              <input type="number" id="opInterval" min="0" max="1440" value="${esc(String(data.checkEveryMin ?? 180))}">
+            </label>
+          </div>
+          <div class="row" style="gap:16px;flex-wrap:wrap">
+            <label class="row" style="gap:6px;cursor:pointer"><input type="checkbox" id="opEnabled"${data.enabled ? ' checked' : ''}><span>허브 시작 시 관제 세션 자동 실행</span></label>
+            <label class="row" style="gap:6px;cursor:pointer"><input type="checkbox" id="opSkipPerms"${data.skipPermissions ? ' checked' : ''}><span>권한 확인 건너뛰기(yolo)</span></label>
+          </div>
+          ${data.hasCustomCommand ? '<div class="ums" style="margin:0;color:var(--warn)">현재 config.json의 사용자 지정 command가 적용 중입니다. 저장하면 선택한 CLI 설정으로 전환됩니다.</div>' : ''}
+          <div class="row" style="gap:8px;justify-content:flex-end">
+            <button type="button" id="opSaveOnly">설정만 저장</button>
+            <button type="button" class="primary" id="opSaveRestart">${t ? '저장 후 관제 세션 재시작' : '저장 후 관제 세션 시작'}</button>
+          </div>
+        </div>
+      </section>
+    </div></div></div>`;
+
+    const view = $('#view');
+    view.onclick = async (e) => {
+      const sysTab = e.target.closest('[data-systab]');
+      if (sysTab) return select({ kind: sysTab.dataset.systab });
+      if (e.target.closest('#opOpenTerm') && t) return select({ kind: 'term', id: t.id });
+      if (e.target.closest('#opStop')) {
+        await api('/api/operator', { method: 'POST', body: { action: 'stop' } });
+        toast('관제 세션을 중지했습니다.');
+        await refreshOverview();
+        return viewOperator();
+      }
+      const saveBtn = e.target.closest('#opSaveOnly');
+      const restartBtn = e.target.closest('#opSaveRestart');
+      if (saveBtn || restartBtn) {
+        const btn = saveBtn || restartBtn;
+        btn.disabled = true;
+        try {
+          const body = {
+            action: restartBtn ? 'restart' : 'save',
+            agent: $('#opAgent')?.value || 'claude',
+            model: $('#opModel')?.value || '',
+            effort: $('#opEffort')?.value || '',
+            checkEveryMin: Number($('#opInterval')?.value ?? 180),
+            enabled: !!$('#opEnabled')?.checked,
+            skipPermissions: !!$('#opSkipPerms')?.checked,
+          };
+          const r = await api('/api/operator', { method: 'POST', body });
+          if (r.error) throw new Error(r.error);
+          toast(restartBtn ? `관제 세션을 ${body.agent}로 시작했습니다.` : '관제 세션 설정을 저장했습니다.');
+          await refreshOverview();
+          return viewOperator();
+        } catch (err) {
+          toast(err.message || '관제 세션 설정에 실패했습니다.', 5000, 'danger');
+          if (btn.isConnected) btn.disabled = false;
+        }
+      }
+    };
+    const agSel = $('#opAgent');
+    if (agSel) {
+      agSel.onchange = () => {
+        const { modelHtml: mh, effortHtml: eh } = fillModels(agSel.value, '', '');
+        if ($('#opModel')) $('#opModel').innerHTML = mh;
+        if ($('#opEffort')) $('#opEffort').innerHTML = eh;
+      };
+    }
+  };
+  const [data, cliOpts] = await Promise.all([
+    api('/api/operator'),
+    api('/api/projects/cli-options').catch(() => ({})),
+  ]);
+  render(data, cliOpts);
+}
+window.viewOperator = viewOperator;
