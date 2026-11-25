@@ -100,33 +100,81 @@ function computeAutoFlowLayout(tasks, dir = 'lr') {
     (columns[c] ||= []).push(t);
   }
 
+  // Build temporary layered graph with dummy nodes for skip-layer edges (span > 1)
+  // so barycenter ordering sees intermediate crossings and keeps long edges on the outside.
+  const layers = columns.map((col) => (col || []).map((t) => ({ id: t.id, task: t, dummy: false })));
+  const layerParents = new Map();
+  const layerChildren = new Map();
+  const ensureNode = (id) => {
+    if (!layerParents.has(id)) layerParents.set(id, []);
+    if (!layerChildren.has(id)) layerChildren.set(id, []);
+  };
+  for (const t of tasks) ensureNode(t.id);
+
+  let dummySeq = 0;
+  for (const t of tasks) {
+    const cTo = levels.get(t.id);
+    for (const pid of (parentsOf.get(t.id) || [])) {
+      const cFrom = levels.get(pid);
+      if (cFrom == null || cTo == null || cTo <= cFrom) continue;
+      if (cTo - cFrom === 1) {
+        layerChildren.get(pid).push(t.id);
+        layerParents.get(t.id).push(pid);
+      } else {
+        let prev = pid;
+        for (let c = cFrom + 1; c < cTo; c++) {
+          const did = `__d_${dummySeq++}`;
+          ensureNode(did);
+          (layers[c] ||= []).push({ id: did, task: null, dummy: true });
+          layerChildren.get(prev).push(did);
+          layerParents.get(did).push(prev);
+          prev = did;
+        }
+        layerChildren.get(prev).push(t.id);
+        layerParents.get(t.id).push(prev);
+      }
+    }
+  }
+
+  // Average edge span (shorter span first on ties so straight main chains stay on the primary axis)
+  const avgSpan = (id) => {
+    if (!byId.has(id)) return 1;
+    const cSelf = levels.get(id) ?? 0;
+    const outs = [...(rawAdj.get(id) || [])].filter((cid) => levels.has(cid));
+    const ins = [...(parentsOf.get(id) || [])].filter((pid) => levels.has(pid));
+    const spans = [
+      ...outs.map((cid) => Math.max(1, levels.get(cid) - cSelf)),
+      ...ins.map((pid) => Math.max(1, cSelf - levels.get(pid))),
+    ];
+    return spans.length ? spans.reduce((s, v) => s + v, 0) / spans.length : 1;
+  };
+
   // Barycenter ordering pass (forward + backward) to minimize edge crossings
   const rankInCol = new Map();
-  columns.forEach((col) => col.forEach((t, idx) => rankInCol.set(t.id, idx)));
+  layers.forEach((col) => col.forEach((n, idx) => rankInCol.set(n.id, idx)));
 
-  for (let pass = 0; pass < 3; pass++) {
-    for (let c = 1; c < columns.length; c++) {
-      const col = columns[c];
-      col.sort((a, b) => {
-        const pa = [...(parentsOf.get(a.id) || [])];
-        const pb = [...(parentsOf.get(b.id) || [])];
-        const ba = pa.length ? pa.reduce((s, id) => s + (rankInCol.get(id) ?? 0), 0) / pa.length : (rankInCol.get(a.id) ?? 0);
-        const bb = pb.length ? pb.reduce((s, id) => s + (rankInCol.get(id) ?? 0), 0) / pb.length : (rankInCol.get(b.id) ?? 0);
-        return ba - bb;
-      });
-      col.forEach((t, idx) => rankInCol.set(t.id, idx));
-    }
-    for (let c = columns.length - 2; c >= 0; c--) {
-      const col = columns[c];
-      col.sort((a, b) => {
-        const ca = [...(rawAdj.get(a.id) || [])];
-        const cb = [...(rawAdj.get(b.id) || [])];
-        const ba = ca.length ? ca.reduce((s, id) => s + (rankInCol.get(id) ?? 0), 0) / ca.length : (rankInCol.get(a.id) ?? 0);
-        const bb = cb.length ? cb.reduce((s, id) => s + (rankInCol.get(id) ?? 0), 0) / cb.length : (rankInCol.get(b.id) ?? 0);
-        return ba - bb;
-      });
-      col.forEach((t, idx) => rankInCol.set(t.id, idx));
-    }
+  const sortLayer = (col, neighborsOf) => {
+    col.sort((a, b) => {
+      const na = neighborsOf.get(a.id) || [];
+      const nb = neighborsOf.get(b.id) || [];
+      const ba = na.length ? na.reduce((s, id) => s + (rankInCol.get(id) ?? 0), 0) / na.length : (rankInCol.get(a.id) ?? 0);
+      const bb = nb.length ? nb.reduce((s, id) => s + (rankInCol.get(id) ?? 0), 0) / nb.length : (rankInCol.get(b.id) ?? 0);
+      if (Math.abs(ba - bb) > 1e-6) return ba - bb;
+      if (a.dummy !== b.dummy) return a.dummy ? 1 : -1;
+      const sa = avgSpan(a.id), sb = avgSpan(b.id);
+      if (Math.abs(sa - sb) > 1e-6) return sa - sb;
+      return (rankInCol.get(a.id) ?? 0) - (rankInCol.get(b.id) ?? 0);
+    });
+    col.forEach((n, idx) => rankInCol.set(n.id, idx));
+  };
+
+  for (let pass = 0; pass < 4; pass++) {
+    for (let c = 1; c < layers.length; c++) sortLayer(layers[c], layerParents);
+    for (let c = layers.length - 2; c >= 0; c--) sortLayer(layers[c], layerChildren);
+  }
+
+  for (let c = 0; c < columns.length; c++) {
+    columns[c] = (layers[c] || []).filter((n) => !n.dummy && n.task).map((n) => n.task);
   }
 
   const CARD_W = 244;
@@ -199,9 +247,8 @@ function refineAutoFlowCoords(tasks, columns, cardEls, dir = 'lr') {
       curY += maxH + LAYER_GAP;
     });
     const packRow = (col, targetXOf) => {
-      const sorted = [...col].sort((a, b) => targetXOf(a) - targetXOf(b));
       let cursor = PAD_X;
-      const items = sorted.map((t) => {
+      const items = col.map((t) => {
         const w = sizeOf(t.id).w;
         const desired = Math.max(cursor, Math.round(targetXOf(t) - w / 2));
         cursor = desired + w + ITEM_GAP;
@@ -255,9 +302,8 @@ function refineAutoFlowCoords(tasks, columns, cardEls, dir = 'lr') {
   });
 
   const packCol = (col, targetYOf) => {
-    const sorted = [...col].sort((a, b) => targetYOf(a) - targetYOf(b));
     let cursor = PAD_Y;
-    const items = sorted.map((t) => {
+    const items = col.map((t) => {
       const h = sizeOf(t.id).h;
       const desired = Math.max(cursor, Math.round(targetYOf(t) - h / 2));
       cursor = desired + h + ITEM_GAP;
