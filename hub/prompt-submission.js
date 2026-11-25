@@ -12,7 +12,7 @@ function composerText(screen, cursorLine) {
   if (start < 0 || cursorLine < start) return null;
   const draft = lines.slice(start).join('\n').replace(/^[ \t]*[›❯>][ \t]*/, '').split(
     /\n\s*(?:[─━]{3,}|[^\n]+ · (?:[A-Z]:[\\/]|~|\/)|← for agents\s*·\s*\? for shortcuts|\? for shortcuts|esc to (?:interrupt|cancel)|alt\s*\+\s*m\s*(?:to\s*)?send|tab to (?:queue|steer))/i, 1
-  )[0];
+  )[0].replace(/[ \t]{2,}(?:⚠\s+\d+\s+warnings?\s*·\s*f2 to view|\? for shortcuts)[ \t]*$/gim, '');
   if (cursorLine >= start + draft.split('\n').length) return null;
   return draft.trimEnd();
 }

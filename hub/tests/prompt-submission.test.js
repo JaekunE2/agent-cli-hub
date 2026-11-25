@@ -253,3 +253,11 @@ test('AGY submits a medium Korean pasted message with short visible tail or tran
   });
   assert.deepEqual(writes, [text, PTY_KEYS.enter]);
 });
+
+test('Codex right-aligned warnings badge on the prompt line is not mistaken for a user draft', async () => {
+  const readyWithWarn = ['› Ask Codex to do anything                                    ⚠ 5 warnings · f2 to view', '  GPT-6.1-Sol medium · D:\\repo'];
+  const draftWithWarn = [`› ${message}                                    ⚠ 5 warnings · f2 to view`, '  GPT-6.1-Sol medium · D:\\repo'];
+  for (const target of ['term', 'automatic', 'console']) {
+    assert.deepEqual(await replay(target, [readyWithWarn, draftWithWarn, running]), { ok: true, writes: [message, PTY_KEYS.enter] }, target);
+  }
+});
