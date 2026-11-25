@@ -35,6 +35,7 @@ const { createTermEventStore } = require('./term-events');
 const { createAccountSwitchService } = require('./account-switch');
 const { createProjectRoutes } = require('./routes-projects');
 const { createSessionRoutes } = require('./routes-sessions');
+const { ingestToolHook } = require('./tool-hooks');
 const { createSystemRoutes } = require('./routes-system');
 
 const cleanModelEffort = (model, effort) => {
@@ -55,6 +56,7 @@ const PY = process.env.CCD_PYTHON || CONFIG.python || 'python';
 const TOKEN_FILE = path.join(__dirname, '.token');
 if (!fs.existsSync(TOKEN_FILE)) fs.writeFileSync(TOKEN_FILE, crypto.randomBytes(18).toString('hex'));
 const TOKEN = fs.readFileSync(TOKEN_FILE, 'utf8').trim();
+const HOOK_TOKEN = crypto.createHmac('sha256', TOKEN).update('subagent-hooks').digest('hex');
 
 const accountPrefs = createAccountPrefsStore({ cleanModelEffort });
 const projectHarness = createProjectHarnessStore();
@@ -62,7 +64,7 @@ const projectRefs = createProjectRefsStore(path.join(__dirname, 'data', 'project
 const conversationBranches = createBranchStore(BRANCH_STORE_FILE);
 const termEvents = createTermEventStore(path.join(__dirname, 'data', 'term-events.json'));
 const index = new SearchIndex(path.join(CLAUDE_DIR, 'projects'));
-const sessionDisplayTitle = (id, doc) => conversationBranches.getTitle(id) || doc?.title || null;
+const sessionDisplayTitle = (id, doc) => conversationBranches.getTitle(id) || conversationBranches.baseTitle(id, doc?.title) || null;
 const unifiedVault = createUnifiedVault({
   repoRoot: path.resolve(__dirname, '..'),
   vaultDir: CONFIG.vaultDir ? path.resolve(__dirname, CONFIG.vaultDir) : '',
@@ -128,7 +130,7 @@ const watchAutopilot = () => checkAutopilotCompletions(hub).catch((e) => console
 
 let consoleTitleCache = new Map();
 const hub = {
-  baseDir: __dirname, port: PORT, token: TOKEN, config: CONFIG, buildId: SERVER_BUILD_ID, claudeDir: CLAUDE_DIR, I18N,
+  baseDir: __dirname, port: PORT, token: TOKEN, hookToken: HOOK_TOKEN, config: CONFIG, buildId: SERVER_BUILD_ID, claudeDir: CLAUDE_DIR, I18N,
   index, projects, accountPrefs, projectHarness, projectRefs, unifiedVault, conversationBranches, termEvents, sessionDisplayTitle, branchBackupDir: BRANCH_BACKUP_DIR,
   CA, codexRecoveryArgs, cliModelEffortArgs, buildRecoveryLaunchArgs, cleanModelEffort,
   fingerprint, projectSession, validSessionId, generatePlan, generateSubtasks, inspectWorkspace, scanFloorplan,
@@ -340,6 +342,8 @@ const STATIC = {
   '/styles.css': 'public/styles.css', '/components.css': 'public/components.css',
   '/ui.js': 'public/ui.js', '/app-core.js': 'public/app-core.js', '/sidebar-ui.js': 'public/sidebar-ui.js',
   '/home-terms-ui.js': 'public/home-terms-ui.js', '/terminals-ui.js': 'public/terminals-ui.js',
+  '/tool-stream-ui.js': 'public/tool-stream-ui.js',
+  '/subagent-viewer.js': 'public/subagent-viewer.js',
   '/files-artifacts.js': 'public/files-artifacts.js', '/chat-composer.js': 'public/chat-composer.js',
   '/chat-ui.js': 'public/chat-ui.js', '/usage-ui.js': 'public/usage-ui.js',
   '/switch-gpu-ui.js': 'public/switch-gpu-ui.js', '/research-ui.js': 'public/research-ui.js',
@@ -381,6 +385,7 @@ hub.writeInteractiveTerm = async (t, data) => {
     if (t.meta?.projectAutoClose && t.lastInputAt === t.meta.spawnedAt) hub.touchUserInput(t);
   }
   const result = await t.proc.write(data);
+  if (result?.ok && data === '\x03') t._subagentsInterruptedAt = Date.now();
   if (result?.ok && /[\r\n]/.test(data)) hub.touchUserInput(t);
   return !!result?.ok;
 };
@@ -398,6 +403,17 @@ const server = http.createServer(async (req, res) => {
     return fs.createReadStream(path.join(__dirname, file)).pipe(res);
   }
   if (!p.startsWith('/api/')) return send(res, 404, { error: 'not found' });
+  if (p === '/api/session/subagent-hook' && req.method === 'POST') {
+    if (req.socket.remoteAddress !== '127.0.0.1' || req.headers.origin || req.headers['x-hook-token'] !== HOOK_TOKEN) return send(res, 401, { error: 'bad token' });
+    try {
+      const event = ingestToolHook(hub, await body(req));
+      if (event) for (const ws of hookClients) if (ws.readyState === 1) ws.send(JSON.stringify(event));
+      return send(res, 200, { ok: true });
+    } catch (error) {
+      console.error('[hub hook]', error);
+      return send(res, 500, { ok: false });
+    }
+  }
   if (p === '/api/calendar/google/callback') return calendarMod.oauthCallback(url, res).catch((e) => send(res, 500, { error: e.message }));
   if (!authed(req, url)) return send(res, 401, { error: 'bad token' });
   if (req.method === 'POST') hub.overviewStale();
@@ -413,8 +429,16 @@ const server = http.createServer(async (req, res) => {
 });
 
 const wss = new WebSocketServer({ noServer: true });
+const hookClients = new Set();
 server.on('upgrade', (req, sock, head) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
+  if (url.pathname === '/ws/hooks' && authed(req, url)) {
+    return wss.handleUpgrade(req, sock, head, ws => {
+      hookClients.add(ws);
+      ws.on('close', () => hookClients.delete(ws));
+      ws.on('error', () => hookClients.delete(ws));
+    });
+  }
   const t = hub.terms.get(url.searchParams.get('id') || '');
   if (url.pathname !== '/ws/term' || !authed(req, url) || !t) return sock.destroy();
   wss.handleUpgrade(req, sock, head, (ws) => {

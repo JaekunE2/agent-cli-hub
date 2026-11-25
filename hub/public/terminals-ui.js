@@ -190,7 +190,7 @@ function viewConsole() {
   const title = esc(c ? consoleLabel(c) : 'pid ' + state.sel.id);
   setSessionBar(`<h2 title="${title}"><span>${title}</span></h2>`,
     dockTopSegHTML({ openSet: new Set(initialPanels), isContentTab, hasTerm: true, hasChat: !!sid, showFiles: !!sid, curTab: state.tab }),
-    `<button id="btnConMore" class="ghost icon-btn btn-sm desk" aria-label="콘솔 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
+    `<button id="btnConMore" class="ghost icon-btn btn-sm desk" aria-label="콘솔 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`, sid ? { sessionId: sid } : null);
 
   let dock = null;
   $('#bar').onclick = (e) => {
@@ -673,8 +673,9 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
 
 function viewTerm() {
   const gen = viewGen;
+  const id = String(state.sel.id);
   clearTimeout(chatPollTimer);
-  const t = state.terms.find((x) => String(x.id) === String(state.sel.id));
+  const t = state.terms.find(x => String(x.id) === id);
   const sid = resolveTermSessionId(t);
   const artSid = sid || (t ? `term:${t.id}` : '');
   const ag = t?.agent || (t?.codex ? 'codex' : t?.agy ? 'agy' : t?.claude ? 'claude' : null);
@@ -705,14 +706,13 @@ function viewTerm() {
     <span id="termLiveBadge" class="term-live-pill ${pillCls}">${pillText}</span>
     <div class="session-meta">${sessionOriginButton(t?.branch)}${branchTagHTML(t?.branch)}${t?.account ? `<span class="badge c">${esc(t.account.label.replace(/@.*/, ''))}</span>` : ''}${(t?.model || t?.effort) ? `<span class="badge" title="선택된 모델 · 추론 성능">${esc([t.model, t.effort].filter(Boolean).join(' · '))}</span>` : ''}</div>`,
     dockTopSegHTML({ openSet: new Set(initialPanels), isContentTab, hasTerm: true, hasChat: true, showFiles: true, curTab: state.tab }),
-    `<button id="btnTermMore" class="ghost icon-btn btn-sm" aria-label="터미널 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
+    `<button id="btnTermMore" class="ghost icon-btn btn-sm" aria-label="터미널 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`,
+    { termId: String(id), cwd: t?.cwd });
 
   let dock = null;
-  const doRenameTerm = async () => {
-    const curTitle = t ? termLabel(t) : '';
-    const sid = resolveTermSessionId(t) || '';
-    const saved = await renameSessionItem({ sessionId: sid, termId: id, currentTitle: curTitle });
-    if (saved !== null) return openTerm(id);
+  const doRenameTerm = () => {
+    const current = state.terms.find(term => String(term.id) === String(id));
+    if (current) renameSessionItem({ termId: id, currentTitle: termLabel(current) });
   };
   $('#bar h2')?.addEventListener('dblclick', doRenameTerm);
   $('#bar').onclick = async (e) => {

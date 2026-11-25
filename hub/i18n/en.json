@@ -3192,5 +3192,21 @@
   "이 메시지 참조": "Reference this message",
   "참조 해제": "Clear reference",
   "참조 · #": "Ref · #",
-  "[참조 #": "[Ref #"
+  "[참조 #": "[Ref #",
+  "세션 명칭": "Session name",
+  "기본 제목으로 복원하려면 비워 두세요.": "Leave blank to restore the default title.",
+  "서브에이전트": "Subagents",
+  "서브에이전트 뷰어": "Subagent viewer",
+  "프롬프트": "Prompt",
+  "도구 호출 내역": "Tool calls",
+  "최근 출력": "Latest output",
+  "중단": "Stopped",
+  "결과": "Result",
+  "세션 열기": "Open session",
+  "뷰어 열기": "Open viewer",
+  "최근 완료/중단": "Recently completed or stopped",
+  "서브에이전트 기록이 없습니다.": "No subagent activity.",
+  "터미널 ID가 올바르지 않습니다.": "Invalid terminal ID.",
+  "세션 명칭을 저장하지 못했습니다.": "Could not save the session name.",
+  "서브에이전트를 찾을 수 없습니다.": "Subagent not found."
 }
