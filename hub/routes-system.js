@@ -44,13 +44,14 @@ function createSystemRoutes(hub) {
         effort: oc.effort || '',
         checkEveryMin: Number(oc.checkEveryMin ?? 180),
         skipPermissions: oc.skipPermissions !== false,
+        noticeDeliver: oc.noticeDeliver === true,
         hasCustomCommand: Array.isArray(oc.command) && oc.command.length > 0,
         term: t ? hub.termInfo(t) : null,
         dir: hub.OPERATOR_DIR,
       });
       if (req.method === 'POST') {
         const b = await body(req);
-        if (b && ['agent', 'model', 'effort', 'enabled', 'checkEveryMin', 'skipPermissions'].some((k) => Object.hasOwn(b, k))) {
+        if (b && ['agent', 'model', 'effort', 'enabled', 'checkEveryMin', 'skipPermissions', 'noticeDeliver'].some((k) => Object.hasOwn(b, k))) {
           hub.saveOperatorConfig?.(b);
         }
         const cur = hub.operatorTerm();

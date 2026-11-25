@@ -470,6 +470,7 @@ async function viewOperator() {
           <div class="row" style="gap:16px;flex-wrap:wrap">
             <label class="row" style="gap:6px;cursor:pointer"><input type="checkbox" id="opEnabled"${data.enabled ? ' checked' : ''}><span>허브 시작 시 관제 세션 자동 실행</span></label>
             <label class="row" style="gap:6px;cursor:pointer"><input type="checkbox" id="opSkipPerms"${data.skipPermissions ? ' checked' : ''}><span>권한 확인 건너뛰기(yolo)</span></label>
+            <label class="row" style="gap:6px;cursor:pointer"><input type="checkbox" id="opNoticeDeliver"${data.noticeDeliver ? ' checked' : ''}><span>공지를 실행·대기 중인 터미널(Claude·Codex·AGY)에 자동 입력</span></label>
           </div>
           ${data.hasCustomCommand ? '<div class="ums" style="margin:0;color:var(--warn)">현재 config.json의 사용자 지정 command가 적용 중입니다. 저장하면 선택한 CLI 설정으로 전환됩니다.</div>' : ''}
           <div class="row" style="gap:8px;justify-content:flex-end">
@@ -505,6 +506,7 @@ async function viewOperator() {
             checkEveryMin: Number($('#opInterval')?.value ?? 180),
             enabled: !!$('#opEnabled')?.checked,
             skipPermissions: !!$('#opSkipPerms')?.checked,
+            noticeDeliver: !!$('#opNoticeDeliver')?.checked,
           };
           const r = await api('/api/operator', { method: 'POST', body });
           if (r.error) throw new Error(r.error);

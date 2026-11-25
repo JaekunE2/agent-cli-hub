@@ -250,11 +250,24 @@ async function postNotice({ text, to = 'all', boardOnly = false, fromPid = 0 }) 
   fs.mkdirSync(path.dirname(NOTICE_FILE), { recursive: true });
   if (!fs.existsSync(NOTICE_FILE)) fs.writeFileSync(NOTICE_FILE, '# 허브 공지\n\n');
   fs.appendFileSync(NOTICE_FILE, `- [${stamp}] ${text.replace(/\n+/g, ' ')}\n`);
-  if (boardOnly) return { ok: true, sent: [] };
+  if (boardOnly || CONFIG.operator?.noticeDeliver !== true) return { ok: true, sent: [] };
   const want = String(to).split(',').map((x) => x.trim()).filter(Boolean);
-  const targets = [...hub.terms.values()].filter((t) => t.exited === null && !t.meta?.operator && !t.meta?.projectTask
-    && (!fromPid || t.pid !== fromPid) && ['claude', 'codex'].includes(hub.agentOf(t))
-    && (want.includes('all') || want.includes(`t:${t.id}`) || want.includes(t.id)));
+  const now = Date.now();
+  const DORMANT_MS = 60 * 60 * 1000;
+  const isActive = (t, agent) => {
+    const st = agent === 'codex' ? hub.codexStatus?.(t) : agent === 'agy' ? hub.agyStatus?.(t) : hub.claudeStatus?.(t);
+    if (st === 'busy') return true;
+    const lastActive = Math.max(Number(t.lastOutputAt) || 0, Number(t.lastInputAt) || 0, Number(t.meta?.spawnedAt) || 0);
+    return !lastActive || (now - lastActive) < DORMANT_MS;
+  };
+  const targets = [...hub.terms.values()].filter((t) => {
+    if (t.exited !== null || t.meta?.operator || t.meta?.projectTask) return false;
+    if (fromPid && t.pid === fromPid) return false;
+    const agent = hub.agentOf(t);
+    if (!['claude', 'codex', 'agy'].includes(agent)) return false;
+    if (!isActive(t, agent)) return false;
+    return want.includes('all') || want.includes(`t:${t.id}`) || want.includes(t.id);
+  });
   const msg = `[허브 공지 ${stamp.slice(11)}] ${text.replace(/\n+/g, ' ')} — 하던 작업은 그대로 이어가세요. (전체 공지: ccd notices)`;
   for (const t of targets) { t.proc.write(msg); await hub.sleep(hub.SUBMIT_DELAY); t.proc.write('\r'); }
   hub.overviewStale();
@@ -279,6 +292,7 @@ function saveOperatorConfig(patch = {}) {
   }
   if (patch.enabled !== undefined) next.enabled = !!patch.enabled;
   if (patch.skipPermissions !== undefined) next.skipPermissions = !!patch.skipPermissions;
+  if (patch.noticeDeliver !== undefined) next.noticeDeliver = !!patch.noticeDeliver;
   if (patch.checkEveryMin !== undefined) {
     const mins = Number(patch.checkEveryMin);
     if (Number.isFinite(mins) && mins >= 0) next.checkEveryMin = Math.min(1440, Math.round(mins));

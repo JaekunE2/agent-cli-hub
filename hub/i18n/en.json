@@ -3171,5 +3171,6 @@
   "현재 세션 산출물": "Current session artifacts",
   "프로젝트 ·": "Project ·",
   "대상": "Target",
-  "표시할 산출물이 없습니다.": "No artifacts to display."
+  "표시할 산출물이 없습니다.": "No artifacts to display.",
+  "공지를 실행·대기 중인 터미널(Claude·Codex·AGY)에 자동 입력": "Auto-send notices to active/idle terminals (Claude, Codex, AGY)"
 }
