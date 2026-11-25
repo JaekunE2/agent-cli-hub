@@ -465,10 +465,12 @@ function windowTitle(raw) {
 }
 function termLabel(t) {
   if (t.operator) return '관제 세션';
+  const custom = cleanSideTitle(t.customTitle);
+  if (custom) return custom;
   if (t.projectTask) return t.title;
   const session = recentSession(t.sessionId || (t.agy && state.sel.kind === 'term' && state.sel.id === t.id ? state.sel.agyResume : null));
   const con = t.pid && state.consoles.find(c => c.managed && (c.pids || []).includes(t.pid));
-  const label = cleanSideTitle(t.customTitle) || cleanSideTitle(session?.title) || cleanSideTitle(session?.firstPrompt)
+  const label = cleanSideTitle(session?.title) || cleanSideTitle(session?.firstPrompt)
     || cleanSideTitle(t.sessionName) || windowTitle(con?.title) || windowTitle(t.liveTitle);
   if (label) return label;
   const title = String(t.title || '');
@@ -476,29 +478,27 @@ function termLabel(t) {
   if (/^cmd(?:\.exe)?$/i.test(title)) return 'Command Prompt';
   return (/^(?:agy |codex resume |claude resume )[\da-f-]+$/i.test(title) ? '' : windowTitle(title)) || providerName(t.agent);
 }
-async function renameSessionItem({ sessionId = '', termId = '', currentTitle = '' } = {}) {
-  const next = prompt('새 세션 명칭을 입력하세요:', currentTitle || '');
-  if (next === null) return null;
-  const trimmed = next.trim();
-  const body = {
-    ...(sessionId ? { id: sessionId } : {}),
-    ...(termId ? { termId } : {}),
-    title: trimmed,
-  };
-  const res = await api('/api/transcript/title', { method: 'POST', body });
-  if (res?.error) { toast(res.error, 4000, 'danger'); return null; }
-  const saved = res?.title || '';
-  if (termId) {
-    const t = (state.terms || []).find((x) => String(x.id) === String(termId));
-    if (t) { t.customTitle = saved; if (saved) t.title = saved; }
-  }
-  if (sessionId) {
-    const r = recentSession(sessionId);
-    if (r) r.title = saved || null;
-  }
-  await refreshOverview();
-  toast('세션 명칭을 수정했습니다');
-  return saved;
+function renameSessionItem({ sessionId = '', termId = '', currentTitle = '' } = {}) {
+  const dialog = projectDialog('세션 명칭 수정', `
+    <label>세션 명칭<input name="title" value="${esc(currentTitle)}" maxlength="140" autofocus></label>
+    <small>기본 제목으로 복원하려면 비워 두세요.</small>`, async form => {
+    const id = sessionId || `term:${termId}`;
+    const res = await api('/api/transcript/title', { method: 'POST', requireOk: true, body: { id, title: form.get('title') } });
+    for (const item of [...state.recent, ...Object.values(state.recentByAgent || {}).flat(), ...(state.search.sessions || [])]) {
+      if (item.sessionId === res.sessionId) item.title = res.displayTitle;
+    }
+    await Promise.all([refreshOverview(), refreshRecent()]);
+    const active = state.sel;
+    const term = active.kind === 'term' && state.terms.find(t => String(t.id) === String(active.id));
+    const label = term ? termLabel(term) : active.kind === 'recent' ? sessionLabel(recentSession(active.id), active.id) : '';
+    const heading = $('#bar .session-head h2 span');
+    if (heading && label) heading.title = heading.textContent = label;
+    renderSide();
+    updateDocTitle();
+    toast('세션 명칭을 수정했습니다');
+  });
+  dialog.querySelector('input').select();
+  return dialog;
 }
 function consoleLabel(c) {
   const mt = c.managed && state.terms.find((t) => t.pid && c.pids.includes(t.pid));

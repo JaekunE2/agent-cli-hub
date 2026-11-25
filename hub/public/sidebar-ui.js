@@ -271,6 +271,7 @@ function renderSide() {
             : '<span class="srow-tag idle">대기</span>'
   );
 
+  const renameButton = `<button type="button" class="ghost icon-btn side-rename" data-side-rename title="세션 명칭 수정" aria-label="세션 명칭 수정">${ICO.edit}</button>`;
   const renderUnifiedRow = (entry) => {
     if (entry.kind === 'term') {
       const t = entry.item;
@@ -295,7 +296,7 @@ function renderSide() {
       return `<div class="srow${isSel ? ' sel' : ''}${unread ? ' just-done' : ''}" data-key="term:${esc(t.id)}" title="${esc([termLabel(t), pj?.name, t.cwd, brTip].filter(Boolean).join(' · '))}">
         ${agentIcon(kind, dot)}
         <button type="button" class="ghost srow-main srow-open"><span class="srow-t">${esc(termLabel(t))}</span><span class="srow-s">${tags}</span></button>
-        <span class="srow-end">${unread ? '<span class="srow-unread" title="방금 작업 완료"></span>' : ''}${fk ? `<span class="fav${isStar ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${isStar ? '즐겨찾기 해제' : '즐겨찾기'}">${isStar ? ICO.starFill : ICO.star}</span>` : ''}</span>
+        <span class="srow-end">${t.operator ? '' : renameButton}${unread ? '<span class="srow-unread" title="방금 작업 완료"></span>' : ''}${fk ? `<span class="fav${isStar ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${isStar ? '즐겨찾기 해제' : '즐겨찾기'}">${isStar ? ICO.starFill : ICO.star}</span>` : ''}</span>
       </div>`;
     }
     if (entry.kind === 'console') {
@@ -326,6 +327,7 @@ function renderSide() {
       ${agentIcon(ag, liveDot)}
       <button type="button" class="ghost srow-main srow-open"><span class="srow-t">${esc(sessionLabel(r))}</span><span class="srow-s">${subHTML}</span></button>
       <span class="srow-end">
+        ${renameButton}
         <span class="fav${on ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${on ? '즐겨찾기 해제' : '즐겨찾기'}">${on ? ICO.starFill : ICO.star}</span>
         <button class="record-delete danger ghost icon-btn" data-hide-record="${esc(r.sessionId)}" title="${delRecTitle}" aria-label="${esc(delRecAria)}">${ICO.trash}</button>
       </span>
@@ -402,6 +404,8 @@ function renderSide() {
 const renderTopNav = renderSide;
 
 $('#side')?.addEventListener('click', async (e) => {
+  const rename = e.target.closest('[data-side-rename]');
+  if (rename) return renameSidebarItem(rename.closest('[data-key]'));
   const fold = e.target.closest('[data-sec-fold]');
   if (fold) { e.stopPropagation(); return toggleSideFold(fold.dataset.secFold); }
   if (e.target.closest('[data-tgroup]')) {
@@ -466,29 +470,28 @@ $('#side')?.addEventListener('click', async (e) => {
   if (k === 'projects') return select({ kind: 'projects' });
   if (k.startsWith('project:')) return typeof openProject === 'function' ? openProject(k.slice(8)) : select({ kind: 'projects', id: k.slice(8) });
   const i = k.indexOf(':');
-  if (i > 0) select({ kind: k.slice(0, i), id: k.slice(i + 1) });
+  if (i > 0 && !(it.classList.contains('sel') && e.target.closest('.srow-open'))) {
+    select({ kind: k.slice(0, i), id: k.slice(i + 1) });
+  }
 });
 
-$('#side')?.addEventListener('dblclick', async (e) => {
-  if (e.target.closest('button, [data-fav], [data-hide-record]')) return;
-  const it = e.target.closest('[data-key]');
-  if (!it) return;
-  const k = it.dataset.key || '';
+function renameSidebarItem(item) {
+  const k = item?.dataset.key || '';
   if (k.startsWith('term:')) {
-    e.preventDefault();
     const tid = k.slice(5);
     const t = (state.terms || []).find((x) => String(x.id) === tid);
-    if (!t) return;
-    const sid = typeof resolveTermSessionId === 'function' ? (resolveTermSessionId(t) || '') : (t.sessionId || '');
-    const saved = await renameSessionItem({ sessionId: sid, termId: tid, currentTitle: termLabel(t) });
-    if (saved !== null && state.sel.kind === 'term' && String(state.sel.id) === tid) openTerm(tid);
+    if (!t || t.operator) return;
+    renameSessionItem({ termId: tid, currentTitle: termLabel(t) });
   } else if (k.startsWith('recent:')) {
-    e.preventDefault();
     const sid = k.slice(7);
     const r = recentSession(sid);
     const lt = (state.terms || []).find((x) => x.sessionId === sid);
     const cur = r ? sessionLabel(r) : (lt ? termLabel(lt) : sid.slice(0, 8));
-    const saved = await renameSessionItem({ sessionId: sid, termId: lt?.id || '', currentTitle: cur });
-    if (saved !== null && state.sel.kind === 'recent' && state.sel.id === sid) viewTranscript();
+    renameSessionItem({ sessionId: sid, currentTitle: cur });
   }
+}
+$('#side')?.addEventListener('dblclick', (e) => {
+  const button = e.target.closest('button');
+  if ((button && !button.matches('.srow-open')) || e.target.closest('[data-fav]')) return;
+  renameSidebarItem(e.target.closest('[data-key]'));
 });

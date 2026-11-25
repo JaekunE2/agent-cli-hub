@@ -179,6 +179,8 @@ async function waitFor(fn, ms, step = 500) {
 }
 
 /** Create managed terminal, PTY host IPC, PID recovery, and state persistence manager. */
+const { claudeHookArgs } = require('./tool-hooks');
+
 function createTermManager(hub) {
   const {
     baseDir, port, token, config, claudeDir, index, projects, accountPrefs, unifiedVault,
@@ -428,7 +430,7 @@ function createTermManager(hub) {
 
   function makeMirror({ id, meta = {}, cols = 120, rows = 32, exited = null }) {
     const t = {
-      id, title: meta.title, cwd: meta.cwd, cmd: meta.cmd, args: meta.args || [], account: meta.account || null, research: meta.research || null,
+      id, title: meta.defaultTitle ?? meta.title, cwd: meta.cwd, cmd: meta.cmd, args: meta.args || [], account: meta.account || null, research: meta.research || null,
       meta, buf: '', clients: new Set(), exited, pid: 0, cols, rows, liveTitle: '',
       lastInputAt: Number(meta.lastInputAt) || Number(meta.spawnedAt) || 0,
     };
@@ -466,7 +468,7 @@ function createTermManager(hub) {
     return { kind, args: [...args, ...(prep?.extraArgs || [])], env: { ...env, ...prep?.env }, vault: prep?.vault, blocked: prep?.blocked };
   }
 
-  function createTerm({ cwd, cmd, args = [], title, env = {}, account = null, model = '', effort = '', lastInputAt = 0, research = null, operator = false, projectTask, projectPrompt, agent, preparedVault }) {
+  function createTerm({ cwd, cmd, args = [], title, customTitle, env = {}, account = null, model = '', effort = '', lastInputAt = 0, research = null, operator = false, projectTask, projectPrompt, parentTermId, agent, preparedVault }) {
     const id = String(++termSeq);
     if (!cwd || !fs.existsSync(cwd)) cwd = os.homedir();
     const me = cleanModelEffort(model, effort);
@@ -484,18 +486,24 @@ function createTermManager(hub) {
       args = [...args, '--log-file', path.join(dir, crypto.randomUUID() + '.log')];
     }
     const now = Date.now();
+    const defaultTitle = title || [cmd, ...args].join(' ');
     const meta = {
-      title: title || [cmd, ...args].join(' '), cwd, cmd, args, account, research, envFlags, spawnedAt: now, lastInputAt: Number(lastInputAt) || now,
+      title: defaultTitle, defaultTitle, cwd, cmd, args, account, research, envFlags, spawnedAt: now, lastInputAt: Number(lastInputAt) || now,
       ...(me.model ? { model: me.model } : {}),
       ...(me.effort ? { effort: me.effort } : {}),
       ...(operator ? { operator: true } : {}),
+      ...(parentTermId ? { parentTermId } : {}),
+      ...(customTitle ? { customTitle } : {}),
     };
     if (projectTask) Object.assign(meta, { projectTask, projectPrompt,
       projectAutoClose: !args.some(a => /^(?:resume|--resume|--conversation|--continue)$/.test(a)) });
     const t = makeMirror({ id, meta });
     const terminalEnv = { ...cleanEnv(), ...env };
+    terminalEnv.ACH_HUB_PARENT_TERM = id;
     if (!terminalEnv.TERM || /^dumb$/i.test(terminalEnv.TERM)) terminalEnv.TERM = 'xterm-256color';
-    t.spawnResult = ptyPost(id, '/spawn', { id, cmd, args, cwd, env: terminalEnv, cols: 120, rows: 32, meta });
+    const monitorClaude = hub.hookToken && /\bclaude(?:\.exe)?$/i.test(cmd);
+    if (hub.hookToken) Object.assign(terminalEnv, { ACH_HOOK_PORT: String(port), ACH_HOOK_TOKEN: hub.hookToken, ACH_HOOK_TERM: id });
+    t.spawnResult = ptyPost(id, '/spawn', { id, cmd, args: monitorClaude ? claudeHookArgs(args) : args, cwd, env: terminalEnv, cols: 120, rows: 32, meta });
     return t;
   }
 
@@ -665,13 +673,13 @@ function createTermManager(hub) {
       const args = cliKind
         ? buildRecoveryLaunchArgs({ cli: cliKind, rawArgs: m.args || [], sessionId: x.sessionId, model: recModel, effort: recEffort, codexRecoveryArgs, cliModelEffortArgs })
         : (m.args || []);
-      const savedTitle = (x.sessionId && hub.conversationBranches?.getTitle(x.sessionId)) || m.customTitle || '';
+      const customTitle = x.sessionId && hub.conversationBranches?.hasTitleSetting(x.sessionId)
+        ? hub.conversationBranches.getTitle(x.sessionId) : m.customTitle;
       const t = createTerm({
-        cwd: m.cwd, cmd: m.cmd, args, title: savedTitle || m.title, env, account: m.account,
+        cwd: m.cwd, cmd: m.cmd, args, title: m.defaultTitle ?? m.title, customTitle, env, account: m.account,
         model: recModel, effort: recEffort, lastInputAt: m.lastInputAt || m.spawnedAt || 0,
-        research: m.research, projectTask: m.projectTask, projectPrompt: m.projectPrompt,
+        research: m.research, projectTask: m.projectTask, projectPrompt: m.projectPrompt, parentTermId: m.parentTermId,
       });
-      if (savedTitle) t.meta.customTitle = savedTitle;
       if (m.research) t.research = m.research;
       t.meta.sessionId = x.sessionId;
       if (isClaude && x.busy && !m.research) sendNoteWhenReady(t, note).catch(() => {});

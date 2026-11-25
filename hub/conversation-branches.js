@@ -227,25 +227,38 @@ function createBranchStore(filePath) {
       };
     }
   } catch {}
+  state.titles = Object.assign(Object.create(null), state.titles);
 
   const save = () => {
-    rev++;
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     const tmp = `${filePath}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf8');
     fs.renameSync(tmp, filePath);
+    rev++;
   };
 
   return {
     rev() { return rev; },
     getTitle(id) {
-      return state.titles[id] || null;
+      const entry = state.titles[id];
+      return (typeof entry === 'string' ? entry : entry?.title) || null;
+    },
+    baseTitle(id, title) {
+      return state.titles[id]?.clearedTitle === title ? null : title;
+    },
+    hasTitleSetting(id) {
+      return Object.hasOwn(state.titles, id);
     },
     setTitle(id, title) {
       const clean = String(title || '').trim().slice(0, 140);
-      if (clean) state.titles[id] = clean;
-      else delete state.titles[id];
-      save();
+      const previous = state.titles[id];
+      state.titles[id] = { title: clean, clearedTitle: typeof previous === 'string' ? previous : previous?.clearedTitle };
+      try { save(); }
+      catch (error) {
+        if (previous === undefined) delete state.titles[id];
+        else state.titles[id] = previous;
+        throw error;
+      }
       return clean || null;
     },
     getMsgEdits(id) {

@@ -13,6 +13,8 @@ const { prepareProjectPrompt } = require('./project-prompt');
 const { projectDeliveryResult, deliveryError } = require('./project-history');
 const { claudeCommandNote, claudeToolResultNote } = require('./searchindex');
 const { spawnCli } = require('./project-plan');
+const { listSubagents, readSubagentDetail } = require('./subagent-monitor');
+const { parentSession } = require('./subagent-files');
 const { sessionStartupBlock, waitForTerminalInput, dismissProjectHookMenu, dispatchTerminalPrompt, submissionBlockMessage, terminalConfirmationMessage, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE } = require('./term-manager');
 
 const OV_TTL = 2500;
@@ -151,7 +153,7 @@ function createSessionRoutes(hub) {
       return ov ? { ...m, text: String(ov.text || '').slice(0, 24000), edited: true } : m;
     });
     return {
-      file, title: conversationBranches.getTitle(sessionId) || title, messages: patched, total: mergedMsgs.length, base, size: fs.statSync(file).size,
+      file, title: sessionDisplayTitle(sessionId, { title }), messages: patched, total: mergedMsgs.length, base, size: fs.statSync(file).size,
       rev: conversationBranches.rev() + (termEvents ? termEvents.rev() : 0), lineage: conversationBranches.lineageFor(sessionId, (id) => sessionDisplayTitle(id, index.get(id))),
       capabilities: { canNativeFork: true, canRewindEdit: true, canEditSource: true },
     };
@@ -236,7 +238,7 @@ function createSessionRoutes(hub) {
   }
 
   async function buildOverview() {
-    const [cons] = await Promise.all([hub.helperCall({ op: 'list' })]);
+    const [cons, usageOk] = await Promise.all([hub.helperCall({ op: 'list' }), hub.checkUsageServer()]);
     const needAgyPid = [...hub.terms.values()].filter((t) => hub.isAgyTerm(t) && !t.pid && t.exited === null && (!t._pidTryAt || Date.now() - t._pidTryAt > 10_000));
     if (needAgyPid.length && !hub.isMatchBusy()) {
       const now = Date.now();
@@ -278,15 +280,13 @@ function createSessionRoutes(hub) {
           if (cid) info.sessionId = cid;
         }
       }
-      if (info.sessionId && t.meta?.customTitle && !conversationBranches.getTitle(info.sessionId)) {
+      if (info.sessionId && t.meta?.customTitle && !conversationBranches.hasTitleSetting(info.sessionId)) {
         conversationBranches.setTitle(info.sessionId, t.meta.customTitle);
       }
-      if (info.sessionId) {
+      if (info.sessionId && conversationBranches.hasTitleSetting(info.sessionId)) {
         const custom = conversationBranches.getTitle(info.sessionId);
-        if (custom) {
-          info.sessionName = custom;
-          info.customTitle = custom;
-        }
+        if (custom) info.sessionName = custom;
+        info.customTitle = custom || '';
       }
       const br = conversationBranches.branchMetaFor({ sessionId: info.sessionId || null, termId: t.id, lookupTitleFn: (id) => sessionDisplayTitle(id, index.get(id)) });
       if (br) info.branch = br;
@@ -301,7 +301,7 @@ function createSessionRoutes(hub) {
     const services = {
       hub: { ok: true, port, pid: process.pid },
       ptyHost: { ok: !!ptyHostPid && hub.pidAlive(ptyHostPid), pid: ptyHostPid || null },
-      usage: { ok: await hub.checkUsageServer(), url: hub.USAGE_URL, hasLocalServer: fs.existsSync(path.join(hub.USAGE_DIR, 'server.js')) },
+      usage: { ok: usageOk, url: hub.USAGE_URL, hasLocalServer: fs.existsSync(path.join(hub.USAGE_DIR, 'server.js')) },
       agyQuota: { ok: !!hub.agyQuota.get(), refreshing: hub.agyQuota.getFast().refreshing, account: hub.agyQuota.get()?.account || null },
       helper: { ok: !hub.getHelperMissing(), error: hub.getHelperMissing() || null },
     };
@@ -317,6 +317,10 @@ function createSessionRoutes(hub) {
 
   async function handleStartOrNewTerm(p, req, res, body, send, { trackHandoff = false, continueFileRun = false } = {}) {
     let b = await body(req);
+    const parentTermId = b.parentTermId == null ? '' : String(b.parentTermId);
+    if (parentTermId && (!/^\d+$/.test(parentTermId) || !hub.terms.has(parentTermId))) {
+      return send(res, 400, { error: '터미널 ID가 올바르지 않습니다.' });
+    }
     const retry = p === '/api/projects/start' && b.retry === true;
     const submitDraft = retry && b.submitDraft === true;
     let projectTask, projectPrompt, launchAccount, projectRefsBlock = '';
@@ -548,7 +552,7 @@ function createSessionRoutes(hub) {
       if (b._autoDispatch && !submitDraft) b._rawPrompt = prepareProjectPrompt(baseDir, b._rawPrompt, reuseTerm?.meta?.cmd || cmd);
       if (b._autoDispatch) projectPrompt = fingerprint(b._rawPrompt);
     }
-    const t = reuseTerm || hub.createTerm({ cwd, cmd, args, title: b.title || title, ...launchAccount, model: b.model || '', effort: b.effort || '', projectTask, projectPrompt, agent: projectTask ? b.kind : undefined, preparedVault });
+    const t = reuseTerm || hub.createTerm({ cwd, cmd, args, title: b.title || title, ...launchAccount, model: b.model || '', effort: b.effort || '', projectTask, projectPrompt, parentTermId, agent: projectTask ? b.kind : undefined, preparedVault });
     const result = await t.spawnResult;
     if (result?.error || (!result && !reuseTerm)) {
       if (!reuseTerm) hub.terms.delete(t.id);
@@ -929,6 +933,18 @@ function createSessionRoutes(hub) {
     if (!authed(req, url)) { send(res, 401, { error: 'bad token' }); return true; }
 
     if (p === '/api/overview') { send(res, 200, await overviewSnapshot()); return true; }
+    if (req.method === 'GET' && (p === '/api/session/subagents' || p === '/api/session/subagent-detail')) {
+      const params = Object.fromEntries(url.searchParams);
+      if (params.sessionId && (!validSessionId(params.sessionId) || projects.hidden().has(params.sessionId))) {
+        send(res, 404, { ok: false, error: '대화 ID가 올바르지 않습니다.' });
+      } else if (p.endsWith('/subagents')) {
+        send(res, 200, { subagents: listSubagents(hub, params) });
+      } else {
+        const detail = readSubagentDetail(hub, params);
+        send(res, detail.ok ? 200 : 404, detail);
+      }
+      return true;
+    }
     if (p === '/api/favorites' && req.method === 'POST') {
       const b = await body(req);
       const validKey = (k) => /^(sid:[\w-]{8,64}|term:\d{1,6}|proj:[\w-]{8,64})$/.test(String(k || ''));
@@ -954,7 +970,7 @@ function createSessionRoutes(hub) {
         const customTitle = conversationBranches.getTitle(s.sessionId);
         const fallbackBranchTitle = branch?.isBranch ? (branch.branchTitle || (branch.parentTitle ? `(분기) ${String(branch.parentTitle).slice(0, 36)}` : null)) : null;
         const owner = owners.get(s.sessionId) || owners.get(branch?.parentSessionId);
-        return { ...s, title: customTitle || fallbackBranchTitle || s.title, projectId: owner?.projectId, ...(branch ? { branch } : {}) };
+        return { ...s, title: customTitle || fallbackBranchTitle || conversationBranches.baseTitle(s.sessionId, s.title), projectId: owner?.projectId, ...(branch ? { branch } : {}) };
       });
       send(res, 200, { sessions });
       return true;
@@ -982,33 +998,47 @@ function createSessionRoutes(hub) {
     }
     if (p === '/api/transcript/title' && req.method === 'POST') {
       const b = await body(req);
-      const id = String(b.id || '').trim();
-      const termId = b.termId != null && b.termId !== '' ? String(b.termId) : '';
+      const requested = String(b.id || '').trim();
+      const synthetic = requested.startsWith('term:');
+      const termId = String(b.termId ?? (synthetic ? requested.slice(5) : ''));
+      const term = termId && hub.terms.get(termId);
       const title = String(b.title || '').trim().slice(0, 140);
-      if (id && !validSessionId(id)) { send(res, 400, { error: '대화 ID가 올바르지 않습니다.' }); return true; }
-      if (!id && !termId) { send(res, 400, { error: '대화 ID 또는 터미널 ID가 필요합니다.' }); return true; }
-      let saved = title || null;
-      if (id) {
-        saved = conversationBranches.setTitle(id, title);
-        const d = index.get(id);
-        if (d) {
-          d.title = saved || d.title;
-          if ((d.agent || 'claude') === 'claude' && d.file && fs.existsSync(d.file) && saved) {
-            try { fs.appendFileSync(d.file, JSON.stringify({ type: 'custom-title', customTitle: saved, sessionId: id }) + '\n', 'utf8'); } catch {}
-          }
-        }
+      if ((termId && (!/^\d+$/.test(termId) || !term)) || (synthetic && requested !== `term:${termId}`)) {
+        send(res, 400, { error: '터미널 ID가 올바르지 않습니다.' });
+        return true;
       }
-      const targets = [...hub.terms.values()].filter((t) => (termId && String(t.id) === termId) || (id && hub.termSessionId(t) === id));
+      const linkedId = term && (parentSession(hub, term) || ovSnap?.terms?.find(t => t.id === termId)?.sessionId);
+      const id = requested && !synthetic ? requested : linkedId;
+      if (id && (!validSessionId(id) || (linkedId && linkedId !== id))) {
+        send(res, 400, { error: '대화 ID가 올바르지 않습니다.' });
+        return true;
+      }
+      if (!id && !term) { send(res, 400, { error: '대화 ID 또는 터미널 ID가 필요합니다.' }); return true; }
+      const saved = id ? conversationBranches.setTitle(id, title) : title || null;
+      const targets = [...hub.terms.values()].filter(t => t === term || (id && parentSession(hub, t) === id));
       for (const t of targets) {
-        t.meta = { ...(t.meta || {}), customTitle: saved || '' };
-        if (saved) t.title = saved;
-        if (saved) t.meta.title = saved;
-        hub.ptyPost?.(t.id, '/meta', { id: t.id, meta: { customTitle: saved || '', ...(saved ? { title: saved } : {}) } });
-        const tSid = !id ? hub.termSessionId(t) : '';
-        if (tSid) saved = conversationBranches.setTitle(tSid, title);
+        let defaultTitle = t.meta?.defaultTitle ?? t.title;
+        // Older Hub versions stored the override in both terminal title fields.
+        if (t.meta?.defaultTitle == null && t.meta?.customTitle && t.meta.customTitle === defaultTitle) {
+          const project = t.meta.projectTask && projects?.list().find(p => p.id === t.meta.projectTask.projectId);
+          const task = project?.tasks.find(task => task.id === t.meta.projectTask.taskId);
+          const parent = task?.parentId && project.tasks.find(item => item.id === task.parentId);
+          defaultTitle = task ? (parent ? `${parent.title} › ${task.title}` : task.title)
+            : path.win32.basename(t.meta.cmd || t.cmd || 'terminal').replace(/\.exe$/i, '');
+        }
+        const meta = { customTitle: saved || '', defaultTitle };
+        const persisted = hub.ptyPost?.(t.id, '/meta', { id: t.id, meta });
+        if (!id && !(await persisted)?.ok) {
+          send(res, 502, { error: '세션 명칭을 저장하지 못했습니다.' });
+          return true;
+        }
+        t.meta = { ...t.meta, ...meta };
+        t.title = defaultTitle;
       }
       overviewStale();
-      send(res, 200, { ok: true, title: saved });
+      const branch = id && conversationBranches.branchMetaFor({ sessionId: id });
+      send(res, 200, { ok: true, title: saved, sessionId: id || null,
+        displayTitle: saved || branch?.branchTitle || (id ? sessionDisplayTitle(id, index.get(id)) : null) });
       return true;
     }
     if ((p === '/api/transcript/fork' || p === '/api/transcript/edit') && req.method === 'POST') {
@@ -1086,7 +1116,7 @@ function createSessionRoutes(hub) {
       const opts = { role: url.searchParams.get('role') || 'all', includeAuto: url.searchParams.get('auto') === '1', cwd: url.searchParams.get('cwd') || '', agent: url.searchParams.get('agent') || '', hidden: projects.hidden() };
       const sessions = index.search(q, opts).map((s) => {
         const branch = conversationBranches.branchMetaFor({ sessionId: s.sessionId, lookupTitleFn: (id) => sessionDisplayTitle(id, index.get(id)) });
-        return { ...s, title: conversationBranches.getTitle(s.sessionId) || branch?.branchTitle || s.title, ...(branch ? { branch } : {}) };
+        return { ...s, title: conversationBranches.getTitle(s.sessionId) || branch?.branchTitle || conversationBranches.baseTitle(s.sessionId, s.title), ...(branch ? { branch } : {}) };
       });
       const screens = url.searchParams.get('screens') === '0' ? [] : await searchScreens(q);
       send(res, 200, { sessions, screens, ms: Date.now() - t0, ready: index.ready, progress: index.progress });
@@ -1325,6 +1355,7 @@ function createSessionRoutes(hub) {
         hub.termMonitor?.onInput(t, input);
         const result = await t.proc.write(input);
         if (!result?.ok) throw new Error(result?.error || '터미널 입력을 확인하지 못했습니다.');
+        if (input === '\x03') t._subagentsInterruptedAt = Date.now();
       };
       try {
         if (b.text) {

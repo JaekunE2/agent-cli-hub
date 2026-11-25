@@ -12,9 +12,10 @@ function dockTopSegHTML({ openSet, isContentTab = false, hasTerm = true, hasChat
   </div>`;
 }
 
-function setSessionBar(identity, views, actions) {
+function setSessionBar(identity, views, actions, subagents) {
   setBar(`<div class="session-head">${identity}<div class="session-actions">${actions}</div></div>
     <div class="session-views">${views}</div>`);
+  if (subagents) mountSubagents($('#bar .session-views'), subagents);
 }
 
 function sessionOriginButton(branch) {
@@ -158,18 +159,10 @@ function viewTranscript() {
       termTitle: hasLivePane ? '연결된 터미널 패널 열기/닫기' : '이 세션을 터미널로 열어 함께 보기',
     }),
     `${!live ? `<button class="primary btn-sm" id="btnResume" aria-label="대시보드에서 이어하기">${ICO.play} 이어하기</button>` : isDesktopSession(live) ? `<button class="primary btn-sm" id="btnResume" data-fork="1" title="데스크톱 앱 대화를 여기까지 복제한 새 세션으로 이어갑니다">${ICO.play} 복제 후 이어하기</button>` : ''}
-    <button id="btnRecMore" class="ghost icon-btn btn-sm" aria-label="세션 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`);
+    <button id="btnRecMore" class="ghost icon-btn btn-sm" aria-label="세션 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`, { sessionId: sid, cwd: r?.cwd });
 
   let dock = null;
-  const doRenameSess = async () => {
-    const curTitle = sessionLabel(r, sid, live?.name);
-    const lt = state.terms.find((term) => term.exited === null && term.sessionId === sid);
-    const saved = await renameSessionItem({ sessionId: sid, termId: lt?.id || '', currentTitle: curTitle });
-    if (saved !== null) {
-      if (r) r.title = saved || null;
-      return viewTranscript();
-    }
-  };
+  const doRenameSess = () => renameSessionItem({ sessionId: sid, currentTitle: sessionLabel(recentSession(sid) || r, sid, live?.name) });
   $('#bar h2')?.addEventListener('dblclick', doRenameSess);
   $('#bar').onclick = async (e) => {
     if (openSessionOrigin(e.target)) return;

@@ -213,6 +213,20 @@ input[type="checkbox"], input[type="radio"] { min-height: 0; padding: 0; accent-
 .srow.just-done { background: color-mix(in srgb, var(--ok) 11%, transparent); border-color: color-mix(in srgb, var(--ok) 36%, transparent); animation: done-glow 2.8s ease-in-out infinite; }
 .srow.just-done:hover { background: color-mix(in srgb, var(--ok) 17%, transparent); }
 .dot.busy { animation: busy-pulse 2s ease-in-out infinite; }
+.ts-right { margin-inline-start: auto; position: relative; }
+.ts-pill.busy { color: var(--ok); }
+.ts-pill .dot.busy { background: var(--ok); margin-inline-end: var(--sp-1); }
+.ts-subagent-list {
+  position: absolute; inset-inline-end: 0; top: calc(100% + var(--sp-1)); z-index: 30;
+  width: min(360px, calc(100vw - 32px)); max-height: min(420px, 60dvh); overflow: auto; padding: var(--sp-2);
+  background: var(--popover); border: 1px solid var(--line-strong); border-radius: var(--radius-lg); box-shadow: var(--shadow-high);
+}
+.ts-subagent-list h3, .ts-subagent-list p { margin: var(--sp-2); font-size: 13px; }
+.ts-subagent-list button { display: flex; justify-content: space-between; gap: var(--sp-2); text-align: left; width: 100%; }
+.ts-subagent-list button > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.ts-subagent-list small { display: block; color: var(--muted); }
+.ts-subagent-viewer pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: var(--sp-2); background: var(--panel2); }
+.ts-subagent-viewer ol { padding-inline-start: var(--sp-6); }
 .term-live-pill { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: var(--radius-full); display: inline-flex; align-items: center; gap: 5px; flex: none; transition: background .2s, color .2s, border-color .2s; }
 .term-live-pill.busy { color: var(--warn); background: color-mix(in srgb, var(--warn) 13%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); }
 .term-live-pill.done { color: var(--ok); background: color-mix(in srgb, var(--ok) 13%, transparent); border: 1px solid color-mix(in srgb, var(--ok) 34%, transparent); }
@@ -229,6 +243,7 @@ input[type="checkbox"], input[type="radio"] { min-height: 0; padding: 0; accent-
 .side-history { max-height: min(46vh, 420px); overflow-y: auto; scrollbar-gutter: stable; }
 .srow-open { align-items: stretch; min-height: 0; padding: 0; border: 0; border-radius: var(--radius-sm); text-align: left; }
 .srow-open:hover { background: transparent; border-color: transparent; }
+.side-rename { width: 24px; height: 24px; min-height: 0; padding: 0; color: var(--muted); }
 .srow-open .srow-t { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: normal; overflow-wrap: anywhere; }
 .srow-t { font-size: 12.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.35; color: var(--text); }
 .srow.sel .srow-t { font-weight: 650; color: var(--accent); }

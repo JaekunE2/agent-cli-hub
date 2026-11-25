@@ -88,6 +88,7 @@ function select(sel, tab, persistTab = false) {
 }
 
 function setBar(html) {
+  unmountSubagents?.();
   $('#bar').innerHTML = html || '';
 }
 

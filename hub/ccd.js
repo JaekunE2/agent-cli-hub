@@ -672,7 +672,7 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
   async new() {
     const kind = pos[1] || 'claude';
     if (!['claude', 'codex', 'cursor', 'powershell', 'cmd'].includes(kind)) die('kind must be claude, codex (GPT), cursor, powershell or cmd');
-    const t = await api('/api/term/new', { kind, cwd: flags.cwd || process.cwd(), resume: flags.resume, skipPermissions: !flags['no-skip-permissions'], title: flags.title, model: flags.model });
+    const t = await api('/api/term/new', { kind, cwd: flags.cwd || process.cwd(), resume: flags.resume, skipPermissions: !flags['no-skip-permissions'], title: flags.title, model: flags.model, parentTermId: flags.parent || process.env.ACH_HUB_PARENT_TERM });
     console.log(`t:${t.id}  ${t.title}  [${t.cwd}]`);
     if (kind === 'codex') {
       // codex is ready when its composer is up ("› …" / "send" hint) or it asks for a decision (trust, update, login)
