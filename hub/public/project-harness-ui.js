@@ -28,7 +28,7 @@ async function openProjectHarnessDrawer() {
     ['claude', 'Claude Code'],
     ['agy', 'Antigravity (AGY)'],
     ['cursor', 'Cursor Agent'],
-  ];
+  ].filter(([k]) => k !== 'agy' || state.features?.agy !== false);
 
   let activeTab = 'roles';
   let activeRole = 'plan';

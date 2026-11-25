@@ -381,7 +381,7 @@ function openNewTermDrawer(projectCwd = '', onCreated = null, initialKind = null
       <div class="nt-grid">
         ${agTile('claude', 'claude', 'Claude Code', 'Anthropic CLI 에이전트')}
         ${agTile('codex', 'codex', 'GPT (Codex)', 'OpenAI 코딩 에이전트', 'ChatGPT 계정(Codex 앱 로그인)으로 GPT 대화형 세션')}
-        ${agTile('agy', 'agy', 'Antigravity', 'Google 에이전트 CLI (agy)')}
+        ${state.features?.agy === false ? '' : agTile('agy', 'agy', 'Antigravity', 'Google 에이전트 CLI (agy)')}
         ${agTile('cursor', 'cursor', 'Cursor', 'cursor-agent 터미널', 'Cursor 터미널 에이전트 (처음 한 번 cursor-agent login 필요)')}
       </div>
     </div>

@@ -415,6 +415,9 @@ async function refreshOverview() {
     if (o.sessionGroups && Array.isArray(o.sessionGroups.groups)) state.sessionGroups = o.sessionGroups;
     state.disk = o.disk || null;
     state.consolesOff = !!o.consolesOff;
+    // optional features the server turned on (Antigravity is off unless config "antigravity": true)
+    state.features = o.features || state.features || { agy: true };
+    for (const k of ['drive', 'drives', 'delta', 'apps']) if (k in o) state[k] = o[k];
   } catch (e) {
     state.err = e.message;
     state.hubDown = true;

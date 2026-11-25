@@ -3,7 +3,7 @@ let agyPollTimer = null;
 async function refreshUsage(force) {
   const [uRes, aRes] = await Promise.allSettled([
     api('/api/usage' + (force ? '?force=1' : '')),
-    api('/api/agy/quota' + (force ? '?force=1' : '')),
+    state.features?.agy === false ? Promise.resolve(null) : api('/api/agy/quota' + (force ? '?force=1' : '')),
   ]);
   state.usage = uRes.status === 'fulfilled' ? uRes.value : { available: false, error: uRes.reason?.message || '오류' };
   if (state.usage?.accounts) state.usage.accounts = state.usage.accounts.filter((a) => a.id !== 'agy-cli');
