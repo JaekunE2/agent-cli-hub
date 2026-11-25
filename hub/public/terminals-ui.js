@@ -453,7 +453,20 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
     return true;
   };
   const resize = () => {
-    if (gen !== viewGen || !wrapEl.isConnected || wrapEl.offsetParent === null) return;
+    if (gen !== viewGen || !wrapEl.isConnected) return;
+    if (wrapEl.offsetParent === null) {
+      const hostBox = hostEl.closest('.dock-ws') || $('#view');
+      const w = Math.max(640, (hostBox?.clientWidth || 960) - 32);
+      const h = Math.max(400, (hostBox?.clientHeight || 600) - 96);
+      const estCols = Math.max(80, Math.min(200, Math.floor(w / 8)));
+      const estRows = Math.max(24, Math.min(60, Math.floor(h / 17)));
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'resize', cols: estCols, rows: estRows }));
+      else if (httpReady) {
+        flushInput();
+        sendHttp({ cols: estCols, rows: estRows });
+      }
+      return;
+    }
     try { fit.fit(); } catch {}
     if (ws?.readyState === WebSocket.OPEN && xterm) ws.send(JSON.stringify({ type: 'resize', cols: xterm.cols, rows: xterm.rows }));
     else if (httpReady && xterm) {

@@ -116,6 +116,10 @@
 html, body { height: 100%; margin: 0; }
 body { background: var(--bg); color: var(--text); font: 13.5px/1.55 "Pretendard Variable", "Pretendard", "Segoe UI", "Malgun Gothic", system-ui, -apple-system, sans-serif; letter-spacing: -0.011em; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; display: flex; }
 html.is-tauri body { padding-top: 32px; }
+html.is-tauri .drw-backdrop,
+html.is-tauri .dlg,
+html.is-tauri .cmdk-backdrop { top: 32px; }
+html.is-tauri .drw-compact .drw-panel { max-height: calc(100vh - 80px); }
 .tauri-tb { position: fixed; top: 0; left: 0; right: 0; height: 32px; z-index: 9000; display: flex; align-items: stretch; justify-content: space-between; background: var(--side-bg); border-bottom: 1px solid var(--line); color: var(--text); user-select: none; -webkit-user-select: none; }
 .tauri-tb-drag { flex: 1; display: flex; align-items: center; gap: 8px; padding: 0 12px; min-width: 0; cursor: default; }
 .tauri-tb-title { font-size: 12px; font-weight: 600; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
