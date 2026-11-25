@@ -358,7 +358,9 @@ function createAccountSwitchService(hub) {
     if (!pick) return { ok: false, error: account === 'auto' ? '여유 있는 다른 계정이 없습니다 (AI 사용량 확인)' : '선택한 계정을 찾을 수 없습니다' };
 
     const targetAgent = pick.agent || 'claude';
-    const samePlatform = sourceAgent === targetAgent;
+    const { hasAgyCliConversation } = require('./agy-session');
+    const canNativeAgy = !(targetAgent === 'agy' && sid && !hasAgyCliConversation(sid));
+    const samePlatform = sourceAgent === targetAgent && canNativeAgy;
     const savedME = accountPrefs.getForAccount(pick.id, targetAgent);
     const useME = cleanModelEffort(model === undefined ? savedME.model : reqME.model, effort === undefined ? savedME.effort : reqME.effort);
     if (model !== undefined || effort !== undefined) accountPrefs.save({ account: pick.id, agent: targetAgent, model: useME.model, effort: useME.effort });

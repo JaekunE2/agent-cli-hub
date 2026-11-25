@@ -1,4 +1,12 @@
 const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+function hasAgyCliConversation(id, homeDir = os.homedir()) {
+  if (!id || !/^[0-9a-f-]+$/i.test(String(id))) return false;
+  const dir = path.join(homeDir, '.gemini', 'antigravity-cli', 'conversations');
+  return fs.existsSync(path.join(dir, `${id}.db`)) || fs.existsSync(path.join(dir, `${id}.pb`));
+}
 
 function sessionFromLog(text, pid) {
   const idPattern = /\b(?:Created|Streaming|Full redraw completed.*?for|Sending user message to)\s+conversation\s+([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\b/i;
@@ -35,4 +43,4 @@ function agyStatusFromScreen(screen, { exited = null, lastOutputAt = 0, spawnedA
   return 'idle';
 }
 
-module.exports = { readSession, sessionFromLog, agyStatusFromScreen, stripAnsi };
+module.exports = { readSession, sessionFromLog, agyStatusFromScreen, stripAnsi, hasAgyCliConversation };

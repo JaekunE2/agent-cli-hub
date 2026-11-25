@@ -16,6 +16,7 @@ const { spawnCli } = require('./project-plan');
 const { listSubagents, readSubagentDetail } = require('./subagent-monitor');
 const { parentSession, transcriptFile } = require('./subagent-files');
 const { sessionStartupBlock, waitForTerminalInput, dismissProjectHookMenu, dispatchTerminalPrompt, submissionBlockMessage, terminalConfirmationMessage, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE } = require('./term-manager');
+const { hasAgyCliConversation } = require('./agy-session');
 const { collectSessionTraces } = require('./session-traces');
 
 const OV_TTL = 2500;
@@ -495,7 +496,7 @@ function createSessionRoutes(hub) {
       title = 'Cursor agent';
     } else if (b.kind === 'agy') {
       cmd = hub.agyExe();
-      if (b.resume && /^[\w-]+$/.test(b.resume)) args.push('--conversation', b.resume);
+      if (b.resume && /^[\w-]+$/.test(b.resume) && hasAgyCliConversation(b.resume)) args.push('--conversation', b.resume);
       else if (b.continue) args.push('--continue');
       if (yolo) args.push('--dangerously-skip-permissions');
       args.push(...cliModelEffortArgs('agy', b.model, b.effort));
