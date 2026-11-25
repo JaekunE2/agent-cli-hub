@@ -10,7 +10,7 @@ async function projectRefsView(project, gen) {
   const host = $('#projectContent');
   if (!host || !project?.id) return;
   const ico = window.UI_ICO || {};
-  host.innerHTML = '<div class="empty">참조 데이터를 불러오는 중…</div>';
+  host.innerHTML = '<div class="empty">산출물을 불러오는 중…</div>';
 
   const authTok = () => (typeof TOKEN !== 'undefined' ? TOKEN : (window.TOKEN || ''));
   const scope = { projectId: project.id, version: project.scope?.number || '' };
