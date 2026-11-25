@@ -39,9 +39,7 @@ function mountChatWorkspace(body, { sid, gen, at = -1, terms = [], composerOpts 
     <div class="chat-pv-resizer" hidden role="separator" aria-orientation="vertical" aria-label="미리보기 크기 조절"></div>
     <aside class="chat-pv-pane" hidden aria-label="미리보기"></aside>
     <nav class="pv-rail" aria-label="사이드 도구 모음">
-      <button type="button" class="pv-rail-btn" data-pv-side="preview" aria-pressed="false" title="미리보기">${ICO.eye}</button>
-      <button type="button" class="pv-rail-btn" data-pv-side="refs" aria-pressed="false" title="산출물">${ICO.folder}</button>
-      <button type="button" class="pv-rail-btn" data-pv-side="floorplan" aria-pressed="false" title="코드 구조">${ICO.layers}</button>
+      <button type="button" class="pv-rail-btn" data-pv-side="toggle" aria-pressed="false" title="사이드 패널 (미리보기 · 산출물 · 코드 구조)">${ICO.layers}</button>
     </nav>
   </div>`;
   const splitEl = $('.chat-split', body);
@@ -69,7 +67,7 @@ function mountChatWorkspace(body, { sid, gen, at = -1, terms = [], composerOpts 
     pvCtl?.refresh(false);
     $('.pv-rail', splitEl)?.addEventListener('click', (e) => {
       const btn = e.target.closest('[data-pv-side]');
-      if (btn) pvCtl?.togglePanel?.(btn.dataset.pvSide);
+      if (btn) pvCtl?.togglePanel?.(btn.dataset.pvSide === 'toggle' ? (pvCtl.currentPanel?.() || 'preview') : btn.dataset.pvSide);
     });
   }
   renderChat(sid, gen, at, terms, scrollEl);

@@ -337,7 +337,7 @@
 
     const syncBarSideButtons = () => {
       document.querySelectorAll('[data-pv-side]').forEach((btn) => {
-        const on = isPaneVisible && paneKind === btn.dataset.pvSide;
+        const on = btn.dataset.pvSide === 'toggle' ? isPaneVisible : (isPaneVisible && paneKind === btn.dataset.pvSide);
         btn.classList.toggle('on', on);
         btn.setAttribute('aria-pressed', String(on));
       });
