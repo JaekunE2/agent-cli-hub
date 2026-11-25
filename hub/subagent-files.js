@@ -50,7 +50,7 @@ function transcriptFile(hub, id, term) {
   const root = home ? path.resolve(home, 'sessions') : hub.index?.codexRoot;
   const agy = [].concat(hub.index?.agyRoot || []);
   const doc = hub.index?.get(id);
-  if (doc?.file) {
+  if (doc?.file && !/\.db$/i.test(doc.file)) {
     const file = path.resolve(doc.file);
     const roots = [claude, hub.index?.root, root, hub.index?.codexRoot, ...agy].filter(Boolean);
     for (const dir of roots.length ? roots : [null]) {
