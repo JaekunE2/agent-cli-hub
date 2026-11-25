@@ -4,7 +4,7 @@
 const CAL = { month: null, day: null, data: null };
 const CAL_KIND = {
   task: { cls: 'ck-task', label: '할 일' }, milestone: { cls: 'ck-ms', label: '마일스톤' },
-  event: { cls: 'ck-ev', label: '일정' }, gcal: { cls: 'ck-g', label: '구글' }, mscal: { cls: 'ck-ms365', label: 'Teams' },
+  event: { cls: 'ck-ev', label: '일정' }, gcal: { cls: 'ck-g', label: '구글' }, dooray: { cls: 'ck-d', label: '두레이' }, mscal: { cls: 'ck-ms365', label: 'Teams' },
 };
 // Korean national public holidays from the official almanacs and later government notices.
 // https://astro.kasi.re.kr/kor/life/post/almanac
@@ -39,7 +39,7 @@ function calHolidayName(date) {
 }
 const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const todayStr = () => ymd(new Date());
-const calDayLabel = (s) => { const d = new Date(s + 'T00:00:00'); return d.toLocaleDateString((document.documentElement.lang === 'en' ? 'en-US' : 'ko-KR'), { month: 'long', day: 'numeric', weekday: 'short' }); };
+const calDayLabel = (s) => { const d = new Date(s + 'T00:00:00'); return d.toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'short' }); };
 const dDay = (s) => { const n = Math.round((new Date(s + 'T00:00:00') - new Date(todayStr() + 'T00:00:00')) / 864e5); return n === 0 ? 'D-day' : n > 0 ? `D-${n}` : `D+${-n}`; };
 
 async function loadCalendar() {
@@ -92,7 +92,7 @@ function paintCalendar() {
 
   for (const it of items) { if (!byDate.has(it.date)) byDate.set(it.date, []); byDate.get(it.date).push(it); }
   const selectedItems = byDate.get(selected) || [];
-  const order = { event: 0, mscal: 1, gcal: 1, task: 2, milestone: 3 };
+  const order = { event: 0, dooray: 1, mscal: 1, gcal: 1, task: 2, milestone: 3 };
   for (const list of byDate.values()) list.sort((a, b) => (order[a.kind] - order[b.kind]) || String(a.time || '').localeCompare(String(b.time || '')) || a.title.localeCompare(b.title));
   window.__calItems = items;
   const chip = (it) => `<div class="cchip ${CAL_KIND[it.kind].cls}${it.kind === 'task' && it.done ? ' done' : ''}" data-cit="${esc(it.id)}" title="${esc(it.title)}">${it.time ? `<b>${esc(it.time)}</b> ` : ''}${it.kind === 'task' ? (it.done ? '☑ ' : '☐ ') : it.kind === 'milestone' ? '◆ ' : ''}${esc(it.title)}</div>`;
@@ -123,10 +123,12 @@ function paintCalendar() {
 
   const gNote = g.connected ? `구글: ${esc(g.account || '연결됨')}${g.error ? ` · <span style="color:var(--danger)">${esc(g.error)}</span>` : ''}` : '';
   const msNote = ms.connected ? `Teams: ${esc(ms.label || '연결됨')} (${ms.count || 0}건)${ms.error ? ` · <span style="color:var(--danger)">${esc(ms.error)}</span>` : ''}` : '';
-  const extSummary = [msNote, gNote, d.todoError ? `<span style="color:var(--danger)">${esc(d.todoError)}</span>` : ''].filter(Boolean).join(' · ');
+  const dr = d.dooray || null;
+  const drNote = dr ? `두레이: ${dr.count || 0}건${dr.at ? ` (${new Date(dr.at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })})` : ''}${dr.error ? ` · <span style="color:var(--danger)">${esc(dr.error)}</span>` : ''}` : '';
+  const extSummary = [drNote, msNote, gNote, d.todoError ? `<span style="color:var(--danger)">${esc(d.todoError)}</span>` : ''].filter(Boolean).join(' · ');
   $('#view').innerHTML = `<div class="sys-shell">${sysTop}<div class="sys-body"><div class="calwrap"><div class="calmain"><div class="cgrid">${head}${cells}</div>
       <div class="empty" style="padding:6px 2px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px">
-        <span class="ck-legend"><span class="cdot ck-ev"></span>일정 <span class="cdot ck-task"></span>할 일 <span class="cdot ck-ms"></span>마일스톤 <span class="cdot ck-ms365"></span>Teams <span class="cdot ck-g"></span>구글</span>
+        <span class="ck-legend"><span class="cdot ck-ev"></span>일정 <span class="cdot ck-task"></span>할 일 <span class="cdot ck-ms"></span>마일스톤 <span class="cdot ck-d"></span>두레이 <span class="cdot ck-ms365"></span>Teams <span class="cdot ck-g"></span>구글</span>
         <span>${extSummary}</span>
       </div></div>
     <div class="calside">${overBlock}<section class="cag cal-selected" aria-live="polite"><h2>${esc(calDayLabel(selected))}</h2>${selectedHoliday ? `<div class="cal-holiday cal-holiday-name">${esc(selectedHoliday)}</div>` : ''}${selectedItems.map((it) => row(it, true)).join('') || '<div class="empty">등록된 일정이 없습니다</div>'}</section>
@@ -170,6 +172,7 @@ async function calClick(e) {
       const ico = window.UI_ICO || {};
       return openMoreMenu(b, [
         anyConn ? { label: '외부 캘린더 지금 동기화', icon: ico.refresh || '', onClick: () => calSyncAll() } : null,
+        CAL.data?.dooray ? { label: '두레이 일정 다시 읽기', icon: ico.refresh || '', onClick: async () => { CAL.data = await api('/api/calendar?refresh=dooray').catch(() => CAL.data); paintCalendar(); } } : null,
         { label: `외부 캘린더 연동 관리${anyConn ? ` (${(ms.connected ? 1 : 0) + (g.connected ? 1 : 0)})` : ''}`, icon: ico.settings || '', onClick: () => calIntegrationsDrawer() },
       ]);
     }
@@ -206,7 +209,7 @@ function calDetail(it) {
     ? `<button class="primary" data-a="done">${it.done ? '완료 취소' : '완료 처리'}</button>`
     : it.kind === 'event'
       ? '<button class="danger ghost" data-a="del">삭제</button><span class="sp"></span><button class="primary" data-a="edit">수정</button>'
-      : it.kind === 'gcal' && it.link ? `<a class="btnlike" href="${esc(it.link)}" target="_blank" rel="noopener">구글에서 열기</a>` : '';
+      : (it.kind === 'gcal' || it.kind === 'dooray') && it.link ? `<a class="btnlike" href="${esc(it.link)}" target="_blank" rel="noopener">${it.kind === 'gcal' ? '구글' : '두레이'}에서 열기</a>` : '';
   const body = `<div class="empty" style="padding:0">${meta.map(esc).join(' · ')}</div>${it.note ? `<div style="white-space:pre-wrap;margin-top:6px;line-height:1.55">${esc(it.note)}</div>` : ''}
     ${it.kind === 'milestone' ? '<div class="empty" style="padding:0">todo.md의 “일정” 줄에서 읽은 날짜입니다 (수정은 todo.md에서).</div>' : ''}`;
   const d = openDrawer({ title: it.title, bodyHTML: body, footerHTML: foot, width: 440 });
@@ -324,7 +327,7 @@ function calGoogleSetup() {
       <li><a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com" target="_blank" rel="noopener">Google Calendar API</a> → <b>사용</b></li>
       <li><a href="https://console.cloud.google.com/auth/overview" target="_blank" rel="noopener">OAuth 동의 화면</a> → 시작하기 → 앱 이름 아무거나 · 대상 <b>외부</b> → 만든 뒤 <b>대상 → 테스트 사용자</b>에 그 계정 추가</li>
       <li><a href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener">클라이언트</a> → 클라이언트 만들기 → 유형 <b>데스크톱 앱</b> → 만들기 → <b>JSON 다운로드</b></li>
-      <li>받은 파일을 <span class="mono">&lt;설치 폴더&gt;\\hub\\data\\secrets\\google-oauth-client.json</span> 이름으로 저장 → 이 화면을 새로고침 → <b>구글 계정 연결</b></li>
+      <li>받은 파일을 <span class="mono">&lt;config secretsDir, 기본 hub\\data\\secrets&gt;\\google-oauth-client.json</span> 이름으로 저장 → 이 화면을 새로고침 → <b>구글 계정 연결</b></li>
     </ol>
     <div class="empty" style="padding:0">연결하면 허브의 할 일 마감·마일스톤·일정이 구글에 새로 생기는 “Agent CLI Hub” 캘린더로 들어가고(기존 캘린더는 건드리지 않음), 구글 기본 캘린더의 일정도 여기 함께 보입니다.</div>`;
   openDrawer({ title: '구글 캘린더 연결 (처음 한 번)', bodyHTML: body, width: 520 });
