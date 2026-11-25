@@ -341,6 +341,7 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
     </div>
     <div class="chat-reply-in">
       <label class="ghost icon-btn btn-sm filebtn" title="파일 · 이미지 첨부 (드래그&드롭 / 붙여넣기)" style="flex:none;height:38px;min-height:38px;width:36px;justify-content:center;border-radius:10px;border:1px solid var(--line-strong)">${ICO.clip}<input type="file" class="fpick" multiple hidden></label>
+      <button type="button" class="ghost icon-btn btn-sm" data-chat-app-pick title="앱 결과물 첨부" aria-label="앱 결과물 첨부" style="flex:none;height:38px;min-height:38px;width:36px;justify-content:center;border-radius:10px;border:1px solid var(--line-strong)">${ICO.grid}</button>
       <textarea rows="1" aria-label="대화 프롬프트" placeholder="대화 프롬프트 · Enter 전송"></textarea>
       <button type="button" class="primary">대화 전송</button>
     </div>
@@ -673,6 +674,9 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
   const dropZone = barHost.closest('.chat-shell') || barHost;
   attachFileInput(dropZone, null, cwd, { onFiles: chatAttCtl.addFiles, onPaths: chatAttCtl.addPaths });
   bindFilePick(barHost, null, cwd, { onFiles: (fl, it) => chatAttCtl.addFiles(fl, it) });
+  $('[data-chat-app-pick]', barHost)?.addEventListener('click', () => {
+    window.openAppOutputPicker?.((paths) => chatAttCtl.addPaths(paths));
+  });
 
   const sendReply = async (retry = false) => {
     if (repBtn.disabled) return;

@@ -41,6 +41,8 @@ const HELP = `ccd — Agent CLI Hub CLI  (server ${BASE})
   operator [status|start]          the operator session that looks after this hub (GPU, network, disks, accounts, notices)
   research ls | new <name> --direction "..." [--venue V] | show <slug> | msg <slug> <text> | pause <slug> | resume <slug>
                                    autonomous research projects (director sessions driven by research-harness)
+  app ls | run <id> [--action A] [--wait] | data <id> [--file latest] [--q K] | files <id> | import <dir> | rm <id> [--purge-outputs] | data-rm <id> [--file F | --older-than N]
+                                   lightweight hub apps (UI + session-callable tools & data integration)
   gpu [ls]                         GPUs (memory/util/procs) + lease queue
   gpu plan --mem 12G --est 90m     when a job of that size would start / finish on each GPU
   gpu run [--mem 20G | --exclusive] [--gpu 0] [--label L] [--est 90m] [--ram 40G] -- <command>
@@ -742,6 +744,65 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
     if (flags.json) return console.log(JSON.stringify({ sessionId: id, title: d.title, cwd: d.cwd, total: d.total, messages: msgs }));
     console.log(`== ${id} ${d.title || ''} [${d.cwd || ''}] ${d.total ?? ''} msgs`);
     for (const m of msgs) console.log(`\n@${m.i} ${m.role === 'user' ? 'USER' : d.agent === 'codex' ? 'CODEX' : 'CLAUDE'}${m.ts ? ' ' + m.ts : ''}${m.i === at ? '  <==' : ''}\n${m.text}`);
+  },
+
+  async app() {
+    const sub = pos[1] || 'ls';
+    if (sub === 'ls') {
+      const d = await api('/api/apps');
+      if (flags.json) return console.log(JSON.stringify(d));
+      if (!d.apps?.length) return console.log('no apps registered');
+      for (const a of d.apps) {
+        console.log(`${a.id}  [${a.status}]  ${a.name}  (${a.type})  views=${a.counts?.views || 0} data=${a.counts?.data || 0}  cwd=${a.cwd}`);
+      }
+      return;
+    }
+    if (sub === 'import') {
+      const dir = pos[2] || flags.dir || process.cwd();
+      const d = await api('/api/apps/import', { dir });
+      return console.log(`imported ${d.app.id} (${d.app.name})`);
+    }
+    const id = pos[2];
+    if (!id) die('app <run|data|files|rm|data-rm> requires <id>');
+    if (sub === 'files') {
+      const d = await api(`/api/apps/${encodeURIComponent(id)}/files`);
+      if (flags.json) return console.log(JSON.stringify(d));
+      console.log('Views:', (d.views || []).map((f) => f.path).join('\n') || '(none)');
+      console.log('Data:', (d.data || []).map((f) => f.path).join('\n') || '(none)');
+      return;
+    }
+    if (sub === 'data') {
+      const qs = new URLSearchParams({
+        file: flags.file || 'latest',
+        ...(flags.q ? { q: flags.q } : {}),
+        ...(flags.limit ? { limit: String(flags.limit) } : {}),
+      });
+      const d = await api(`/api/apps/${encodeURIComponent(id)}/data?${qs}`);
+      return console.log(JSON.stringify(d, null, 2));
+    }
+    if (sub === 'run') {
+      const d = await api(`/api/apps/${encodeURIComponent(id)}/run`, { actionId: flags.action || undefined });
+      if (!flags.wait) return console.log(JSON.stringify(d.run, null, 2));
+      for (let i = 0; i < 120; i++) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const runs = await api(`/api/apps/${encodeURIComponent(id)}/runs`);
+        const cur = (runs.runs || []).find((x) => x.runId === d.run.runId);
+        if (cur && cur.status !== 'running') return console.log(JSON.stringify(cur, null, 2));
+      }
+      die('app run timed out waiting');
+    }
+    if (sub === 'rm') {
+      const d = await api(`/api/apps/${encodeURIComponent(id)}?purgeOutputs=${flags['purge-outputs'] ? 'true' : 'false'}`, { method: 'DELETE' });
+      return console.log(JSON.stringify(d));
+    }
+    if (sub === 'data-rm') {
+      const qs = flags.file
+        ? `file=${encodeURIComponent(flags.file)}`
+        : `olderThanDays=${encodeURIComponent(flags['older-than'] || 30)}`;
+      const d = await api(`/api/apps/${encodeURIComponent(id)}/data?${qs}`, { method: 'DELETE' });
+      return console.log(JSON.stringify(d));
+    }
+    die(`unknown app subcommand: ${sub}`);
   },
 };
 

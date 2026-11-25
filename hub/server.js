@@ -212,10 +212,21 @@ function makeCalendar() {
   const config = (() => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { return CONFIG; } })();
   return require('./calendar')({ config, port: PORT });
 }
+function makeApps() {
+  return require('./apps')({
+    terms: hub.terms,
+    createTerm: hub.createTerm,
+    liveSessions: () => hub.liveSessions(),
+    writeInteractiveTerm: hub.writeInteractiveTerm,
+    artifactsMod,
+    termInfo: hub.termInfo,
+  });
+}
 
 let gpuQ = makeGpuQ();
 let research = makeResearch();
 let calendarMod = makeCalendar();
+let appsMod = makeApps();
 const projectRoutes = createProjectRoutes(hub);
 const hookTransport = createHookTransport(hub);
 hub.toolHooks = hookTransport.toolHooks;
@@ -224,7 +235,7 @@ const sessionRoutes = createSessionRoutes(hub);
 Object.assign(hub, {
   ...projectRoutes,
   ...sessionRoutes,
-  procTable, artifactsMod, gpuQ: () => gpuQ, research: () => research, calendarMod: () => calendarMod,
+  procTable, artifactsMod, gpuQ: () => gpuQ, research: () => research, calendarMod: () => calendarMod, appsMod: () => appsMod,
 });
 const systemRoutes = createSystemRoutes(hub);
 
@@ -242,6 +253,7 @@ function reloadModules(which) {
   const fresh = (rel) => { delete require.cache[require.resolve(rel)]; };
   if (which.includes('gpu')) { fresh('./gpu'); const next = makeGpuQ(); gpuQ.stop(); gpuQ = next; gpuQ.start(); done.push('gpu'); }
   if (which.includes('calendar')) { fresh('./calendar'); const next = makeCalendar(); calendarMod.stop(); calendarMod = next; if (watchdogOn) calendarMod.start(); done.push('calendar'); }
+  if (which.includes('apps')) { fresh('./apps'); const next = makeApps(); appsMod.stop(); appsMod = next; done.push('apps'); }
   if (which.includes('research')) {
     fresh('./research'); try { fresh('../research-harness/lib/project'); } catch {}
     const next = makeResearch();
@@ -359,7 +371,7 @@ const STATIC = {
   '/files-artifacts.js': 'public/files-artifacts.js', '/chat-composer.js': 'public/chat-composer.js',
   '/chat-ui.js': 'public/chat-ui.js', '/usage-ui.js': 'public/usage-ui.js',
   '/switch-gpu-ui.js': 'public/switch-gpu-ui.js', '/research-ui.js': 'public/research-ui.js',
-  '/dock.js': 'public/dock.js', '/preview.js': 'public/preview.js', '/vault.js': 'public/vault.js',
+  '/dock.js': 'public/dock.js', '/preview.js': 'public/preview.js', '/vault.js': 'public/vault.js', '/apps-ui.js': 'public/apps-ui.js',
   '/projects.js': 'public/projects.js', '/project-forms.js': 'public/project-forms.js', '/project-plan-form.js': 'public/project-plan-form.js',
   '/project-board.js': 'public/project-board.js', '/project-task-form.js': 'public/project-task-form.js', '/project-flow.js': 'public/project-flow.js',
   '/project-harness-ui.js': 'public/project-harness-ui.js', '/project-refs-ui.js': 'public/project-refs-ui.js', '/project-floorplan.js': 'public/project-floorplan.js', '/project-git.js': 'public/project-git.js', '/project-terminals.js': 'public/project-terminals.js', '/projects.css': 'public/projects.css',

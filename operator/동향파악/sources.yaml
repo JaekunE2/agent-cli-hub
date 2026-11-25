@@ -1,0 +1,99 @@
+# LLM & AI 신기술 동향 파악을 위한 스크래핑 대상 목록
+# 각 출처는 scrapling Fetcher 유형(static / api / stealthy) 및 수집 필드를 정의합니다.
+
+keywords:
+  include:
+    - llm
+    - ai
+    - agent
+    - rag
+    - vlm
+    - multimodal
+    - inference
+    - quantization
+    - fine-tuning
+    - mcp
+    - reasoning
+    - transformer
+    - claude
+    - gemini
+    - openai
+    - gpt
+    - deepseek
+    - qwen
+    - llama
+    - mistral
+    - diffusion
+    - nvidia
+    - cuda
+    - 모델
+    - 인공지능
+    - 에이전트
+
+sources:
+  - id: geeknews
+    name: GeekNews (긱뉴스)
+    category: community
+    url: https://news.hada.io/
+    fetcher: static
+    enabled: true
+    filter_by_keywords: true
+
+  - id: hackernews
+    name: Hacker News
+    category: community
+    url: https://news.ycombinator.com/
+    fetcher: static
+    enabled: true
+    filter_by_keywords: true
+
+  - id: github_trending
+    name: GitHub Trending (All & Python)
+    category: opensource
+    urls:
+      - https://github.com/trending?since=daily
+      - https://github.com/trending/python?since=daily
+    fetcher: static
+    enabled: true
+    filter_by_keywords: true
+
+  - id: gitlab_llm
+    name: GitLab Public Projects (LLM/AI Starred)
+    category: opensource
+    urls:
+      - https://gitlab.com/api/v4/projects?search=llm&order_by=star_count&sort=desc&per_page=10&last_activity_after=2026-08-01T00:00:00Z
+    fetcher: api
+    enabled: true
+    filter_by_keywords: false
+
+  - id: hf_daily_papers
+    name: Hugging Face Daily Papers
+    category: research
+    url: https://huggingface.co/papers
+    fetcher: static
+    enabled: true
+    filter_by_keywords: false
+
+  - id: hf_trending_models
+    name: Hugging Face Trending Models
+    category: models
+    url: https://huggingface.co/models?sort=trending
+    fetcher: static
+    enabled: true
+    filter_by_keywords: false
+
+  - id: arxiv_cl
+    name: arXiv cs.CL (Computation and Language)
+    category: research
+    url: https://arxiv.org/list/cs.CL/recent
+    fetcher: static
+    enabled: true
+    filter_by_keywords: true
+
+  - id: reddit_localllama
+    name: Reddit r/LocalLLaMA
+    category: community
+    url: https://www.reddit.com/r/LocalLLaMA/hot.json?limit=15
+    fetcher: stealthy
+    enabled: false  # 일반 HTTP 요청 시 403 반환 — 브라우저(StealthyFetcher) 설정 시 활성화
+    filter_by_keywords: false

@@ -77,6 +77,21 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height:
 .screen { background: var(--screen); color: var(--screen-text); margin: 0; padding: 10px 12px; font-size: 12.5px; line-height: 1.38; white-space: pre; overflow: auto; }
 .card .screen { height: 240px; font-size: 11px; }
 
+.apps-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr)); gap: 12px; }
+.app-tile { min-width: 0; cursor: default; }
+.app-tile .app-tile-main {
+  display: grid; align-content: start; justify-items: start; flex: 1; gap: 8px;
+  height: auto; min-height: 118px; padding: 14px; border-radius: 0; text-align: start;
+  white-space: normal; overflow-wrap: anywhere; cursor: pointer;
+}
+.app-tile-main strong { font-size: 15px; }
+.app-tile-description { color: var(--muted); }
+.app-tile-session { display: flex; align-items: center; gap: 5px; color: var(--accent); }
+.app-tile-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--line); }
+.app-guide { display: grid; gap: 12px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.app-guide h3 { margin: 0 0 4px; font-size: .9rem; }
+.app-guide p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+
 /* Session Artifacts */
 .agrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
 .aday { font-weight: 700; font-size: 12.5px; color: var(--muted); margin: 14px 2px 8px; padding-bottom: 5px; border-bottom: 1px solid var(--line); }
