@@ -89,6 +89,7 @@ function select(sel, tab, persistTab = false) {
 
 function setBar(html) {
   unmountSubagents?.();
+  window.ACH_TOOL_STREAM?.destroyAll();
   $('#bar').innerHTML = html || '';
 }
 
@@ -301,6 +302,35 @@ document.addEventListener('keydown', e => {
       $('dialog[open], .drw-backdrop, .dlg')) return;
   e.preventDefault();
   openCommandPalette();
+});
+
+function toggleTuiGuiFace() {
+  const kind = state.sel?.kind;
+  if (kind === 'term') {
+    const open = window.ACH_DOCK ? window.ACH_DOCK.getDockOpen('term', state.tab) : ['term', 'chat'];
+    const isTuiOnly = open.includes('term') && !open.includes('chat');
+    const next = isTuiOnly ? ['chat'] : ['term'];
+    window.ACH_DOCK?.saveDockOpen('term', next);
+    select(state.sel, 'dock', true);
+    toast(isTuiOnly ? 'GUI 대화 모드로 전환 (Alt+J)' : 'TUI 터미널 모드로 전환 (Alt+J)', 1800);
+    return true;
+  }
+  if (kind === 'recent' || kind === 'session') {
+    const live = (state.terms || []).find((t) => t.exited === null && t.sessionId === state.sel.id);
+    if (live) {
+      window.ACH_DOCK?.saveDockOpen('term', ['term']);
+      select({ kind: 'term', id: live.id }, 'dock', true);
+      toast('연결된 TUI 터미널로 전환 (Alt+J)', 1800);
+      return true;
+    }
+  }
+  return false;
+}
+
+document.addEventListener('keydown', e => {
+  if (e.defaultPrevented || e.isComposing || e.repeat || !e.altKey || e.ctrlKey || e.metaKey || e.shiftKey ||
+      e.key.toLowerCase() !== 'j' || $('dialog[open], .drw-backdrop, .dlg')) return;
+  if (toggleTuiGuiFace()) e.preventDefault();
 });
 
 // calendar counts in the TopNav (todo.md changes come from other sessions too)

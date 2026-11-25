@@ -436,6 +436,13 @@ function createTermManager(hub) {
     };
     t.vt = new HeadlessTerminal({ cols, rows, scrollback: 3000, allowProposedApi: true });
     t.vt.onTitleChange((s) => { t.liveTitle = s; });
+    // Answer CLI terminal queries (e.g. DSR \x1b[6n, DA \x1b[c) when no browser xterm client is attached (e.g. chat-only view)
+    t.vt.onData((reply) => {
+      if (!t.clients.size && t.exited === null && t.pid && typeof reply === 'string'
+        && /^(?:\x1b\[(?:\??\d+(?:;\d+)*[Rcny]|0n)|\x1b\][0-9]+;[^\x07\x1b]*(?:\x07|\x1b\\))+$/.test(reply)) {
+        t.proc.write(reply);
+      }
+    });
     t.proc = {
       write: (data) => ptyPost(id, '/write', { id, data }),
       kill: () => ptyPost(id, '/kill', { id }),
@@ -498,8 +505,13 @@ function createTermManager(hub) {
     if (projectTask) Object.assign(meta, { projectTask, projectPrompt,
       projectAutoClose: !args.some(a => /^(?:resume|--resume|--conversation|--continue)$/.test(a)) });
     const t = makeMirror({ id, meta });
-    const terminalEnv = { ...cleanEnv(), ...env };
-    terminalEnv.ACH_HUB_PARENT_TERM = id;
+    const terminalEnv = {
+      ...cleanEnv(),
+      ...env,
+      ACH_TERM_ID: id,
+      ACH_HUB_PARENT_TERM: id,
+      ACH_HOOK_DIR: path.join(baseDir, 'data', 'hooks'),
+    };
     if (!terminalEnv.TERM || /^dumb$/i.test(terminalEnv.TERM)) terminalEnv.TERM = 'xterm-256color';
     const monitorClaude = hub.hookToken && /\bclaude(?:\.exe)?$/i.test(cmd);
     if (hub.hookToken) Object.assign(terminalEnv, { ACH_HOOK_PORT: String(port), ACH_HOOK_TOKEN: hub.hookToken, ACH_HOOK_TERM: id });
@@ -762,7 +774,11 @@ function createTermManager(hub) {
       const t = terms.get(e.id);
       if (e.type === 'spawned' && !terms.has(e.term.id)) restore(e.term);
       if (e.type === 'data' && t) mirrorData(t, e.data);
-      else if (e.type === 'exit' && t) { t.exited = e.code; for (const ws of t.clients) ws.send(JSON.stringify({ type: 'exit', code: e.code })); }
+      else if (e.type === 'exit' && t) {
+        t.exited = e.code;
+        t.exitedAt = Date.now();
+        for (const ws of t.clients) ws.send(JSON.stringify({ type: 'exit', code: e.code }));
+      }
       else if (e.type === 'resize' && t && (t.cols !== e.cols || t.rows !== e.rows)) { t.cols = e.cols; t.rows = e.rows; t.vt.resize(e.cols, e.rows); }
     });
     ev.on('close', () => {

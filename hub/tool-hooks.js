@@ -21,6 +21,7 @@ function ingestToolHook(hub, { termId, data } = {}) {
   return recordHook(hub, { termId, sessionId: data.session_id, event: {
     type: event === 'PreToolUse' ? 'call' : 'result',
     id, tool, input: data.tool_input, output: data.tool_response ?? data.tool_output ?? data.error,
+    subagentId: data.subagent_id,
     failed: event === 'PostToolUseFailure', ts: Date.now(),
   } });
 }

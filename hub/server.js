@@ -35,7 +35,7 @@ const { createTermEventStore } = require('./term-events');
 const { createAccountSwitchService } = require('./account-switch');
 const { createProjectRoutes } = require('./routes-projects');
 const { createSessionRoutes } = require('./routes-sessions');
-const { ingestToolHook } = require('./tool-hooks');
+const { createHookTransport } = require('./session-hook-transport');
 const { createSystemRoutes } = require('./routes-system');
 
 const cleanModelEffort = (model, effort) => {
@@ -209,6 +209,9 @@ let gpuQ = makeGpuQ();
 let research = makeResearch();
 let calendarMod = makeCalendar();
 const projectRoutes = createProjectRoutes(hub);
+const hookTransport = createHookTransport(hub);
+hub.toolHooks = hookTransport.toolHooks;
+hub.artifacts = artifactsMod;
 const sessionRoutes = createSessionRoutes(hub);
 Object.assign(hub, {
   ...projectRoutes,
@@ -342,6 +345,7 @@ const STATIC = {
   '/styles.css': 'public/styles.css', '/components.css': 'public/components.css',
   '/ui.js': 'public/ui.js', '/app-core.js': 'public/app-core.js', '/sidebar-ui.js': 'public/sidebar-ui.js',
   '/home-terms-ui.js': 'public/home-terms-ui.js', '/terminals-ui.js': 'public/terminals-ui.js',
+  '/tool-activity-ui.js': 'public/tool-activity-ui.js',
   '/tool-stream-ui.js': 'public/tool-stream-ui.js',
   '/subagent-viewer.js': 'public/subagent-viewer.js',
   '/files-artifacts.js': 'public/files-artifacts.js', '/chat-composer.js': 'public/chat-composer.js',
@@ -350,7 +354,7 @@ const STATIC = {
   '/dock.js': 'public/dock.js', '/preview.js': 'public/preview.js', '/vault.js': 'public/vault.js',
   '/projects.js': 'public/projects.js', '/project-forms.js': 'public/project-forms.js', '/project-plan-form.js': 'public/project-plan-form.js',
   '/project-board.js': 'public/project-board.js', '/project-task-form.js': 'public/project-task-form.js', '/project-flow.js': 'public/project-flow.js',
-  '/project-harness-ui.js': 'public/project-harness-ui.js', '/project-refs-ui.js': 'public/project-refs-ui.js', '/project-floorplan.js': 'public/project-floorplan.js', '/project-terminals.js': 'public/project-terminals.js', '/projects.css': 'public/projects.css',
+  '/project-harness-ui.js': 'public/project-harness-ui.js', '/project-refs-ui.js': 'public/project-refs-ui.js', '/project-floorplan.js': 'public/project-floorplan.js', '/project-git.js': 'public/project-git.js', '/project-terminals.js': 'public/project-terminals.js', '/projects.css': 'public/projects.css',
   '/xterm.js': 'node_modules/@xterm/xterm/lib/xterm.js', '/xterm.css': 'node_modules/@xterm/xterm/css/xterm.css',
   '/addon-fit.js': 'node_modules/@xterm/addon-fit/lib/addon-fit.js', '/mermaid.js': 'node_modules/mermaid/dist/mermaid.min.js',
   '/icon-claude.png': 'public/icon-claude.png', '/icon-openai.png': 'public/icon-openai.png',
@@ -385,7 +389,7 @@ hub.writeInteractiveTerm = async (t, data) => {
     if (t.meta?.projectAutoClose && t.lastInputAt === t.meta.spawnedAt) hub.touchUserInput(t);
   }
   const result = await t.proc.write(data);
-  if (result?.ok && data === '\x03') t._subagentsInterruptedAt = Date.now();
+  if (result?.ok && data.includes('\x03')) t._subagentsInterruptedAt = Date.now();
   if (result?.ok && /[\r\n]/.test(data)) hub.touchUserInput(t);
   return !!result?.ok;
 };
@@ -404,15 +408,7 @@ const server = http.createServer(async (req, res) => {
   }
   if (!p.startsWith('/api/')) return send(res, 404, { error: 'not found' });
   if (p === '/api/session/subagent-hook' && req.method === 'POST') {
-    if (req.socket.remoteAddress !== '127.0.0.1' || req.headers.origin || req.headers['x-hook-token'] !== HOOK_TOKEN) return send(res, 401, { error: 'bad token' });
-    try {
-      const event = ingestToolHook(hub, await body(req));
-      if (event) for (const ws of hookClients) if (ws.readyState === 1) ws.send(JSON.stringify(event));
-      return send(res, 200, { ok: true });
-    } catch (error) {
-      console.error('[hub hook]', error);
-      return send(res, 500, { ok: false });
-    }
+    return hookTransport.handleNativeHook(req, res, body, send);
   }
   if (p === '/api/calendar/google/callback') return calendarMod.oauthCallback(url, res).catch((e) => send(res, 500, { error: e.message }));
   if (!authed(req, url)) return send(res, 401, { error: 'bad token' });
@@ -429,16 +425,9 @@ const server = http.createServer(async (req, res) => {
 });
 
 const wss = new WebSocketServer({ noServer: true });
-const hookClients = new Set();
 server.on('upgrade', (req, sock, head) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
-  if (url.pathname === '/ws/hooks' && authed(req, url)) {
-    return wss.handleUpgrade(req, sock, head, ws => {
-      hookClients.add(ws);
-      ws.on('close', () => hookClients.delete(ws));
-      ws.on('error', () => hookClients.delete(ws));
-    });
-  }
+  if (hookTransport.handleUpgrade(wss, req, sock, head, url, authed)) return;
   const t = hub.terms.get(url.searchParams.get('id') || '');
   if (url.pathname !== '/ws/term' || !authed(req, url) || !t) return sock.destroy();
   wss.handleUpgrade(req, sock, head, (ws) => {

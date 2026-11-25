@@ -9,7 +9,8 @@ function dockTopSegHTML({ openSet, isContentTab = false, hasTerm = true, hasChat
   <div class="seg bar-tab-seg" role="tablist" aria-label="전용 화면 탭">
     ${showFiles ? `<button type="button" role="tab" aria-selected="${curTab === 'files'}" data-tab="files" class="${curTab === 'files' ? 'on' : ''}" title="이 세션의 산출물 보기 및 지정">산출물</button>` : ''}
     <button type="button" role="tab" aria-selected="${curTab === 'floorplan'}" data-tab="floorplan" class="${curTab === 'floorplan' ? 'on' : ''}" title="코드 구조(Floorplan) 및 보안·품질 점검">${ICO.layers} 코드 구조</button>
-  </div>`;
+  </div>
+  ${hasTerm && hasChat ? `<button type="button" class="ghost btn-sm bar-face-btn" data-face-toggle title="TUI(터미널) ↔ GUI(대화 기록) 즉시 전환 (Alt+J)">${ICO.swap || ''} TUI⇄GUI</button>` : ''}`;
 }
 
 function setSessionBar(identity, views, actions, subagents) {
@@ -34,6 +35,7 @@ function mountChatWorkspace(body, { sid, gen, at = -1, terms = [], composerOpts 
   if (!body) return null;
   body.innerHTML = `<div class="chat-split">
     <div class="chat-shell">
+      <div class="tool-stream-host" hidden></div>
       <div class="chat-scroll"></div>
       <div class="chat-comp-host"></div>
     </div>
@@ -73,6 +75,16 @@ function mountChatWorkspace(body, { sid, gen, at = -1, terms = [], composerOpts 
   }
   renderChat(sid, gen, at, terms, scrollEl);
   mountChatComposer({ barHost: compEl, chatHost: scrollEl, sid, ...composerOpts });
+  const tsHost = $('.tool-stream-host', body);
+  if (tsHost && window.ACH_TOOL_STREAM) {
+    const curTermId = composerOpts.termId || (state.sel.kind === 'term' ? state.sel.id : '');
+    window.ACH_TOOL_STREAM.mountToolStreamBar(tsHost, {
+      termId: curTermId,
+      sessionId: sid || '',
+      cwd: composerOpts.cwd || '',
+      gen,
+    });
+  }
   return { scrollEl, compEl };
 }
 function syncBarDockButtons(openList) {

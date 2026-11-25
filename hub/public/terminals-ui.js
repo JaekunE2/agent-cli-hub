@@ -318,7 +318,7 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
   const termId = t?.id || state.sel.id;
   let dockCollapsed = chatHost ? true : termInputCollapsed;
   const keysOpen = getTuiKeysOpen();
-  hostEl.innerHTML = `<div class="full"><div id="termwrap"><div class="termhint" id="termConnectionStatus" role="status" hidden></div><button type="button" class="scroll-bottom-btn term-bottom-float" id="btnTermFloatBottom" hidden title="터미널 최하단으로 이동" aria-label="터미널 최하단으로 이동">${ICO.chevDown}<span>최하단</span></button></div>
+  hostEl.innerHTML = `<div class="full"><div class="tool-stream-host" id="termToolStreamHost" hidden></div><div id="termwrap"><div class="termhint" id="termConnectionStatus" role="status" hidden></div><button type="button" class="scroll-bottom-btn term-bottom-float" id="btnTermFloatBottom" hidden title="터미널 최하단으로 이동" aria-label="터미널 최하단으로 이동">${ICO.chevDown}<span>최하단</span></button></div>
     <div class="term-dock">
       <div class="tdock-bar">
         <button class="ghost btn-sm" id="tDockToggle" aria-expanded="${!dockCollapsed}" title="하단 프롬프트 작성창 접기/펼치기">${dockCollapsed ? `${ICO.chevUp} 터미널 입력` : `${ICO.chevDown} 터미널 입력`}</button>
@@ -352,6 +352,16 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
 
   const fullEl = $('.full', hostEl);
   const wrapEl = $('#termwrap', fullEl);
+  const termTsHost = $('#termToolStreamHost', fullEl);
+  const termTsCtl = (termTsHost && window.ACH_TOOL_STREAM)
+    ? window.ACH_TOOL_STREAM.mountToolStreamBar(termTsHost, {
+        termId: String(termId || ''),
+        sessionId: (typeof resolveTermSessionId === 'function' ? resolveTermSessionId(t) : t?.sessionId) || '',
+        cwd: t?.cwd || '',
+        gen,
+      })
+    : null;
+  termTsCtl?.setVisible(!chatHost);
   xterm = new Terminal({ fontFamily: '"Cascadia Mono", Consolas, "D2Coding", monospace', fontSize: IS_MOBILE ? 11 : 13, cursorBlink: true, scrollback: 10000, theme: { background: '#0e0e11' } });
   const fit = new FitAddon.FitAddon();
   xterm.loadAddon(fit);
@@ -524,6 +534,7 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
     if (t?.agent === 'codex' && e.ctrlKey && !e.altKey && !e.shiftKey && k === 'r') { e.preventDefault(); return false; }
     if ((e.ctrlKey || e.metaKey) && k === 'c' && (e.shiftKey || xterm.hasSelection())) { copyText(xterm.getSelection()); xterm.clearSelection(); return false; }
     if ((e.ctrlKey || e.metaKey) && k === 'v') { pasteWithShift = !!e.shiftKey; return false; }
+    if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && k === 'j') return false;
     return true;
   });
   wrapEl.addEventListener('contextmenu', (e) => { if (xterm?.hasSelection()) { e.preventDefault(); copyText(xterm.getSelection()); xterm.clearSelection(); } });
@@ -658,6 +669,7 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
   const syncChatPane = (next) => {
     if (!!next === !!chatHost) return;
     chatHost = next;
+    termTsCtl?.setVisible(!chatHost);
     setInputCollapsed(!tin.value && (chatHost ? true : termInputCollapsed));
     $('#tsend', fullEl).classList.toggle('primary', !chatHost);
   };
@@ -707,7 +719,7 @@ function viewTerm() {
     <div class="session-meta">${sessionOriginButton(t?.branch)}${branchTagHTML(t?.branch)}${t?.account ? `<span class="badge c">${esc(t.account.label.replace(/@.*/, ''))}</span>` : ''}${(t?.model || t?.effort) ? `<span class="badge" title="선택된 모델 · 추론 성능">${esc([t.model, t.effort].filter(Boolean).join(' · '))}</span>` : ''}</div>`,
     dockTopSegHTML({ openSet: new Set(initialPanels), isContentTab, hasTerm: true, hasChat: true, showFiles: true, curTab: state.tab }),
     `<button id="btnTermMore" class="ghost icon-btn btn-sm" aria-label="터미널 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`,
-    { termId: String(id), cwd: t?.cwd });
+    { termId: String(id), sessionId: sid, cwd: t?.cwd });
 
   let dock = null;
   const doRenameTerm = () => {
@@ -749,6 +761,10 @@ function viewTerm() {
     }
     const tb = e.target.closest('[data-tab]');
     if (tb) return select(state.sel, tb.dataset.tab, true);
+    if (e.target.closest('[data-face-toggle]')) {
+      if (typeof toggleTuiGuiFace === 'function') return toggleTuiGuiFace();
+      return;
+    }
     const more = e.target.closest('#btnTermMore');
     if (more) {
       e.stopPropagation();

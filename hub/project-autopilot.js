@@ -300,6 +300,28 @@ async function runProjectIntegration(hub, project, retry, maxRetries) {
   }
   if (result.skipped || !current()) return { skipped: true, started: [] };
   if (!result.ok) {
+    if (hub.startProjectMergeSession && entries.length && !result.pending) {
+      const pFail = latest();
+      const errNote = String(result.error || waitingMessage).slice(0, 600);
+      hub.projects.save({ ...pFail, tasks: pFail.tasks.map((task) => stillQueued(task) ? {
+        ...task, stage: 'merge', reviewStatus: 'merge-session', reviewPaused: false,
+        reviewNote: [task.mergeApprovalNote, `코드 자동 통합 실패 → 병합 에이전트 세션에서 직접 병합 진행 중`, errNote].filter(Boolean).join('\n'),
+      } : task) });
+      hub.overviewStale?.();
+      const session = await hub.startProjectMergeSession(pFail, queue, {
+        ...result,
+        entries,
+        worktree: result.worktree || run.worktree || '',
+      });
+      if (!session?.error) {
+        const curP = latest();
+        hub.projects.save({ ...curP, tasks: curP.tasks.map((task) => task.stage === 'merge' && task.reviewStatus === 'merge-session' && queue.some((q) => q.id === task.id) ? {
+          ...task, mergeTermId: session.id,
+        } : task) });
+        hub.overviewStale?.();
+        return { approved: false, mergeSession: true, termId: session.id, started: [] };
+      }
+    }
     const failures = run.failures + 1;
     const pending = !!project.autopilot && failures <= run.maxRetries && result.code !== 'REVIEW_UNCERTAIN';
     const reason = [result.error || waitingMessage, result.worktree || run.worktree].filter(Boolean).join('\n');
@@ -1165,7 +1187,7 @@ async function checkAutopilotCompletions(hub) {
     for (const project of hub.projects.list()) {
       if (!Array.isArray(project.tasks)) continue;
       let recoveredMergeSession = false;
-      const checkedMergeTasks = project.tasks.map((tk) => {
+      const checkedMergeTasks = await Promise.all(project.tasks.map(async (tk) => {
         if (tk.stage === 'merge' && tk.reviewStatus === 'merge-session' && !tk.reviewPaused) {
           const mKey = `${project.id}:${tk.mergeTermId || ''}`;
           if (tk.mergeTermId && activeMergeKeys.has(mKey)) {
@@ -1177,12 +1199,22 @@ async function checkAutopilotCompletions(hub) {
             if (ticks >= 4) {
               orphanDoingTicks.delete(oKey);
               recoveredMergeSession = true;
+              const alreadyMerged = tk.mergeCommit && project.cwd
+                ? (await execGit(project.cwd, ['merge-base', '--is-ancestor', tk.mergeCommit, 'HEAD'])).ok
+                : false;
+              if (alreadyMerged) {
+                return {
+                  ...tk, stage: 'done', reviewStatus: 'approved', reviewPaused: false, retryCount: 0,
+                  reviewNote: [tk.mergeApprovalNote, `대상 브랜치 반영 확인 완료 (${tk.mergeCommit.slice(0, 8)})`].filter(Boolean).join('\n'),
+                  mergeApprovalNote: '', mergeCommit: '', mergeTip: '', mergeTermId: '', worktreePath: '',
+                };
+              }
               return { ...tk, reviewStatus: 'merge-blocked', reviewPaused: true, reviewNote: '병합 세션 터미널이 종료되어 일시 정지되었습니다.' };
             }
           }
         }
         return tk;
-      });
+      }));
       if (recoveredMergeSession) {
         hub.projects.save({ ...project, tasks: checkedMergeTasks });
         hub.overviewStale?.();

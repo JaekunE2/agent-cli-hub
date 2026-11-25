@@ -443,3 +443,29 @@ svg.fm-map-edges path.fm-edge.dim { opacity: 0.06; }
 .pj-convoy { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 14px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel); flex-wrap: wrap; font-size: 12.5px; box-shadow: var(--shadow-xs); }
 .pj-convoy.on { border-color: var(--line-strong); background: var(--panel); }
 .pj-convoy-pill { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 650; color: var(--text); }
+.pg-wrap { display: flex; flex-direction: column; gap: 12px; }
+.pg-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.pg-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; align-items: start; }
+.pg-card { border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel); padding: 12px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.pg-card h4 { margin: 0; font-size: 13px; font-weight: 650; }
+.pg-graph { overflow-x: auto; padding: 6px; border-radius: var(--radius-sm); background: var(--bg); border: 1px solid var(--line); }
+.pg-commits { display: flex; flex-direction: column; gap: 5px; max-height: 280px; overflow-y: auto; }
+.pg-commit { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 4px 0; border-bottom: 1px dashed var(--line); }
+.pg-hash { font-size: 11px; color: var(--accent); flex: none; }
+.pg-subj { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pg-group { margin-bottom: 8px; }
+.pg-group-hd { display: flex; align-items: center; justify-content: space-between; font-size: 12px; font-weight: 600; margin-bottom: 4px; color: var(--muted); }
+.pg-files { display: flex; flex-direction: column; gap: 3px; }
+.pg-file-btn { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 5px 8px; border-radius: var(--radius-sm); background: var(--bg); border: 1px solid var(--line); cursor: pointer; font-size: 12px; }
+.pg-file-btn:hover, .pg-file-btn.on { border-color: var(--accent); }
+.pg-st { font-family: monospace; font-weight: 700; width: 14px; text-align: center; flex: none; }
+.pg-st.st-m { color: var(--warn); }
+.pg-st.st-a, .pg-st.st-u { color: var(--ok); }
+.pg-st.st-d { color: var(--danger, #e05252); }
+.pg-fpath { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pg-diff-box { border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg); overflow: hidden; }
+.pg-diff-hd { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--panel2); font-size: 12px; }
+.pg-diff-pre { margin: 0; padding: 8px 10px; font-size: 11.5px; line-height: 1.45; max-height: 360px; overflow: auto; white-space: pre; }
+.pg-dl-add { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+.pg-dl-del { background: color-mix(in srgb, var(--danger, #e05252) 15%, transparent); color: var(--danger, #e05252); }
+.pg-dl-hunk { color: var(--accent); font-weight: 600; }

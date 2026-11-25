@@ -26,8 +26,13 @@ function parentSession(hub, term) {
     || (agent === 'codex' && hub.codexSessionOf?.(term)) || (agent === 'agy' && hub.agySessionOf?.(term)) || null;
 }
 
-function existing(file) {
+function existing(file, root) {
   try {
+    if (root) {
+      const relative = path.relative(root, file);
+      if (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) return null;
+      file = path.join(fs.realpathSync(root), relative);
+    }
     const real = fs.realpathSync(file);
     const normalize = value => process.platform === 'win32' ? value.toLowerCase() : value;
     return normalize(real) === normalize(file) && fs.statSync(real).isFile() ? file : null;
@@ -39,44 +44,54 @@ function existing(file) {
 
 function transcriptFile(hub, id, term) {
   if (!safeId(id)) return null;
-  const doc = hub.index?.get(id);
-  if (doc?.file) return existing(path.resolve(doc.file));
   const claudeRoot = term?.meta?.envFlags?.CLAUDE_CONFIG_DIR || hub.claudeDir;
   const claude = claudeRoot && path.resolve(claudeRoot, 'projects');
-  for (const dir of claude && fs.existsSync(claude) ? fs.readdirSync(claude) : []) {
-    const file = existing(path.join(claude, dir, id + '.jsonl'));
-    if (file) return file;
-  }
-  for (const root of [].concat(hub.index?.agyRoot || [])) {
-    const dir = path.resolve(root, id, '.system_generated', 'logs');
-    const file = existing(path.join(dir, 'transcript_full.jsonl')) || existing(path.join(dir, 'transcript.jsonl'));
-    if (file) return file;
-  }
   const home = term?.meta?.envFlags?.CODEX_HOME;
-  const root = home ? path.join(home, 'sessions') : hub.index?.codexRoot;
+  const root = home ? path.resolve(home, 'sessions') : hub.index?.codexRoot;
+  const agy = [].concat(hub.index?.agyRoot || []);
+  const doc = hub.index?.get(id);
+  if (doc?.file) {
+    const file = path.resolve(doc.file);
+    const roots = [claude, hub.index?.root, root, hub.index?.codexRoot, ...agy].filter(Boolean);
+    for (const dir of roots.length ? roots : [null]) {
+      const found = existing(file, dir);
+      if (found) return found;
+    }
+  }
+  for (const dir of claude && fs.existsSync(claude) ? fs.readdirSync(claude) : []) {
+    const file = existing(path.join(claude, dir, id + '.jsonl'), claude);
+    if (file) return file;
+  }
+  for (const agyRoot of agy) {
+    const dir = path.resolve(agyRoot, id, '.system_generated', 'logs');
+    const file = existing(path.join(dir, 'transcript_full.jsonl'), agyRoot) || existing(path.join(dir, 'transcript.jsonl'), agyRoot);
+    if (file) return file;
+  }
   const now = Date.now();
   for (const ms of [now, now - 86_400_000, term?.startedAt, term?.startedAt && term.startedAt - 86_400_000].filter(Boolean)) {
     if (!root) break;
     const date = new Date(ms);
     const dir = path.join(root, String(date.getFullYear()), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0'));
     const name = (fs.existsSync(dir) ? fs.readdirSync(dir) : []).find(name => name.startsWith('rollout-') && name.endsWith(`-${id}.jsonl`));
-    if (name) return existing(path.resolve(dir, name));
+    if (name) return existing(path.resolve(dir, name), root);
   }
   return null;
 }
 
 function readEvents(file, cursor, consume, limit = 2_000_000, fromStart = false) {
   if (!file) return;
-  const fd = fs.openSync(file, 'r');
+  let fd;
+  try { fd = fs.openSync(file, 'r'); }
+  catch (error) { if (error.code === 'ENOENT') return; throw error; }
   try {
     const st = fs.fstatSync(fd);
     if (cursor.size > st.size || cursor.ino !== st.ino) cursor.offset = 0;
     if (cursor.size === st.size && cursor.mtime === st.mtimeMs && cursor.ino === st.ino) return;
     Object.assign(cursor, { ino: st.ino, size: st.size, mtime: st.mtimeMs });
-    const start = fromStart ? 0 : cursor.offset || Math.max(0, st.size - limit);
+    const start = fromStart ? 0 : Math.max(cursor.offset || 0, st.size - limit);
     const bytes = Buffer.alloc(fromStart ? Math.min(limit, st.size) : st.size - start);
     const count = fs.readSync(fd, bytes, 0, bytes.length, start);
-    let from = !cursor.offset && start ? bytes.indexOf(10) + 1 || count : 0;
+    let from = start && start !== cursor.offset ? bytes.indexOf(10) + 1 || count : 0;
     for (let end; from < count && (end = bytes.indexOf(10, from)) >= 0 && end < count; from = end + 1) {
       const line = bytes.toString('utf8', from, end).trim();
       if (!line) continue;

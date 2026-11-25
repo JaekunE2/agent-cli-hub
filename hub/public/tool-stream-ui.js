@@ -1,8 +1,9 @@
 let unmountSubagents;
+let positionSubagents;
 
 function mountSubagents(bar, params) {
   const host = document.createElement('div');
-  host.className = 'ts-right';
+  host.className = 'ts-subagent-control';
   host.innerHTML = `<button type="button" class="ts-pill ghost btn-sm" data-ts-subagents aria-expanded="false">
     <span class="dot busy" hidden></span><span data-ts-count aria-live="polite">서브에이전트</span></button>
     <div class="ts-subagent-list" hidden></div>`;
@@ -11,7 +12,16 @@ function mountSubagents(bar, params) {
   const counter = button.querySelector('[data-ts-count]');
   const list = host.querySelector('.ts-subagent-list');
   const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value));
+  const request = new AbortController();
+  let viewer;
+  positionSubagents = () => {
+    const toolboxes = document.querySelectorAll('#view [data-ts-bar] .ts-right');
+    const toolbox = [...toolboxes].find(element => element.getClientRects().length);
+    const target = toolbox || bar;
+    if (host.parentElement !== target) target.append(host);
+  };
   let items = [], pending = false, failure = '';
+  let refreshQueued = false;
   const label = '서브에이전트';
   function paint() {
     const running = items.filter(item => item.status === 'running');
@@ -38,17 +48,31 @@ function mountSubagents(bar, params) {
       : group('실행 중', running) + group('최근 완료/중단', history) || '<p>서브에이전트 기록이 없습니다.</p>';
     if (focused) [...list.querySelectorAll('button')].find(b => b.dataset.tsItem === focused)?.focus();
   }
-  async function refresh() {
-    if (pending) return;
+  async function refresh(afterHook = false) {
+    if (request.signal.aborted) return;
+    if (pending) {
+      refreshQueued ||= afterHook;
+      return;
+    }
     pending = true;
     try {
-      ({ subagents: items = [] } = await api(`/api/session/subagents?${query}`, { requireOk: true }));
+      const data = await api(`/api/session/subagents?${query}`, { requireOk: true, signal: request.signal });
+      if (request.signal.aborted || refreshQueued) return;
+      items = Array.isArray(data) ? data : data.subagents || [];
       failure = '';
     } catch (error) {
-      failure = error.message;
+      if (!request.signal.aborted && !refreshQueued) failure = error.message;
     } finally {
       pending = false;
-      if (host.isConnected) paint();
+      if (!request.signal.aborted) {
+        if (refreshQueued) {
+          refreshQueued = false;
+          void refresh();
+        } else {
+          positionSubagents();
+          paint();
+        }
+      }
     }
   }
   function close() {
@@ -68,22 +92,44 @@ function mountSubagents(bar, params) {
     close();
     if (item.targetTermId) return select({ kind: 'term', id: item.targetTermId });
     if (item.targetSessionId) return select({ kind: 'recent', id: item.targetSessionId }, 'chat');
-    openSubagentViewerModal(query, item);
+    viewer = openSubagentViewerModal(query, item);
   };
   function outside(event) { if (!host.contains(event.target)) close(); }
   document.addEventListener('pointerdown', outside);
   host.onkeydown = event => {
     if (event.key === 'Escape' && !list.hidden) { close(); button.focus(); }
   };
-  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/hooks?t=${encodeURIComponent(TOKEN)}`);
-  ws.onmessage = ({ data }) => {
-    const event = JSON.parse(data);
-    if (event.type === 'hook-event' && (event.termId === params.termId || event.sessionId && event.sessionId === params.sessionId)) refresh();
-  };
+  const socketUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/hooks?t=${encodeURIComponent(TOKEN)}`;
+  let ws, reconnectTimer;
+  function refreshFromHook() {
+    if (request.signal.aborted) return;
+    void refresh(true);
+    if (viewer?.open) viewer.dispatchEvent(new Event('hook-event'));
+  }
+  function connect(reconnecting = false) {
+    ws = new WebSocket(socketUrl);
+    ws.onopen = () => { if (reconnecting) refreshFromHook(); };
+    ws.onmessage = ({ data }) => {
+      let event;
+      try { event = JSON.parse(data); } catch { return; }
+      if (event?.type !== 'hook-event') return;
+      if ((event.termId && String(event.termId) === params.termId)
+        || (event.sessionId && event.sessionId === params.sessionId)) refreshFromHook();
+    };
+    ws.onclose = () => {
+      if (!request.signal.aborted) reconnectTimer = setTimeout(() => connect(true), 1000);
+    };
+  }
+  connect();
   const timer = setInterval(refresh, 1000);
   unmountSubagents = () => {
     document.removeEventListener('pointerdown', outside);
     clearInterval(timer);
+    clearTimeout(reconnectTimer);
+    request.abort();
+    viewer?.close();
+    host.remove();
+    positionSubagents = null;
     if (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN) ws.close();
     unmountSubagents = null;
   };

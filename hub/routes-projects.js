@@ -13,6 +13,7 @@ const { versionFolder, copyVersion, versionWorkspace, scanVersion } = require('.
 const { createFileRuns, fileRunPath } = require('./project-file-runs');
 const { VERSION_RE } = require('./project-validation');
 const { requiredMcpMessage } = require('./vault-cli-ops');
+const { inspectGit } = require('./git-inspector');
 
 const projectAgents = ['codex', 'claude', 'agy', 'cursor'];
 
@@ -878,6 +879,18 @@ function createProjectRoutes(hub) {
         return true;
       }
       send(res, 405, { error: 'method not allowed' });
+      return true;
+    }
+
+    if (p === '/api/projects/git' && req.method === 'GET') {
+      const pid = url.searchParams.get('id') || '';
+      const project = pid ? projects.list().find((x) => x.id === pid) : null;
+      const cwd = url.searchParams.get('cwd') || project?.cwd || '';
+      const file = url.searchParams.get('file') || '';
+      const staged = url.searchParams.get('staged') === '1';
+      const untracked = url.searchParams.get('untracked') === '1';
+      const data = await inspectGit(cwd, { file, staged, untracked });
+      send(res, 200, data);
       return true;
     }
 

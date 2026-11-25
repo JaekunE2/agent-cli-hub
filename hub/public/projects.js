@@ -6,6 +6,7 @@ const projectViews = [
   ['board', '칸반 보드', '작업을 상태별로 보고 옮깁니다.'],
   ['flow', '작업 흐름', '선행 작업과 의존성을 확인합니다.'],
   ['floorplan', '코드 구조', '코드 구성과 주요 연결을 확인합니다.'],
+  ['git', 'Git 현황', '브랜치 노선도와 변경분(Diff)을 읽기 전용으로 확인합니다.'],
   ['refs', '산출물', '사용자와 AI 태스크가 공용으로 읽고 쓰는 산출물·레퍼런스 저장소입니다.'],
   ['terms', '터미널 모아보기', '이 프로젝트에서 열린 터미널을 확인합니다.'],
   ['versions', '버전 이력', '작업 파일을 버전으로 저장하고 이전 버전에서 이어 작업합니다.'],
@@ -793,6 +794,7 @@ async function viewProjects() {
     if (projectTab === 'design') projectDesign(p);
     else if (projectTab === 'versions') projectVersions(fullProject);
     else if (projectTab === 'floorplan' && typeof projectFloorplan === 'function') projectFloorplan(p, gen);
+    else if (projectTab === 'git' && typeof projectGitView === 'function') projectGitView(p, gen);
     else if (projectTab === 'refs' && typeof projectRefsView === 'function') projectRefsView(p, gen);
     else if (projectTab === 'terms') projectTerminals(p, gen);
     else projectBoard(p);

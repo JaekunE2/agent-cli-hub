@@ -112,5 +112,5 @@ module.exports = async function fixture(store, handleRoute) {
   const ws = new WebSocketServer({ server });
   ws.on('connection', c => c.send(JSON.stringify({ type: 'data', data: 'test terminal\r\n' })));
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  return { url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise(resolve => { ws.close(); server.close(resolve); }) };
+  return { ws, url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise(resolve => { ws.close(); server.close(resolve); }) };
 };

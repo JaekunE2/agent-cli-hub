@@ -14,8 +14,9 @@ const { projectDeliveryResult, deliveryError } = require('./project-history');
 const { claudeCommandNote, claudeToolResultNote } = require('./searchindex');
 const { spawnCli } = require('./project-plan');
 const { listSubagents, readSubagentDetail } = require('./subagent-monitor');
-const { parentSession } = require('./subagent-files');
+const { parentSession, transcriptFile } = require('./subagent-files');
 const { sessionStartupBlock, waitForTerminalInput, dismissProjectHookMenu, dispatchTerminalPrompt, submissionBlockMessage, terminalConfirmationMessage, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE } = require('./term-manager');
+const { collectSessionTraces } = require('./session-traces');
 
 const OV_TTL = 2500;
 
@@ -724,7 +725,8 @@ function createSessionRoutes(hub) {
       args = ['/c', ca];
     }
     const taskIds = queue.map((t) => t.id);
-    const projectMerge = { projectId: project.id, runId: queue[0]?.mergeRun?.id || result.tip, taskIds, tip: result.tip };
+    const tip = result?.tip || '';
+    const projectMerge = { projectId: project.id, runId: queue[0]?.mergeRun?.id || tip || crypto.randomUUID(), taskIds, tip };
     const t = hub.createTerm({
       cwd: project.cwd, cmd, args, title: `[병합] ${project.name}`, ...launchAccount, model, effort, agent, projectMerge,
     });
@@ -739,10 +741,10 @@ function createSessionRoutes(hub) {
     }
     overviewStale();
 
-    const taskLines = queue.map((item) => `- ${item.title} (${item.id.slice(0, 8)})`).join('\n');
-    const rawPrompt = [
+    const taskLines = queue.map((item) => `- ${item.title} (${item.id.slice(0, 8)})${item.mergeCommit ? ` [commit: ${item.mergeCommit.slice(0, 8)}]` : ''}${item.worktreePath ? ` [worktree: ${item.worktreePath}]` : ''}`).join('\n');
+    const rawPrompt = tip ? [
       `[프로젝트 병합 최종 검증 세션] ${project.name}`,
-      `대상 브랜치(${project.cwd})에 1차 자동 병합(${result.tip.slice(0, 8)})이 반영되었습니다.`,
+      `대상 브랜치(${project.cwd})에 1차 자동 병합(${tip.slice(0, 8)})이 반영되었습니다.`,
       '포함된 작업:',
       taskLines,
       '',
@@ -751,6 +753,19 @@ function createSessionRoutes(hub) {
       '2. 만약 `hub: auto-stash before target merge` 스태시가 남아 있다면(`git stash list`), 충돌 여부를 확인해 안전하게 복원·정리합니다.',
       '3. 프로젝트의 핵심 테스트/빌드 검증을 실행해 최종 병합 상태에 이상이 없는지 확인합니다.',
       '4. 확인이 끝나면 검증 결과를 간략히 요약하고 작업을 마칩니다.',
+      ...(mergeRole?.template ? ['', `[Role 하네스 · ${mergeRole.label || 'merge'}]`, mergeRole.template] : []),
+    ].join('\n') : [
+      `[프로젝트 통합 · 병합 에이전트 세션] ${project.name}`,
+      `대상 브랜치(${project.cwd})에 아래 검토 완료 작업들을 직접 병합하고 검증해 주세요.`,
+      '포함된 작업:',
+      taskLines,
+      ...(result?.error ? ['', '이전 자동 통합 단계 실패 원인:', String(result.error).slice(-1200)] : []),
+      '',
+      '현재 폴더에서 아래 순서로 작업을 완료하세요:',
+      '1. 각 작업의 커밋(`commit`)을 대상 브랜치에 `git merge --no-ff`로 병합하고, 충돌이 있으면 양쪽 의도를 보존하며 해결합니다.',
+      '2. 만약 `hub: auto-stash before target merge` 스태시가 남아 있다면(`git stash list`), 충돌 여부를 확인해 안전하게 복원·정리합니다.',
+      '3. 프로젝트의 테스트(`npm test` 등)를 실행해 실패하는 항목이 있으면 원인을 수정하고 모두 통과시킵니다.',
+      '4. `git status` 및 `git log -n 5 --oneline`을 확인해 최종 병합 결과를 요약하고 마칩니다.',
       ...(mergeRole?.template ? ['', `[Role 하네스 · ${mergeRole.label || 'merge'}]`, mergeRole.template] : []),
     ].join('\n');
 
@@ -935,13 +950,28 @@ function createSessionRoutes(hub) {
     if (p === '/api/overview') { send(res, 200, await overviewSnapshot()); return true; }
     if (req.method === 'GET' && (p === '/api/session/subagents' || p === '/api/session/subagent-detail')) {
       const params = Object.fromEntries(url.searchParams);
-      if (params.sessionId && (!validSessionId(params.sessionId) || projects.hidden().has(params.sessionId))) {
+      const isDetail = p.endsWith('/subagent-detail');
+      const synthetic = params.sessionId?.startsWith('term:');
+      const termId = params.termId || (synthetic && params.sessionId.slice(5));
+      if ((!termId && !params.sessionId) || (termId && !/^\d+$/.test(termId))
+          || (synthetic && (!termId || params.sessionId !== `term:${termId}`))
+          || (!synthetic && params.sessionId && !validSessionId(params.sessionId))
+          || (isDetail && (!/^[\w.:-]{1,200}$/.test(params.id || '')
+            || (params.id.startsWith('term:') && !/^term:\d+$/.test(params.id))))) {
+        send(res, 400, { ok: false, error: '대화 ID가 올바르지 않습니다.' });
+        return true;
+      }
+      const term = termId && hub.terms.get(termId);
+      if ((termId && !term)
+          || (params.sessionId && projects.hidden().has(params.sessionId))
+          || (term && params.sessionId && !synthetic && parentSession(hub, term) !== params.sessionId)
+          || (!term && params.sessionId && !index.get(params.sessionId) && !transcriptFile(hub, params.sessionId))) {
         send(res, 404, { ok: false, error: '대화 ID가 올바르지 않습니다.' });
-      } else if (p.endsWith('/subagents')) {
-        send(res, 200, { subagents: listSubagents(hub, params) });
+      } else if (!isDetail) {
+        send(res, 200, listSubagents(hub, params));
       } else {
         const detail = readSubagentDetail(hub, params);
-        send(res, detail.ok ? 200 : 404, detail);
+        send(res, detail.ok ? 200 : detail.invalidPath ? 400 : 404, detail);
       }
       return true;
     }
@@ -989,7 +1019,12 @@ function createSessionRoutes(hub) {
       if (projects.hidden().has(id)) { send(res, 404, { error: '허브에서 제거한 대화 기록입니다.', hidden: true }); return true; }
       conversationBranches.resolveLinks(hub.terms, hub.termSessionId);
       let d = index.get(id);
-      if (!d && id && Date.now() - hub.getLastIndexAt() > 1500) { await hub.refreshIndex(); d = index.get(id); }
+      if (!d && validSessionId(id)) {
+        const file = transcriptFile(hub, id);
+        if (file) await index.updateFile(file);
+        else if (Date.now() - hub.getLastIndexAt() > 1500) await hub.refreshIndex();
+        d = index.get(id);
+      }
       if (d) await index.updateFile(d.file);
       const out = transcriptFromIndex(id, at) || transcript(id);
       if (out && !out.lineage && id) out.lineage = conversationBranches.lineageFor(id, (sid) => sessionDisplayTitle(sid, index.get(sid)));
@@ -1003,10 +1038,11 @@ function createSessionRoutes(hub) {
       const termId = String(b.termId ?? (synthetic ? requested.slice(5) : ''));
       const term = termId && hub.terms.get(termId);
       const title = String(b.title || '').trim().slice(0, 140);
-      if ((termId && (!/^\d+$/.test(termId) || !term)) || (synthetic && requested !== `term:${termId}`)) {
+      if ((termId && !/^\d+$/.test(termId)) || (synthetic && (!termId || requested !== `term:${termId}`))) {
         send(res, 400, { error: '터미널 ID가 올바르지 않습니다.' });
         return true;
       }
+      if (termId && !term) { send(res, 404, { error: '터미널 ID가 올바르지 않습니다.' }); return true; }
       const linkedId = term && (parentSession(hub, term) || ovSnap?.terms?.find(t => t.id === termId)?.sessionId);
       const id = requested && !synthetic ? requested : linkedId;
       if (id && (!validSessionId(id) || (linkedId && linkedId !== id))) {
@@ -1425,6 +1461,34 @@ function createSessionRoutes(hub) {
         overviewStale();
       }
       send(res, 200, { ok: true });
+      return true;
+    }
+
+    if (p === '/api/hooks/events' && req.method === 'GET') {
+      const termId = url.searchParams.get('termId') || '';
+      const sessionId = url.searchParams.get('sessionId') || '';
+      send(res, 200, hub.toolHooks ? hub.toolHooks.getEvents({ termId, sessionId }) : { ok: true, source: 'none', rawCount: 0, events: [] });
+      return true;
+    }
+    if (p === '/api/hooks/event' && req.method === 'POST') {
+      const b = await body(req);
+      const entry = hub.toolHooks ? hub.toolHooks.recordEvent(b) : null;
+      send(res, entry ? 200 : 400, entry ? { ok: true, event: entry } : { error: 'tool required' });
+      return true;
+    }
+    if (p === '/api/hooks/snippet' && req.method === 'GET') {
+      send(res, 200, hub.toolHooks ? { ok: true, ...hub.toolHooks.getHookSnippet() } : { ok: false });
+      return true;
+    }
+    if (p === '/api/hooks/install-claude' && req.method === 'POST') {
+      send(res, 200, hub.toolHooks ? hub.toolHooks.installClaudeHook() : { ok: false });
+      return true;
+    }
+    if (p === '/api/session/traces' && req.method === 'GET') {
+      const sessionId = url.searchParams.get('sessionId') || '';
+      const termId = url.searchParams.get('termId') || '';
+      const cwd = url.searchParams.get('cwd') || '';
+      send(res, 200, collectSessionTraces(hub, { sessionId, termId, cwd }));
       return true;
     }
 

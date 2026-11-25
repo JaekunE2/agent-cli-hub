@@ -11,13 +11,19 @@ function openSubagentViewerModal(query, item) {
   dialog.querySelector('button').onclick = () => dialog.close();
   const detail = new URLSearchParams(query);
   detail.set('id', item.id);
-  let pending = false, previous = '';
+  const request = new AbortController();
+  let pending = false, refreshQueued = false, previous = '';
   const write = (selector, value) => { dialog.querySelector(selector).textContent = value || '—'; };
-  async function refresh() {
-    if (pending) return;
+  async function refresh(afterHook = false) {
+    if (!dialog.open || request.signal.aborted) return;
+    if (pending) {
+      refreshQueued ||= afterHook;
+      return;
+    }
     pending = true;
     try {
-      const data = await api(`/api/session/subagent-detail?${detail}`, { requireOk: true });
+      const data = await api(`/api/session/subagent-detail?${detail}`, { requireOk: true, signal: request.signal });
+      if (!dialog.open || request.signal.aborted || refreshQueued) return;
       const key = JSON.stringify(data);
       if (key === previous) return;
       previous = key;
@@ -26,22 +32,32 @@ function openSubagentViewerModal(query, item) {
       write('[data-ts-output]', data.lastMessage);
       const calls = new Map();
       dialog.querySelector('ol').replaceChildren(...data.events.map(event => {
-        if (event.type === 'call') calls.set(event.id, event.tool);
+        const isTool = event.type === 'tool';
+        if (isTool) calls.set(event.id, event.tool);
         const li = document.createElement('li');
         const pre = document.createElement('pre');
-        const value = event.type === 'call' ? event.input : event.output;
-        pre.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2) || '';
-        const label = event.type === 'call' ? '호출' : '결과';
+        pre.textContent = event.text || '';
+        const label = isTool ? '호출' : '결과';
         li.append(`${label} · ${event.tool || calls.get(event.id) || event.id || ''}`, pre);
         return li;
       }));
     } catch (error) {
-      previous = '';
-      write('[data-ts-status]', error.message);
-    } finally { pending = false; }
+      if (dialog.open && !request.signal.aborted && !refreshQueued) {
+        previous = '';
+        write('[data-ts-status]', error.message);
+      }
+    } finally {
+      pending = false;
+      if (refreshQueued) {
+        refreshQueued = false;
+        void refresh();
+      }
+    }
   }
   const timer = setInterval(refresh, 1000);
-  dialog.onclose = () => { clearInterval(timer); dialog.remove(); };
+  dialog.addEventListener('hook-event', () => refresh(true));
+  dialog.onclose = () => { clearInterval(timer); request.abort(); dialog.remove(); };
   dialog.showModal();
   refresh();
+  return dialog;
 }

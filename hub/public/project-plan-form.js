@@ -395,26 +395,33 @@ function bindProjectAccounts(dialog, selected, project, initModel = '', initEffo
 
   let version = 0;
   const selectedByCli = new Map();
+  const userPickedByCli = new Set();
   let activeCli;
-  if (!project && account) {
+  if (account) {
     account.addEventListener('change', () => {
-      saveCliDefaults(agent.value || 'codex', { account: account.value });
+      const k = agent.value || project?.agent || 'codex';
+      userPickedByCli.add(k);
+      selectedByCli.set(k, account.value);
+      if (!project) saveCliDefaults(k, { account: account.value });
     });
   }
 
   const refresh = async () => {
     const load = ++version;
     const kind = agent.value || project?.agent || 'codex';
+    const inherited = !!(project && kind === (project.agent || 'codex'));
     if (!activeCli) {
-      selectedByCli.set(kind, selected || (!project ? readSavedCliDefaults(kind).account : ''));
+      const initialSel = (selected === undefined || selected === null)
+        ? (inherited ? 'inherit' : (!project ? readSavedCliDefaults(kind).account : ''))
+        : selected;
+      selectedByCli.set(kind, initialSel);
     } else {
       selectedByCli.set(activeCli, account.value);
     }
     activeCli = kind;
     const preferred = selectedByCli.has(kind)
       ? selectedByCli.get(kind)
-      : (!project ? readSavedCliDefaults(kind).account : '');
-    const inherited = project && kind === (project.agent || 'codex');
+      : (inherited ? 'inherit' : (!project ? readSavedCliDefaults(kind).account : ''));
     const options = inherited ? [['inherit', 'Project 기본 계정'], ['', '이 PC의 CLI 로그인']] : [['', '이 PC의 CLI 로그인']];
     const paint = (value = preferred) => {
       account.replaceChildren(...options.map(([id, label]) => new Option(label, id)));
@@ -433,7 +440,13 @@ function bindProjectAccounts(dialog, selected, project, initModel = '', initEffo
         const i = options.findIndex(([key]) => key === id);
         if (i >= 0) options[i] = [id, label]; else options.push([id, label]);
       }
-      paint(account.value);
+      let targetVal = account.value;
+      const isDefaultCliLogin = !targetVal || targetVal === 'default' || targetVal.startsWith('__cli__:');
+      if (!userPickedByCli.has(kind) && !inherited && isDefaultCliLogin && r.accounts.length > 0) {
+        targetVal = r.accounts[0].id;
+        selectedByCli.set(kind, targetVal);
+      }
+      paint(targetVal);
       status.textContent = r.accounts.length ? `등록 계정 ${r.accounts.length}개` : '등록된 추가 계정이 없어 이 PC의 CLI 로그인을 사용할 수 있습니다.';
     } catch (e) { if (load === version) status.textContent = e.message; }
   };

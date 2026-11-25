@@ -27,9 +27,21 @@ function* transcriptEvents(row) {
     if (['function_call', 'custom_tool_call'].includes(p.type)) yield { type: 'call', id: p.call_id, tool: p.name, input: decode(p.arguments ?? p.input), ts };
     if (['function_call_output', 'custom_tool_call_output'].includes(p.type)) yield { type: 'result', id: p.call_id, output: decode(p.output), ts };
     if (p.type === 'message') yield { type: p.role, text: outputText(p.content), ts };
+    if (p.type === 'agent_message') {
+      const message = /^Message Type: FINAL_ANSWER\r?\n[\s\S]*?\r?\nPayload:\r?\n([\s\S]*)$/.exec(outputText(p.content));
+      if (message) yield { type: 'child-status', agentPath: p.author, status: 'done', text: message[1], ts };
+    }
   }
-  if (row.type === 'event_msg' && ['task_complete', 'turn_complete', 'turn_aborted'].includes(p?.type)) {
-    yield { type: 'terminal-status', status: p.type === 'turn_aborted' ? 'stopped' : 'done', ts };
+  const item = row.type === 'event_msg' && p?.type === 'item_completed' && p.item;
+  if (item?.type === 'SubAgentActivity') {
+    if (item.kind === 'started') yield { type: 'child-link', id: item.id, childId: item.agent_thread_id, agentPath: item.agent_path, ts };
+    else if (['completed', 'failed', 'interrupted', 'closed'].includes(item.kind)) {
+      yield { type: 'child-status', childId: item.agent_thread_id, status: item.kind === 'completed' ? 'done' : 'stopped', ts };
+    }
+  }
+  if (row.type === 'event_msg') {
+    if (p?.type === 'turn_aborted') yield { type: 'turn-aborted', ts };
+    if (['task_complete', 'turn_complete'].includes(p?.type)) yield { type: 'terminal-status', status: 'done', ts };
   }
   const calls = Array.isArray(row.tool_calls) ? row.tool_calls : ['TOOL_CALL', 'FUNCTION_CALL'].includes(row.type) ? [row] : [];
   for (const [i, call] of calls.entries()) {
@@ -45,6 +57,9 @@ function* transcriptEvents(row) {
   }
   if (row.type === 'PLANNER_RESPONSE' || row.type === 'USER_INPUT') {
     yield { type: row.type === 'USER_INPUT' ? 'user' : 'assistant', text: outputText(row.content), ts };
+    if (row.type === 'PLANNER_RESPONSE' && row.status === 'DONE' && row.content && !calls.length) {
+      yield { type: 'child-turn-complete', status: 'done', ts };
+    }
   }
 }
 
