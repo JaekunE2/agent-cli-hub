@@ -384,6 +384,11 @@ body.side-collapsed .side-float-btn { display: inline-flex; }
   .chat-pv-pane { flex: 0 0 44% !important; min-width: 0; width: 100%; border-top: 1px solid var(--line); }
 }
 .chat-shell { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; width: 100%; }
+.pv-rail { flex: 0 0 36px; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 4px; background: var(--side-bg); border-left: 1px solid var(--line); }
+.pv-rail-btn { width: 28px; height: 28px; min-height: 0; padding: 0; border: 0; border-radius: var(--radius-md); background: transparent; color: var(--muted); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.pv-rail-btn:hover { background: var(--panel2); color: var(--text); }
+.pv-rail-btn.on { background: var(--sel); color: var(--accent); }
+@media (max-width: 900px) { .pv-rail { display: none; } }
 .chat-scroll { flex: 1; min-height: 0; min-width: 0; overflow-y: auto; overflow-x: hidden; }
 .chat-scroll > .chat { width: 100%; max-width: 880px; margin-inline: auto; }
 .chat-reply-bar { flex: none; border-top: 1px solid var(--line); background: var(--panel); padding: 10px clamp(12px, 2vw, 24px) 12px; }

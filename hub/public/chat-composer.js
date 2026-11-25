@@ -5,8 +5,6 @@ function dockTopSegHTML({ openSet, isContentTab = false, hasTerm = true, hasChat
     ${hasTerm ? `<button type="button" data-dock-toggle="term" aria-pressed="${on('term')}" class="${on('term') ? 'on' : ''}" title="${esc(termTitle)}">${ICO.terminal} 터미널</button>` : ''}
     ${hasChat ? `<button type="button" data-dock-toggle="chat" aria-pressed="${on('chat')}" class="${on('chat') ? 'on' : ''}" title="대화 기록 패널 열기/닫기">${ICO.chat} 대화 기록</button>` : ''}
     <button type="button" data-dock-toggle="windows" aria-pressed="${on('windows')}" class="${on('windows') ? 'on' : ''}" title="연결된 창 · 브라우저 미리보기 패널 열기/닫기">${ICO.monitor} 창 <span class="seg-cnt" data-dock-win-cnt>0</span></button>
-    <button type="button" data-pv-side="refs" aria-pressed="false" title="채팅 옆 사이드 패널에 산출물 열기/닫기">사이드 산출물</button>
-    <button type="button" data-pv-side="floorplan" aria-pressed="false" title="채팅 옆 사이드 패널에 코드 구조 열기/닫기">사이드 구조</button>
   </div>
   <div class="seg bar-tab-seg" role="tablist" aria-label="전용 화면 탭">
     ${showFiles ? `<button type="button" role="tab" aria-selected="${curTab === 'files'}" data-tab="files" class="${curTab === 'files' ? 'on' : ''}" title="이 세션의 산출물 보기 및 지정">산출물</button>` : ''}
@@ -40,6 +38,11 @@ function mountChatWorkspace(body, { sid, gen, at = -1, terms = [], composerOpts 
     </div>
     <div class="chat-pv-resizer" hidden role="separator" aria-orientation="vertical" aria-label="미리보기 크기 조절"></div>
     <aside class="chat-pv-pane" hidden aria-label="미리보기"></aside>
+    <nav class="pv-rail" aria-label="사이드 도구 모음">
+      <button type="button" class="pv-rail-btn" data-pv-side="preview" aria-pressed="false" title="미리보기">${ICO.eye}</button>
+      <button type="button" class="pv-rail-btn" data-pv-side="refs" aria-pressed="false" title="산출물">${ICO.folder}</button>
+      <button type="button" class="pv-rail-btn" data-pv-side="floorplan" aria-pressed="false" title="코드 구조">${ICO.layers}</button>
+    </nav>
   </div>`;
   const splitEl = $('.chat-split', body);
   const scrollEl = $('.chat-scroll', body);
@@ -64,6 +67,10 @@ function mountChatWorkspace(body, { sid, gen, at = -1, terms = [], composerOpts 
     });
     window.ACH_PREVIEW.setActiveController(pvCtl);
     pvCtl?.refresh(false);
+    $('.pv-rail', splitEl)?.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-pv-side]');
+      if (btn) pvCtl?.togglePanel?.(btn.dataset.pvSide);
+    });
   }
   renderChat(sid, gen, at, terms, scrollEl);
   mountChatComposer({ barHost: compEl, chatHost: scrollEl, sid, ...composerOpts });
