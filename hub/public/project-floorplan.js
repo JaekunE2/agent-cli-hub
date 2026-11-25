@@ -961,5 +961,6 @@
   }
 
   window.projectFloorplan = projectFloorplan;
+  window.renderFloorplanInto = renderFloorplanInto;
   window.renderStandaloneFloorplan = renderStandaloneFloorplan;
 })();

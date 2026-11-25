@@ -551,14 +551,10 @@ function projectVersions(p) {
   const selected = versions.find((version) => version.number === state.sel.version);
   const needsWorkspace = selected?.snapshotId && !selected.workspace;
   const canSave = !needsWorkspace;
-  const list = selected ? [selected] : [...versions].reverse();
+  const list = [...versions].reverse();
   view.innerHTML = `<div class="row pj-version-actions">
-      ${selected ? `<button type="button" class="btn-sm" id="projectVersionBack">← 버전 목록</button>` : ''}
-      ${selected ? '<button type="button" class="btn-sm" id="projectVersionDesign">버전 설계 보기</button>' : ''}
-      ${!selected ? '<button type="button" id="projectNewVersion">버전업 설계</button>' : ''}
-      ${canSave ? `<button type="button" class="${selected ? 'btn-sm' : 'primary'}" id="projectSaveSnapshot">버전 저장</button>` : ''}
+      ${canSave ? `<button type="button" class="${selected ? 'btn-sm' : 'primary'}" id="projectSaveSnapshot" title="현재 작업 폴더의 파일 상태를 스냅샷으로 저장해 나중에 복원하거나 이어 작업할 수 있습니다">작업 파일 스냅샷 저장</button>` : ''}
       ${selected && canSave ? `
-      <button type="button" class="btn-sm" id="projectVersionPlan">버전 작업 설계</button>
       <button type="button" class="primary" id="projectVersionTask">이 버전에 작업 추가</button>` : ''}
       ${needsWorkspace ? '<button type="button" class="primary" id="projectRestoreVersion">이 버전에서 이어 작업</button>' : ''}
     </div>
@@ -567,19 +563,20 @@ function projectVersions(p) {
       const done = tasks.filter((task) => task.stage === 'done').length;
       const stateLabel = version.snapshotId ? (version.workspace ? '작업 폴더 열림' : '파일 저장됨')
         : version.completedCommit ? (done < tasks.length ? '확정 후 작업 중' : '확정') : tasks.length && done === tasks.length && version.baseCommit ? '확정 가능' : '작업 중';
-      return `<section class="pj-version">
+      const isCur = selected && selected.number === version.number;
+      return `<section class="pj-version${isCur ? ' is-current' : ''}">
         <div class="row" style="justify-content:space-between;flex-wrap:wrap">
-          <h3>${selected ? `v${esc(version.number)}` : `<button type="button" class="ghost" data-open-version="${esc(version.number)}">v${esc(version.number)}</button>`} <span class="badge">${stateLabel}</span></h3>
+          <h3><button type="button" class="ghost" data-open-version="${esc(version.number)}">v${esc(version.number)}</button> <span class="badge">${stateLabel}</span>${isCur ? ' <span class="badge ok">선택됨</span>' : ''}</h3>
           ${tasks.length ? `<span class="ums">완료 ${done}/${tasks.length}</span>` : ''}
         </div>
         <p class="pj-version-goal">${esc(version.goal)}</p>
         ${version.baseCommit ? `<div class="ums">시작 커밋 <code title="${esc(version.baseCommit)}">${esc(version.baseCommit.slice(0, 12))}</code></div>` : ''}
         ${version.completedCommit ? `<div class="ums">확정 커밋 <code title="${esc(version.completedCommit)}">${esc(version.completedCommit.slice(0, 12))}</code></div>` : ''}
-        ${selected && tasks.length ? `<ul class="pj-version-task-list">${tasks.map((task) => `<li><div class="pj-version-task">
+        ${isCur && tasks.length ? `<ul class="pj-version-task-list">${tasks.map((task) => `<li><div class="pj-version-task">
           <button type="button" class="ghost btn-sm" data-version-task="${esc(task.id)}">${esc(task.title)}</button>
           <div class="row">${stageBadgeHTML(task.stage)} ${needsWorkspace ? '' : projectStartBtnHTML(p, task)}</div>
         </div></li>`).join('')}</ul>` : ''}
-        ${selected && !version.snapshotId && version.baseCommit && !version.completedCommit && tasks.length && done === tasks.length ? `<button type="button" class="btn-sm" data-finalize-version="${esc(version.number)}">현재 Git 커밋으로 확정</button>` : ''}
+        ${isCur && !version.snapshotId && version.baseCommit && !version.completedCommit && tasks.length && done === tasks.length ? `<button type="button" class="btn-sm" data-finalize-version="${esc(version.number)}">현재 Git 커밋으로 확정</button>` : ''}
       </section>`;
     }).join('') : !p.fileRuns?.some((run) => run.startedAt) ? '<div class="pj-empty">등록된 버전이 없습니다.</div>' : ''}
     ${selected ? '' : projectFileRunHistoryHTML(p)}`;

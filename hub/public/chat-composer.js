@@ -5,6 +5,8 @@ function dockTopSegHTML({ openSet, isContentTab = false, hasTerm = true, hasChat
     ${hasTerm ? `<button type="button" data-dock-toggle="term" aria-pressed="${on('term')}" class="${on('term') ? 'on' : ''}" title="${esc(termTitle)}">${ICO.terminal} 터미널</button>` : ''}
     ${hasChat ? `<button type="button" data-dock-toggle="chat" aria-pressed="${on('chat')}" class="${on('chat') ? 'on' : ''}" title="대화 기록 패널 열기/닫기">${ICO.chat} 대화 기록</button>` : ''}
     <button type="button" data-dock-toggle="windows" aria-pressed="${on('windows')}" class="${on('windows') ? 'on' : ''}" title="연결된 창 · 브라우저 미리보기 패널 열기/닫기">${ICO.monitor} 창 <span class="seg-cnt" data-dock-win-cnt>0</span></button>
+    <button type="button" data-pv-side="refs" aria-pressed="false" title="채팅 옆 사이드 패널에 산출물 열기/닫기">사이드 산출물</button>
+    <button type="button" data-pv-side="floorplan" aria-pressed="false" title="채팅 옆 사이드 패널에 코드 구조 열기/닫기">사이드 구조</button>
   </div>
   <div class="seg bar-tab-seg" role="tablist" aria-label="전용 화면 탭">
     ${showFiles ? `<button type="button" role="tab" aria-selected="${curTab === 'files'}" data-tab="files" class="${curTab === 'files' ? 'on' : ''}" title="이 세션의 산출물 보기 및 지정">산출물</button>` : ''}
@@ -50,6 +52,15 @@ function mountChatWorkspace(body, { sid, gen, at = -1, terms = [], composerOpts 
       splitEl,
       resizerEl: pvResizer,
       getSessionId: () => sid || composerOpts.sid || currentSessionId() || '',
+      getContext: () => {
+        const curSid = sid || composerOpts.sid || currentSessionId() || '';
+        const live = (state.terms || []).find((x) => x.sessionId === curSid) || composerOpts.term || null;
+        const curCwd = composerOpts.cwd || live?.cwd || '';
+        const project = (live && typeof projectOfTerm === 'function' && projectOfTerm(live))
+          || (state.projects || []).find((p) => p.cwd && curCwd && p.cwd.toLowerCase() === curCwd.toLowerCase())
+          || null;
+        return { sid: curSid, termId: live?.id || '', cwd: curCwd || project?.cwd || '', project };
+      },
     });
     window.ACH_PREVIEW.setActiveController(pvCtl);
     pvCtl?.refresh(false);
@@ -175,6 +186,17 @@ function viewTranscript() {
         return select(state.sel, 'dock', true);
       }
       dock.togglePanel(p);
+      return;
+    }
+    const pvSide = e.target.closest('[data-pv-side]');
+    if (pvSide) {
+      const kind = pvSide.dataset.pvSide;
+      if (isContentTab || !dock) {
+        await select(state.sel, 'dock', true);
+        setTimeout(() => window.ACH_PREVIEW?.openPanel?.(kind), 60);
+        return;
+      }
+      window.ACH_PREVIEW?.togglePanel?.(kind);
       return;
     }
     const tb = e.target.closest('[data-tab]');

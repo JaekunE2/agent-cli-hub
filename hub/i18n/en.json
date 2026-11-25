@@ -3149,5 +3149,20 @@
   "로 시작했습니다.": ".",
   "관제 세션 설정을 저장했습니다.": "Saved operator session settings.",
   "관제 세션 설정에 실패했습니다.": "Failed to update operator session settings.",
-  "관제 세션을 시작하지 못했습니다 (선택한 CLI 설치 경로를 확인하세요)": "Could not start the operator session (verify the selected CLI installation)."
+  "관제 세션을 시작하지 못했습니다 (선택한 CLI 설치 경로를 확인하세요)": "Could not start the operator session (verify the selected CLI installation).",
+  "채팅 옆 사이드 패널에 산출물 열기/닫기": "Toggle artifacts in the side panel",
+  "채팅 옆 사이드 패널에 코드 구조 열기/닫기": "Toggle architecture in the side panel",
+  "사이드 산출물": "Side Artifacts",
+  "사이드 구조": "Side Structure",
+  "최소화": "Minimize",
+  "최대화": "Maximize",
+  "트레이로 숨기기": "Hide to tray",
+  "사이드 패널 선택": "Select side panel",
+  "사이드 패널 닫기": "Close side panel",
+  "코드 구조 모듈을 불러오는 중입니다.": "Loading architecture module…",
+  "연결된 프로젝트가 없습니다. 프로젝트가 등록되면 산출물 저장소를 바로 확인할 수 있습니다.": "No linked project yet. Once a project is registered, you can view its artifact repository here.",
+  "현재 버전 설계 보기": "View current version design",
+  "선택됨": "Selected",
+  "작업 파일 스냅샷 저장": "Save Workspace Snapshot",
+  "현재 작업 폴더의 파일 상태를 스냅샷으로 저장해 나중에 복원하거나 이어 작업할 수 있습니다": "Save a snapshot of the current working folder so you can restore or resume from it later"
 }

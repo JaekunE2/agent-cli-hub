@@ -300,4 +300,20 @@
     });
   }
   window.bindEnterSubmit = bindEnterSubmit;
+
+  if (window.__TAURI_INTERNALS__?.invoke) {
+    const tb = document.getElementById('tauriTitlebar');
+    if (tb) {
+      document.documentElement.classList.add('is-tauri');
+      tb.hidden = false;
+      const invokeWin = (action) => window.__TAURI_INTERNALS__.invoke('window_action', { action }).catch(() => {});
+      document.getElementById('tauriTbDrag')?.addEventListener('mousedown', (e) => {
+        if (e.button === 0 && e.detail === 1) invokeWin('drag');
+      });
+      document.getElementById('tauriTbDrag')?.addEventListener('dblclick', () => invokeWin('toggle-maximize'));
+      tb.querySelectorAll('[data-tauri-win]').forEach((btn) => {
+        btn.addEventListener('click', () => invokeWin(btn.dataset.tauriWin));
+      });
+    }
+  }
 })();

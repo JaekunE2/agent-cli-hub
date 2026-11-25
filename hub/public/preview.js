@@ -261,12 +261,14 @@
    * Mount an auto-splitting Canvas preview pane directly inside a conversation `.chat-split` container.
    * Automatically shows side-by-side when previewable HTML/MD/SVG/Mermaid blocks or artifacts exist.
    */
-  function mountPreviewPane({ rootEl, splitEl = null, resizerEl = null, getSessionId }) {
+  function mountPreviewPane({ rootEl, splitEl = null, resizerEl = null, getSessionId, getContext }) {
     if (!rootEl) return null;
     let chatItems = [];
     let artItems = [];
     let manualItems = [];
     let selectedId = '';
+    let paneKind = 'preview';
+    let sideProjectId = '';
     let viewMode = 'preview';
     let lastLoadedSid = '';
     let isPaneVisible = false;
@@ -308,7 +310,11 @@
 
     rootEl.innerHTML = `<div class="pv-shell">
       <div class="pv-bar">
-        <span class="pv-lbl">${UI_ICO.eye || ''} <b>미리보기</b></span>
+        <div class="seg" data-pv-panels role="tablist" aria-label="사이드 패널 선택">
+          <button type="button" data-pv-panel="preview" class="on">미리보기</button>
+          <button type="button" data-pv-panel="refs">산출물</button>
+          <button type="button" data-pv-panel="floorplan">코드 구조</button>
+        </div>
         <select class="btn-sm" data-pv-pick aria-label="미리보기 대상 선택"></select>
         <div class="seg" data-pv-modes role="tablist" aria-label="보기 전환">
           <button type="button" data-pv-mode="preview" class="on">미리보기</button>
@@ -318,24 +324,34 @@
           <button type="button" class="ghost icon-btn btn-sm" data-pv-copy title="내용 복사" aria-label="복사">${UI_ICO.copy}</button>
           <button type="button" class="ghost icon-btn btn-sm" data-pv-ext title="새 탭에서 열기" aria-label="새 탭">${UI_ICO.external}</button>
           <button type="button" class="ghost icon-btn btn-sm" data-pv-refresh title="목록 새로고침" aria-label="새로고침">${UI_ICO.refresh}</button>
-          <button type="button" class="ghost icon-btn btn-sm" data-pv-close title="미리보기 닫기" aria-label="닫기">${UI_ICO.close}</button>
+          <button type="button" class="ghost icon-btn btn-sm" data-pv-close title="사이드 패널 닫기" aria-label="닫기">${UI_ICO.close}</button>
         </div>
       </div>
       <div class="pv-body" data-pv-body></div>
     </div>`;
 
+    const panelsEl = $('[data-pv-panels]', rootEl);
     const pickEl = $('[data-pv-pick]', rootEl);
     const modesEl = $('[data-pv-modes]', rootEl);
     const bodyEl = $('[data-pv-body]', rootEl);
 
+    const syncBarSideButtons = () => {
+      document.querySelectorAll('[data-pv-side]').forEach((btn) => {
+        const on = isPaneVisible && paneKind === btn.dataset.pvSide;
+        btn.classList.toggle('on', on);
+        btn.setAttribute('aria-pressed', String(on));
+      });
+    };
+
     const setVisible = (show) => {
       const next = !!show;
-      if (isPaneVisible === next) return;
+      if (isPaneVisible === next) { syncBarSideButtons(); return; }
       isPaneVisible = next;
       rootEl.hidden = !next;
       if (resizerEl) resizerEl.hidden = !next;
       splitEl?.classList.toggle('has-pv', next);
       if (next) applySplitRatio();
+      syncBarSideButtons();
     };
 
     const allItems = () => [...manualItems, ...chatItems, ...artItems];
@@ -346,8 +362,76 @@
       return `art|${item.id}|${mode}|${item.artifact?.mtime || 0}|${item.artifact?.size || 0}`;
     };
 
+    const resolveSideContext = () => {
+      const ctx = getContext?.() || {};
+      const projects = window.state?.projects || [];
+      const project = ctx.project || projects.find((x) => x.id === sideProjectId) || projects[0] || null;
+      if (project && !sideProjectId) sideProjectId = project.id;
+      return {
+        sid: ctx.sid || getSessionId?.() || '',
+        cwd: ctx.cwd || project?.cwd || '',
+        project,
+        projects,
+      };
+    };
+
+    const renderSpecialPanel = async () => {
+      const ctx = resolveSideContext();
+      if (paneKind === 'floorplan') {
+        lastRenderedSig = `floorplan|${ctx.project?.id || ''}|${ctx.cwd}`;
+        if (typeof window.renderFloorplanInto === 'function') {
+          await window.renderFloorplanInto({
+            host: bodyEl,
+            p: ctx.project,
+            cwd: ctx.cwd,
+            gen: window.viewGen,
+            termCtx: { sessionId: ctx.sid, termId: ctx.termId },
+          });
+        } else {
+          bodyEl.innerHTML = '<div class="empty" style="padding:24px">코드 구조 모듈을 불러오는 중입니다.</div>';
+        }
+        return;
+      }
+      if (paneKind === 'refs') {
+        lastRenderedSig = `refs|${ctx.project?.id || ''}|${ctx.sid}`;
+        if (!ctx.projects.length) {
+          bodyEl.innerHTML = '<div class="empty" style="padding:24px">연결된 프로젝트가 없습니다. 프로젝트가 등록되면 산출물 저장소를 바로 확인할 수 있습니다.</div>';
+          return;
+        }
+        const project = ctx.project;
+        const bar = ctx.projects.length > 1
+          ? `<div class="row" style="gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);align-items:center">
+              <span class="ums" style="margin:0">프로젝트</span>
+              <select class="btn-sm" data-pv-proj style="max-width:240px">${ctx.projects.map((p) => `<option value="${esc(p.id)}"${p.id === project?.id ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
+            </div>`
+          : '';
+        bodyEl.innerHTML = `${bar}<div data-pv-refs-host style="padding:10px 12px"></div>`;
+        const sel = $('[data-pv-proj]', bodyEl);
+        if (sel) {
+          sel.onchange = () => {
+            sideProjectId = sel.value;
+            renderSpecialPanel();
+          };
+        }
+        const host = $('[data-pv-refs-host]', bodyEl);
+        if (project && typeof window.projectRefsView === 'function') {
+          await window.projectRefsView(project, window.viewGen, host);
+        }
+      }
+    };
+
     const syncControlsAndPaint = (forcePaint = false) => {
       if (!rootEl.isConnected) return;
+      panelsEl?.querySelectorAll('[data-pv-panel]').forEach((b) => b.classList.toggle('on', b.dataset.pvPanel === paneKind));
+      syncBarSideButtons();
+      const inPreview = paneKind === 'preview';
+      pickEl.hidden = !inPreview;
+      if (!inPreview) {
+        modesEl.hidden = true;
+        const sig = `${paneKind}|${sideProjectId}|${getSessionId?.() || ''}`;
+        if (forcePaint || lastRenderedSig !== sig) renderSpecialPanel();
+        return;
+      }
       const list = allItems();
       const cur = findItem(selectedId);
       if (cur && cur.id !== selectedId) selectedId = cur.id;
@@ -492,6 +576,26 @@
       syncControlsAndPaint();
     };
 
+    const openPanel = (kind = 'preview') => {
+      paneKind = ['preview', 'refs', 'floorplan'].includes(kind) ? kind : 'preview';
+      setVisible(true);
+      syncControlsAndPaint(true);
+    };
+    const togglePanel = (kind = 'preview') => {
+      if (isPaneVisible && paneKind === kind) {
+        setVisible(false);
+        return false;
+      }
+      openPanel(kind);
+      return true;
+    };
+
+    panelsEl.onclick = (e) => {
+      const b = e.target.closest('[data-pv-panel]');
+      if (!b) return;
+      paneKind = b.dataset.pvPanel;
+      syncControlsAndPaint(true);
+    };
     pickEl.onchange = () => { selectedId = pickEl.value; syncControlsAndPaint(); };
     modesEl.onclick = (e) => {
       const b = e.target.closest('[data-pv-mode]');
@@ -521,25 +625,28 @@
       }
     };
     $('[data-pv-refresh]', rootEl).onclick = async () => {
-      await loadArtifacts(true);
+      if (paneKind === 'preview') await loadArtifacts(true);
       syncControlsAndPaint(true);
     };
     $('[data-pv-close]', rootEl).onclick = () => {
-      setDismissed(getSessionId?.() || '', true);
+      if (paneKind === 'preview') setDismissed(getSessionId?.() || '', true);
       setVisible(false);
     };
 
     const refresh = async (force = false) => {
       await loadArtifacts(force);
-      if (isPaneVisible) syncControlsAndPaint();
+      if (isPaneVisible && paneKind === 'preview') syncControlsAndPaint();
     };
 
     return {
       openCode,
       openArtifact,
+      openPanel,
+      togglePanel,
       scanChatBlocks,
       refresh,
       isOpen: () => isPaneVisible,
+      currentPanel: () => paneKind,
     };
   }
 
@@ -553,6 +660,8 @@
     hasActive: () => !!activeCtl,
     openCode: (opts) => (activeCtl ? activeCtl.openCode(opts) : openCodeModal(opts)),
     openArtifact: (sid, it) => activeCtl?.openArtifact(sid, it),
+    openPanel: (kind) => activeCtl?.openPanel(kind),
+    togglePanel: (kind) => activeCtl?.togglePanel(kind),
     scanChatBlocks: (chatEl) => activeCtl?.scanChatBlocks(chatEl),
   };
 })();

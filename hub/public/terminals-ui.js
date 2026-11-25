@@ -206,6 +206,17 @@ function viewConsole() {
       dock.togglePanel(p);
       return;
     }
+    const pvSide = e.target.closest('[data-pv-side]');
+    if (pvSide) {
+      const kind = pvSide.dataset.pvSide;
+      if (isContentTab || !dock) {
+        select(state.sel, 'dock', true);
+        setTimeout(() => window.ACH_PREVIEW?.openPanel?.(kind), 60);
+        return;
+      }
+      window.ACH_PREVIEW?.togglePanel?.(kind);
+      return;
+    }
     const b = e.target.closest('[data-tab]');
     if (b) return select(state.sel, b.dataset.tab, true);
     const more = e.target.closest('#btnConMore');
@@ -723,6 +734,17 @@ function viewTerm() {
         return select(state.sel, 'dock', true);
       }
       dock.togglePanel(p);
+      return;
+    }
+    const pvSide = e.target.closest('[data-pv-side]');
+    if (pvSide) {
+      const kind = pvSide.dataset.pvSide;
+      if (isContentTab || !dock) {
+        select(state.sel, 'dock', true);
+        setTimeout(() => window.ACH_PREVIEW?.openPanel?.(kind), 60);
+        return;
+      }
+      window.ACH_PREVIEW?.togglePanel?.(kind);
       return;
     }
     const tb = e.target.closest('[data-tab]');

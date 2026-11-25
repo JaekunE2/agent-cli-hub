@@ -115,6 +115,14 @@
 ::placeholder { color: var(--muted); opacity: .82; }
 html, body { height: 100%; margin: 0; }
 body { background: var(--bg); color: var(--text); font: 13.5px/1.55 "Pretendard Variable", "Pretendard", "Segoe UI", "Malgun Gothic", system-ui, -apple-system, sans-serif; letter-spacing: -0.011em; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; display: flex; }
+html.is-tauri body { padding-top: 32px; }
+.tauri-tb { position: fixed; top: 0; left: 0; right: 0; height: 32px; z-index: 9000; display: flex; align-items: stretch; justify-content: space-between; background: var(--side-bg); border-bottom: 1px solid var(--line); color: var(--text); user-select: none; -webkit-user-select: none; }
+.tauri-tb-drag { flex: 1; display: flex; align-items: center; gap: 8px; padding: 0 12px; min-width: 0; cursor: default; }
+.tauri-tb-title { font-size: 12px; font-weight: 600; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tauri-tb-acts { display: flex; align-items: stretch; flex: none; }
+.tauri-tb-btn { width: 42px; height: 31px; min-height: 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--muted); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.tauri-tb-btn:hover { background: var(--panel2); color: var(--text); }
+.tauri-tb-btn.tauri-tb-close:hover { background: var(--danger); color: #ffffff; }
 
 /* Astryx 4-variant x 2-size button system */
 button { font: inherit; font-size: 13px; font-weight: 500; color: inherit; background: var(--panel); border: 1px solid var(--line-strong); border-radius: var(--radius-md); min-height: var(--ctrl-h-md); padding: 0 12px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; transition: border-color .14s ease, background .14s ease, color .14s ease, box-shadow .14s ease, opacity .14s ease; white-space: nowrap; }

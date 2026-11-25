@@ -6,8 +6,7 @@ function formatRefBytes(n) {
   return `${(v / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-async function projectRefsView(project, gen) {
-  const host = $('#projectContent');
+async function projectRefsView(project, gen, host = $('#projectContent')) {
   if (!host || !project?.id) return;
   const ico = window.UI_ICO || {};
   host.innerHTML = '<div class="empty">산출물을 불러오는 중…</div>';

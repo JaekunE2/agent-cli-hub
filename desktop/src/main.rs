@@ -60,6 +60,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             connect_hub,
             bridge::pick_folder,
+            bridge::window_action,
             notifications::notify_terminal
         ])
         .run(tauri::generate_context!())

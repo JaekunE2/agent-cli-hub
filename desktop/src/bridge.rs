@@ -10,8 +10,26 @@ pub fn grant(app: &tauri::App, port: u16) -> tauri::Result<()> {
             .local(false)
             .remote(format!("http://127.0.0.1:{port}/"))
             .permission("allow-pick-folder")
-            .permission("allow-notify-terminal"),
+            .permission("allow-notify-terminal")
+            .permission("allow-window-action"),
     )
+}
+
+#[tauri::command]
+pub async fn window_action(window: tauri::WebviewWindow, action: String) -> Result<(), String> {
+    match action.as_str() {
+        "drag" => window.start_dragging().map_err(|e| e.to_string()),
+        "minimize" => window.minimize().map_err(|e| e.to_string()),
+        "toggle-maximize" => {
+            if window.is_maximized().unwrap_or(false) {
+                window.unmaximize().map_err(|e| e.to_string())
+            } else {
+                window.maximize().map_err(|e| e.to_string())
+            }
+        }
+        "close" => window.hide().map_err(|e| e.to_string()),
+        _ => Ok(()),
+    }
 }
 
 #[tauri::command]
