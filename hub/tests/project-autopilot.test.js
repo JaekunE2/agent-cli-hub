@@ -388,7 +388,10 @@ test('completeAutopilotTask resumes priorSessionId on exited retry and auto-back
   assert.equal(savedProject.tasks[0].reviewStatus, 'reviewing');
 
   // Wait for scheduled backoff re-review to execute and trigger REJECT -> retry with resume
-  await new Promise((r) => setTimeout(r, 120));
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline && (revCalls < 2 || startedCalls.length < 1)) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
   assert.equal(revCalls, 2);
   assert.equal(savedProject.tasks[0].stage, 'doing');
   assert.equal(savedProject.tasks[0].retryCount, 1);
