@@ -402,15 +402,16 @@ function artTimeline(pairs, card) { // pairs: [[item, index]]
   }
   return groups.map(([t, xs]) => `<div class="aday">${label(t)} <span class="empty">${xs.length}개</span></div><div class="agrid">${xs.map(card).join('')}</div>`).join('');
 }
-async function renderArtifacts(sid, gen, termId = '') {
-  $('#view').innerHTML = '<div class="empty" style="padding:20px">산출물 찾는 중…</div>';
+async function renderArtifacts(sid, gen, termId = '', host = $('#view')) {
+  if (!host) return;
+  host.innerHTML = '<div class="empty" style="padding:20px">산출물 찾는 중…</div>';
   let query = '';
   let showCards = false;
   let autoExpanded = false;
   const paint = async () => {
     const r = await api(`/api/artifacts?session=${encodeURIComponent(sid || '')}${termId ? `&term=${encodeURIComponent(termId)}` : ''}`).catch((e) => ({ error: e.message }));
-    if (gen !== viewGen) return;
-    if (r.error) { $('#view').innerHTML = `<div class="err">${esc(r.error)}</div>`; return; }
+    if (gen !== viewGen || !host.isConnected) return;
+    if (r.error) { host.innerHTML = `<div class="err">${esc(r.error)}</div>`; return; }
     const all = r.items || [];
     const mainCount = all.filter((x) => x.main).length;
     if (!autoExpanded && !artShowAll && mainCount === 0 && all.length > 0) {
@@ -428,7 +429,7 @@ async function renderArtifacts(sid, gen, termId = '') {
           <span class="ums">${esc(it.ext.toUpperCase())} · ${fmtSize(it.size)} · ${relTime(it.mtime)}${it.source === 'pinned' ? ' · 지정됨' : ''}</span></span></button>
         <button class="ahide" data-ahide="${i}" aria-label="목록에서 숨기기" title="목록에서 숨기기">${ICO.close}</button><button class="asend" data-asend="${i}" aria-label="세션에 보내기" title="이 파일을 세션에 보내기 (경로 멘션)">${ICO.arrowUpRight}</button></div>`;
     };
-    $('#view').innerHTML = `<div class="subtoolbar">
+    host.innerHTML = `<div class="subtoolbar">
         <div class="seg" role="tablist" aria-label="산출물 범위">
           <button data-art-scope="main" class="${!artShowAll ? 'on' : ''}">주요 산출물 <span class="seg-cnt">${all.filter((x) => x.main).length}</span></button>
           <button data-art-scope="all" class="${artShowAll ? 'on' : ''}">전체 파일 <span class="seg-cnt">${all.length}</span></button>
@@ -444,36 +445,36 @@ async function renderArtifacts(sid, gen, termId = '') {
     bindArtOrder(paint);
     const filterRows = () => {
       const keywords = termsOf(query);
-      const rows = [...$('#view').querySelectorAll('[data-ai]')];
+      const rows = [...host.querySelectorAll('[data-ai]')];
       for (const row of rows) {
         const { title, name, path, ext } = items[Number(row.dataset.ai)];
         const label = [title, name, path, ext].join(' ').toLowerCase();
         row.hidden = !keywords.every((term) => label.includes(term));
       }
-      for (const heading of $('#view').querySelectorAll('.session-artifacts .aday')) {
+      for (const heading of host.querySelectorAll('.session-artifacts .aday')) {
         heading.hidden = !heading.nextElementSibling.querySelector('[data-ai]:not([hidden])');
       }
-      $('#artNoMatch').hidden = !rows.length || rows.some((row) => !row.hidden);
+      $('#artNoMatch', host).hidden = !rows.length || rows.some((row) => !row.hidden);
     };
-    $('.session-artifacts').insertAdjacentHTML('beforeend', '<p id="artNoMatch" class="empty" hidden>일치하는 파일이 없습니다</p>');
-    $('#artSearch').oninput = (e) => { query = e.target.value; filterRows(); };
-    $('#artLayout').onclick = (e) => {
+    $('.session-artifacts', host).insertAdjacentHTML('beforeend', '<p id="artNoMatch" class="empty" hidden>일치하는 파일이 없습니다</p>');
+    $('#artSearch', host).oninput = (e) => { query = e.target.value; filterRows(); };
+    $('#artLayout', host).onclick = (e) => {
       showCards = !showCards;
       e.currentTarget.setAttribute('aria-pressed', String(showCards));
-      $('.session-artifacts').classList.toggle('artifact-list', !showCards);
+      $('.session-artifacts', host).classList.toggle('artifact-list', !showCards);
     };
     filterRows();
-    $('#view').querySelectorAll('[data-art-scope]').forEach((b) => (b.onclick = () => { artShowAll = b.dataset.artScope === 'all'; paint(); }));
-    $('#artAdd').onclick = () => addArtifactDialog(sid, paint);
-    const emptyAdd = $('#artEmptyAdd');
+    host.querySelectorAll('[data-art-scope]').forEach((b) => (b.onclick = () => { artShowAll = b.dataset.artScope === 'all'; paint(); }));
+    $('#artAdd', host).onclick = () => addArtifactDialog(sid, paint);
+    const emptyAdd = $('#artEmptyAdd', host);
     if (emptyAdd) emptyAdd.onclick = () => addArtifactDialog(sid, paint);
-    $('#view').querySelectorAll('[data-ai]').forEach((el) => (el.onclick = (e) => {
+    host.querySelectorAll('[data-ai]').forEach((el) => (el.onclick = (e) => {
       if (e.target.closest('[data-ahide]')) return;
       const sb = e.target.closest('[data-asend]');
       if (sb) return sendPathDialog(items[Number(sb.dataset.asend)].path);
       openArtifact(sid, items[Number(el.dataset.ai)], artUrl(sid, items[Number(el.dataset.ai)].path, termId));
     }));
-    $('#view').querySelectorAll('[data-ahide]').forEach((b) => (b.onclick = async (e) => {
+    host.querySelectorAll('[data-ahide]').forEach((b) => (b.onclick = async (e) => {
       e.stopPropagation();
       b.disabled = true;
       try {

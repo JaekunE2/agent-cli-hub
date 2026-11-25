@@ -365,11 +365,14 @@
     const resolveSideContext = () => {
       const ctx = getContext?.() || {};
       const projects = window.state?.projects || [];
-      const project = ctx.project || projects.find((x) => x.id === sideProjectId) || projects[0] || null;
-      if (project && !sideProjectId) sideProjectId = project.id;
+      const linkedProject = ctx.project || null;
+      const pickedProject = sideProjectId ? projects.find((x) => x.id === sideProjectId) || null : null;
+      const project = linkedProject || pickedProject;
       return {
         sid: ctx.sid || getSessionId?.() || '',
-        cwd: ctx.cwd || project?.cwd || '',
+        termId: ctx.termId || '',
+        cwd: ctx.cwd || linkedProject?.cwd || '',
+        linkedProject,
         project,
         projects,
       };
@@ -378,11 +381,15 @@
     const renderSpecialPanel = async () => {
       const ctx = resolveSideContext();
       if (paneKind === 'floorplan') {
-        lastRenderedSig = `floorplan|${ctx.project?.id || ''}|${ctx.cwd}`;
+        lastRenderedSig = `floorplan|${ctx.linkedProject?.id || ''}|${ctx.cwd}`;
+        if (!ctx.cwd && !ctx.linkedProject) {
+          bodyEl.innerHTML = '<div class="empty" style="padding:24px">이 세션의 작업 폴더(cwd)를 확인할 수 없습니다.</div>';
+          return;
+        }
         if (typeof window.renderFloorplanInto === 'function') {
           await window.renderFloorplanInto({
             host: bodyEl,
-            p: ctx.project,
+            p: ctx.linkedProject,
             cwd: ctx.cwd,
             gen: window.viewGen,
             termCtx: { sessionId: ctx.sid, termId: ctx.termId },
@@ -393,16 +400,15 @@
         return;
       }
       if (paneKind === 'refs') {
-        lastRenderedSig = `refs|${ctx.project?.id || ''}|${ctx.sid}`;
-        if (!ctx.projects.length) {
-          bodyEl.innerHTML = '<div class="empty" style="padding:24px">연결된 프로젝트가 없습니다. 프로젝트가 등록되면 산출물 저장소를 바로 확인할 수 있습니다.</div>';
-          return;
-        }
-        const project = ctx.project;
-        const bar = ctx.projects.length > 1
+        lastRenderedSig = `refs|${ctx.project?.id || ''}|${ctx.sid}|${ctx.termId}`;
+        const scopeOpts = [
+          (ctx.sid || ctx.termId) ? `<option value=""${!ctx.project ? ' selected' : ''}>현재 세션 산출물</option>` : '',
+          ...ctx.projects.map((p) => `<option value="${esc(p.id)}"${p.id === ctx.project?.id ? ' selected' : ''}>프로젝트 · ${esc(p.name)}</option>`),
+        ].filter(Boolean);
+        const bar = scopeOpts.length > 1
           ? `<div class="row" style="gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);align-items:center">
-              <span class="ums" style="margin:0">프로젝트</span>
-              <select class="btn-sm" data-pv-proj style="max-width:240px">${ctx.projects.map((p) => `<option value="${esc(p.id)}"${p.id === project?.id ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
+              <span class="ums" style="margin:0">대상</span>
+              <select class="btn-sm" data-pv-proj style="max-width:260px">${scopeOpts.join('')}</select>
             </div>`
           : '';
         bodyEl.innerHTML = `${bar}<div data-pv-refs-host style="padding:10px 12px"></div>`;
@@ -414,8 +420,12 @@
           };
         }
         const host = $('[data-pv-refs-host]', bodyEl);
-        if (project && typeof window.projectRefsView === 'function') {
-          await window.projectRefsView(project, window.viewGen, host);
+        if (ctx.project && typeof window.projectRefsView === 'function') {
+          await window.projectRefsView(ctx.project, window.viewGen, host);
+        } else if ((ctx.sid || ctx.termId) && typeof window.renderArtifacts === 'function') {
+          await window.renderArtifacts(ctx.sid, window.viewGen, ctx.termId, host);
+        } else {
+          host.innerHTML = '<div class="empty" style="padding:24px">표시할 산출물이 없습니다.</div>';
         }
       }
     };
