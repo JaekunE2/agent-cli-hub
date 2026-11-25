@@ -476,7 +476,7 @@ function tailscaleIPs() {
         || a.family === 'IPv6' && /^fd7a:115c:a1e0:/i.test(a.address)) out.push(a.address);
     }
   }
-  return out;
+  return out.sort((a, b) => a.includes(':') - b.includes(':'));
 }
 const remoteUrl = (ip) => `http://${ip.includes(':') ? `[${ip}]` : ip}:${PORT}/`;
 function syncRemoteListeners() {
@@ -500,7 +500,9 @@ function remoteInfo() {
     dns = st.Self?.DNSName?.replace(/\.$/, '') || null;
   } catch {}
   const ips = [...remote.keys()];
-  const urls = [...(dns ? [remoteUrl(dns)] : []), ...ips.map(remoteUrl)];
+  const ipv4 = ips.filter((ip) => !ip.includes(':')).map(remoteUrl);
+  const ipv6 = ips.filter((ip) => ip.includes(':')).map(remoteUrl);
+  const urls = [...ipv4, ...(dns ? [remoteUrl(dns)] : []), ...ipv6];
   return { enabled: CONFIG.remote !== 'off', listening: ips, urls, tailscaleInstalled: fs.existsSync('C:\\Program Files\\Tailscale\\tailscale.exe') };
 }
 hub.remoteInfo = remoteInfo;

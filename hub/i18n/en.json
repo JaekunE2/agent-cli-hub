@@ -1232,6 +1232,7 @@
   "Project 삭제": "Delete Project",
   "Project 없음": "No Projects",
   "Project별 터미널 묶어보기": "Group terminals by Project",
+  "QR 주소:": "QR URL:",
   "QR과 복사한 링크에는 접속 토큰이 들어 있습니다. 다른 사람에게 보내지 마세요.": "The QR code and copied link contain the access token. Don't send them to anyone.",
   "ram 형식: 40G, 8000M": "ram format: 40G, 8000M",
   "sessionToken 형식이 올바르지 않습니다 (user_xxx::eyJ... 또는 %3A%3A 형태)": "sessionToken has the wrong format (user_xxx::eyJ... or the %3A%3A form)",

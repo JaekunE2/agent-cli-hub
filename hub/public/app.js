@@ -509,6 +509,7 @@ async function openPhoneDrawer() {
   const body = $('#phoneBody', d);
   if (r.qr) {
     body.innerHTML = `<div class="qr">${r.qr}</div>
+      <p class="empty" style="text-align:center;margin-top:6px">QR 주소: <span class="mono">${esc(r.urls[0] || '')}</span></p>
       <p>휴대폰에서도 Tailscale에 <b>같은 계정</b>으로 로그인한 뒤 QR을 찍으세요. 첫 접속 후에는 토큰 없이 주소만 열어도 됩니다.</p>
       <p><b>다른 PC·노트북</b>: 그 PC에도 Tailscale을 같은 계정으로 켠 뒤, 아래 링크를 복사해 브라우저에서 여세요 (한 번 열면 그 브라우저는 토큰을 기억합니다).</p>
       ${r.urls.map((u) => `<div class="row" style="gap:6px"><span class="mono" style="flex:1;word-break:break-all">${esc(u)}</span><button data-copyurl="${esc(u + '?t=' + TOKEN)}">토큰 포함 링크 복사</button></div>`).join('')}
