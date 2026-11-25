@@ -391,7 +391,7 @@
             host: bodyEl,
             p: ctx.linkedProject,
             cwd: ctx.cwd,
-            gen: window.viewGen,
+            gen: typeof viewGen === 'number' ? viewGen : 0,
             termCtx: { sessionId: ctx.sid, termId: ctx.termId },
           });
         } else {
@@ -420,10 +420,11 @@
           };
         }
         const host = $('[data-pv-refs-host]', bodyEl);
+        const curGen = typeof viewGen === 'number' ? viewGen : 0;
         if (ctx.project && typeof window.projectRefsView === 'function') {
-          await window.projectRefsView(ctx.project, window.viewGen, host);
+          await window.projectRefsView(ctx.project, curGen, host);
         } else if ((ctx.sid || ctx.termId) && typeof window.renderArtifacts === 'function') {
-          await window.renderArtifacts(ctx.sid, window.viewGen, ctx.termId, host);
+          await window.renderArtifacts(ctx.sid, curGen, ctx.termId, host);
         } else {
           host.innerHTML = '<div class="empty" style="padding:24px">표시할 산출물이 없습니다.</div>';
         }
