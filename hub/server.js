@@ -329,7 +329,7 @@ function ensureOperator(force = false) {
     if (!favs.includes(`term:${t.id}`)) fs.writeFileSync(hub.FAV_FILE, JSON.stringify([`term:${t.id}`, ...favs.filter((k) => !/^term:/.test(k) || hub.terms.has(k.slice(5)))]));
     console.log(`[operator] ${agent} started as t:${t.id}${prior ? ' (continuing its last conversation)' : ''}`);
     return t;
-  })().catch((e) => { console.error('[operator]', e.message); return null; }).finally(() => { setTimeout(() => { operatorStarting = null; }, 5000); });
+  })().catch((e) => { console.error('[operator]', e.message); return null; }).finally(() => { operatorStarting = null; });
   return operatorStarting;
 }
 Object.assign(hub, { readNotices, postNotice, OPERATOR_DIR, operatorTerm, ensureOperator, saveOperatorConfig });

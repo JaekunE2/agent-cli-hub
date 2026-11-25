@@ -56,12 +56,13 @@ function createSystemRoutes(hub) {
         }
         const cur = hub.operatorTerm();
         if (b?.action === 'stop') {
-          if (cur) await hub.stopTerminal?.(cur).catch(() => {});
+          if (cur) { hub.forgetTerm?.(cur); hub.overviewStale?.(); }
           send(res, 200, { ok: true, ...payload(hub.operatorTerm()) });
           return true;
         }
         if ((b?.restart || b?.action === 'restart') && cur) {
-          await hub.stopTerminal?.(cur).catch(() => {});
+          hub.forgetTerm?.(cur);
+          hub.overviewStale?.();
           await new Promise((r) => setTimeout(r, 350));
         }
         if (b?.action === 'save') {
