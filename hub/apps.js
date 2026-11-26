@@ -89,7 +89,9 @@ module.exports = function appsModule(deps = {}) {
   const liveSessions = deps.liveSessions || (() => []);
   const writeInteractiveTerm = deps.writeInteractiveTerm || null;
   const artifactsMod = deps.artifactsMod || null;
-  const termInfo = deps.termInfo || ((t) => (t ? { id: t.id, title: t.title, cwd: t.cwd, exited: t.exited, sessionId: t.sessionId } : null));
+  const termInfo = deps.termInfo || ((t) => ({
+    id: t.id, title: t.title, cwd: t.cwd, exited: t.exited, sessionId: t.sessionId, agent: t.agent,
+  }));
 
   const activeProcs = new Map(); // appId -> { runId, proc, cancelRequested }
 
@@ -198,21 +200,27 @@ module.exports = function appsModule(deps = {}) {
     const normCwd = app.cwd ? path.resolve(app.cwd).toLowerCase() : '';
     const live = liveSessions();
     let matchedTerm = null;
+    let agentTerm = null;
     for (const t of terms.values()) {
       if (t.exited !== null) continue;
-      if (pinned && t.sessionId === pinned) { matchedTerm = t; break; }
-      if (app.session?.autoMatchCwd && normCwd && t.cwd && path.resolve(t.cwd).toLowerCase() === normCwd) {
-        matchedTerm = matchedTerm || t;
+      const isPinned = pinned && t.sessionId === pinned;
+      const sameCwd = app.session?.autoMatchCwd && normCwd && t.cwd && path.resolve(t.cwd).toLowerCase() === normCwd;
+      if (!isPinned && !sameCwd) continue;
+      if (isPinned || !matchedTerm) matchedTerm = t;
+      if (writeInteractiveTerm && (isPinned || !agentTerm)) {
+        const info = termInfo(t);
+        if (info.agent && !info.startupBlock) agentTerm = info;
       }
     }
     const pinnedLive = pinned ? live.find((s) => s.sessionId === pinned) : null;
     const matchedLive = pinnedLive || live.find((s) => app.session?.autoMatchCwd && normCwd && s.cwd && path.resolve(s.cwd).toLowerCase() === normCwd);
-    if (pinnedLive && matchedTerm?.sessionId !== pinned) matchedTerm = null;
+    const displayTerm = pinnedLive && matchedTerm?.sessionId !== pinned ? null : matchedTerm;
     return {
-      term: matchedTerm ? termInfo(matchedTerm) : null,
+      term: displayTerm ? termInfo(displayTerm) : null,
+      actionTermId: agentTerm ? String(agentTerm.id) : null,
       live: matchedLive ? { sessionId: matchedLive.sessionId, status: matchedLive.status || 'idle', cwd: matchedLive.cwd } : null,
-      sessionId: pinned || matchedTerm?.sessionId || matchedLive?.sessionId || null,
-      status: matchedLive?.status || (matchedTerm ? 'idle' : 'offline'),
+      sessionId: pinned || displayTerm?.sessionId || matchedLive?.sessionId || null,
+      status: matchedLive?.status || (displayTerm ? 'idle' : 'offline'),
     };
   }
 
@@ -262,21 +270,14 @@ module.exports = function appsModule(deps = {}) {
     return env;
   }
 
-  function autoPinOutputs(app, beforeFiles) {
-    if (!artifactsMod || app.session?.autoPinArtifacts === false) return [];
+  function autoPinOutputs(app, changedFiles) {
+    if (!artifactsMod?.pinFile || app.session?.autoPinArtifacts === false) return [];
     const linked = findLinkedSession(app);
     const sid = linked.sessionId;
     if (!sid) return [];
-    const after = getAppFiles(app);
-    const beforeSet = new Set([...beforeFiles.views, ...beforeFiles.data].map((f) => `${f.path}:${f.mtimeMs}`));
     const pinned = [];
-    for (const f of [...after.views.slice(0, 3), ...after.data.slice(0, 2)]) {
-      if (!beforeSet.has(`${f.path}:${f.mtimeMs}`)) {
-        try {
-          artifactsMod.add(sid, f.path);
-          pinned.push(f.path);
-        } catch {}
-      }
+    for (const f of changedFiles) {
+      if (artifactsMod.pinFile(sid, f.path)) pinned.push(f.path);
     }
     return pinned;
   }
@@ -325,19 +326,11 @@ module.exports = function appsModule(deps = {}) {
         appendRun(app.id, runObj);
         return runObj;
       }
-      if (linked.term && writeInteractiveTerm) {
-        const termObj = terms.get(String(linked.term.id));
-        if (termObj) {
-          await writeInteractiveTerm(termObj, promptText + '\r');
-          runObj.status = 'ok';
-          runObj.stdout = `[세션 t:${linked.term.id}로 프롬프트 전달 완료]\n${promptText}`;
-          runObj.finishedAt = new Date().toISOString();
-          appendRun(app.id, runObj);
-          return runObj;
-        }
-      }
-      runObj.status = 'error';
-      runObj.stderr = '연결된 실행 중 터미널 세션이 없습니다. 먼저 세션을 열어 주세요.';
+      const termObj = terms.get(linked.actionTermId);
+      const delivered = termObj ? await writeInteractiveTerm(termObj, promptText + '\r').catch(() => false) : false;
+      runObj.status = delivered ? 'ok' : 'error';
+      if (delivered) runObj.stdout = `[세션 t:${linked.actionTermId}로 프롬프트 전달 완료]\n${promptText}`;
+      else runObj.stderr = termObj ? '세션에 요청을 전달하지 못했습니다.' : '연결된 실행 중 터미널 세션이 없습니다. 먼저 세션을 열어 주세요.';
       runObj.finishedAt = new Date().toISOString();
       appendRun(app.id, runObj);
       return runObj;
@@ -379,12 +372,17 @@ module.exports = function appsModule(deps = {}) {
       runObj.finishedAt = new Date().toISOString();
       runObj.status = entry.cancelRequested ? 'cancelled' : (code === 0 ? 'ok' : 'error');
       if (runObj.status === 'ok') {
-        runObj.pinnedArtifacts = autoPinOutputs(app, beforeFiles);
+        const nextFiles = getAppFiles(app);
+        const before = new Map([...beforeFiles.views, ...beforeFiles.data].map((f) => [f.path, f.mtimeMs]));
+        const changed = (f) => before.get(f.path) !== f.mtimeMs;
+        const views = nextFiles.views.filter(changed);
+        const data = nextFiles.data.filter(changed);
+        runObj.outputView = views[0]?.name || null;
+        runObj.pinnedArtifacts = autoPinOutputs(app, [...views.slice(0, 3), ...data.slice(0, 2)]);
         if (action.kind === 'pipeline' && action.prompt) {
           const linked = findLinkedSession(app);
-          const termObj = linked.term ? terms.get(String(linked.term.id)) : null;
+          const termObj = terms.get(linked.actionTermId);
           if (termObj && writeInteractiveTerm) {
-            const nextFiles = getAppFiles(app);
             const promptText = applyTemplate(action.prompt, {
               ...paramVars,
               latestViewFile: nextFiles.views[0]?.path || '',
@@ -519,6 +517,18 @@ module.exports = function appsModule(deps = {}) {
       return send(200, { runs, running: activeProcs.has(app.id) });
     }
 
+    if (sub.startsWith('runs/') && req.method === 'DELETE') {
+      const runId = decodeURIComponent(sub.slice('runs/'.length));
+      const history = loadRuns();
+      const runs = history[app.id] || [];
+      const run = runs.find((r) => r.runId === runId);
+      if (!run) return send(404, { error: '실행 기록을 찾을 수 없습니다.' });
+      if (run.status === 'running') return send(409, { error: '실행 중인 기록은 삭제할 수 없습니다.' });
+      history[app.id] = runs.filter((r) => r.runId !== runId);
+      saveRuns(history);
+      return send(200, { ok: true });
+    }
+
     if (sub === 'files' && req.method === 'GET') {
       const files = getAppFiles(app);
       return send(200, { views: files.views, data: files.data });
@@ -614,17 +624,16 @@ module.exports = function appsModule(deps = {}) {
       const all = [...files.views, ...files.data];
       const fileObj = b.file ? all.find((f) => f.name === b.file) : (files.views[0] || files.data[0]);
       const linked = findLinkedSession(app);
-      const targetTermId = b.termId || linked.term?.id;
+      const targetTermId = b.termId || linked.actionTermId;
       const targetSid = b.sessionId || linked.sessionId;
       if (artifactsMod && targetSid && fileObj) {
-        try { artifactsMod.add(targetSid, fileObj.path); } catch {}
+        artifactsMod.pinFile(targetSid, fileObj.path);
       }
       const prompt = String(b.prompt || '').trim();
       const msg = [fileObj ? `"${fileObj.path}"` : '', prompt || `[${app.name}] 결과물을 확인하고 요약·분석해 주세요.`].filter(Boolean).join(' ');
       if (targetTermId && writeInteractiveTerm) {
         const termObj = terms.get(String(targetTermId));
-        if (termObj && termObj.exited === null) {
-          await writeInteractiveTerm(termObj, msg + '\r');
+        if (termObj?.exited === null && await writeInteractiveTerm(termObj, msg + '\r').catch(() => false)) {
           return send(200, { ok: true, delivered: true, termId: targetTermId, file: fileObj?.path || null });
         }
       }

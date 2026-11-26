@@ -7,6 +7,7 @@
   let activeTab = 'view';
   let selectedViewFile = '';
   let selectedDataFile = '';
+  let reportRunId = '';
   let pollTimer = null;
   let renderId = 0;
 
@@ -27,6 +28,8 @@
   function statusBadge(st) {
     if (st === 'running') return '<span class="pill busy">실행 중</span>';
     if (st === 'error') return '<span class="pill danger">오류</span>';
+    if (st === 'ok') return '<span class="pill done">완료</span>';
+    if (st === 'cancelled') return '<span class="pill">중단됨</span>';
     return '<span class="pill">대기</span>';
   }
 
@@ -103,7 +106,7 @@
         const dir = wrap.querySelector('#impDir').value.trim();
         if (!dir) return toast('폴더 경로를 입력하세요');
         try {
-          const r = await api('/api/apps/import', { method: 'POST', body: { dir } });
+          const r = await api('/api/apps/import', { method: 'POST', body: { dir }, requireOk: true });
           close();
           toast(`${r.app.name} 앱을 가져왔습니다`);
           viewApps(r.app.id);
@@ -198,16 +201,14 @@
       return;
     }
 
+    const needsAgent = app.actions?.some((action) => action.kind === 'agent') && !app.linkedSession?.actionTermId;
     const actionsHtml = (app.actions || []).map((act) => {
       const paramsHtml = (act.params || []).map((pm) =>
         `<input class="btn-sm app-param" data-action="${esc(act.id)}" data-key="${esc(pm.key)}" placeholder="${esc(pm.label || pm.key)}" value="${esc(pm.default || '')}" style="width:140px;">`
       ).join('');
-      return `${paramsHtml}<button type="button" class="primary btn-sm app-run-btn" data-action="${esc(act.id)}" ${app.status === 'running' ? 'disabled' : ''}>${ICO.play} ${esc(act.label)}</button>`;
+      const blocked = needsAgent && act.kind === 'agent';
+      return `${paramsHtml}<button type="button" class="primary btn-sm app-run-btn" data-action="${esc(act.id)}" ${app.status === 'running' || blocked ? 'disabled' : ''} ${blocked ? 'aria-describedby="appAgentHelp"' : ''}>${ICO.play} ${esc(act.label)}</button>`;
     }).join(' ');
-
-    const sessStatus = app.linkedSession?.status || 'offline';
-    const hasSession = Boolean(sessionSelection(app.linkedSession));
-    const sessLabel = sessStatus === 'busy' ? '작업 중인 세션 열기' : (hasSession ? '세션 열기' : '새 세션 열기');
 
     body.innerHTML = `
       <div class="card" style="padding:14px 16px;margin-bottom:12px;">
@@ -215,7 +216,7 @@
           <div>
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
               <strong style="font-size:1.05rem;">${esc(app.name)}</strong>
-              ${statusBadge(app.status)}
+              ${statusBadge(app.status === 'running' ? app.status : app.latestRun?.status || app.status)}
               <span class="pill">${esc(app.type)}</span>
             </div>
             <div style="color:var(--muted);font-size:.85rem;margin-top:4px;">${esc(app.description || app.cwd)}</div>
@@ -223,11 +224,13 @@
           <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
             ${actionsHtml}
             ${app.status === 'running' ? `<button type="button" class="btn-sm danger" id="btnCancelRun">중단</button>` : ''}
-            ${hasSession || app.cwd ? `<button type="button" class="btn-sm" id="btnOpenSess">${ICO.terminal} ${sessLabel}</button>` : ''}
             <button type="button" class="btn-sm" id="btnEditApp" title="앱 설정">${ICO.edit}</button>
             <button type="button" class="btn-sm danger" id="btnDelApp" title="앱 제거">${ICO.trash}</button>
           </div>
         </div>
+        ${needsAgent ? `<p id="appAgentHelp" style="margin:10px 0 0;color:var(--muted);">
+          연결된 에이전트 실행기가 준비되면 이 작업을 시작할 수 있습니다.
+        </p>` : ''}
         ${app.usage || app.purpose ? `<div class="app-guide">
           ${app.usage ? `<section><h3>사용법</h3><p>${esc(app.usage)}</p></section>` : ''}
           ${app.purpose ? `<section><h3>개발 의도</h3><p>${esc(app.purpose)}</p></section>` : ''}
@@ -251,32 +254,29 @@
       await fetchApps();
       renderAppBody(currentApp());
     });
-    body.querySelector('#btnOpenSess')?.addEventListener('click', async (event) => {
-      const linked = sessionSelection(app.linkedSession);
-      if (linked) return select(linked);
-      const button = event.currentTarget;
-      button.disabled = true;
-      try {
-        const gen = viewGen;
-        const r = await api(`/api/apps/${encodeURIComponent(app.id)}/session/open`, { method: 'POST' });
-        const target = sessionSelection({ term: r.term, live: r });
-        if (target && gen === viewGen && button.isConnected) select(target);
-      } catch (e) { toast(e.message, 5000, 'danger'); }
-      finally { button.disabled = false; }
-    });
     body.querySelectorAll('.app-run-btn').forEach((btn) => {
       btn.onclick = async () => {
         const aid = btn.dataset.action;
+        btn.disabled = true;
+        const label = btn.innerHTML;
+        btn.textContent = '제출 중…';
         const params = {};
         body.querySelectorAll(`.app-param[data-action="${aid}"]`).forEach((inp) => {
           params[inp.dataset.key] = inp.value;
         });
         try {
-          await api(`/api/apps/${encodeURIComponent(app.id)}/run`, { method: 'POST', body: { actionId: aid, params } });
-          toast('실행을 시작했습니다');
+          const { run } = await api(`/api/apps/${encodeURIComponent(app.id)}/run`, { method: 'POST', body: { actionId: aid, params }, requireOk: true });
+          if (run.status === 'error') toast(run.stderr || '실행할 수 없습니다', 5000, 'danger');
+          else toast(run.kind === 'agent' ? '세션에 요약 요청을 전달했습니다' : '실행을 시작했습니다');
+          if (!btn.isConnected) return;
+          reportRunId = app.type === 'report' && run.kind !== 'agent' ? run.runId : '';
           activeTab = 'runs';
-          if (btn.isConnected) viewApps(app.id);
-        } catch (e) { toast(e.message, 5000, 'danger'); }
+          viewApps(app.id);
+        } catch (e) {
+          btn.disabled = false;
+          btn.innerHTML = label;
+          toast(e.message, 5000, 'danger');
+        }
       };
     });
 
@@ -298,7 +298,7 @@
     }
     const curFile = views.some((v) => v.name === selectedViewFile) ? selectedViewFile : views[0].name;
     selectedViewFile = curFile;
-    const viewUrl = `/api/apps/${encodeURIComponent(app.id)}/view/${encodeURIComponent(curFile)}?token=${encodeURIComponent(TOKEN)}`;
+    const viewUrl = `/api/apps/${encodeURIComponent(app.id)}/view/${encodeURIComponent(curFile)}?t=${encodeURIComponent(TOKEN)}`;
     box.innerHTML = `
       <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px;">
         <select id="selViewFile" class="btn-sm">${views.map((v) => `<option value="${esc(v.name)}" ${v.name === curFile ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select>
@@ -365,15 +365,29 @@
       box.innerHTML = '<div class="empty" style="padding:24px;">아직 실행 이력이 없습니다.</div>';
       return;
     }
-    box.innerHTML = runs.slice(0, 8).map((run) => `
+    box.innerHTML = runs.map((run) => `
       <div class="card" style="padding:12px 14px;margin-bottom:10px;">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px;">
           <div><strong>${esc(run.actionLabel || run.actionId)}</strong> ${statusBadge(run.status)}</div>
           <span style="color:var(--muted);font-size:.82rem;">${esc((run.startedAt || '').slice(0, 19).replace('T', ' '))}</span>
+          ${run.status === 'running' ? '' : `<button type="button" class="btn-sm" data-remove-run="${esc(run.runId)}">기록 삭제</button>`}
         </div>
         ${run.stdout ? `<pre style="max-height:180px;overflow:auto;font-size:.78rem;background:var(--bg);padding:8px;border-radius:8px;margin:6px 0 0;">${esc(run.stdout)}</pre>` : ''}
         ${run.stderr ? `<pre style="max-height:140px;overflow:auto;font-size:.78rem;background:#fef2f2;color:#991b1b;padding:8px;border-radius:8px;margin:6px 0 0;">${esc(run.stderr)}</pre>` : ''}
       </div>`).join('');
+    box.querySelectorAll('[data-remove-run]').forEach((button) => {
+      button.onclick = async () => {
+        if (!confirm('이 실행 기록을 삭제할까요?')) return;
+        button.disabled = true;
+        try {
+          await api(`/api/apps/${encodeURIComponent(app.id)}/runs/${encodeURIComponent(button.dataset.removeRun)}`, { method: 'DELETE', requireOk: true });
+          if (box.isConnected) viewApps(app.id);
+        } catch (e) {
+          toast(e.message, 5000, 'danger');
+          button.disabled = false;
+        }
+      };
+    });
   }
 
   window.openAppOutputPicker = async function openAppOutputPicker(onPickPaths) {
@@ -400,42 +414,32 @@
     });
   };
 
-  function sessionSelection(linkedSession) {
-    const termId = linkedSession?.term?.id;
-    const sessionId = linkedSession?.live?.sessionId;
-    const recentId = linkedSession?.sessionId;
-    if (termId != null) return { kind: 'term', id: String(termId) };
-    if (sessionId) return { kind: 'session', id: sessionId };
-    if (recentId && recentSession(recentId)) return { kind: 'recent', id: recentId };
-    return null;
+  function showCompletedReport(app) {
+    const run = app?.latestRun;
+    if (!reportRunId || run?.runId !== reportRunId || run.status === 'running') return;
+    reportRunId = '';
+    if (run.status === 'ok' && run.outputView && activeTab === 'runs') {
+      selectedViewFile = run.outputView;
+      activeTab = 'view';
+      toast('작업이 완료되어 리포트를 열었습니다');
+    }
   }
 
   function renderAppCards(apps, body) {
     if (!apps.length) return renderAppBody(null);
-    body.innerHTML = `<div class="apps-grid">${apps.map((app, index) => {
-      const hasSession = Boolean(sessionSelection(app.linkedSession));
-      return `<article class="card app-tile">
+    body.innerHTML = `<div class="apps-grid">${apps.map((app, index) => `
+      <article class="card app-tile">
         <button type="button" class="ghost app-tile-main" data-app-open="${index}">
           <strong>${esc(app.name)}</strong>
           ${app.description ? `<span class="app-tile-description">${esc(app.description)}</span>` : ''}
-          <span class="app-tile-session">${hasSession ? `${ICO.terminal} 세션 열기` : '연결된 세션 없음'}</span>
+          <span class="app-tile-session">앱 열기</span>
         </button>
         <div class="app-tile-footer">
           ${statusBadge(app.status)}
-          <button type="button" class="btn-sm" data-app-detail="${index}" aria-label="${esc(app.name)} 앱 상세">앱 상세</button>
         </div>
-      </article>`;
-    }).join('')}</div>`;
+      </article>`).join('')}</div>`;
     body.querySelectorAll('[data-app-open]').forEach((button) => {
-      button.onclick = () => {
-        const app = apps[Number(button.dataset.appOpen)];
-        const target = sessionSelection(app.linkedSession);
-        if (target) select(target);
-        else viewApps(app.id);
-      };
-    });
-    body.querySelectorAll('[data-app-detail]').forEach((button) => {
-      button.onclick = () => viewApps(apps[Number(button.dataset.appDetail)].id);
+      button.onclick = () => viewApps(apps[Number(button.dataset.appOpen)].id);
     });
   }
 
@@ -444,7 +448,9 @@
     const gen = viewGen;
     const requestId = ++renderId;
     const isCurrent = () => gen === viewGen && requestId === renderId;
-    if (selectedAppId !== appId) {
+    const changingApp = selectedAppId !== appId;
+    if (changingApp) {
+      reportRunId = '';
       selectedViewFile = '';
       selectedDataFile = '';
       activeTab = 'view';
@@ -467,6 +473,11 @@
 
     const app = currentApp();
     if (!app) return renderAppCards(appsCache, body);
+    if (changingApp && app.status === 'running') {
+      activeTab = 'runs';
+      reportRunId = app.type === 'report' ? app.activeRunId : '';
+    }
+    showCompletedReport(app);
     await renderAppBody(app);
     if (isCurrent() && app.status === 'running') {
       pollTimer = setInterval(async () => {
@@ -475,6 +486,7 @@
         if (!isCurrent()) return;
         const cur = currentApp();
         if (cur?.status !== 'running') stopPoll();
+        showCompletedReport(cur);
         renderAppBody(cur);
       }, 2500);
     }

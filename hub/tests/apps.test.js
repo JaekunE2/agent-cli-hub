@@ -8,6 +8,7 @@ const path = require('node:path');
 const { URL } = require('node:url');
 
 const createApps = require('../apps');
+const createArtifacts = require('../artifacts');
 
 function makeHarness() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ach-apps-test-'));
@@ -24,9 +25,12 @@ function makeHarness() {
   );
 
   const sentMessages = [];
-  const pinnedArtifacts = [];
+  const artifactsDir = path.join(tmp, 'artifacts');
+  fs.mkdirSync(artifactsDir);
+  const artifactsMod = createArtifacts({ dir: artifactsDir });
+  const pinned = (sid) => JSON.parse(fs.readFileSync(path.join(artifactsDir, 'artifacts-store.json'), 'utf8'))[sid].pinned.map((f) => f.path);
   const terms = new Map([
-    ['1', { id: '1', cwd: appDir, exited: null, sessionId: 'sess-1', title: 'test-term' }],
+    ['1', { id: '1', cwd: appDir, exited: null, sessionId: 'sess-1', title: 'test-term', agent: 'agy' }],
   ]);
   const live = [{ sessionId: 'sess-1', status: 'idle', cwd: appDir }];
 
@@ -37,7 +41,7 @@ function makeHarness() {
     terms,
     liveSessions: () => live,
     writeInteractiveTerm: async (t, text) => { sentMessages.push({ termId: t.id, text }); return true; },
-    artifactsMod: { add: (sid, filePath) => { pinnedArtifacts.push({ sid, filePath }); } },
+    artifactsMod,
   });
 
   async function call(method, reqPath, bodyObj = null) {
@@ -59,7 +63,7 @@ function makeHarness() {
     return { handled, status, payload, headers };
   }
 
-  return { tmp, appDir, viewDir, dataDir, mod, call, live, sentMessages, pinnedArtifacts };
+  return { tmp, appDir, viewDir, dataDir, mod, call, live, sentMessages, pinned, terms };
 }
 
 test('apps CRUD, validation, and folder import', async () => {
@@ -126,6 +130,8 @@ test('a pinned live session takes priority over a different terminal in the app 
     h.live.push({ sessionId: 'pinned-live', cwd: h.appDir, status: 'idle' });
     const opened = await h.call('POST', '/api/apps/pinned-app/session/open');
     assert.deepEqual(opened.payload, { ok: true, sessionId: 'pinned-live', existing: true });
+    const linked = await h.call('GET', '/api/apps/pinned-app');
+    assert.equal(linked.payload.app.linkedSession.actionTermId, '1');
   } finally {
     h.mod.stop();
     fs.rmSync(h.tmp, { recursive: true, force: true });
@@ -135,33 +141,81 @@ test('a pinned live session takes priority over a different terminal in the app 
 test('action run, run lock, cancellation, and logs', async () => {
   const h = makeHarness();
   try {
+    fs.writeFileSync(path.join(h.appDir, 'runner.cjs'), `
+      require('node:fs').writeFileSync('views/latest.html', '<h1>Latest report</h1>');
+      console.log('hello-' + process.env.APP_PARAM_WHO);
+    `);
     await h.call('POST', '/api/apps', {
       id: 'runner',
       name: 'Runner',
       type: 'command',
       cwd: h.appDir,
+      outputs: { viewDir: 'views' },
       actions: [
-        { id: 'fast', label: 'Fast', kind: 'command', cmd: 'node -e "console.log(\'hello-\' + process.env.APP_PARAM_WHO)"', params: [{ key: 'who', default: 'world' }] },
+        { id: 'fast', label: 'Fast', kind: 'command', cmd: 'node runner.cjs', params: [{ key: 'who', default: 'world' }] },
         { id: 'slow', label: 'Slow', kind: 'command', cmd: 'node -e "setTimeout(() => {}, 10000)"' },
       ],
     });
 
     const r1 = await h.call('POST', '/api/apps/runner/run', { actionId: 'fast', params: { who: 'hub' } });
     assert.equal(r1.status, 200);
-    await new Promise((r) => setTimeout(r, 400));
-    const logs = await h.call('GET', '/api/apps/runner/runs');
+    let logs;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      logs = await h.call('GET', '/api/apps/runner/runs');
+      if (logs.payload.runs[0].status !== 'running') break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
     assert.equal(logs.payload.runs[0].status, 'ok');
     assert.match(logs.payload.runs[0].stdout, /hello-hub/);
+    assert.equal(logs.payload.runs[0].outputView, 'latest.html');
+    assert.deepEqual(logs.payload.runs[0].pinnedArtifacts, [path.join(h.viewDir, 'latest.html')]);
+    assert.deepEqual(h.pinned('sess-1'), [path.join(h.viewDir, 'latest.html')]);
 
     // slow run + lock + cancel
     const s1 = await h.call('POST', '/api/apps/runner/run', { actionId: 'slow' });
     assert.equal(s1.status, 200);
+    const removeActive = await h.call('DELETE', `/api/apps/runner/runs/${s1.payload.run.runId}`);
+    assert.equal(removeActive.status, 409);
+    const removeFinished = await h.call('DELETE', `/api/apps/runner/runs/${r1.payload.run.runId}`);
+    assert.equal(removeFinished.status, 200);
+    assert.equal(fs.existsSync(path.join(h.viewDir, 'latest.html')), true);
+    const history = await h.call('GET', '/api/apps/runner/runs');
+    assert.deepEqual(history.payload.runs.map((run) => run.runId), [s1.payload.run.runId]);
     const locked = await h.call('POST', '/api/apps/runner/run', { actionId: 'fast' });
     assert.equal(locked.status, 409);
 
     const can = await h.call('POST', '/api/apps/runner/cancel');
     assert.equal(can.status, 200);
     assert.equal(can.payload.wasRunning, true);
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const status = await h.call('GET', '/api/apps/runner/runs');
+      if (!status.payload.running) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  } finally {
+    h.mod.stop();
+    fs.rmSync(h.tmp, { recursive: true, force: true, maxRetries: 8, retryDelay: 120 });
+  }
+});
+
+test('agent actions require a connected agent terminal and report prompt delivery', async () => {
+  const h = makeHarness();
+  try {
+    const t = h.terms.get('1');
+    t.agent = null;
+    const created = await h.call('POST', '/api/apps', {
+      id: 'summary', name: 'Summary', cwd: h.appDir,
+      actions: [{ id: 'run', kind: 'agent', prompt: 'Summarize app data' }],
+    });
+    assert.equal(created.payload.app.linkedSession.actionTermId, null);
+    const unavailable = await h.call('POST', '/api/apps/summary/run');
+    assert.equal(unavailable.payload.run.status, 'error');
+    assert.equal(h.sentMessages.length, 0);
+
+    t.agent = 'agy';
+    const sent = await h.call('POST', '/api/apps/summary/run');
+    assert.equal(sent.payload.run.status, 'ok');
+    assert.deepEqual(h.sentMessages, [{ termId: '1', text: 'Summarize app data\r' }]);
   } finally {
     h.mod.stop();
     fs.rmSync(h.tmp, { recursive: true, force: true });
@@ -197,7 +251,7 @@ test('data query, path traversal guard, data delete, app delete, and send-to-cha
     assert.equal(chat.status, 200);
     assert.equal(chat.payload.delivered, true);
     assert.equal(h.sentMessages.length, 1);
-    assert.equal(h.pinnedArtifacts.length, 1);
+    assert.deepEqual(h.pinned('sess-1'), [path.join(h.viewDir, 'report.html')]);
 
     // delete single data file
     const delFile = await h.call('DELETE', '/api/apps/data-app/data?file=2026-11-26.json');
