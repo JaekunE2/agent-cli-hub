@@ -66,7 +66,7 @@ function homeStatsHTML() {
 
 function homeListsHTML() {
   const cons = sortConsolesByState(visibleConsoles());
-  const terms = sortTermsByState(state.terms.filter((t) => t.exited === null));
+  const terms = sortTermsByState(state.terms.filter((t) => t.exited === null && !isProjectSubSession(t)));
   const recentMap = new Map((state.recent || []).map((r) => [r.sessionId, r]));
   const merged = [
     ...terms.map((t) => ({ kind: 'term', rank: STATE_RANK[termStateOf(t)] ?? 9, item: t })),
@@ -97,7 +97,7 @@ function homeListsHTML() {
 
   const liveIds = new Set(state.live.map((s) => s.sessionId));
   for (const t of terms) liveIds.add(t.sessionId);
-  const recents = state.recent.filter((r) => !liveIds.has(r.sessionId)).slice(0, 4);
+  const recents = state.recent.filter((r) => !liveIds.has(r.sessionId) && !isProjectSubRecent(r)).slice(0, 4);
   const recentRows = recents.map((r) => {
     const ag = r.agent || 'claude';
     return `<div class="m-row" data-hrecent="${esc(r.sessionId)}">

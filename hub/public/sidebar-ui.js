@@ -208,8 +208,12 @@ function renderSide() {
   </div>${favorites}`;
 
   // Unified Recent Conversations & Active Terminals
-  const cons = sortConsolesByState(visibleConsoles()).filter((c) => matchSide(consoleLabel(c), '콘솔'));
-  const terms = sortTermsByState(state.terms || []).filter((t) => matchSide(termLabel(t), t.cwd || '', projectOfTerm(t)?.name || '', t.agent || ''));
+  const showProjTerms = !!state.showProjectTerms || !!state.termGroupByProject || !!fTerms.length;
+  const allCons = sortConsolesByState(visibleConsoles()).filter((c) => matchSide(consoleLabel(c), '콘솔'));
+  const allTerms = sortTermsByState(state.terms || []).filter((t) => matchSide(termLabel(t), t.cwd || '', projectOfTerm(t)?.name || '', t.agent || ''));
+  const hiddenProjTerms = showProjTerms ? 0 : allTerms.filter((t) => isProjectSubSession(t)).length;
+  const cons = allCons;
+  const terms = showProjTerms ? allTerms : allTerms.filter((t) => !isProjectSubSession(t));
   const rf = state.recentFilter || '';
   const fbtn = (val, label, cnt = 0) => `<button data-rfilt="${val}" class="${rf === val ? 'on' : ''}">${label}${cnt ? ` <span class="seg-cnt">${cnt}</span>` : ''}</button>`;
 
@@ -244,14 +248,17 @@ function renderSide() {
   ];
 
   const recSourceKey = (rf && rf !== 'live') ? rf : '';
-  const unlinkedRecent = (state.recentByAgent?.[recSourceKey] || state.recent)
+  const rawRecent = (state.recentByAgent?.[recSourceKey] || state.recent)
     .filter((r) => {
       if (seenSids.has(r.sessionId)) return false;
       if (!matchSide(sessionLabel(r), r.cwd || '', r.agent || '')) return false;
       if (rf === 'live') return liveBySid.has(r.sessionId);
       if (rf && (r.agent || 'claude') !== rf) return false;
       return true;
-    })
+    });
+  const hiddenProjRecent = showProjTerms ? 0 : rawRecent.filter((r) => isProjectSubRecent(r)).length;
+  const hiddenProjCount = hiddenProjTerms + hiddenProjRecent;
+  const unlinkedRecent = (showProjTerms ? rawRecent : rawRecent.filter((r) => !isProjectSubRecent(r)))
     .slice(0, 18)
     .map((r) => {
       const lp = liveBySid.get(r.sessionId);
@@ -260,7 +267,7 @@ function renderSide() {
     });
 
   const unifiedEntries = [...combinedLive, ...unlinkedRecent].sort((a, b) => compareUnifiedEntries(a, b, recentMap));
-  const liveCount = activeTermCount + (state.recent || []).filter((r) => !seenSids.has(r.sessionId) && liveBySid.has(r.sessionId)).length;
+  const liveCount = activeTermCount + (state.recent || []).filter((r) => !seenSids.has(r.sessionId) && liveBySid.has(r.sessionId) && (showProjTerms || !isProjectSubRecent(r))).length;
 
   const sideLiveStateTag = (st, unread = false, dormant = false) => (
     st === 'busy'
@@ -359,6 +366,12 @@ function renderSide() {
     } else {
       recentRows = unifiedEntries.map(renderUnifiedRow).join('');
     }
+    if (!state.termGroupByProject && !fTerms.length && (hiddenProjCount > 0 || state.showProjectTerms)) {
+      const lbl = state.showProjectTerms
+        ? '프로젝트 작업 세션 숨기기'
+        : `프로젝트 작업 세션 ${hiddenProjCount}개 숨김 · 보기`;
+      recentRows += `<button type="button" class="srow-empty" data-toggle-proj-terms="1" style="width:100%;text-align:center;border:0;background:transparent;cursor:pointer;padding:6px 8px">${lbl}</button>`;
+    }
   }
 
   const cleanExitedAria = '종료된 터미널 정리';
@@ -417,6 +430,12 @@ $('#side')?.addEventListener('click', async (e) => {
     e.stopPropagation();
     state.termGroupByProject = !state.termGroupByProject;
     try { localStorage.setItem('ach-term-group', state.termGroupByProject ? '1' : '0'); } catch {}
+    return renderSide();
+  }
+  if (e.target.closest('[data-toggle-proj-terms]')) {
+    e.stopPropagation();
+    state.showProjectTerms = !state.showProjectTerms;
+    try { localStorage.setItem('ach-show-proj-terms', state.showProjectTerms ? '1' : '0'); } catch {}
     return renderSide();
   }
   if (e.target.closest('[data-side-clean-exited]')) {

@@ -597,6 +597,14 @@ function projectOfTerm(t) {
   return projectOfSession(t.sessionId) || projectOfSession(t.branch?.parentSessionId)
     || (state.projects || []).find((p) => (p.termIds || []).includes(t.id)) || null;
 }
+function isProjectSubSession(t) {
+  if (!t) return false;
+  return !!(t.projectTask || /^\[병합\]/.test(t.title || '') || /[\\/]\.hub-worktrees[\\/]/i.test(t.cwd || ''));
+}
+function isProjectSubRecent(r) {
+  if (!r) return false;
+  return !!(r.auto || projectOfSession(r.sessionId) || /[\\/]\.hub-worktrees[\\/]/i.test(r.cwd || ''));
+}
 function termKindLabel(t) {
   if (t.operator) return '관제';
   if (t.agent === 'claude') return '터미널 · Claude';
