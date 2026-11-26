@@ -419,6 +419,8 @@ test('cross-platform switchAlways converts Claude <-> Codex natively and keeps A
     assert.equal(sqlRow?.model_provider, 'openai');
     const lastTs = JSON.parse(fs.readFileSync(sqlRes.file, 'utf8').trim().split(/\r?\n/).at(-1)).timestamp;
     assert.ok(Date.parse(lastTs) > Date.now() - 60_000);
+    const metaRec = JSON.parse(fs.readFileSync(sqlRes.file, 'utf8').trim().split(/\r?\n/)[0]);
+    assert.equal(metaRec.payload.history_mode, 'legacy');
 
     // 2) Codex -> Claude uses native Claude JSONL + `claude --resume <id>`
     const toClaude = await svc.switchAccount({ sessionId: codexDoc.id, account: '__cli__:claude', cont: false, openMode: 'dashboard' });

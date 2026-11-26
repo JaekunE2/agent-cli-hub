@@ -506,7 +506,7 @@ function registerCodexThreadSqlite({ codexHome, sessionId, outFile, cwd, title, 
         preview: String(firstUserMsg || title || '').slice(0, 200),
         recency_at: nowSec,
         recency_at_ms: nowMs,
-        history_mode: 'paginated',
+        history_mode: 'legacy',
         originator: 'codex-tui',
       };
       const keys = Object.keys(row).filter((k) => cols.has(k));
@@ -550,7 +550,7 @@ function writeNativeCodexSession({ sessionId = crypto.randomUUID(), codexHome, c
         source: 'cli',
         thread_source: 'user',
         model_provider: 'openai',
-        history_mode: 'paginated',
+        history_mode: 'legacy',
       },
     }),
   ];
