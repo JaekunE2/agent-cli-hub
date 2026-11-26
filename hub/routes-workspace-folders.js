@@ -55,7 +55,7 @@ function createFolderListSummaries(store, resolveSessions, logError) {
     try {
       // Cache the drive inventory for display only. Path identities are checked on every lookup.
       if (!reading || Date.now() >= expires) {
-        expires = Date.now() + 10_000;
+        expires = Date.now() + 60_000;
         reading = folderInspector().catch((err) => { expires = 0; throw err; });
       }
       const inspector = await reading;

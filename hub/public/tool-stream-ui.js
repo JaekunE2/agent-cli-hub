@@ -140,7 +140,9 @@ function mountSubagents(bar, params) {
     };
   }
   connect();
-  const timer = setInterval(refresh, 1000);
+  const timer = setInterval(() => {
+    if (!document.hidden && (items.some(x => x.status === 'running') || !list.hidden || Math.random() < 0.4)) refresh();
+  }, 1500);
   unmountSubagents = () => {
     document.removeEventListener('pointerdown', outside);
     clearInterval(timer);

@@ -290,8 +290,13 @@ function createTermManager(hub) {
     const args = t.meta.args || [];
     const log = args.indexOf('--log-file');
     const resume = args.indexOf('--conversation');
+    const now = Date.now();
+    if (t._agySidCache && now - t._agySidCache.at < 1500) {
+      return t._agySidCache.val || (resume >= 0 ? args[resume + 1] : null);
+    }
     const logged = log >= 0 ? readAgySession(args[log + 1]) : t.pid
       ? readAgySession(path.join(os.homedir(), '.gemini', 'antigravity-cli', 'cli.log'), t.pid) : null;
+    t._agySidCache = { at: now, val: logged };
     return logged || (resume >= 0 ? args[resume + 1] : null);
   }
 
@@ -398,12 +403,36 @@ function createTermManager(hub) {
     return agyStatusFromScreen(screen, { exited: t.exited, lastOutputAt: t.lastOutputAt, spawnedAt: t.meta?.spawnedAt });
   }
 
+  const codexHeadCache = new Map();
+  function readFirstJsonLine(file, mtimeMs) {
+    const cached = codexHeadCache.get(file);
+    if (cached && cached.mtimeMs === mtimeMs) return cached.meta;
+    let fd;
+    let meta = null;
+    try {
+      fd = fs.openSync(file, 'r');
+      const buf = Buffer.alloc(16384);
+      const n = fs.readSync(fd, buf, 0, buf.length, 0);
+      if (n > 0) {
+        const nl = buf.indexOf(10, 0);
+        const line = buf.toString('utf8', 0, nl >= 0 && nl < n ? nl : n).trim();
+        if (line) meta = JSON.parse(line)?.payload || null;
+      }
+    } catch { meta = null; }
+    finally { if (fd !== undefined) try { fs.closeSync(fd); } catch {} }
+    if (codexHeadCache.size > 512) codexHeadCache.clear();
+    codexHeadCache.set(file, { mtimeMs, meta });
+    return meta;
+  }
+
   function codexSessionOf(t) {
     const id = codexResumeId(t);
     if (id) return id;
     const hit = codexDocOf(t);
     if (hit) return hit.id;
     if (codexResumeArg(t) === '--last' || !t.meta?.spawnedAt || !(t.cwd || t.meta?.cwd)) return null;
+    const now = Date.now();
+    if (t._codexSidCache && now - t._codexSidCache.at < 2000) return t._codexSidCache.val;
     const root = t.meta?.envFlags?.CODEX_HOME || process.env.CODEX_HOME || CA.MAIN;
     function* walk(d) {
       let ents = []; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
@@ -411,8 +440,9 @@ function createTermManager(hub) {
         if (!e.isFile() || !/^rollout-.*\.jsonl$/.test(e.name)) continue;
         const file = path.join(d, e.name);
         try {
-          if (fs.statSync(file).mtimeMs < t.meta.spawnedAt) continue;
-          const meta = JSON.parse(fs.readFileSync(file, 'utf8').split('\n', 1)[0]).payload;
+          const mtimeMs = fs.statSync(file).mtimeMs;
+          if (mtimeMs < t.meta.spawnedAt) continue;
+          const meta = readFirstJsonLine(file, mtimeMs);
           if (meta?.id) yield { id: meta.id, cwd: meta.cwd, file, agent: 'codex', auto: /exec/i.test(`${meta.originator || ''} ${meta.source || ''}`) };
         } catch {}
       }
@@ -421,11 +451,13 @@ function createTermManager(hub) {
       const d = new Date(ms);
       return path.join(root, 'sessions', String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0'));
     };
+    let matchedId = null;
     for (const dir of new Set([dayDir(t.meta.spawnedAt), dayDir(t.meta.spawnedAt + 60_000)])) {
       const match = matchCodexLaunch(t, walk(dir));
-      if (match) return match.id;
+      if (match) { matchedId = match.id; break; }
     }
-    return null;
+    t._codexSidCache = { at: now, val: matchedId };
+    return matchedId;
   }
 
   function termSessionId(t) {

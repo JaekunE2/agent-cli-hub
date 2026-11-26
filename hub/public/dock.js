@@ -213,20 +213,22 @@
     $('[data-w-auto]', rootEl).onchange = (e) => { winAuto = !!e.target.checked; };
     $('[data-w-all]', rootEl).onchange = (e) => { winShowAll = !!e.target.checked; refreshWindows(true); };
 
-    refreshWindows(false);
+    if (isOpen()) refreshWindows(false);
     winPollTimer = setInterval(() => {
       if (gen !== currentViewGen() || !rootEl.isConnected) { clearInterval(winPollTimer); clearInterval(snapTimer); return; }
-      refreshWindows(false);
-    }, 4500);
+      if (isOpen()) refreshWindows(false);
+    }, 5000);
     snapTimer = setInterval(() => {
       if (gen !== currentViewGen() || !rootEl.isConnected) { clearInterval(winPollTimer); clearInterval(snapTimer); return; }
       if (isOpen() && winAuto && winList.some((w) => !w.minimized)) {
         snapNonce = Date.now();
-        rootEl.querySelectorAll('[data-w-body] img[src*="/api/window/shot"]').forEach((img) => {
+        const imgs = [...rootEl.querySelectorAll('[data-w-body] img[src*="/api/window/shot"]')];
+        const batch = imgs.slice(0, 6);
+        batch.forEach((img) => {
           img.src = img.src.replace(/ts=\d+/, `ts=${snapNonce}`);
         });
       }
-    }, 2200);
+    }, 3500);
 
     return { refreshWindows, renderWindows };
   }

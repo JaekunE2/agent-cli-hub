@@ -42,6 +42,7 @@ function existing(file, root) {
   }
 }
 
+const codexMissCache = new Map();
 function transcriptFile(hub, id, term) {
   if (!safeId(id)) return null;
   const claudeRoot = term?.meta?.envFlags?.CLAUDE_CONFIG_DIR || hub.claudeDir;
@@ -93,7 +94,9 @@ function transcriptFile(hub, id, term) {
       if (name) return existing(path.resolve(dir, name), root);
     }
   }
-  if (root && fs.existsSync(root)) {
+  const missKey = root ? `${root}|${id}` : '';
+  const missAt = missKey ? codexMissCache.get(missKey) : 0;
+  if (root && (!missAt || now - missAt > 30_000) && fs.existsSync(root)) {
     let scanned = 0;
     const years = fs.readdirSync(root).filter(n => /^\d{4}$/.test(n)).sort().reverse();
     for (const y of years) {
@@ -115,6 +118,8 @@ function transcriptFile(hub, id, term) {
       }
       if (scanned > 90) break;
     }
+    if (codexMissCache.size > 512) codexMissCache.clear();
+    codexMissCache.set(missKey, now);
   }
   return null;
 }
@@ -149,15 +154,25 @@ function readEvents(file, cursor, consume, limit = 2_000_000, fromStart = false,
     Object.assign(cursor, { ino: st.ino, size: st.size, mtime: st.mtimeMs });
     if (opts.fastScan && !fromStart && !cursor.offset && st.size > limit) {
       const CHUNK = 1024 * 1024;
+      const MAX_FAST_SCAN = 80 * 1024 * 1024;
       const tailStart = Math.max(0, st.size - limit);
       const buf = Buffer.alloc(CHUNK);
-      let pos = 0;
+      let pos = st.size > MAX_FAST_SCAN ? st.size - MAX_FAST_SCAN : 0;
+      let skipFirstPartial = pos > 0;
       let carry = Buffer.alloc(0);
       while (pos < st.size) {
         const toRead = Math.min(CHUNK, st.size - pos);
         const n = fs.readSync(fd, buf, 0, toRead, pos);
         if (n <= 0) break;
-        const view = buf.subarray(0, n);
+        let view = buf.subarray(0, n);
+        let offsetBias = 0;
+        if (skipFirstPartial) {
+          const firstNl = view.indexOf(10);
+          if (firstNl < 0) { pos += n; continue; }
+          offsetBias = firstNl + 1;
+          view = view.subarray(offsetBias);
+          skipFirstPartial = false;
+        }
         const lastNl = view.lastIndexOf(10);
         const usePrefilter = pos + n < tailStart;
         if (lastNl >= 0) {
@@ -165,9 +180,9 @@ function readEvents(file, cursor, consume, limit = 2_000_000, fromStart = false,
           const full = carry.length ? Buffer.concat([carry, head]) : head;
           parseLinesChunk(full.toString('utf8'), consume, usePrefilter);
           carry = Buffer.from(view.subarray(lastNl + 1));
-          cursor.offset = pos + lastNl + 1;
+          cursor.offset = pos + offsetBias + lastNl + 1;
         } else {
-          carry = carry.length + n <= 4_000_000 ? Buffer.concat([carry, view]) : Buffer.alloc(0);
+          carry = carry.length + view.length <= 4_000_000 ? Buffer.concat([carry, view]) : Buffer.alloc(0);
         }
         pos += n;
       }

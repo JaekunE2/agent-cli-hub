@@ -32,7 +32,8 @@ function scopeFor(hub, { termId, sessionId, agent } = {}) {
     scopes.set(key, state);
     if (term && sid) scopes.delete(sid);
   }
-  const file = transcriptFile(hub, sid, term);
+  const keepFile = state.file && state.sessionId === sid && fs.existsSync(state.file);
+  const file = keepFile ? state.file : transcriptFile(hub, sid, term);
   if (file !== state.file) state.cursor = {};
   Object.assign(state, { sessionId: sid, file, term, agent: (term && hub.agentOf?.(term)) || hub.index?.get(sid)?.agent || agent || 'claude' });
   return state;
@@ -101,7 +102,12 @@ function sync(hub, state) {
     if (call.childSessionId) {
       const target = [...hub.terms.values()].find(t => t !== term && parentSession(hub, t) === call.childSessionId);
       call.targetTermId = target ? String(target.id) : undefined;
-      call.logPath = transcriptFile(hub, call.childSessionId, term);
+      const indexedChild = hub.index?.get(call.childSessionId);
+      const needLogLookup = !call.logPath && (indexedChild?.file || !call._logCheckAt || (call.status === 'running' ? now - call._logCheckAt > 4000 : now - call._logCheckAt > 30_000));
+      if (needLogLookup) {
+        call._logCheckAt = now;
+        call.logPath = transcriptFile(hub, call.childSessionId, term);
+      }
       call.targetSessionId = (hub.index?.get(call.childSessionId) || call.logPath) && !hub.projects?.hidden?.().has(call.childSessionId)
         ? call.childSessionId : undefined;
       let child = state.children.get(call.childSessionId);
