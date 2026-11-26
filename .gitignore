@@ -48,3 +48,4 @@ hub/delta-session.json
 hub/cwatch.pid
 hub/telegram-bridge.pid
 hub/llm-rules.md
+__pycache__/
