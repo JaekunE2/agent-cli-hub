@@ -185,6 +185,13 @@
 .pj-flow-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 8px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-md); margin-bottom: 10px; box-shadow: var(--shadow-xs); }
 .pj-flow-bar > .row, .pj-task.flow-node > .row { flex-wrap: wrap; }
 .pj-flow-bar button.on { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--panel)); font-weight: 600; }
+@media (max-width: 760px) {
+  .pj-flow-bar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding: 5px 8px; gap: 6px; margin-bottom: 6px; }
+  .pj-flow-bar::-webkit-scrollbar { display: none; }
+  .pj-flow-bar > .row { flex: none; flex-wrap: nowrap !important; gap: 6px !important; }
+  .pj-flow-bar .seg { flex: none; flex-wrap: nowrap; }
+  .pj-flow-bar button, .pj-flow-bar summary { white-space: nowrap; height: 26px; min-height: 26px; font-size: 12px; }
+}
 .pj-flow { overflow: auto; padding: 0; border: 1px solid var(--diag-rule-solid); border-radius: var(--radius-lg); background-color: var(--diag-paper); background-image: radial-gradient(color-mix(in srgb, var(--diag-ink) 9%, transparent) 1px, transparent 1px); background-size: 22px 22px; height: calc(100vh - 216px); min-height: 580px; max-height: 84vh; cursor: grab; position: relative; }
 .pj-flow.is-panning { cursor: grabbing; user-select: none; }
 .pj-flow-canvas { position: relative; min-width: 100%; min-height: 560px; transform-origin: 0 0; }
