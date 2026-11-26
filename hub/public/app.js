@@ -86,7 +86,6 @@ function select(sel, tab, persistTab = false) {
   }
   renderSide();
   window.ACH_PREVIEW?.setActiveController(null);
-  if (sel.kind === 'trusted-folders') return viewTrustedFolders();
   if (sel.kind === 'schedules') return viewSchedules();
   return ({ home: viewHome, terms: viewTerms, projects: window.viewProjects || (() => { setBar('<h2>Project</h2>'); $('#view').textContent = 'Project 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }), console: viewConsole, recent: viewTranscript, term: viewTerm, search: viewSearch, usage: viewUsage, research: viewResearch, gpu: viewGpu, operator: window.viewOperator || (() => { setBar('<h2>관제 세션</h2>'); }), calendar: viewCalendar, apps: window.viewApps || (() => { setBar('<h2>Apps</h2>'); }), vault: window.viewVault || (() => { setBar('<h2>공통 자원</h2>'); $('#view').textContent = '공통 자원 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }) })[sel.kind]?.();
 }
@@ -705,7 +704,7 @@ if (desktopInvoke) window.addEventListener('hashchange', () => {
       }
       const saved = fromHash || previous;
       const s = saved?.sel;
-      if (s && ['home', 'terms', 'projects', 'usage', 'calendar', 'schedules', 'apps', 'gpu', 'vault', 'operator', 'trusted-folders', 'recent', 'research'].includes(s.kind)) restored = saved;
+      if (s && ['home', 'terms', 'projects', 'usage', 'calendar', 'schedules', 'apps', 'gpu', 'vault', 'operator', 'recent', 'research'].includes(s.kind)) restored = saved;
       else if (s?.kind === 'term' && terminalExists(s.id)) restored = saved;
       else if (s?.kind === 'console' && state.consoles.some((c) => String(c.id) === String(s.id))) restored = saved;
     } catch {}

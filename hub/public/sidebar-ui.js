@@ -83,7 +83,7 @@ function renderSide() {
   const focusedSession = focusedControl?.closest?.('[data-key]')?.dataset.key;
   const folded = sideFolded();
   const curKind = state.sel.kind;
-  const isSys = ['usage', 'gpu', 'vault', 'operator', 'trusted-folders'].includes(curKind);
+  const isSys = ['usage', 'gpu', 'vault', 'operator'].includes(curKind);
 
   const calItems = ((typeof CAL !== 'undefined' && CAL?.data?.items) || []).filter((x) => !(x.kind === 'task' && x.done));
   const now = new Date();
