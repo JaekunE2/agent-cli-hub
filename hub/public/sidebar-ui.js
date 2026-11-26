@@ -299,7 +299,6 @@ function renderSide() {
       return `<div class="srow${isSel ? ' sel' : ''}${unread ? ' just-done' : ''}" data-key="term:${esc(t.id)}" title="${esc([termLabel(t), pj?.name, t.cwd, brTip].filter(Boolean).join(' · '))}">
         ${agentIcon(kind, dot)}
         <button type="button" class="ghost srow-main srow-open"><span class="srow-t">${esc(termLabel(t))}</span><span class="srow-s">${tags}</span></button>
-        ${folderBadge(folderTarget(t, true))}
         <span class="srow-end">${t.operator ? '' : renameButton}${unread ? '<span class="srow-unread" title="방금 작업 완료"></span>' : ''}${fk ? `<span class="fav${isStar ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${isStar ? '즐겨찾기 해제' : '즐겨찾기'}">${isStar ? ICO.starFill : ICO.star}</span>` : ''}</span>
       </div>`;
     }
@@ -311,7 +310,6 @@ function renderSide() {
       return `<div class="srow${isSel ? ' sel' : ''}" data-key="console:${esc(c.id)}">
         ${agentIcon(cs ? (cs.agent || 'claude') : 'shell', st === 'busy' ? 'busy' : 'idle')}
         <button type="button" class="ghost srow-main srow-open"><span class="srow-t">${esc(consoleLabel(c))}</span><span class="srow-s"><span class="srow-tag con">콘솔</span>${sideLiveStateTag(st)}</span></button>
-        ${folderBadge(folderTarget(cs || c, false, true))}
       </div>`;
     }
     const r = entry.item;
@@ -332,7 +330,6 @@ function renderSide() {
     return `<div class="srow${isSel ? ' sel' : ''}" data-key="recent:${esc(r.sessionId)}" title="${esc([sessionLabel(r), r.cwd, brTip].filter(Boolean).join(' · '))}">
       ${agentIcon(ag, liveDot)}
       <button type="button" class="ghost srow-main srow-open"><span class="srow-t">${esc(sessionLabel(r))}</span><span class="srow-s">${subHTML}</span></button>
-      ${folderBadge(folderTarget(r))}
       <span class="srow-end">
         ${renameButton}
         <span class="fav${on ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${on ? '즐겨찾기 해제' : '즐겨찾기'}">${on ? ICO.starFill : ICO.star}</span>

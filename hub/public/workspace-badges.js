@@ -11,14 +11,13 @@ function folderTarget(item, term = false, readOnly = false) {
   count: context?.referenceCount, trust: context?.trustState };
 }
 
-function folderBadgeContent({ primaryCwd, count, trust }) {
-  const label = folderStateLabel(trust);
-  return `<span class="folder-short">${esc(primaryCwd ? base(primaryCwd) : '폴더 확인 불가')}</span>
-    <span>${count ?? '–'}</span><span class="badge ${trust === 'trusted' ? 'ok' : trust === 'untrusted' ? 'warn' : ''}">${label}</span>`;
+function folderBadgeContent({ primaryCwd, count }) {
+  const refBadge = count > 0 ? `<span class="badge c">+${count}</span>` : '';
+  return `<span class="folder-short">${esc(primaryCwd ? base(primaryCwd) : '참조 폴더')}</span>${refBadge}`;
 }
 
-const folderBadgeTitle = (target) => ['세션 폴더', target.primaryCwd, '참조 폴더 ' + (target.count ?? '–'),
-  folderStateLabel(target.trust)].filter(Boolean).join(' · ');
+const folderBadgeTitle = (target) => ['참조 폴더 설정', target.primaryCwd, target.count > 0 ? `참조 ${target.count}개` : '']
+  .filter(Boolean).join(' · ');
 
 function folderBadge(target) {
   if (!target) return '';

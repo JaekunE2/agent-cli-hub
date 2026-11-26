@@ -138,14 +138,14 @@ function termCardHTML(t, extraBadge = '') {
     : '';
   return `<div class="card" data-term="${t.id}"><div class="hd">${agentIcon(kind, dot)}
     <span class="t">${esc(termLabel(t))}</span>
-    ${folderBadge(folderTarget(t, true))}${branchTagHTML(t.branch)}${pjBadge}${extraBadge}${kindBadge}${stBadge}${closeBtn}</div>
+    ${branchTagHTML(t.branch)}${pjBadge}${extraBadge}${kindBadge}${stBadge}${closeBtn}</div>
     <div class="mini" id="mini-${t.id}"><div class="mini-in"></div></div></div>`;
 }
 function conCardHTML(c) {
   const s = sessionOfConsole(c);
   const st = consoleStateOf(c);
   return `<div class="card" data-id="${c.id}"><div class="hd"><span class="dot ${st === 'busy' ? 'busy' : 'idle'}"></span>
-    <span class="t">${esc(consoleLabel(c))}</span>${folderBadge(folderTarget(s || c, false, true))}${s?.limit ? '<span class="badge lim">한도</span>' : ''}<span class="badge agy">외부 콘솔</span><span class="badge ${st === 'busy' ? 'warn' : 'ok'}">${st === 'busy' ? '실행 중' : '대기'}</span></div>
+    <span class="t">${esc(consoleLabel(c))}</span>${s?.limit ? '<span class="badge lim">한도</span>' : ''}<span class="badge agy">외부 콘솔</span><span class="badge ${st === 'busy' ? 'warn' : 'ok'}">${st === 'busy' ? '실행 중' : '대기'}</span></div>
     <pre class="screen" id="scr-${c.id}">불러오는 중…</pre></div>`;
 }
 function bindMiniTerminals(gen, terms, cons) {
@@ -242,7 +242,6 @@ function recentRowHTML(r) {
     ${agentIcon(ag)}
     <div class="m-row-main"><div class="m-row-t">${esc(sessionLabel(r))}</div><div class="m-row-s">${esc(sub)}</div></div>
     <div class="m-row-end">
-      ${folderBadge(folderTarget(r))}
       ${branchTagHTML(r.branch)}
       <span class="fav${on ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${on ? '즐겨찾기 해제' : '즐겨찾기'}">${on ? ICO.starFill : ICO.star}</span>
       <button class="record-delete danger ghost icon-btn btn-sm" data-hide-record="${esc(r.sessionId)}" title="${delRecTitle}" aria-label="${esc(delRecAria)}">${ICO.trash}</button>
@@ -308,7 +307,6 @@ function paintTermsBody() {
             ${agentIcon(kind, meta.dot)}
             <div class="m-row-main"><div class="m-row-t">${esc(termLabel(t))}</div><div class="m-row-s">${esc(termKindLabel(t))}${base(t.cwd) ? ` · ${esc(base(t.cwd))}` : ''}</div></div>
             <div class="m-row-end">
-              ${folderBadge(folderTarget(t, true))}
               ${branchTagHTML(t.branch)}
               ${fk ? `<span class="fav${on ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0">${on ? ICO.starFill : ICO.star}</span>` : ''}
               ${pj ? `<span class="badge c">${esc(pj.name)}</span>` : ''}
