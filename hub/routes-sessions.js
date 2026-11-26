@@ -348,7 +348,8 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       helper: { ok: !hub.getHelperMissing(), error: hub.getHelperMissing() || null },
     };
     const projectRevisions = Object.fromEntries(projects.list().map((p) => [p.id, p.revision]));
-    return { ...(hub.integrations?.overviewFields() || {}), features: { agy: !!hub.agyEnabled }, live, consoles, terms: termsOut, consoleError: cons.error, favs: hub.liveFavs(), sessionGroups: hub.loadSessionGroups ? hub.loadSessionGroups() : { version: 1, groups: [], assignments: {} }, disk: diskLow, consolesOff: config.consoles === false, services, buildId, accountPrefs: accountPrefs.get(), projectRevisions };
+    const pluginState = hub.plugins?.overview() || {};
+    return { pluginState, features: { agy: !!hub.agyEnabled }, live, consoles, terms: termsOut, consoleError: cons.error, favs: hub.liveFavs(), sessionGroups: hub.loadSessionGroups ? hub.loadSessionGroups() : { version: 1, groups: [], assignments: {} }, disk: diskLow, consolesOff: config.consoles === false, services, buildId, accountPrefs: accountPrefs.get(), projectRevisions };
   }
 
   function overviewSnapshot() {

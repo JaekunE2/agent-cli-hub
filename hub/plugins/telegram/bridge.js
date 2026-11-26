@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Telegram → Claude Code sessions on this PC (the dashboard's own bot, separate from the usage bot).
-//   node --use-system-ca telegram-bridge.js        (start it hidden at logon, e.g. from a local .vbs)
+//   node --use-system-ca hub/plugins/telegram/bridge.js   (start it hidden at logon, e.g. from a local .vbs)
 // Token: <config secretsDir>/ccd-telegram.json {token} (or CCD_TELEGRAM_SECRET). Only ALLOWED_USER_IDS / TELEGRAM_PROXY from the
 // usage bot's .env are reused (same owner, same corporate CONNECT proxy).
 //
@@ -24,10 +24,10 @@ const fs = require('fs'), path = require('path'), os = require('os');
 try { require('os').setPriority(require('os').constants.priority.PRIORITY_ABOVE_NORMAL); } catch {}
 const { execFile } = require('child_process');
 
-const DIR = __dirname;
+const DIR = require('path').join(__dirname, '..', '..'); // the hub folder (.token, config.json, ccd.js, approvals/, notify/, state + log files)
 // Only the main hub's bridge polls the bot: a second getUpdates poller (e.g. a hub copy on another port)
 // would steal the live bridge's updates. CCD_TELEGRAM=1 forces it on (instance.js).
-const INSTANCE = require('./instance');
+const INSTANCE = require('../../instance');
 if (!INSTANCE.telegram) { console.error(`[telegram] side hub instance (port ${INSTANCE.port}): bridge disabled; set CCD_TELEGRAM=1 to run it anyway`); process.exit(0); }
 const HUB = `http://127.0.0.1:${INSTANCE.port}`;
 const HUBCFG = (() => { try { return JSON.parse(fs.readFileSync(path.join(DIR, 'config.json'), 'utf8')); } catch { return {}; } })();
@@ -396,7 +396,7 @@ async function watchLimits() {
   const ov = await dash('/api/overview').catch(() => null);
   if (!ov) return;
   const directors = new Set();
-  try { for (const p of require('./harness').lib('project').listProjects()) if (p.state.director_session_id) directors.add(p.state.director_session_id); } catch {}
+  try { for (const p of require('../../harness').lib('project').listProjects()) if (p.state.director_session_id) directors.add(p.state.director_session_id); } catch {}
   for (const s of ov.live || []) {
     if (!s.limit) { if (st.alerted[s.sessionId]) { delete st.alerted[s.sessionId]; save(); } continue; }
     const key = String(s.limit.ts || 'x');

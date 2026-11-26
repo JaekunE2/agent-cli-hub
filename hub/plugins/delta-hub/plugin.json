@@ -1,0 +1,18 @@
+{
+  "id": "delta-hub",
+  "name": "Delta Hub",
+  "description": "Deltascale AI Control Hub: login, sessions view, ccd delta, gpt fallback",
+  "server": "server.js",
+  "cli": "cli.js",
+  "scripts": [
+    "delta.js",
+    "ui.js"
+  ],
+  "valueFlags": [
+    "runtime",
+    "via"
+  ],
+  "help": [
+    "  delta ls | read <s> | send <s> \"prompt\" | wait <s> | new <project> [\"prompt\"] | stop <s> | stage | get | where | nodes   (plugin delta-hub)"
+  ]
+}

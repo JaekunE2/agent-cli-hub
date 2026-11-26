@@ -8,7 +8,9 @@
   "cursorAgent": "C:\\Users\\you\\AppData\\Local\\cursor-agent\\cursor-agent.cmd",
   "usageUrl": "http://127.0.0.1:4777",
   "usageDir": "../ai-usage",
-  "locateRoots": ["D:\\work"],
+  "locateRoots": [
+    "D:\\work"
+  ],
   "calendar": {
     "todo": "D:\\notes\\todo.md",
     "events": "D:\\notes\\calendar.json",
@@ -19,7 +21,9 @@
     "model": "gpt-5",
     "_comment": "ccd gpt falls back to a Codex session on a Delta Hub (below) when every ChatGPT login is at its limit",
     "hubProject": "<delta hub project id for the fallback sessions>",
-    "hubProjects": ["<other project ids whose runs share the same quota>"],
+    "hubProjects": [
+      "<other project ids whose runs share the same quota>"
+    ],
     "hubFallback": true
   },
   "secretsDir": "C:\\path\\to\\secrets",
@@ -27,7 +31,11 @@
   "codexAutoSwitch": true,
   "codexAutoPick": true,
   "switchCrossAgentAuto": false,
-  "operator": { "enabled": true, "noticeDeliver": false, "checkEveryMin": 180 },
+  "operator": {
+    "enabled": true,
+    "noticeDeliver": false,
+    "checkEveryMin": 180
+  },
   "telegram": {
     "_comment": "telegram-bridge.js (main hub only): token in <secretsDir>/ccd-telegram.json {\"token\": \"...\"}; allowed user ids come from the usage dashboard's telegram/.env",
     "home": "<session id prefix that plain messages go to>",
@@ -45,10 +53,32 @@
   "driveUrl": "http://127.0.0.1:8090",
   "driveLabel": "GX10 드라이브",
   "drives": {
-    "nas": { "label": "Team share (Z:)", "url": "http://127.0.0.1:8091", "local": "Z:\\", "letter": "Z:", "unc": "\\\\fileserver\\share", "start": "C:\\path\\to\\start-drive-server.vbs" }
+    "nas": {
+      "label": "Team share (Z:)",
+      "url": "http://127.0.0.1:8091",
+      "local": "Z:\\",
+      "letter": "Z:",
+      "unc": "\\\\fileserver\\share",
+      "start": "C:\\path\\to\\start-drive-server.vbs"
+    }
   },
   "webApps": [
-    { "id": "studio", "label": "My web app", "icon": "🧩", "url": "http://127.0.0.1:5180", "start": "C:\\path\\to\\start-app.vbs", "hint": "start it with ..." }
+    {
+      "id": "studio",
+      "label": "My web app",
+      "icon": "🧩",
+      "url": "http://127.0.0.1:5180",
+      "start": "C:path\tostart-app.vbs",
+      "hint": "start it with ..."
+    },
+    {
+      "id": "llm",
+      "label": "LLM chat",
+      "icon": "💬",
+      "url": "http://127.0.0.1:11434",
+      "page": "C:path\tollm.html",
+      "bridge": "llm-web-bridge.js"
+    }
   ],
   "delta": {
     "_comment": "a Deltascale AI Control Hub: portal = login page, hub = the hub itself; the session cookie is kept in <secretsDir>/delta-session.json",
@@ -58,23 +88,55 @@
     "defaultProject": "<project name or id preselected for new sessions>"
   },
   "nasMirror": "/srv/nas/work/<user>/mirror",
-  "homelink": { "url": "https://hub.example.org/" },
+  "homelink": {
+    "url": "https://hub.example.org/"
+  },
   "dooray": {
     "_comment": "optional read-only Dooray calendar: read through a logged-in Chrome on CDP; calendars: name -> \"all\" | \"mine\"",
     "base": "https://<tenant>.dooray.com",
     "cdp": 9222,
     "me": "<your name tag as written in entries>",
-    "calendars": { "<calendar name>": "all" }
+    "calendars": {
+      "<calendar name>": "all"
+    }
   },
   "gpu": {
     "_comment": "see gpu.js for every key; servers are optional remote GPU boxes reached over ssh",
     "localDisplayReserveMB": 4000,
     "hotC": 85,
     "servers": [
-      { "id": "bigbox", "name": "Big-memory box", "ssh": "user@bigbox", "key": "C:\\path\\to\\ssh-key", "workdir": "/home/user", "python": "/home/user/venvs/torch/bin/python",
-        "auto": true, "speed": 0.35, "reserveBaseMB": 56000, "envs": { "gs": "/home/user/venvs/gs" } },
-      { "id": "delta", "name": "Slurm cluster", "ssh": "user@slurm-controller", "workdir": "/work/user/stage",
-        "slurm": { "partition": "gpu", "local": true, "stageRoot": "/work/user/stage", "nodes": ["gpu-w01", "gpu-w02"] } }
-    ]
-  }
+      {
+        "id": "bigbox",
+        "name": "Big-memory box",
+        "ssh": "user@bigbox",
+        "key": "C:\\path\\to\\ssh-key",
+        "workdir": "/home/user",
+        "python": "/home/user/venvs/torch/bin/python",
+        "auto": true,
+        "speed": 0.35,
+        "reserveBaseMB": 56000,
+        "envs": {
+          "gs": "/home/user/venvs/gs"
+        }
+      },
+      {
+        "id": "delta",
+        "name": "Slurm cluster",
+        "ssh": "user@slurm-controller",
+        "workdir": "/work/user/stage",
+        "slurm": {
+          "partition": "gpu",
+          "local": true,
+          "stageRoot": "/work/user/stage",
+          "nodes": [
+            "gpu-w01",
+            "gpu-w02"
+          ]
+        }
+      }
+    ],
+    "blockLocalLlm": false
+  },
+  "_plugins": "Optional features are plugins (hub/plugins/<id>, docs/PLUGINS.md); each turns on when its keys below are set.",
+  "researchHarness": "../research-harness"
 }

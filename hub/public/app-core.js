@@ -417,7 +417,7 @@ async function refreshOverview() {
     state.consolesOff = !!o.consolesOff;
     // optional features the server turned on (Antigravity is off unless config "antigravity": true)
     state.features = o.features || state.features || { agy: true };
-    for (const k of ['drive', 'drives', 'delta', 'webApps']) if (k in o) state[k] = o[k];
+    if (o.pluginState && typeof o.pluginState === 'object') Object.assign(state, o.pluginState); // fields the enabled plugins add (plugins.js)
   } catch (e) {
     state.err = e.message;
     state.hubDown = true;

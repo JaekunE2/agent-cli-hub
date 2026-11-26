@@ -1,0 +1,18 @@
+{
+  "id": "drives",
+  "name": "Drives",
+  "description": "File servers (drive-server.js) in the hub: browse, upload, send files to sessions; ccd drive",
+  "server": "server.js",
+  "cli": "cli.js",
+  "scripts": [
+    "drive.js",
+    "ui.js"
+  ],
+  "valueFlags": [
+    "drive",
+    "to"
+  ],
+  "help": [
+    "  drive ls [dir] | find <name> | cat | stat | get <remote> [local] | put <files...> [--to dir] | mkdir | mv | rm | info | jobs | job-status   (plugin drives)"
+  ]
+}

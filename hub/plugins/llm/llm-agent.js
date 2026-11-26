@@ -12,7 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const { createAgent } = require('./llm-agent-core');
 
-const DIR = __dirname;
+const DIR = path.join(__dirname, '..', '..'); // the hub folder (config.json, ccd.js, llm-tools/, llm-rules.md)
 const argv = process.argv.slice(2);
 const flags = {};
 const pos = [];

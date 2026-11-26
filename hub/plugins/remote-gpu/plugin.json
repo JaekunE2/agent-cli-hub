@@ -1,0 +1,21 @@
+{
+  "id": "remote-gpu",
+  "name": "Remote GPU servers",
+  "description": "gpu run on configured ssh / Slurm servers (--sync/--fetch/--stage/--env), node staging, NAS mirror",
+  "cli": "cli.js",
+  "valueFlags": [
+    "remote-dir",
+    "sync",
+    "fetch",
+    "sync-exclude",
+    "env",
+    "stage",
+    "node",
+    "server",
+    "exclude"
+  ],
+  "help": [
+    "  gpu run --gpu <server-id|auto> [--sync DIR] [--fetch out] [--stage a,b] [--env NAME] -- <command>   jobs on gpu.servers   (plugin remote-gpu)",
+    "  nas push <dir...> | where <path> | ls [dir]   mirror code/data to the cluster NAS (config nasMirror)   (plugin remote-gpu)"
+  ]
+}

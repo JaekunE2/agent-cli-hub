@@ -1,0 +1,6 @@
+{
+  "id": "telegram",
+  "name": "Telegram control bot",
+  "description": "bridge.js (own process, main hub only): talk to sessions from Telegram, usage-limit alerts, approvals/ and notify/ outbox",
+  "server": "server.js"
+}

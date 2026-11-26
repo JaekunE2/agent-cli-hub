@@ -14,6 +14,8 @@ const tokenFile = path.join(DIR, '.token');
 // read lazily: on a fresh install the server creates .token only after `ccd up` starts it
 const token = () => process.env.CCD_TOKEN || (fs.existsSync(tokenFile) ? fs.readFileSync(tokenFile, 'utf8').trim() : '');
 const SELF_PID = Number(process.env.CLAUDE_PID || 0);
+// plugins (plugins.js): their value-taking flags and help lines, then their commands and hooks (see the end of this file)
+const PLUGIN_MANIFEST = require('./plugins').cliManifest();
 
 const HELP = `ccd — Agent CLI Hub CLI  (server ${BASE})
 
@@ -77,7 +79,7 @@ for (let i = 0; i < argv.length; i++) {
   if (a === '-n') flags.n = Number(argv[++i]);
   else if (a.startsWith('--')) {
     const k = a.slice(2);
-    if (['to', 'cwd', 'resume', 'title', 'role', 'at', 'timeout', 'account', 'direction', 'venue', 'gpu', 'mem', 'ram', 'label', 'est', 'modules', 'model', 'session', 'sync', 'fetch', 'sync-exclude', 'file', 'system', 'url', 'image', 'env', 'cd', 'to', 'in', 'msg', 'rename', 'max', 'runtime', 'drive', 'stage', 'node', 'server', 'exclude', 'via', 'root', 'steps', 'name', 'project', 'version', 'task', 'every', 'cron', 'tz', 'prompt', 'overlap', 'misfire', 'effort', 'ref', 'limit', 'action', 'dir', 'q', 'older-than', 'cli', 'date', 'time', 'end', 'note', 'tags'].includes(k)) flags[k] = argv[++i];
+    if (['to', 'cwd', 'resume', 'title', 'role', 'at', 'timeout', 'account', 'direction', 'venue', 'gpu', 'mem', 'ram', 'label', 'est', 'modules', 'model', 'session', 'sync', 'fetch', 'sync-exclude', 'file', 'system', 'url', 'image', 'env', 'cd', 'to', 'in', 'msg', 'rename', 'max', 'runtime', 'drive', 'stage', 'node', 'server', 'exclude', 'via', 'root', 'steps', 'name', 'project', 'version', 'task', 'every', 'cron', 'tz', 'prompt', 'overlap', 'misfire', 'effort', 'ref', 'limit', 'action', 'dir', 'q', 'older-than', 'cli', 'date', 'time', 'end', 'note', 'tags'].includes(k) || PLUGIN_MANIFEST.valueFlags.includes(k)) flags[k] = argv[++i];
     else flags[k] = true;
   } else pos.push(a);
 }
@@ -509,6 +511,7 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
     }
     if (sub === 'run') {
       if (!rest.length) die('usage: ccd gpu run [--mem 20G | --exclusive] [--gpu 0] [--label L] -- <command ...>');
+      for (const h of PLUGIN.hooks.gpuRunCheck || []) await h(); // plugins may adjust placement or refuse the job
       const t = await request(true, process.pid);
       const g = t.status === 'granted' ? t : await waitGrant(t.id);
       console.error(`[gpu] ${g.id} granted on ${g.gpu} → CUDA_VISIBLE_DEVICES=${g.gpuIndex}`);
@@ -562,6 +565,8 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
         }, 2000);
         api('/api/gpu/heartbeat', { id: g.id, childPid: jobPid, log: logFile, detached: true }).catch(() => {});
       } else {
+        const remote = PLUGIN.hooks.gpuRunRemote?.[0]; // a plugin that runs jobs on a configured server
+        if (remote) return remote(g, host);
         die(`[gpu] ${g.gpu} is not a GPU on this PC`);
       }
       const hb = setInterval(() => api('/api/gpu/heartbeat', { id: g.id, childPid: child.pid }).catch(() => {}), 30000);
@@ -974,10 +979,16 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
   },
 };
 
+const PLUGIN = require('./plugins').loadCli({ api, die, flags, pos, rest, DIR, BASE, PORT, token, usageDir, readTarget, overview, resolve, sessionIdOf, ago, termLabel, SELF_PID });
+Object.assign(cmds, PLUGIN.commands);
+const FULL_HELP = PLUGIN_MANIFEST.help.length ? HELP.replace('\n<target>:', `\n${PLUGIN_MANIFEST.help.join('\n')}\n\n<target>:`) : HELP;
+
 (async () => {
   const c = pos[0];
-  if (!c || c === 'help' || flags.help) return console.log(HELP);
-  if (!cmds[c]) die(`unknown command ${c}\n\n${HELP}`);
+  if (!c || c === 'help' || flags.help) return console.log(FULL_HELP);
+  if (!cmds[c]) die(`unknown command ${c}
+
+${FULL_HELP}`);
   const savedCodexTokens = c === 'codex' && pos[1] === 'tokens' && !flags.watch;
   if (c !== 'url' && !savedCodexTokens) await ensureUp(c === 'up' || c === 'restart');
   await cmds[c]();

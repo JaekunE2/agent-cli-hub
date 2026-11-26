@@ -55,7 +55,7 @@ const { createScheduleRoutes } = require('./routes-schedules');
 const { createScheduleTransport } = require('./schedule-transport');
 const { error: scheduleError } = require('./schedule-fields');
 const INSTANCE = require('./instance');
-const { createIntegrations } = require('./integrations');
+const { createServerHost: createPluginHost } = require('./plugins');
 
 const cleanModelEffort = (model, effort) => {
   const m = String(model || '').trim();
@@ -177,7 +177,7 @@ hub.rememberProjectTerm = (t) => {
 };
 
 Object.assign(hub, createTermManager(hub));
-hub.integrations = createIntegrations(hub);
+hub.plugins = createPluginHost(hub);
 Object.assign(hub, createAccountSwitchService(hub));
 
 function describePid(pid) {
@@ -225,7 +225,7 @@ function makeResearch() {
 }
 function makeCalendar() {
   const config = (() => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { return CONFIG; } })();
-  return require('./calendar')({ config, port: PORT, readOnly: !INSTANCE.calendarWrite });
+  return require('./calendar')({ config, port: PORT, readOnly: !INSTANCE.calendarWrite, sources: () => hub.plugins.collect('calendarSources').flat() });
 }
 function makeDrive() {
   const config = (() => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { return CONFIG; } })();
@@ -528,7 +528,7 @@ const STATIC = {
   '/project-harness-ui.js': 'public/project-harness-ui.js', '/project-refs-ui.js': 'public/project-refs-ui.js', '/project-floorplan.js': 'public/project-floorplan.js', '/project-git.js': 'public/project-git.js', '/project-terminals.js': 'public/project-terminals.js', '/projects.css': 'public/projects.css',
   '/xterm.js': 'node_modules/@xterm/xterm/lib/xterm.js', '/xterm.css': 'node_modules/@xterm/xterm/css/xterm.css',
   '/addon-fit.js': 'node_modules/@xterm/addon-fit/lib/addon-fit.js', '/mermaid.js': 'node_modules/mermaid/dist/mermaid.min.js',
-  '/drive.js': 'public/drive.js', '/delta.js': 'public/delta.js', '/integrations-ui.js': 'public/integrations-ui.js',
+  '/plugin-host.js': 'public/plugin-host.js',
   '/icon-claude.png': 'public/icon-claude.png', '/icon-openai.png': 'public/icon-openai.png',
 };
 
@@ -574,22 +574,24 @@ const server = http.createServer(async (req, res) => {
     const file = p === '/' ? 'public/index.html' : STATIC[p] || 'public' + p;
     const local = p === '/' && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress) && new RegExp(`^(127\\.0\\.0\\.1|localhost|\\[::1\\]):${PORT}$`).test(req.headers.host || '');
     res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream', 'cache-control': 'no-store, no-cache, must-revalidate, max-age=0', pragma: 'no-cache' });
+    // the page lists the enabled plugins' scripts at its <!--plugins--> marker
+    const withPlugins = (html) => (p === '/' ? html.replace('<!--plugins-->', hub.plugins.pageTags()) : html);
     const bustIndex = (html) => (p === '/'
       ? html.replace(/((?:src|href)="\/[^"?]+\.(?:css|js))"/g, `$1?v=${SERVER_BUILD_ID}"`)
       : html);
     const text = file.startsWith('public/') && !file.endsWith('.woff2') ? I18N.forFile(path.join(__dirname, file)) : null;
     if (text !== null) {
-      const out = bustIndex(local ? text.replace('<head>', `<head><script>window.LOCAL_TOKEN=${JSON.stringify(TOKEN)}</script>`) : text);
+      const out = bustIndex(withPlugins(local ? text.replace('<head>', `<head><script>window.LOCAL_TOKEN=${JSON.stringify(TOKEN)}</script>`) : text));
       return res.end(out);
     }
     if (p === '/') {
       const raw = fs.readFileSync(path.join(__dirname, file), 'utf8');
-      const out = bustIndex(local ? raw.replace('<head>', `<head><script>window.LOCAL_TOKEN=${JSON.stringify(TOKEN)}</script>`) : raw);
+      const out = bustIndex(withPlugins(local ? raw.replace('<head>', `<head><script>window.LOCAL_TOKEN=${JSON.stringify(TOKEN)}</script>`) : raw));
       return res.end(out);
     }
     return fs.createReadStream(path.join(__dirname, file)).pipe(res);
   }
-  if (hub.integrations.handlePage(p, url, req, res, send)) return;
+  if (await hub.plugins.handlePage(p, url, req, res, send)) return;
   if (!p.startsWith('/api/')) return send(res, 404, { error: 'not found' });
   if (p === '/api/session/subagent-hook' && req.method === 'POST') {
     return hookTransport.handleNativeHook(req, res, body, send);
@@ -602,7 +604,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST') hub.overviewStale();
 
   try {
-    if (await hub.integrations.handleApi(p, url, req, res, body, send)) return;
+    if (await hub.plugins.handleApi(p, url, req, res, body, send)) return;
     if (await projectRoutes.handleProjectRoutes(p, url, req, res, body, send, authed)) return;
     if (await sessionRoutes.handleSessionRoutes(p, url, req, res, body, send, authed)) return;
     if (await systemRoutes.handleSystemRoutes(p, url, req, res, body, send, authed)) return;
@@ -686,8 +688,8 @@ function remoteInfo() {
   const ips = [...remote.keys()];
   const ipv4 = ips.filter((ip) => !ip.includes(':')).map(remoteUrl);
   const ipv6 = ips.filter((ip) => ip.includes(':')).map(remoteUrl);
-  const urls = [...hub.integrations.remoteUrls(), ...ipv4, ...(dns ? [remoteUrl(dns)] : []), ...ipv6];
-  return { enabled: CONFIG.remote !== 'off', listening: ips, urls, homelink: hub.integrations.homelink, tailscaleInstalled: fs.existsSync('C:\\Program Files\\Tailscale\\tailscale.exe') };
+  const urls = [...hub.plugins.collect('remoteUrls').flat(), ...ipv4, ...(dns ? [remoteUrl(dns)] : []), ...ipv6];
+  return { enabled: CONFIG.remote !== 'off', listening: ips, urls, tailscaleInstalled: fs.existsSync('C:\\Program Files\\Tailscale\\tailscale.exe') };
 }
 hub.remoteInfo = remoteInfo;
 
@@ -725,7 +727,7 @@ server.listen(PORT, HOST, () => {
   const u = `http://${HOST}:${PORT}/?t=${TOKEN}`;
   fs.writeFileSync(path.join(__dirname, 'url.txt'), u + '\n');
   console.log('Agent CLI Hub:', u);
-  hub.integrations.startDeltaUi();
+  hub.plugins.start();
   if (INSTANCE.autopilot) {
     watchAutopilot();
     setInterval(watchAutopilot, 3500).unref?.();

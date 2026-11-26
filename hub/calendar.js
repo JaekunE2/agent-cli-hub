@@ -5,9 +5,7 @@
 //   - Google Calendar when connected (your own OAuth "Desktop app" client in data/secrets/google-oauth-client.json):
 //     hub items are pushed one way into a dedicated Google calendar "Agent CLI Hub", and the account's primary
 //     calendar is read back so its events show here too (read-only),
-//   - Dooray (optional, read-only, only when config "dooray": {"base": "https://<tenant>.dooray.com"} is set): the
-//     calendars of a Dooray tenant, through a logged-in Chrome on CDP (config dooray.cdp, default 9222).
-//     Entries tagged with someone else's name ("[이름] …") are left out; dooray.me is your own tag.
+//   - read-only sources from plugins (hook calendarSources: [{ id, label, cls, events(), status(), refresh(), maybeRefresh() }]).
 // todo.md stays the source of truth for tasks: the hub only flips a checkbox or appends a task line.
 'use strict';
 const fs = require('fs');
@@ -16,7 +14,9 @@ const crypto = require('crypto');
 
 // readOnly: a side hub instance (instance.js calendarWrite off) shows the calendar but never writes todo.md /
 // calendar.json or pushes to Google.
-module.exports = function calendar({ config = {}, port = 7777, readOnly = false } = {}) {
+module.exports = function calendar({ config = {}, port = 7777, readOnly = false, sources = () => [] } = {}) {
+  const srcList = () => { try { return sources() || []; } catch { return []; } };
+  const srcEvents = () => srcList().flatMap((s) => { try { return s.events() || []; } catch { return []; } });
   const C = config.calendar || {};
   const DATA = path.join(__dirname, 'data');
   const TODO = C.todo || path.join(DATA, 'todo.md');
@@ -213,66 +213,6 @@ module.exports = function calendar({ config = {}, port = 7777, readOnly = false 
   let syncTimer = null, interval = null;
   const syncSoon = () => { if (!gState?.refresh_token) return; clearTimeout(syncTimer); syncTimer = setTimeout(() => sync(), 4000); };
 
-  // ---------- Dooray ----------
-  const DR = { base: '', cdp: 9222, me: '', calendars: {}, ...(config.dooray || {}) };
-  DR.base = String(DR.base || '').replace(/\/+$/, '');
-  let dCache = { events: [], at: 0, error: null, calendars: [] };
-  let dBusy = null;
-  async function doorayCookie() {
-    const WebSocket = require('ws');
-    let ver;
-    try { ver = await (await fetch(`http://127.0.0.1:${DR.cdp}/json/version`, { signal: AbortSignal.timeout(3000) })).json(); }
-    catch { throw new Error(`두레이에 로그인된 Chrome(CDP ${DR.cdp})이 꺼져 있습니다`); }
-    const ws = new WebSocket(ver.webSocketDebuggerUrl);
-    try {
-      await new Promise((r, j) => { ws.once('open', r); ws.once('error', j); setTimeout(() => j(new Error('CDP timeout')), 5000); });
-      const res = await new Promise((r, j) => { ws.on('message', (m) => { const x = JSON.parse(m); if (x.id === 1) r(x.result); }); ws.send(JSON.stringify({ id: 1, method: 'Storage.getCookies', params: {} })); setTimeout(() => j(new Error('CDP timeout')), 5000); });
-      const host = new URL(DR.base).hostname;
-      return (res.cookies || []).filter((c) => host.endsWith(c.domain.replace(/^\./, ''))).map((c) => `${c.name}=${c.value}`).join('; ');
-    } finally { ws.close(); }
-  }
-  async function dget(cookie, p) {
-    const r = await fetch(DR.base + p, { headers: { cookie, accept: 'application/json, text/plain, */*', 'dooray-api-version': '1.2', 'dooray-caller': 'WEB', referer: DR.base + '/calendar' }, redirect: 'manual', signal: AbortSignal.timeout(15000) });
-    if (r.status >= 300 && r.status < 400) throw new Error('두레이 로그인이 만료됐습니다 — Chrome(9222)에서 두레이에 다시 로그인하세요');
-    const j = await r.json().catch(() => null);
-    if (!j?.header?.isSuccessful) throw new Error(`두레이 응답 오류 (${r.status} ${j?.header?.resultCode ?? ''})`);
-    return j.result;
-  }
-  function doorayRefresh() {
-    if (!DR.base) return Promise.resolve(); // not configured
-    if (dBusy) return dBusy;
-    dBusy = (async () => {
-      const cookie = await doorayCookie();
-      const cals = (await dget(cookie, '/v2/wapi/calendars?listed=true&size=10000')).contents || [];
-      // which calendars, and how: "all" = every entry except other people's personal ones, "mine" = only mine
-      const pick = cals.map((c) => ({ c, mode: DR.calendars[c.name] || (c.type === 'private' && c.default ? 'all' : null) })).filter((x) => x.mode);
-      if (!pick.length) { dCache = { events: [], at: Date.now(), error: null, calendars: [] }; return; }
-      const fmt = (d) => d.toISOString().slice(0, 10) + 'T00:00:00+09:00';
-      // Dooray allows ~6 weeks per request (USER_INVALID_EXCEED_MAXIMUM_PERIOD): ask in 35-day windows
-      const list = [];
-      for (let from = -35; from < 140; from += 35) {
-        const q = new URLSearchParams({ calendars: pick.map((x) => x.c.id).join(','), timeMin: fmt(new Date(Date.now() + from * 864e5)), timeMax: fmt(new Date(Date.now() + (from + 35) * 864e5)), postType: 'toMe', privateTaskShown: 'false' });
-        list.push(...((await dget(cookie, `/v2/wapi/calendars/*/schedules?${q}`)).contents || []));
-      }
-      const modeOf = new Map(pick.map((x) => [x.c.id, x.mode])), nameOf = new Map(pick.map((x) => [x.c.id, x.c.name]));
-      const seen = new Set(), out = [];
-      for (const e of list) {
-        const subj = String(e.subject || '');
-        const tag = /^\s*\[([가-힣]{2,4})\]/.exec(subj);
-        const mine = (DR.me && subj.includes(`[${DR.me}]`)) || e.users?.me?.postUserType === 'to' || e.users?.me?.postUserType === 'from';
-        const othersPersonal = tag && tag[1] !== DR.me && tag[1] !== '\uD68C\uC758\uC2E4'; // 회의실 (a data tag, never translated)
-        if (modeOf.get(e.calendarId) === 'mine' ? !mine : othersPersonal) continue;
-        const date = String(e.startedAt || '').slice(0, 10);
-        const key = date + '|' + subj.replace(/\(.*?\)/g, '').replace(/\s+/g, '');
-        if (!date || seen.has(key)) continue;
-        seen.add(key);
-        const t = (s) => (e.wholeDayFlag || !s || s.length < 16 ? null : s.slice(11, 16));
-        out.push({ kind: 'dooray', id: 'd:' + e.id, title: subj, date, time: t(e.startedAt), end: t(e.endedAt), note: [nameOf.get(e.calendarId), e.location].filter(Boolean).join(' · '), link: DR.base + '/calendar' });
-      }
-      dCache = { events: out, at: Date.now(), error: null, calendars: pick.map((x) => `${x.c.name}${x.mode === 'mine' ? '(내 것만)' : ''}`) };
-    })().catch((e) => { dCache = { ...dCache, error: e.message, at: Date.now() }; }).finally(() => { dBusy = null; });
-    return dBusy;
-  }
 
   // ---------- Microsoft Teams / Outlook (published ICS link, read-only) ----------
   // Not part of allItems(): these are shown in the hub only, never pushed to the Google calendar.
@@ -343,7 +283,7 @@ module.exports = function calendar({ config = {}, port = 7777, readOnly = false 
   function allItems() {
     const t = parseTodo();
     const ev = loadEvents().map((e) => ({ kind: 'event', ...e }));
-    return [...t.items, ...ev, ...gCache.events, ...dCache.events, ...msCache.events];
+    return [...t.items, ...ev, ...gCache.events, ...srcEvents(), ...msCache.events];
   }
 
   async function oauthCallback(url, res) {
@@ -367,10 +307,11 @@ module.exports = function calendar({ config = {}, port = 7777, readOnly = false 
     if (readOnly && req.method === 'POST' && p.startsWith('/api/calendar')) return send(503, { error: '이 허브 인스턴스(테스트/보조)는 캘린더를 바꾸지 않습니다 — 7777 허브에서 하세요' });
     if (p === '/api/calendar') {
       const t = parseTodo();
-      if (Date.now() - dCache.at > 10 * 60e3) doorayRefresh(); // background; this answer uses the cache
-      if (url.searchParams.get('refresh') === 'dooray') await doorayRefresh();
-      return send(200, { items: [...t.items, ...loadEvents().map((e) => ({ kind: 'event', ...e })), ...gCache.events, ...dCache.events, ...msCache.events], todoError: t.error || null,
-        dooray: DR.base ? { at: dCache.at || null, error: dCache.error, calendars: dCache.calendars, count: dCache.events.length } : null,
+      for (const s of srcList()) s.maybeRefresh?.(); // background; this answer uses each source's cache
+      const want = url.searchParams.get('refresh');
+      if (want) await srcList().find((s) => s.id === want)?.refresh?.();
+      return send(200, { items: [...t.items, ...loadEvents().map((e) => ({ kind: 'event', ...e })), ...gCache.events, ...srcEvents(), ...msCache.events], todoError: t.error || null,
+        sources: srcList().map((s) => ({ id: s.id, label: s.label || s.id, cls: s.cls || '', ...(s.status?.() || {}) })),
         ms: { connected: !!msState?.url, label: msState?.label || 'Teams', lastSync: msState?.lastSync || null, count: msCache.events.length, error: msCache.error },
         google: { configured: !!client(), connected: !!gState?.refresh_token, account: gState?.account || null, calendarId: gState?.calendarId || null, lastSync: gState?.lastSync || null, lastResult: gState?.lastResult || null, error: gCache.error, hint: ACCOUNT } });
     }
@@ -408,12 +349,10 @@ module.exports = function calendar({ config = {}, port = 7777, readOnly = false 
       if (m !== lastTodo) { const first = !lastTodo; lastTodo = m; if (!first) syncSoon(); }
     }, 15000);
     setTimeout(() => sync(), 5000);
-    doorayRefresh();
-    interval.dooray = setInterval(() => doorayRefresh(), 15 * 60e3);
     interval.syncAll = setInterval(() => sync(), 10 * 60e3);
     setTimeout(() => syncMs(), 3000);
     interval.ms = setInterval(() => syncMs(), 10 * 60e3);
   }
-  function stop() { clearInterval(interval); if (interval) { clearInterval(interval.syncAll); clearInterval(interval.dooray); clearInterval(interval.ms); } clearTimeout(syncTimer); }
+  function stop() { clearInterval(interval); if (interval) { clearInterval(interval.syncAll); clearInterval(interval.ms); } clearTimeout(syncTimer); }
   return { handle, oauthCallback, start, stop, sync, upsertEvent, parseTodo, toGoogle };
 };

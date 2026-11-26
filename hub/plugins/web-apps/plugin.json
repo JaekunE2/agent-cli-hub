@@ -1,0 +1,12 @@
+{
+  "id": "web-apps",
+  "name": "Web apps",
+  "description": "Local web apps embedded at /app-<id>/<token>/, optional HTTPS relay URL",
+  "server": "server.js",
+  "scripts": [
+    "ui.js"
+  ],
+  "assets": [
+    "llm-web-bridge.js"
+  ]
+}

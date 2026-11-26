@@ -1,0 +1,6 @@
+{
+  "id": "dooray",
+  "name": "Dooray calendar",
+  "description": "Read-only Dooray calendars in the hub calendar (config dooray)",
+  "server": "server.js"
+}

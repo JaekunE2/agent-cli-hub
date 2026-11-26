@@ -235,16 +235,8 @@ module.exports = function research(d) {
   }
 
   let timer = null;
-  // Optional machine-local drive jobs (hub/local/drivejobs.js, not in the repo: workflows driven by files
-  // dropped on a drive) ride on this hot-reloadable module so adding them needs no server restart.
-  // Fresh require so `ccd reload --modules research` picks up edits.
-  let drive = null;
-  const localJobs = require('path').join(__dirname, 'local', 'drivejobs.js');
-  if (require('fs').existsSync(localJobs)) {
-    try { delete require.cache[require.resolve(localJobs)]; drive = require(localJobs)(d); } catch (e) { console.error('[drivejobs]', e.message); }
-  }
-  function start() { if (!timer) timer = setInterval(() => tick().catch(() => {}), 60e3); drive?.start(); }
-  function stop() { if (timer) { clearInterval(timer); timer = null; } drive?.stop(); }
+  function start() { if (!timer) timer = setInterval(() => tick().catch(() => {}), 60e3); }
+  function stop() { if (timer) { clearInterval(timer); timer = null; } }
 
   // ---------- API ----------
   const tailFile = (f, n) => { try { return fs.readFileSync(f, 'utf8').trimEnd().split('\n').slice(-n).join('\n'); } catch { return ''; } };

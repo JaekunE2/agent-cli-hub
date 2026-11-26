@@ -1,0 +1,19 @@
+{
+  "id": "llm",
+  "name": "Local LLM",
+  "description": "ccd llm / llm agent against an Ollama or OpenAI-compatible server (config llm.url)",
+  "cli": "cli.js",
+  "valueFlags": [
+    "file",
+    "image",
+    "system",
+    "model",
+    "root",
+    "steps",
+    "url"
+  ],
+  "help": [
+    "  llm \"prompt\" [--file a,b] [--image x.png] [--fast] [--system S] [--model M] [--json] [--think]   local LLM (config llm.url)   (plugin llm)",
+    "  llm agent \"task\" [--root DIR] [--steps 20] | llm tools [list|show|approve|remove] | llm models   (plugin llm)"
+  ]
+}

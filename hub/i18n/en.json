@@ -4122,5 +4122,6 @@
   "여유 있는 다른 Codex 계정이 없습니다": "No other Codex account with headroom",
   "한도 도달 →": "at its limit →",
   "계정으로 같은 대화를 이어서 실행": "account continues the same conversation",
-  "한도 도달, 전환 못 함:": "at its limit, could not switch:"
+  "한도 도달, 전환 못 함:": "at its limit, could not switch:",
+  "다시 읽기": "reload"
 }
