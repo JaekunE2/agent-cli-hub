@@ -74,14 +74,39 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
   }
   checkDisk(); setInterval(checkDisk, 60_000).unref?.();
 
+  // ~/.claude/sessions/<pid>.json outlives its process when claude is killed. Windows reuses pids, so "the pid
+  // exists" is not enough: a stale record whose pid now belongs to chrome.exe made a session look live and
+  // blocked resuming it. The process name must also be one that runs Claude Code (cached process table,
+  // refreshed in the background every few seconds; while it is not known yet the pid check alone decides).
+  const CLAUDE_PROC = /^(claude|node|bun)(\.exe)?$/i;
+  let procNames = null, procNamesAt = 0, procNamesBusy = false;
+  function refreshProcNames() {
+    if (procNamesBusy || Date.now() - procNamesAt < 5000 || typeof hub.procTable !== 'function') return;
+    procNamesBusy = true;
+    Promise.resolve().then(() => hub.procTable()).then((tbl) => { if (tbl) { procNames = tbl; procNamesAt = Date.now(); } })
+      .catch(() => {}).finally(() => { procNamesBusy = false; });
+  }
+  function isClaudePid(pid) {
+    refreshProcNames();
+    const p = procNames && procNames.get(Number(pid));
+    if (!p) return true; // unknown (table not loaded yet, or pid newer than the table): trust pidAlive
+    return CLAUDE_PROC.test(String(p.name || ''));
+  }
+  // reused for a second: one overview / research listing used to read every session file several times
+  let liveCache = null, liveCacheAt = 0;
   function liveSessions() {
+    if (liveCache && Date.now() - liveCacheAt < 1000) return liveCache.slice();
+    liveCache = liveSessionsNow(); liveCacheAt = Date.now();
+    return liveCache.slice();
+  }
+  function liveSessionsNow() {
     const dir = path.join(claudeDir, 'sessions');
     const out = [];
     for (const f of fs.existsSync(dir) ? fs.readdirSync(dir) : []) {
       if (!/^\d+\.json$/.test(f)) continue;
       try {
         const s = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
-        if (!hub.pidAlive(s.pid)) continue;
+        if (!hub.pidAlive(s.pid) || !isClaudePid(s.pid)) continue;
         out.push({ pid: s.pid, sessionId: s.sessionId, cwd: s.cwd, name: s.name, status: s.status, kind: s.kind, entrypoint: s.entrypoint || null, startedAt: s.startedAt, updatedAt: s.statusUpdatedAt || s.updatedAt, version: s.version });
       } catch {}
     }
@@ -319,7 +344,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       hub: { ok: true, port, pid: process.pid },
       ptyHost: { ok: !!ptyHostPid && hub.pidAlive(ptyHostPid), pid: ptyHostPid || null },
       usage: { ok: usageOk, url: hub.USAGE_URL, hasLocalServer: fs.existsSync(path.join(hub.USAGE_DIR, 'server.js')) },
-      agyQuota: { ok: !!hub.agyQuota.get(), refreshing: hub.agyQuota.getFast().refreshing, account: hub.agyQuota.get()?.account || null },
+      agyQuota: hub.agyEnabled === false ? { ok: false, disabled: true } : { ok: !!hub.agyQuota.get(), refreshing: hub.agyQuota.getFast().refreshing, account: hub.agyQuota.get()?.account || null },
       helper: { ok: !hub.getHelperMissing(), error: hub.getHelperMissing() || null },
     };
     const projectRevisions = Object.fromEntries(projects.list().map((p) => [p.id, p.revision]));
