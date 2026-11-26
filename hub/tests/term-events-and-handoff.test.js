@@ -397,6 +397,29 @@ test('cross-platform switchAlways converts Claude <-> Codex natively and keeps A
     const codexSessDir = path.join(dir, 'codex', 'sessions');
     assert.ok(fs.existsSync(codexSessDir));
 
+    // Verify SQLite registration + fresh timestamps when state_5.sqlite exists
+    const { writeNativeCodexSession } = require('../conversation-branches');
+    const { DatabaseSync } = require('node:sqlite');
+    const sqlCodex = path.join(dir, 'codex-sql');
+    fs.mkdirSync(sqlCodex, { recursive: true });
+    const sqlDb = new DatabaseSync(path.join(sqlCodex, 'state_5.sqlite'));
+    sqlDb.exec('CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, source TEXT NOT NULL, model_provider TEXT NOT NULL, cwd TEXT NOT NULL, title TEXT NOT NULL, sandbox_policy TEXT NOT NULL, approval_mode TEXT NOT NULL, has_user_event INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0)');
+    sqlDb.close();
+    const sqlRes = writeNativeCodexSession({
+      codexHome: sqlCodex,
+      cwd: dir,
+      msgs: [{ role: 'user', text: 'old msg', ts: '2020-01-01T00:00:00.000Z' }, { role: 'assistant', text: 'old reply', ts: '2020-01-01T00:00:05.000Z' }],
+      title: 'Test SQL',
+    });
+    assert.ok(sqlRes?.sessionId);
+    const checkDb = new DatabaseSync(path.join(sqlCodex, 'state_5.sqlite'), { readOnly: true });
+    const sqlRow = checkDb.prepare('SELECT id, source, model_provider, cwd FROM threads WHERE id = ?').get(sqlRes.sessionId);
+    checkDb.close();
+    assert.equal(sqlRow?.source, 'cli');
+    assert.equal(sqlRow?.model_provider, 'openai');
+    const lastTs = JSON.parse(fs.readFileSync(sqlRes.file, 'utf8').trim().split(/\r?\n/).at(-1)).timestamp;
+    assert.ok(Date.parse(lastTs) > Date.now() - 60_000);
+
     // 2) Codex -> Claude uses native Claude JSONL + `claude --resume <id>`
     const toClaude = await svc.switchAccount({ sessionId: codexDoc.id, account: '__cli__:claude', cont: false, openMode: 'dashboard' });
     assert.equal(toClaude.ok, true);

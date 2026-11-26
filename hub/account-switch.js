@@ -403,7 +403,7 @@ function createAccountSwitchService(hub) {
           const acc = CA.accounts(USAGE_DIR).find((a) => a.id === pick.id);
           const codexEnv = CA.envFor(acc);
           const codexHome = hub.codexHome || codexEnv.CODEX_HOME || path.join(os.homedir(), '.codex');
-          nativeConverted = writeNativeCodexSession({ codexHome, cwd, msgs: sourceMsgs });
+          nativeConverted = writeNativeCodexSession({ codexHome, cwd, msgs: sourceMsgs, title: originTitle });
         } else if (targetAgent === 'claude') {
           let claudeConfigDir = path.join(os.homedir(), '.claude');
           if (pick.id !== 'default') {
@@ -414,7 +414,7 @@ function createAccountSwitchService(hub) {
           }
           nativeConverted = writeNativeClaudeSession({ claudeProjectsDir: path.join(claudeConfigDir, 'projects'), cwd, msgs: sourceMsgs, title: originTitle });
         }
-        if (nativeConverted?.file) index.updateFile?.(nativeConverted.file).catch(() => {});
+        if (nativeConverted?.file) await index.updateFile?.(nativeConverted.file).catch(() => {});
       }
     }
     const effectiveFollowUp = followUp && String(followUp).trim() ? String(followUp).trim() : (cont ? '계속 진행해' : '');

@@ -429,17 +429,19 @@ function writeNativeClaudeSession({ sessionId = crypto.randomUUID(), claudeProje
   const projDir = path.join(claudeProjectsDir, encodeClaudeProjectDir(cwd));
   fs.mkdirSync(projDir, { recursive: true });
   const outFile = path.join(projDir, `${sessionId}.jsonl`);
+  const nowMs = Date.now();
   const lines = [];
   let parentUuid = null;
-  for (const m of clean) {
+  clean.forEach((m, idx) => {
     const uuid = crypto.randomUUID();
-    const ts = m.ts || new Date().toISOString();
+    const ts = new Date(nowMs - (clean.length - 1 - idx) * 1000).toISOString();
     lines.push(JSON.stringify({
       parentUuid,
       isSidechain: false,
       userType: 'external',
       cwd,
       sessionId,
+      version: '2.1.0',
       type: m.role === 'user' ? 'user' : 'assistant',
       uuid,
       timestamp: ts,
@@ -448,7 +450,7 @@ function writeNativeClaudeSession({ sessionId = crypto.randomUUID(), claudeProje
         : { role: 'assistant', content: [{ type: 'text', text: m.text }] },
     }));
     parentUuid = uuid;
-  }
+  });
   if (title) {
     lines.push(JSON.stringify({ type: 'custom-title', customTitle: String(title).slice(0, 120), sessionId }));
   }
@@ -456,38 +458,107 @@ function writeNativeClaudeSession({ sessionId = crypto.randomUUID(), claudeProje
   return { sessionId, file: outFile, messageCount: clean.length };
 }
 
+function registerCodexThreadSqlite({ codexHome, sessionId, outFile, cwd, title, firstUserMsg, nowMs }) {
+  const os = require('os');
+  const mainCodex = path.join(os.homedir(), '.codex');
+  const candidates = [codexHome].filter(Boolean);
+  try {
+    const sessPath = path.join(codexHome, 'sessions');
+    if (path.resolve(codexHome) !== path.resolve(mainCodex) && fs.lstatSync(sessPath).isSymbolicLink()) {
+      candidates.push(mainCodex);
+    }
+  } catch {}
+  let dbPath = null;
+  for (const dir of candidates) {
+    try {
+      const files = fs.readdirSync(dir).filter((f) => /^state_\d+\.sqlite$/i.test(f)).sort();
+      if (files.length) { dbPath = path.join(dir, files[files.length - 1]); break; }
+    } catch {}
+  }
+  if (!dbPath) return false;
+  try {
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(dbPath);
+    try {
+      const cols = new Set(db.prepare('PRAGMA table_info(threads)').all().map((r) => r.name));
+      if (!cols.has('id') || !cols.has('rollout_path')) return false;
+      const nowSec = Math.floor(nowMs / 1000);
+      const row = {
+        id: sessionId,
+        rollout_path: outFile,
+        created_at: nowSec,
+        updated_at: nowSec,
+        source: 'cli',
+        model_provider: 'openai',
+        cwd,
+        title: String(title || firstUserMsg || 'Migrated session').slice(0, 120),
+        sandbox_policy: '{"type":"danger-full-access"}',
+        approval_mode: 'never',
+        tokens_used: 0,
+        has_user_event: 1,
+        archived: 0,
+        cli_version: '0.169.0',
+        first_user_message: String(firstUserMsg || '').slice(0, 500),
+        memory_mode: 'enabled',
+        created_at_ms: nowMs,
+        updated_at_ms: nowMs,
+        thread_source: 'user',
+        preview: String(firstUserMsg || title || '').slice(0, 200),
+        recency_at: nowSec,
+        recency_at_ms: nowMs,
+        history_mode: 'paginated',
+        originator: 'codex-tui',
+      };
+      const keys = Object.keys(row).filter((k) => cols.has(k));
+      const placeholders = keys.map(() => '?').join(', ');
+      db.prepare(`INSERT OR REPLACE INTO threads (${keys.join(', ')}) VALUES (${placeholders})`).run(...keys.map((k) => row[k]));
+      return true;
+    } finally { db.close(); }
+  } catch { return false; }
+}
+
 /**
  * Write a native Codex CLI rollout JSONL session file so `codex resume <id>` works directly.
  */
-function writeNativeCodexSession({ sessionId = crypto.randomUUID(), codexHome, cwd = process.cwd(), msgs = [] }) {
+function writeNativeCodexSession({ sessionId = crypto.randomUUID(), codexHome, cwd = process.cwd(), msgs = [], title = '' }) {
   const clean = normalizeHandoffMessages(msgs);
   if (!clean.length || !codexHome) return null;
-  const now = new Date();
+  const nowMs = Date.now();
+  const now = new Date(nowMs);
+  const nowIso = now.toISOString();
   const yyyy = String(now.getUTCFullYear());
   const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
   const dd = String(now.getUTCDate()).padStart(2, '0');
-  const stamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const stamp = nowIso.replace(/[:.]/g, '-').slice(0, 19);
   const sessDir = path.join(codexHome, 'sessions', yyyy, mm, dd);
   fs.mkdirSync(sessDir, { recursive: true });
   const outFile = path.join(sessDir, `rollout-${stamp}-${sessionId}.jsonl`);
+  const firstUserMsg = clean.find((m) => m.role === 'user')?.text || clean[0]?.text || '';
+  const effectiveTitle = String(title || firstUserMsg.split('\n')[0] || '').slice(0, 120);
   const lines = [
     JSON.stringify({
-      timestamp: now.toISOString(),
+      timestamp: nowIso,
       type: 'session_meta',
       payload: {
         id: sessionId,
         session_id: sessionId,
-        timestamp: now.toISOString(),
+        timestamp: nowIso,
         cwd,
-        originator: 'codex_cli_rs',
+        runtime_workspace_roots: [cwd],
+        originator: 'codex-tui',
+        cli_version: '0.169.0',
         source: 'cli',
+        thread_source: 'user',
+        model_provider: 'openai',
+        history_mode: 'paginated',
       },
     }),
   ];
-  for (const m of clean) {
+  clean.forEach((m, idx) => {
     const isUser = m.role === 'user';
+    const ts = new Date(nowMs - (clean.length - 1 - idx) * 1000).toISOString();
     lines.push(JSON.stringify({
-      timestamp: m.ts || now.toISOString(),
+      timestamp: ts,
       type: 'response_item',
       payload: {
         type: 'message',
@@ -495,8 +566,13 @@ function writeNativeCodexSession({ sessionId = crypto.randomUUID(), codexHome, c
         content: [{ type: isUser ? 'input_text' : 'output_text', text: m.text }],
       },
     }));
-  }
+  });
   fs.writeFileSync(outFile, lines.join('\n') + '\n', 'utf8');
+  registerCodexThreadSqlite({ codexHome, sessionId, outFile, cwd, title: effectiveTitle, firstUserMsg, nowMs });
+  try {
+    const idxFile = path.join(codexHome, 'session_index.jsonl');
+    if (effectiveTitle) fs.appendFileSync(idxFile, JSON.stringify({ id: sessionId, thread_name: effectiveTitle, updated_at: nowIso }) + '\n', 'utf8');
+  } catch {}
   return { sessionId, file: outFile, messageCount: clean.length };
 }
 
