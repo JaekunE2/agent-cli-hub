@@ -29,7 +29,7 @@ async function submitPrompt({ text, read, write, guard, waitFor, sleep, delay = 
   const compact = (value) => value.replace(/[\s\u00b7]/g, '');
   const expectedCompact = compact(text);
   const renderedMatch = (draft) => matched(draft) || (!!draft && !PASTE_MARKER.test(draft.trimStart())
-    && draft.replace(/\s/g, '') === text.replace(/\s/g, ''));
+    && compact(draft) === expectedCompact);
   const wrappedRetry = (draft) => resend && (pasteMarker === 'codex' || pasteMarker === 'agy') && draft?.includes('\n')
     && new RegExp('^' + draft.split(/\n/).map((line) => line.trim()).filter(Boolean)
       .map((line) => line.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join(' *') + '$').test(expected);
