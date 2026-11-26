@@ -100,6 +100,7 @@ function renderSide() {
     <button type="button" class="snav-item${curKind === 'search' ? ' sel' : ''}" data-key="cmdk" aria-haspopup="dialog">${ICO.search}<span class="snav-lbl">빠른 이동 · 검색</span><span class="snav-kbd">Ctrl K</span></button>
     <button type="button" class="snav-item${isSys ? ' sel' : ''}" data-key="system">${ICO.settings}<span class="snav-lbl">설정</span>${sysAlert ? '<span class="snav-dot danger" title="확인할 항목 있음"></span>' : ''}</button>
     <button type="button" class="snav-item${curKind === 'calendar' ? ' sel' : ''}" data-key="calendar">${ICO.calendar}<span class="snav-lbl">캘린더</span>${overN ? '<span class="snav-dot danger" title="기한 지난 할 일 있음"></span>' : ''}</button>
+    <button type="button" class="snav-item${curKind === 'schedules' ? ' sel' : ''}" data-key="schedules">${ICO.clock || ICO.calendar}<span class="snav-lbl">스케줄</span></button>
     <button type="button" class="snav-item${curKind === 'apps' ? ' sel' : ''}" data-key="apps">${ICO.grid}<span class="snav-lbl">Apps</span></button>
   </nav>`;
 
@@ -471,6 +472,7 @@ $('#side')?.addEventListener('click', async (e) => {
   if (k === 'search') return select({ kind: 'search' });
   if (k === 'system') return select({ kind: state.sysTab });
   if (k === 'calendar') return select({ kind: 'calendar' });
+  if (k === 'schedules') return select({ kind: 'schedules' });
   if (k === 'apps') return select({ kind: 'apps' });
   if (k === 'terms') { state.termsTab = 'active'; return select({ kind: 'terms' }); }
   if (k === 'terms-recent') { state.termsTab = 'recent'; return select({ kind: 'terms' }); }
