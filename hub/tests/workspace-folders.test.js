@@ -117,6 +117,30 @@ test('HTTP folder CRUD, canonical duplicates, legacy fallback and restart persis
   assert.equal((await request('GET', route, 200)).trustSummary.state, 'untrusted');
 });
 
+test('reopen preserves ordered canonical references and trust after an invalid update', async (t) => {
+  const { file, root, child, sibling, hub } = fixture(t);
+  const route = endpoint(sessionKey);
+  let api = await openApi(file, hub);
+  t.after(() => api.close());
+  await api.request('POST', registry, 201, { path: root, revision: 0, includeDescendants: true });
+  const alternateChild = `${root}${path.sep}.${path.sep}${path.basename(child)}${path.sep}`;
+  const saved = await api.request('PUT', route, 200, {
+    primaryCwd: root, referenceDirs: [sibling, alternateChild, child], revision: 0,
+  });
+  assert.deepEqual(saved.referenceDirs, [sibling, child]);
+  assert.deepEqual(saved.trustSummary.refs.map(ref => ref.state), ['untrusted', 'trusted']);
+  const rejected = await api.request('PUT', route, 400, {
+    primaryCwd: root, referenceDirs: [child, path.join(root, 'missing')], revision: saved.revision,
+  });
+  assert.equal(rejected.code, 'INVALID_FOLDER');
+  assert.deepEqual(await api.request('GET', route, 200), saved);
+  assert.deepEqual(api.errors, []);
+
+  await api.close();
+  api = await openApi(file, hub);
+  assert.deepEqual(await api.request('GET', route, 200), saved);
+});
+
 test('HTTP writes require local authenticated requests and reject invalid folders and fields', async (t) => {
   const { file, root, child, hub } = fixture(t);
   const api = await openApi(file, hub);
