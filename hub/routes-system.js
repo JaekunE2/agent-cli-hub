@@ -269,6 +269,10 @@ function createSystemRoutes(hub) {
       const handled = await hub.calendarMod().handle(p, url, req, () => body(req), (code, obj) => send(res, code, obj));
       if (handled !== false) return true;
     }
+    if (p.startsWith('/api/drive')) {
+      const handled = await hub.driveMod().handle(p, url, req, () => body(req), (code, obj) => send(res, code, obj));
+      if (handled !== false) return true;
+    }
     if (hub.appsMod && p.startsWith('/api/apps')) {
       const handled = await hub.appsMod().handle(p, url, req, () => body(req), (code, obj) => send(res, code, obj), res);
       if (handled !== false) return true;

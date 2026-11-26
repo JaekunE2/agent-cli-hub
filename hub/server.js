@@ -221,6 +221,10 @@ function makeCalendar() {
   const config = (() => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { return CONFIG; } })();
   return require('./calendar')({ config, port: PORT });
 }
+function makeDrive() {
+  const config = (() => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { return CONFIG; } })();
+  return require('./gdrive').createDriveSync({ baseDir: __dirname, port: PORT, config });
+}
 function makeApps() {
   return require('./apps')({
     terms: hub.terms,
@@ -235,6 +239,7 @@ function makeApps() {
 let gpuQ = makeGpuQ();
 let research = makeResearch();
 let calendarMod = makeCalendar();
+let driveMod = makeDrive();
 let appsMod = makeApps();
 const projectRoutes = createProjectRoutes(hub);
 const hookTransport = createHookTransport(hub);
@@ -261,7 +266,7 @@ function resolveScheduleTarget({ projectId, version, taskId }) {
 Object.assign(hub, {
   ...projectRoutes,
   ...sessionRoutes,
-  procTable, artifactsMod, gpuQ: () => gpuQ, research: () => research, calendarMod: () => calendarMod, appsMod: () => appsMod,
+  procTable, artifactsMod, gpuQ: () => gpuQ, research: () => research, calendarMod: () => calendarMod, driveMod: () => driveMod, appsMod: () => appsMod,
 });
 const systemRoutes = createSystemRoutes(hub);
 
@@ -465,6 +470,7 @@ const server = http.createServer(async (req, res) => {
     return hookTransport.handleNativeHook(req, res, body, send);
   }
   if (p === '/api/calendar/google/callback') return calendarMod.oauthCallback(url, res).catch((e) => send(res, 500, { error: e.message }));
+  if (p === '/api/drive/google/callback') return driveMod.oauthCallback(url, res).catch((e) => send(res, 500, { error: e.message }));
   if (await workspaceFolderRoutes(p, url, req, res, send, authed)) return;
   if (await scheduleRoutes(p, url, req, res, send, authed)) return;
   if (!authed(req, url)) return send(res, 401, { error: 'bad token' });

@@ -135,6 +135,9 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height:
 .asend { position: absolute; top: 4px; right: 32px; min-height: 24px; height: 24px; width: 24px; padding: 0; font-size: 12px; opacity: 0; background: rgba(0,0,0,.6); color: #fff; border: 0; }
 .acard[data-rout] .asend { right: 4px; }
 .acard:hover .asend, .acard:focus-within .asend { opacity: 1; }
+.adrive { position: absolute; top: 4px; right: 60px; min-height: 24px; height: 24px; width: 24px; padding: 0; font-size: 12px; opacity: 0; background: rgba(0,0,0,.6); color: #fff; border: 0; }
+.acard[data-rout] .adrive { right: 32px; }
+.acard:hover .adrive, .acard:focus-within .adrive { opacity: 1; }
 .session-artifacts .artifact-open { width: 100%; min-width: 0; display: flex; flex-direction: column; align-items: stretch; gap: 0; padding: 0; border: 0; border-radius: 0; background: transparent; text-align: start; white-space: normal; }
 .session-artifacts.artifact-list .artifact-open { flex-direction: row; align-items: center; justify-content: flex-start; }
 .artifact-open:focus-visible { outline-offset: -3px; }
@@ -575,8 +578,8 @@ body.remote .desk { display: none; }
   .session-artifacts .agrid { grid-template-columns: minmax(0, 1fr); }
   .session-artifacts .acard { flex-direction: row; align-items: center; }
   .session-artifacts .athumb { flex: 0 0 56px; height: 56px; border-bottom: 0; }
-  .session-artifacts .ameta { flex: 1; padding-right: 63px; }
-  .ahide, .asend { opacity: 1; }
+  .session-artifacts .ameta { flex: 1; padding-right: 92px; }
+  .ahide, .asend, .adrive { opacity: 1; }
   .card, .rgroup, .msg { min-width: 0; max-width: 100%; }
   .card .screen { height: 210px; }
   .card .mini { max-height: 240px; }

@@ -427,7 +427,7 @@ async function renderArtifacts(sid, gen, termId = '', host = $('#view')) {
         <span class="ameta"><b title="${esc(it.path)}">${esc(it.title || it.name)}</b>
           <span class="artifact-location" title="${esc(it.path)}">${esc(location)}</span>
           <span class="ums">${esc(it.ext.toUpperCase())} · ${fmtSize(it.size)} · ${relTime(it.mtime)}${it.source === 'pinned' ? ' · 지정됨' : ''}</span></span></button>
-        <button class="ahide" data-ahide="${i}" aria-label="목록에서 숨기기" title="목록에서 숨기기">${ICO.close}</button><button class="asend" data-asend="${i}" aria-label="세션에 보내기" title="이 파일을 세션에 보내기 (경로 멘션)">${ICO.arrowUpRight}</button></div>`;
+        <button class="adrive" data-adrive="${i}" aria-label="Google Drive에 업로드" title="Google Drive에 업로드">${ICO.upload}</button><button class="ahide" data-ahide="${i}" aria-label="목록에서 숨기기" title="목록에서 숨기기">${ICO.close}</button><button class="asend" data-asend="${i}" aria-label="세션에 보내기" title="이 파일을 세션에 보내기 (경로 멘션)">${ICO.arrowUpRight}</button></div>`;
     };
     host.innerHTML = `<div class="subtoolbar">
         <div class="seg" role="tablist" aria-label="산출물 범위">
@@ -469,10 +469,15 @@ async function renderArtifacts(sid, gen, termId = '', host = $('#view')) {
     const emptyAdd = $('#artEmptyAdd', host);
     if (emptyAdd) emptyAdd.onclick = () => addArtifactDialog(sid, paint);
     host.querySelectorAll('[data-ai]').forEach((el) => (el.onclick = (e) => {
-      if (e.target.closest('[data-ahide]')) return;
+      if (e.target.closest('[data-ahide]') || e.target.closest('[data-adrive]')) return;
       const sb = e.target.closest('[data-asend]');
       if (sb) return sendPathDialog(items[Number(sb.dataset.asend)].path);
       openArtifact(sid, items[Number(el.dataset.ai)], artUrl(sid, items[Number(el.dataset.ai)].path, termId));
+    }));
+    host.querySelectorAll('[data-adrive]').forEach((b) => (b.onclick = async (e) => {
+      e.stopPropagation();
+      const it = items[Number(b.dataset.adrive)];
+      if (it) await uploadArtifactToDrive(it, { btn: b, sid, termId });
     }));
     host.querySelectorAll('[data-ahide]').forEach((b) => (b.onclick = async (e) => {
       e.stopPropagation();
@@ -487,6 +492,61 @@ async function renderArtifacts(sid, gen, termId = '', host = $('#view')) {
   };
   paint();
 }
+async function uploadArtifactToDrive(item, { btn, sid, termId } = {}) {
+  const t = (state.terms || []).find((x) => String(x.id) === String(termId))
+    || (state.recent || []).find((x) => x.sessionId === sid);
+  const folderName = (t?.cwd ? base(t.cwd) : '') || t?.title || 'Session';
+  const tryUpload = async () => {
+    if (btn) btn.disabled = true;
+    try {
+      const r = await fetch('/api/drive/upload', {
+        method: 'POST',
+        headers: { 'x-token': TOKEN, 'content-type': 'application/json' },
+        body: JSON.stringify({ path: item.path, folderName, title: item.name || item.title }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j.ok) {
+        toast(`Drive 업로드 완료: ${j.name || item.name}${j.updated ? ' (업데이트됨)' : ''}`);
+        return true;
+      }
+      if (j.code === 'NOT_CONNECTED' || j.code === 'NOT_CONFIGURED') {
+        const d = openDrawer({
+          title: 'Google Drive 연결',
+          bodyHTML: j.code === 'NOT_CONFIGURED'
+            ? `<p>Google OAuth 클라이언트 파일이 필요합니다.</p><p class="ums"><code>hub/data/secrets/google-oauth-client.json</code> 파일을 설정한 뒤 다시 시도하세요 (Google 캘린더와 동일).</p>`
+            : `<p>선택한 산출물을 Google Drive의 <b>Agent CLI Hub</b> 폴더에 올리려면 먼저 Google 계정을 연결하세요.</p>
+               <div class="row" style="gap:8px;margin-top:10px">
+                 <button type="button" class="primary" id="gdAuthBtn">Google Drive 연결</button>
+                 <button type="button" id="gdRetryBtn">연결 완료 후 다시 업로드</button>
+               </div>`,
+          footerHTML: '<button data-drw-close>닫기</button>',
+          width: 440,
+        });
+        const authBtn = $('#gdAuthBtn', d);
+        if (authBtn) authBtn.onclick = async () => {
+          try {
+            const ar = await api('/api/drive/auth');
+            if (ar.error) throw new Error(ar.error);
+            if (ar.url) window.open(ar.url, '_blank', 'noopener');
+          } catch (err) { toast(err.message, 5000, 'danger'); }
+        };
+        const retryBtn = $('#gdRetryBtn', d);
+        if (retryBtn) retryBtn.onclick = async () => {
+          if (await tryUpload()) d.close();
+        };
+        return false;
+      }
+      throw new Error(j.error || `HTTP ${r.status}`);
+    } catch (err) {
+      toast(err.message, 5000, 'danger');
+      return false;
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  };
+  return tryUpload();
+}
+
 function addArtifactDialog(sid, done) {
   const body = `
     <label>파일 경로<br><input id="apPath" style="width:100%" placeholder="예: C:\\work\\project\\out\\result.mp4 — 파일을 여기로 끌어놓아도 됩니다"></label>
