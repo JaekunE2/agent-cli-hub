@@ -2,7 +2,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { WebSocketServer } = require('ws');
-module.exports = async function fixture(store, handleRoute, { language = 'ko' } = {}) {
+module.exports = async function fixture(store, handleRoute, { language = 'ko', handleUpgrade } = {}) {
   const root = path.resolve(__dirname, '..');
   const assets = {
     '/': path.join(root, 'public/index.html'),
@@ -114,7 +114,11 @@ module.exports = async function fixture(store, handleRoute, { language = 'ko' } 
     }
     fs.createReadStream(file).on('error', () => { res.statusCode = 404; res.end(); }).pipe(res);
   });
-  const ws = new WebSocketServer({ server });
+  const ws = new WebSocketServer({ noServer: true });
+  server.on('upgrade', (req, socket, head) => {
+    if (handleUpgrade?.(req, socket, head)) return;
+    ws.handleUpgrade(req, socket, head, connection => ws.emit('connection', connection, req));
+  });
   ws.on('connection', c => c.send(JSON.stringify({ type: 'data', data: 'test terminal\r\n' })));
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   return { ws, url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise(resolve => { ws.close(); server.close(resolve); }) };

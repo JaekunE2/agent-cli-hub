@@ -1,0 +1,47 @@
+.schedules-page {
+  max-width: var(--page-max);
+  padding: 0 var(--page-pad) var(--sp-6);
+  margin: 0 auto;
+}
+.schedule-list, .schedule-runs { list-style: none; padding: 0; margin: 0; }
+.schedule-list { display: grid; gap: var(--sp-3); }
+.schedule-card {
+  padding: var(--sp-4);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  min-width: 0;
+}
+.schedule-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.schedule-card h3 { margin: 0; overflow-wrap: anywhere; }
+.schedule-target { color: var(--muted); overflow-wrap: anywhere; }
+.schedule-card dl { display: flex; flex-wrap: wrap; gap: var(--sp-4) var(--sp-8); }
+.schedule-card dt { color: var(--muted); font-size: .85em; }
+.schedule-card dd { margin: var(--sp-1) 0 0; }
+.schedule-countdown { color: var(--muted); font-variant-numeric: tabular-nums; margin-inline-start: var(--sp-1); }
+.schedule-badge {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-full);
+  padding: var(--sp-1) var(--sp-2);
+  font-size: .85em;
+}
+.schedule-badge.ok { color: var(--ok); }
+.schedule-badge.warn { color: var(--warn); }
+.schedule-badge.danger, [data-form-error], [data-run-error] { color: var(--danger); }
+[data-form-error]:empty, [data-run-error]:empty, [data-schedule-note]:empty, [data-schedule-error]:empty { display: none; }
+.schedule-actions button { min-height: var(--ctrl-h-md); }
+.schedule-form, .schedule-form fieldset, .schedule-form label { display: grid; gap: var(--sp-2); }
+.schedule-form { gap: var(--sp-3); }
+.schedule-form fieldset {
+  min-inline-size: 0;
+  margin: 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+}
+.schedule-form legend { padding-inline: var(--sp-1); font-weight: 600; }
+.schedule-form label[hidden] { display: none; }
+.schedule-form :is(input, select, textarea) { width: 100%; min-height: var(--ctrl-h-md); }
+.schedule-form textarea { resize: vertical; }
+.schedule-runs li { border-top: 1px solid var(--line); padding: var(--sp-3) 0; }
+.schedule-runs pre { white-space: pre-wrap; overflow-wrap: anywhere; }

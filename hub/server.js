@@ -389,6 +389,10 @@ Object.assign(hub, { readNotices, postNotice, OPERATOR_DIR, operatorTerm, ensure
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const STATIC = {
   '/styles.css': 'public/styles.css', '/components.css': 'public/components.css',
+  '/schedules.css': 'public/schedules.css', '/schedules-ui.js': 'public/schedules-ui.js',
+  '/schedule-form.js': 'public/schedule-form.js', '/schedule-history.js': 'public/schedule-history.js',
+  '/schedule-trigger.js': 'public/schedule-trigger.js', '/schedule-target.js': 'public/schedule-target.js',
+  '/schedule-sync.js': 'public/schedule-sync.js',
   '/ui.js': 'public/ui.js', '/app-core.js': 'public/app-core.js', '/sidebar-ui.js': 'public/sidebar-ui.js',
   '/workspace-badges.js': 'public/workspace-badges.js', '/workspace-folder-edit.js': 'public/workspace-folder-edit.js',
   '/workspace-folder-detail.js': 'public/workspace-folder-detail.js', '/workspace-panel.js': 'public/workspace-panel.js',
