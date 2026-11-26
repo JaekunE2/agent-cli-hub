@@ -15,10 +15,13 @@ test('term start, resume and input honor saved folders and current trust', async
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-launch-folders-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const ref = path.join(root, '한글 reference & files');
+  const secondRef = path.join(root, 'other reference');
   fs.mkdirSync(ref);
+  fs.mkdirSync(secondRef);
   const inspector = await folderInspector();
   const store = createWorkspaceContexts(path.join(root, 'store.json'));
-  const folders = { primaryCwd: root, referenceDirs: [ref + path.sep, ref] };
+  const folders = { primaryCwd: root, referenceDirs: [ref + path.sep, secondRef, ref] };
+  const canonicalRefs = [ref, secondRef].map(dir => inspector.inspect(dir).path);
   const writes = [];
   const sessionId = 'abcd-1234';
   const hub = {
@@ -53,12 +56,18 @@ test('term start, resume and input honor saved folders and current trust', async
   }
   assert.equal((await start({ folders }, { method: 'POST' })).code, 'LOCAL_REQUIRED');
   assert.equal(hub.terms.size, 0);
-  const { item } = store.changeTrust('POST', null, { path: root, revision: 0, includeDescendants: true }, inspector);
+  store.changeTrust('POST', null, { path: root, revision: 0 }, inspector);
+  store.changeTrust('POST', null, { path: ref, revision: 1 }, inspector);
+  const partlyTrusted = await start({ folders });
+  assert.equal(partlyTrusted.status, 403);
+  assert.equal(partlyTrusted.code, 'FOLDER_UNTRUSTED');
+  assert.equal(hub.terms.size, 0);
+  const { item } = store.changeTrust('POST', null, { path: secondRef, revision: 2 }, inspector);
   assert.equal((await start({ folders, skipPermissions: true })).code, 'FOLDERS_PERMISSION_BYPASS');
   assert.equal((await start({ folders, cwd: ref })).code, 'WORKSPACE_MISMATCH');
   const started = await start({ folders });
   assert.equal(started.status, 200);
-  assert.deepEqual(started.folders.applied.referenceDirs, [inspector.inspect(ref).path]);
+  assert.deepEqual(started.folders.applied.referenceDirs, canonicalRefs);
   const first = hub.terms.get(started.id);
   first.exited = 0;
   store.linkTerms(routes.folderSessionLinks());
@@ -66,7 +75,7 @@ test('term start, resume and input honor saved folders and current trust', async
   const resumed = await start({ resume: sessionId });
   assert.equal(resumed.status, 200);
   const term = hub.terms.get(resumed.id);
-  assert.deepEqual(term.launch.args, ['--add-dir', inspector.inspect(ref).path, 'resume', sessionId]);
+  assert.deepEqual(term.launch.args, [...canonicalRefs.flatMap(dir => ['--add-dir', dir]), 'resume', sessionId]);
   term.pid = 32;
   term.proc = { write: async (data) => { writes.push(data); return { ok: true }; } };
   hub.readTerm = () => [];
@@ -80,7 +89,11 @@ test('term start, resume and input honor saved folders and current trust', async
   assert.equal((await call('/api/term/send', { id: term.id, text: 'allowed' })).status, 200);
   store.putFolders(routes.folderSession(`term:${term.id}`), { ...folders, referenceDirs: [], revision: 1 }, inspector);
   assert.equal((await call('/api/term/send', { id: term.id, text: 'pending' })).code, 'FOLDERS_PENDING_RESTART');
-  store.changeTrust('DELETE', item.id, { revision: 1 }, inspector);
+  store.changeTrust('DELETE', item.id, { revision: 3 }, inspector);
+  const blockedResume = await start({ resume: sessionId });
+  assert.equal(blockedResume.status, 403);
+  assert.equal(blockedResume.code, 'FOLDER_UNTRUSTED');
+  assert.equal(hub.terms.size, 2);
   const blocked = await call('/api/term/send', { id: term.id, text: 'revoked' });
   assert.equal(blocked.status, 403);
   assert.equal(blocked.code, 'FOLDER_UNTRUSTED');

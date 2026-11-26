@@ -173,6 +173,65 @@ test('run_once restores the newest missed slot when no on-time slot exists', asy
   assert.equal(f.started.length, 1);
 });
 
+test('reopened cron consumes only the latest missed slot and keeps the next slot after clock rollback', async t => {
+  const f = fixture(t);
+  const item = await activate(f.open(), { trigger: cron('*/5 * * * *'), misfire: 'run_once' });
+  assert.equal(item.nextRunAt, at(5));
+  f.set(17);
+  const restarted = f.open();
+  await restarted.tick();
+  const [run] = restarted.snapshot().runs;
+  assert.equal(run.scheduleId, item.id);
+  assert.equal(run.trigger, 'timer');
+  assert.equal(run.slotAt, at(15));
+  assert.equal(restarted.snapshot().schedules[0].nextRunAt, at(20));
+
+  f.finish(run.id);
+  await restarted.tick();
+  f.set(14);
+  await restarted.tick();
+  f.set(15);
+  await restarted.tick();
+  assert.equal(restarted.snapshot().runs.length, 1);
+  assert.equal(f.started.length, 1);
+
+  f.set(20);
+  await restarted.tick();
+  assert.deepEqual(restarted.snapshot().runs.map(row => row.slotAt), [at(20), at(15)]);
+  assert.deepEqual(f.started.map(started => started.runId), [run.id, restarted.snapshot().runs[0].id]);
+});
+
+for (const [overlap, expected] of Object.entries({
+  skip: { timer: ['skipped', 'OVERLAP'], waiting: ['skipped', 'OVERLAP'] },
+  queue: { timer: ['skipped', 'QUEUE_FULL'], waiting: ['queued', null] },
+  replace: { timer: ['queued', null], waiting: ['cancelled', 'REPLACED'] },
+})) {
+  test(`${overlap} applies to an interval slot arriving during a manual run`, async t => {
+    const f = fixture(t);
+    const engine = f.open();
+    const item = await activate(engine, { overlap });
+    const runNow = () => engine.runNow(item.id, item.revision, randomUUID());
+    const owner = (await runNow()).run;
+    const waiting = (await runNow()).run;
+    f.set(5);
+    await engine.tick();
+    const { runs } = engine.snapshot();
+    const timer = runs.find(run => run.trigger === 'timer');
+    const pending = runs.find(run => run.id === waiting.id);
+    assert.equal(timer.slotAt, at(5));
+    assert.deepEqual([timer.status, timer.reason], expected.timer);
+    assert.deepEqual([pending.status, pending.reason], expected.waiting);
+    assert.deepEqual([...f.cancelled], overlap === 'replace' ? [owner.id] : []);
+    assert.deepEqual(f.started.map(run => run.runId), [owner.id]);
+
+    const result = overlap === 'replace' ? { outcome: 'cancelled', reason: 'REPLACED' } : {};
+    f.finish(owner.id, result);
+    await engine.tick();
+    const next = [timer, pending].find(run => run.status === 'queued');
+    assert.deepEqual(f.started.map(run => run.runId), next ? [owner.id, next.id] : [owner.id]);
+  });
+}
+
 test('failed atomic publish leaves the prior snapshot and sequence intact', async t => {
   const f = fixture(t);
   const engine = f.open();

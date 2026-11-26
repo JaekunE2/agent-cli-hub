@@ -27,11 +27,14 @@ for (const [cli, cmd, args, nativeArgs] of cases) {
     const single = resolveLaunchFolders({ ...options, plan: { row: { ...plan.row, refs: [] } } });
     assert.equal(single.cwd, primary);
     assert.equal(single.args, args);
+    assert.deepEqual(single.env, nativeArgs ? env : { ...env, HUB_REFERENCE_DIRS_JSON: '[]' });
+    assert.deepEqual(single.applied.referenceDirs, []);
     const launch = resolveLaunchFolders(options);
     assert.deepEqual(launch.args, nativeArgs || args);
     assert.deepEqual(launch.env, nativeArgs ? env : { ...env, HUB_REFERENCE_DIRS_JSON: JSON.stringify(refs) });
     assert.equal(launch.applied.method, nativeArgs ? 'native' : 'env');
     assert.deepEqual(launch.applied.referenceDirs, refs);
+    assert.deepEqual(env, { EXAMPLE: 'existing' });
   });
 }
 

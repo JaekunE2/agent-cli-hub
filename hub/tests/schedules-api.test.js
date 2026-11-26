@@ -16,6 +16,7 @@ const { createScheduleTransport } = require('../schedule-transport');
 const { error } = require('../schedule-fields');
 
 const base = '/api/schedules';
+const at = minutes => Date.UTC(2026, 0, 1, 0, minutes);
 const spec = {
   name: 'Daily summary', prompt: 'Private prompt',
   target: { projectId: 'project', version: '1.5.0', referenceDirs: [path.join(os.tmpdir(), 'reference')] },
@@ -34,8 +35,9 @@ async function fixture(t, { available = true, online = true } = {}) {
   const routes = createScheduleRoutes(() => online && engine, capabilities, assert.fail);
   const transport = createScheduleTransport(() => online && engine, assert.fail);
   const evidence = new Map();
+  let now = at(0);
   const engine = createScheduleEngine({
-    file, clock: { now: () => Date.UTC(2026, 0, 1) }, onChange: transport.broadcast,
+    file, clock: { now: () => now }, onChange: transport.broadcast,
     resolveTarget(target) {
       if (target.projectId !== spec.target.projectId) throw error('TARGET_MISSING', 'Project not found');
       return { cwd: root, cmd: process.execPath, args: [], referenceDirs: target.referenceDirs };
@@ -93,7 +95,7 @@ async function fixture(t, { available = true, online = true } = {}) {
     ws.on('message', raw => messages.push(JSON.parse(raw)));
     return { ws, messages };
   }
-  return { request, connect, engine, file, evidence, root };
+  return { request, connect, engine, file, evidence, root, setTime: minutes => { now = at(minutes); } };
 }
 
 async function status(response, expected, code) {
@@ -216,6 +218,45 @@ test('immediate runs broadcast committed transitions and are recoverable through
   assert.equal((await status(history(), 200)).items.length, 2);
 });
 
+test('REST pause cancels queued work, allows manual runs, and resumes at the next slot', { timeout: 5000 }, async t => {
+  const { request, engine, evidence, setTime } = await fixture(t);
+  const post = (route, body) => request(route, { method: 'POST', body });
+  const { item } = await status(post('', { ...spec, overlap: 'queue', misfire: 'run_once' }), 201);
+  const route = `/${item.id}`;
+  const change = (action, revision) => post(`${route}/${action}`, { revision });
+  const run = (revision, requestId = randomUUID()) => post(`${route}/run`, { revision, requestId });
+  const history = async () => (await status(request(`${route}/runs`), 200)).items;
+  const active = (await status(change('resume', item.revision), 200)).item;
+  const owner = (await status(run(active.revision), 201)).run;
+  const key = randomUUID();
+  const waiting = (await status(run(active.revision, key), 201)).run;
+  const paused = (await status(change('pause', active.revision), 200)).item;
+  assert.equal(paused.nextRunAt, null);
+  const replay = (await status(run(active.revision, key), 200)).run;
+  assert.deepEqual([replay.id, replay.status, replay.reason], [waiting.id, 'cancelled', 'PAUSED']);
+  await status(run(active.revision), 409, 'SCHEDULE_CONFLICT');
+  assert.equal((await history()).find(row => row.id === owner.id).status, 'running');
+
+  setTime(16);
+  evidence.set(owner.id, { state: 'finished', result: { outcome: 'succeeded', exitCode: 0 } });
+  await engine.tick();
+  assert.equal((await history()).length, 2);
+  const manual = (await status(run(paused.revision), 201)).run;
+  assert.equal(manual.trigger, 'manual');
+  evidence.set(manual.id, { state: 'finished', result: { outcome: 'succeeded', exitCode: 0 } });
+  const resumed = (await status(change('resume', paused.revision), 200)).item;
+  assert.equal(resumed.nextRunAt, new Date(at(21)).toISOString());
+  setTime(20);
+  await engine.tick();
+  assert.equal((await history()).length, 3);
+
+  setTime(21);
+  await engine.tick();
+  const slots = (await history()).filter(row => row.trigger === 'timer');
+  assert.deepEqual(slots.map(row => row.slotAt), [resumed.nextRunAt]);
+  assert.ok(evidence.has(slots[0].id));
+});
+
 test('an unavailable engine or runner fails closed', { timeout: 5000 }, async t => {
   const offline = await fixture(t, { online: false });
   await status(offline.request(), 503, 'SCHEDULE_UNAVAILABLE');
@@ -223,6 +264,7 @@ test('an unavailable engine or runner fails closed', { timeout: 5000 }, async t 
   assert.equal((await status(request(), 200)).capabilities.cli[0].available, false);
   const { item } = await status(request('', { method: 'POST', body: spec }), 201);
   const input = { revision: item.revision, requestId: randomUUID() };
+  await status(request(`/${item.id}/resume`, { method: 'POST', body: { revision: item.revision } }), 503, 'SCHEDULE_UNAVAILABLE');
   await status(request(`/${item.id}/run`, { method: 'POST', body: input }), 503, 'SCHEDULE_UNAVAILABLE');
   assert.equal(localAccess({ socket: { remoteAddress: '100.64.0.2', localPort: 7777 },
     headers: { host: 'localhost:7777' } }), false);
