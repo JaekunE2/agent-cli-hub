@@ -87,7 +87,7 @@ function select(sel, tab, persistTab = false) {
   renderSide();
   window.ACH_PREVIEW?.setActiveController(null);
   if (sel.kind === 'schedules') return viewSchedules();
-  return ({ home: viewHome, terms: viewTerms, projects: window.viewProjects || (() => { setBar('<h2>Project</h2>'); $('#view').textContent = 'Project 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }), console: viewConsole, recent: viewTranscript, term: viewTerm, search: viewSearch, usage: viewUsage, research: viewResearch, gpu: viewGpu, operator: window.viewOperator || (() => { setBar('<h2>관제 세션</h2>'); }), calendar: viewCalendar, apps: () => (window.viewApps ? window.viewApps(sel.id || '') : setBar('<h2>Apps</h2>')), vault: window.viewVault || (() => { setBar('<h2>공통 자원</h2>'); $('#view').textContent = '공통 자원 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }) })[sel.kind]?.();
+  return ({ home: viewHome, terms: viewTerms, projects: window.viewProjects || (() => { setBar('<h2>Project</h2>'); $('#view').textContent = 'Project 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }), console: viewConsole, recent: viewTranscript, term: viewTerm, search: viewSearch, usage: viewUsage, research: viewResearch, gpu: viewGpu, operator: window.viewOperator || (() => { setBar('<h2>관제 세션</h2>'); }), 'trusted-folders': window.viewTrustedFolders || (() => { setBar('<h2>신뢰 폴더</h2>'); }), calendar: viewCalendar, apps: () => (window.viewApps ? window.viewApps(sel.id || '') : setBar('<h2>Apps</h2>')), vault: window.viewVault || (() => { setBar('<h2>공통 자원</h2>'); $('#view').textContent = '공통 자원 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }) })[sel.kind]?.();
 }
 
 function setBar(html) {
@@ -186,9 +186,9 @@ function openCommandPalette() {
   const trigger = document.activeElement;
   const wrap = document.createElement('div');
   wrap.className = 'cmdk-backdrop';
-  wrap.innerHTML = `<div class="cmdk-box" role="dialog" aria-label="빠른 이동 및 검색">
+  wrap.innerHTML = `<div class="cmdk-box" role="dialog" aria-modal="true" aria-label="빠른 이동 및 검색">
     <div class="cmdk-top">${ICO.search}<input id="cmdkIn" type="search" placeholder="터미널 · Project · 최근 대화 · 메뉴로 즉시 이동…" autocomplete="off"><span class="snav-kbd">Esc</span></div>
-    <div class="cmdk-list" id="cmdkList"></div>
+    <div class="cmdk-list" id="cmdkList" role="listbox"></div>
     <div class="cmdk-foot"><span>↑↓ 이동 · Enter 실행</span><span>전체 대화 검색도 여기서 바로 가능</span></div>
   </div>`;
   document.body.appendChild(wrap);
@@ -250,13 +250,18 @@ function openCommandPalette() {
     pushGrp('최근 대화', recHits);
 
     const actions = [
+      { icon: ICO.home, title: '홈', sub: '대시보드 개요', keys: 'home 홈 대시보드 overview', run: () => select({ kind: 'home' }) },
       { icon: ICO.plus, title: '새 터미널 열기', sub: 'Claude · Codex · Antigravity · 셸', keys: 'new terminal 새 터미널', run: () => openNewTermDrawer() },
+      { icon: ICO.term || ICO.grid, title: '터미널 전체 목록', sub: '열린 터미널 · 최근 대화 · 즐겨찾기', keys: 'terms terminals 터미널 목록', run: () => select({ kind: 'terms' }) },
       { icon: ICO.folder, title: '새 Project 만들기', sub: '목표 · 작업 흐름 설계', keys: 'new project 새 프로젝트', run: () => (typeof projectForm === 'function' ? projectForm() : select({ kind: 'projects' })) },
+      { icon: ICO.clock || ICO.calendar, title: '스케줄', sub: '정기 자동 실행 관리', keys: 'schedule schedules 스케줄 자동 실행 cron', run: () => select({ kind: 'schedules' }) },
+      { icon: ICO.grid, title: 'Apps', sub: '설치된 웹·리포트 앱', keys: 'apps 앱 앱스', run: () => select({ kind: 'apps' }) },
+      { icon: ICO.calendar, title: '캘린더', sub: '일정 · 할 일', keys: 'calendar 캘린더 일정', run: () => select({ kind: 'calendar' }) },
       { icon: ICO.chart, title: 'AI 사용량', sub: '설정', keys: 'usage ai 사용량 한도 설정 settings', run: () => select({ kind: 'usage' }) },
       { icon: ICO.gpu, title: 'GPU 대기열', sub: '설정', keys: 'gpu vram 대기열 설정 settings', run: () => select({ kind: 'gpu' }) },
-      { icon: ICO.calendar, title: '캘린더', sub: '일정 · 할 일', keys: 'calendar 캘린더 일정', run: () => select({ kind: 'calendar' }) },
       { icon: ICO.layers, title: '공통 자원', sub: '설정 · 스킬/MCP/하네스', keys: 'vault shared resources skills mcp harness 공통 자원 통합 볼트 스킬 하네스 설정 settings', run: () => select({ kind: 'vault' }) },
       { icon: ICO.settings, title: '관제 세션', sub: '설정 · CLI/주기', keys: 'operator 관제 세션 cli claude codex agy 설정 settings', run: () => select({ kind: 'operator' }) },
+      { icon: ICO.folder, title: '신뢰 폴더', sub: '설정 · 폴더 접근 권한', keys: 'trust trusted folders 신뢰 폴더 권한 설정 settings', run: () => select({ kind: 'trusted-folders' }) },
       { icon: ICO.sun, title: '테마 전환 (시스템 · 라이트 · 다크)', sub: '화면 밝기 변경', keys: 'theme dark light 테마 다크 라이트', run: () => cycleTheme() },
     ].filter((a) => hit(a.title, a.sub, a.keys));
     pushGrp('빠른 이동 · 작업', actions);
@@ -269,6 +274,7 @@ function openCommandPalette() {
   };
 
   const render = () => {
+    const qTerms = termsOf(inp.value);
     const rawList = buildItems(inp.value);
     items = rawList.filter((x) => !x.grp);
     if (idx >= items.length) idx = Math.max(0, items.length - 1);
@@ -276,7 +282,9 @@ function openCommandPalette() {
     listEl.innerHTML = rawList.map((x) => {
       if (x.grp) return `<div class="cmdk-grp">${esc(x.grp)}</div>`;
       const myI = actI++;
-      return `<button type="button" class="cmdk-item${myI === idx ? ' on' : ''}" data-ci="${myI}">${x.icon || ''}<span class="cmdk-item-main"><span class="cmdk-item-t">${esc(x.title)}</span>${x.sub ? `<span class="cmdk-item-s">${esc(x.sub)}</span>` : ''}</span></button>`;
+      const tHtml = qTerms.length ? hl(x.title, qTerms) : esc(x.title);
+      const sHtml = x.sub ? (qTerms.length ? hl(x.sub, qTerms) : esc(x.sub)) : '';
+      return `<button type="button" role="option" aria-selected="${myI === idx}" class="cmdk-item${myI === idx ? ' on' : ''}" data-ci="${myI}">${x.icon || ''}<span class="cmdk-item-main"><span class="cmdk-item-t">${tHtml}</span>${sHtml ? `<span class="cmdk-item-s">${sHtml}</span>` : ''}</span></button>`;
     }).join('') || '<div class="empty" style="padding:18px;text-align:center">일치하는 항목이 없습니다</div>';
     listEl.querySelector('.cmdk-item.on')?.scrollIntoView({ block: 'nearest' });
   };
@@ -300,11 +308,15 @@ function openCommandPalette() {
 }
 
 document.addEventListener('keydown', e => {
-  if (e.defaultPrevented || e.isComposing || e.repeat || e.altKey || e.shiftKey ||
-      !(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'k' ||
-      $('dialog[open], .drw-backdrop, .dlg')) return;
-  e.preventDefault();
-  openCommandPalette();
+  if (e.defaultPrevented || e.isComposing || e.repeat || e.altKey || e.shiftKey || !(e.ctrlKey || e.metaKey)) return;
+  const k = e.key.toLowerCase();
+  if (k === 'k' && !$('dialog[open], .drw-backdrop, .dlg, .modal-bg')) {
+    e.preventDefault();
+    openCommandPalette();
+  } else if (k === 'b' && !$('dialog[open], .drw-backdrop, .dlg, .modal-bg') && !e.target?.closest?.('input, textarea, [contenteditable]')) {
+    e.preventDefault();
+    setSideCollapsed(!document.body.classList.contains('side-collapsed'));
+  }
 });
 
 function toggleTuiGuiFace() {
@@ -421,17 +433,30 @@ function openNewTermDrawer(projectCwd = '', onCreated = null, initialKind = null
   const syncKindUI = () => {
     const k = kindOf();
     const isRes = k === 'research';
+    const isAgent = supportsME(k);
     $('#nTerm', d).hidden = isRes;
     $('#nTerm', d).style.display = isRes ? 'none' : 'flex';
     $('#nRes', d).hidden = !isRes;
     $('#nRes', d).style.display = isRes ? 'flex' : 'none';
-    $('.new-term-options', d).hidden = !supportsME(k);
-    if (supportsME(k)) nMeCtl?.setCli(k);
+    $('.new-term-options', d).hidden = !isAgent;
+    const skipRow = $('#nSkip', d)?.closest('label');
+    if (skipRow) skipRow.hidden = !isAgent;
+    if (isAgent) nMeCtl?.setCli(k);
     const extBtn = $('#nExt', d);
     if (extBtn) extBtn.style.display = isRes ? 'none' : '';
+    const okBtn = $('#nOk', d);
+    if (okBtn) okBtn.textContent = isRes ? '자율 연구 시작' : ($('#nAdmin', d)?.checked ? '관리자 외부 창으로 열기' : '대시보드에서 열기');
   };
   d.querySelectorAll('input[name=k]').forEach((r) => (r.onchange = syncKindUI));
+  $('#nAdmin', d)?.addEventListener('change', syncKindUI);
   syncKindUI();
+  const onEnterSubmit = (e) => {
+    if (e.key === 'Enter' && !e.isComposing && e.target?.tagName === 'INPUT' && e.target.type !== 'checkbox' && e.target.type !== 'radio') {
+      e.preventDefault();
+      $('#nOk', d)?.click();
+    }
+  };
+  d.addEventListener('keydown', onEnterSubmit);
   const nPickDir = $('#nPickDir', d);
   if (nPickDir) {
     nPickDir.onclick = () => {
@@ -454,31 +479,34 @@ function openNewTermDrawer(projectCwd = '', onCreated = null, initialKind = null
   };
   $('#nExt', d).onclick = async () => {
     const kind = kindOf();
-    if (kind === 'research') return;
+    if (kind === 'research' || $('#nExt', d).disabled) return;
     $('#nExt', d).disabled = true;
     const p = launchParams(kind);
     const r = await api('/api/term/external', { method: 'POST', body: p });
     $('#nExt', d).disabled = false;
-    if (r.error) return toast(r.error, 6000);
+    if (r.error) return toast(r.error, 6000, 'danger');
     d.close();
     toast(p.admin ? '관리자 권한 외부 Windows 콘솔 창에서 열었습니다' : '외부 Windows 콘솔 창에서 열었습니다');
     setTimeout(refreshOverview, 1200);
   };
   $('#nOk', d).onclick = async () => {
+    const okBtn = $('#nOk', d);
+    if (okBtn.disabled) return;
     const kind = kindOf();
     if (kind === 'research') {
       const payload = { name: $('#rName', d).value.trim(), direction: $('#rDir', d).value.trim(), venue: $('#rVenue', d).value.trim(), goal: $('#rGoal', d).value };
-      if (!payload.name || !payload.direction) return toast('프로젝트 이름과 연구 방향을 입력하세요');
-      $('#nOk', d).disabled = true;
+      if (!payload.name || !payload.direction) return toast('프로젝트 이름과 연구 방향을 입력하세요', 4000, 'danger');
+      okBtn.disabled = true;
       const r = await api('/api/research/new', { method: 'POST', body: payload });
-      if (r.error) { $('#nOk', d).disabled = false; return toast(r.error, 6000); }
+      if (r.error) { okBtn.disabled = false; return toast(r.error, 6000, 'danger'); }
       d.close();
       await Promise.all([refreshOverview(), refreshResearch()]);
       return select({ kind: 'research', id: r.slug });
     }
+    okBtn.disabled = true;
     const p = launchParams(kind);
     const t = await api('/api/term/new', { method: 'POST', body: p });
-    if (t.error) return toast(t.error, 6000);
+    if (t.error) { okBtn.disabled = false; return toast(t.error, 6000, 'danger'); }
     d.close();
     if (t.external) {
       toast(t.admin ? '관리자 권한 외부 Windows 콘솔 창에서 열었습니다' : '외부 Windows 콘솔 창에서 열었습니다');
@@ -584,7 +612,10 @@ $('#btnLang').onclick = () => toggleLang();
 $('#btnPhone').onclick = () => openPhoneDrawer();
 const sideFilterIn = $('#sideFilter');
 if (sideFilterIn) {
-  sideFilterIn.addEventListener('input', () => { state.sideFilter = sideFilterIn.value; renderSide(); });
+  let sideComposing = false;
+  sideFilterIn.addEventListener('compositionstart', () => { sideComposing = true; });
+  sideFilterIn.addEventListener('compositionend', () => { sideComposing = false; state.sideFilter = sideFilterIn.value; renderSide(); });
+  sideFilterIn.addEventListener('input', (e) => { if (sideComposing || e.isComposing) return; state.sideFilter = sideFilterIn.value; renderSide(); });
   sideFilterIn.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { sideFilterIn.value = ''; state.sideFilter = ''; renderSide(); }
   });

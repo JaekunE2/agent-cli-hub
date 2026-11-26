@@ -1,83 +1,66 @@
-# agent-cli-hub — 코드 아키텍처 & 품질 점검 보고서
+# Agent CLI Hub 코드 구조
 
-- **분석 대상 경로**: `D:\Gitsource\개인\agent-cli-hub`
-- **분석 일시**: 2026. 11. 22. 오후 9:50:11
-- **코드 규모**: 68개 파일 · 20,377줄 · API 엔드포인트 123개 (프론트 매칭 110건)
-- **코드 건강도**: **86점** (위험 0 · 주의 1 · 정보 2)
-- **감지된 외부/DB 연동**: AI / LLM, Database, External Auth / Cloud
+- **프로젝트 문서 기준** v1.5.0, 2026-11-26, `dev_side` (`a951fa0` 및 통합 작업 트리)
+- **Floorplan 스캐너 표본** 코드·설정 222개 파일, 57,064줄, 엔드포인트 감지 181개, 프런트 호출 매칭 176건. `hub/workspace-floorplan.js`의 정적 감지 결과이며 아래 표의 신규 라우트는 서버 구현에서 직접 대조했습니다.
 
-## 1. 시스템 계층 구조도
+## 1. 시스템 계층
+
 ```mermaid
 flowchart LR
-  L_ui["화면 · UI (14개)<br/>app.js, calendar.js"]
-  L_api["서버 · API (8개)<br/>server.js, research.js"]
-  L_service["코어 로직 (20개)<br/>project-validation.js, agy-session.js"]
-  L_data["데이터 · 저장 (11개)<br/>projects.js, searchindex.js"]
-  L_test["테스트 · 설정 (15개)<br/>browser-fixture.js, project-plan.test.js"]
-  L_ui -->|API 호출| L_api
-  L_api -->|처리 위임| L_service
-  L_service -->|저장 · 조회| L_data
-  L_api --> L_data
+  UI["웹 UI · Tauri WebView"]
+  HTTP["hub/server.js · HTTP/WS"]
+  SA["스케줄 REST · WebSocket"]
+  ENG["스케줄 엔진 · 시간 계산 · 워커"]
+  FA["세션 폴더 · 신뢰 REST"]
+  CTX["폴더 컨텍스트 · 신뢰 검사"]
+  EXEC["세션 시작 · 재개 · 입력"]
+  DISK["hub/data · JSON"]
+  UI --> HTTP
+  HTTP --> SA --> ENG --> DISK
+  HTTP --> FA --> CTX --> DISK
+  HTTP --> EXEC --> CTX
 ```
 
-## 2. 핵심 허브 모듈 (중요도 순 Top 15)
-| 중요도 | 파일 경로 | 계층 | 역할 요약 | 참조 수 | API | 라인 |
-| --- | --- | --- | --- | ---: | ---: | ---: |
-| 핵심 허브 | `hub/server.js` | 서버 · API | Agent CLI Hub — Claude Code / Codex / Cursor agent sessions in one web page; loc | 0 | 55 | 2661 |
-| 핵심 허브 | `hub/research.js` | 서버 · API | Autonomous research projects: API + autopilot watchdog. | 1 | 12 | 422 |
-| 핵심 허브 | `hub/calendar.js` | 서버 · API | Calendar: one view over | 1 | 11 | 319 |
-| 핵심 허브 | `hub/gpu.js` | 서버 · API | GPU / compute-resource queue (cooperative leases). | 1 | 10 | 781 |
-| 핵심 허브 | `ai-usage/server.js` | 서버 · API | API 엔드포인트 9개 처리 (/api/token, /api/meta) | 0 | 9 | 768 |
-| 핵심 허브 | `hub/ptyhost.js` | 서버 · API | pty host: owns the dashboard terminals so they survive dashboard-server restarts | 0 | 9 | 79 |
-| 핵심 허브 | `hub/workspace-floorplan.js` | 서버 · API | API 엔드포인트 4개 처리 (/api/..., /...) | 3 | 4 | 465 |
-| 핵심 허브 | `hub/projects.js` | 데이터 · 저장 | 데이터 저장소 · 스키마 관리 | 6 | 0 | 252 |
-| 핵심 허브 | `hub/artifacts.js` | 서버 · API | Per-session outputs ("artifacts"): files a session produced or mentioned (videos | 2 | 4 | 198 |
-| 핵심 허브 | `hub/project-validation.js` | 코어 로직 | 핵심 모듈 (project-validation.js) | 5 | 0 | 91 |
-| 핵심 허브 | `hub/agy-session.js` | 코어 로직 | 핵심 모듈 (agy-session.js) | 5 | 0 | 39 |
-| 주요 | `hub/tests/browser-fixture.js` | 테스트 · 설정 | 자동화 검증 테스트 | 1 | 8 | 97 |
-| 핵심 허브 | `hub/public/app.js` | 화면 · UI | Agent CLI Hub — frontend | 1 | 0 | 4131 |
-| 핵심 허브 | `hub/searchindex.js` | 데이터 · 저장 | Incremental full-text index over Claude Code transcripts (~/.claude/projects/ | 4 | 0 | 410 |
-| 핵심 허브 | `hub/i18n.js` | 코어 로직 | Language support. The hub is written in Korean; English comes from i18n/en.json, | 4 | 0 | 189 |
+## 2. 주요 모듈
 
-## 3. 주요 API 엔드포인트
-- `ANY /api/artifacts` — `hub/artifacts.js:148`
-- `POST /api/artifacts/add` — `hub/artifacts.js:152`
-- `POST /api/artifacts/hide` — `hub/artifacts.js:164`
-- `ANY /api/artifact-file` — `hub/artifacts.js:173`
-- `ANY /api/calendar` — `hub/calendar.js:274`
-- `POST /api/calendar/event` — `hub/calendar.js:280`
-- `POST /api/calendar/event/delete` — `hub/calendar.js:281`
-- `POST /api/calendar/task` — `hub/calendar.js:282`
-- `POST /api/calendar/task/add` — `hub/calendar.js:283`
-- `ANY /api/calendar/google/auth` — `hub/calendar.js:284`
-- `POST /api/calendar/google/sync` — `hub/calendar.js:291`
-- `POST /api/calendar/google/disconnect` — `hub/calendar.js:292`
-- `POST /api/calendar/ms/connect` — `hub/calendar.js:293`
-- `POST /api/calendar/ms/sync` — `hub/calendar.js:301`
-- `POST /api/calendar/ms/disconnect` — `hub/calendar.js:302`
-- `ANY /api/gpu` — `hub/gpu.js:654`
-- `ANY /api/gpu/plan` — `hub/gpu.js:670`
-- `POST /api/gpu/est` — `hub/gpu.js:671`
-- `POST /api/gpu/toggle` — `hub/gpu.js:687`
-- `ANY /api/gpu/remote` — `hub/gpu.js:696`
-- `ANY /api/gpu/ticket` — `hub/gpu.js:702`
-- `POST /api/gpu/request` — `hub/gpu.js:707`
-- `POST /api/gpu/heartbeat` — `hub/gpu.js:740`
-- `POST /api/gpu/release` — `hub/gpu.js:753`
-- `POST /api/gpu/priority` — `hub/gpu.js:768`
-- `ANY /info` — `hub/ptyhost.js:46`
-- `ANY /buf` — `hub/ptyhost.js:47`
-- `ANY /spawn` — `hub/ptyhost.js:51`
-- `ANY /write` — `hub/ptyhost.js:52`
-- `ANY /resize` — `hub/ptyhost.js:53`
+| 영역 | 파일 | 역할 |
+| --- | --- | --- |
+| 서버 진입점 | `hub/server.js`, `hub/routes-sessions.js`, `hub/routes-projects.js`, `hub/routes-system.js` | 공통 인증 및 웹소켓 업그레이드, 세션·프로젝트·시스템 라우트 |
+| 스케줄 UI | `hub/public/schedules-ui.js`, `hub/public/schedule-form.js`, `hub/public/schedule-trigger.js`, `hub/public/schedule-history.js`, `hub/public/schedule-sync.js` | 목록, 편집, 미리보기, 실행 이력, REST 재조회 |
+| 스케줄 전송 | `hub/routes-schedules.js`, `hub/schedule-api-input.js`, `hub/schedule-api-view.js`, `hub/schedule-transport.js` | 입력 검증, 로컬 권한, 원격 응답 필터, 변경 이벤트 |
+| 스케줄 실행·저장 | `hub/schedules.js`, `hub/schedule-timing.js`, `hub/schedule-runs.js`, `hub/schedule-worker.js`, `hub/schedule-store.js` | 슬롯 계산, 중복 방지, 동시성·미실행 정책, 워커와 실행 이력 |
+| 폴더 UI | `hub/public/workspace-badges.js`, `hub/public/workspace-panel.js`, `hub/public/workspace-folder-edit.js`, `hub/public/workspace-folder-detail.js`, `hub/public/workspace-trust-ui.js` | 세션 배지, 주/참조 폴더 표시·편집, 신뢰 규칙 관리 |
+| 폴더 API·저장 | `hub/routes-workspace-folders.js`, `hub/workspace-contexts.js`, `hub/workspace-paths.js`, `hub/workspace-trust.js`, `hub/workspace-sessions.js` | 세션 키 매핑, 폴더 경로 정규화, 저장, 신뢰 범위와 드라이브·경로 상태 검사 |
+| 폴더 실행 | `hub/workspace-execution.js`, `hub/workspace-launch.js`, `hub/term-manager.js`, `hub/ptyhost.js` | 신뢰 재검사, PTY 실행, CLI별 인자·환경 변수, 입력 차단 |
+| 데스크톱 폴더 선택 | `desktop/src/bridge.rs`, `hub/win-folder-picker.js` | Tauri 브리지와 Windows 로컬 폴더 선택 처리 |
+| 기존 기능 | `hub/projects.js`, `hub/calendar.js`, `hub/gpu.js`, `hub/artifacts.js`, `hub/workspace-floorplan.js`, `hub/searchindex.js` | 프로젝트 저장, 캘린더, GPU 대기열, 산출물, 아키텍처 분석, 대화 검색 |
 
-## 4. 보안 · 구조 점검 결과 (Health Check)
-1. **[WARN] 인증/권한 검증 패턴이 보이지 않는 API 라우트 (calendar.js)** (`hub/calendar.js:274`)
-   - 설명: 11개 엔드포인트(/api/calendar, /api/calendar/event, /api/calendar/event/delete)가 정의되어 있으나 파일 내부에서 토큰/세션 인증 함수가 감지되지 않았습니다.
-   - 권장 조치: hub/calendar.js에 정의된 API 엔드포인트(/api/calendar, /api/calendar/event, /api/calendar/event/delete, /api/calendar/task)의 인증·인가 검사가 누락되지 않았는지 점검하고 필요한 미들웨어를 적용해 주세요.
-2. **[INFO] 대형 단일 파일 (2,661줄 · 모듈 분리 권장)** (`hub/server.js:1`)
-   - 설명: hub/server.js 파일이 2,661줄로 비대합니다. 기능 단위로 모듈을 분리하면 AI 작업 정확도와 유지보수성이 올라갑니다.
-   - 권장 조치: hub/server.js(2661줄)의 책임을 점검해 독립적인 기능/도메인 모듈로 깔끔하게 분리 리팩터링해 주세요. 기존 동작과 테스트는 그대로 유지해야 합니다.
-3. **[INFO] 대형 단일 파일 (4,131줄 · 모듈 분리 권장)** (`hub/public/app.js:1`)
-   - 설명: hub/public/app.js 파일이 4,131줄로 비대합니다. 기능 단위로 모듈을 분리하면 AI 작업 정확도와 유지보수성이 올라갑니다.
-   - 권장 조치: hub/public/app.js(4131줄)의 책임을 점검해 독립적인 기능/도메인 모듈로 깔끔하게 분리 리팩터링해 주세요. 기존 동작과 테스트는 그대로 유지해야 합니다.
+## 3. 스케줄 API
+
+| 메서드 | 경로 | 동작 |
+| --- | --- | --- |
+| GET / POST | `/api/schedules` | 목록은 `items`, `seq`, `capabilities` 반환. 생성은 일시정지 상태로 저장 |
+| GET / PATCH / DELETE | `/api/schedules/:id` | 상세 조회, 편집, 보관 |
+| POST | `/api/schedules/preview` | 주기 미리보기 |
+| POST | `/api/schedules/:id/pause`, `/api/schedules/:id/resume` | 일시정지 및 대기 실행 취소, 다음 슬롯 예약 |
+| POST | `/api/schedules/:id/run` | `revision`과 UUID `requestId`로 즉시 실행. 신규는 201, 같은 요청 재전송은 200 |
+| GET | `/api/schedules/:id/runs` | 이력 조회. `limit`과 `before`를 지원하며 다음 페이지에는 `nextCursor`를 전달 |
+| WS | `/ws/schedules` | 연결 시 `schedules.ready`. `schedules.changed`의 `seq`, `scheduleIds`, `runIds`를 받아 REST로 갱신 |
+
+기본 리스너가 엔진과 `hub/data/schedules.json`을 소유하고 원격 리스너는 엔진을 공유합니다. 인증된 로컬 접속에서만 쓰기가 가능하며, 원격 조회는 프롬프트·참조 폴더·실행 경로·출력·오류 요약을 생략합니다. 운영 서버는 현재 `capabilities.cli[].available=false`와 `RUNNER_UNAVAILABLE`을 반환합니다. 이 상태에서는 자동 실행이 시작되지 않고 재개·즉시 실행 요청이 `503 SCHEDULE_UNAVAILABLE`을 반환합니다. 정상 실행 경로는 테스트 실행기로 검증합니다.
+
+## 4. 세션 폴더 및 신뢰 API
+
+| 메서드 | 경로 | 동작 |
+| --- | --- | --- |
+| GET / PUT | `/api/sessions/:sessionKey/folders` | 폴더 상세 조회 및 `primaryCwd`, `referenceDirs`, `revision` 저장. 참조는 최대 16개 |
+| GET / POST | `/api/trusted-folders` | 신뢰 레지스트리 조회와 경로 등록 |
+| PATCH / DELETE | `/api/trusted-folders/:id` | 하위 폴더 포함 범위 변경과 신뢰 해제 |
+
+세션 및 터미널 목록 응답(`/api/overview`, `/api/recent`)은 `folderContext`에 참조 수, 신뢰 상태, 미적용 여부를 전달합니다. 인증된 원격 접속에서 세션 폴더 조회는 요약만 반환합니다. 레지스트리 접근과 세션 폴더 쓰기는 로컬로 제한됩니다. 컨텍스트와 신뢰 설정은 `hub/data/workspace-contexts.json`에 저장됩니다. 관리 대상 시작·재개 시 주 폴더를 작업 디렉터리로 적용하고 Codex·Claude·AGY에는 `--add-dir`, Cursor·셸에는 `HUB_REFERENCE_DIRS_JSON`으로 참조 목록을 전달합니다. 시작·재개와 허브 입력 경로는 필요한 폴더 신뢰를 다시 확인합니다.
+
+## 5. 동작 검증 위치
+
+- 스케줄 엔진 및 API·WebSocket · `hub/tests/schedules.test.js`, `hub/tests/schedules-api.test.js`
+- 폴더 경로·신뢰·실행 어댑터 · `hub/tests/workspace-folders.test.js`, `hub/tests/workspace-launch.test.js`, `hub/tests/workspace-execution.test.js`
+- 스케줄·폴더 UI 및 접근성 · `hub/tests/schedules-folders-browser.cjs`, `hub/tests/schedules-browser.cjs`, `hub/tests/workspace-folders-browser.cjs`

@@ -220,7 +220,7 @@ async function paintResearch(auto) {
       ${reviewCard}
       <div class="rcard">
         <div class="rprog"><div><b>진행률</b> <span class="empty">목표: ${esc(GOAL_KO[prog.goal])}</span></div><b>${prog.pct}%</b></div>
-        ${bar(prog.pct)}
+        <span class="ubar" aria-hidden="true"><i style="width:${Math.max(2, Math.min(100, prog.pct))}%;background:${prog.pct >= 100 ? 'var(--ok)' : 'var(--accent)'}"></i></span>
         <div class="rsteps">${steps}</div>
         ${d.lineage ? `<div><span class="empty">${d.lineage.kind === 'derived' ? '기반 연구' : '종합 대상'}</span> ${d.lineage.parents.map((x) => `<button class="linkbtn" data-rgo="${esc(x.slug)}">${esc(x.name || x.slug)}</button>`).join(' · ')}</div>` : ''}
         ${d.children?.length ? `<div><span class="empty">이어진 연구</span> ${d.children.map((c) => `<button class="linkbtn" data-rgo="${esc(c)}">${esc((state.research.find((x) => x.slug === c) || {}).name || c)}</button>`).join(' · ')}</div>` : ''}

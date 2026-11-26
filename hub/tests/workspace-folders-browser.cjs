@@ -64,13 +64,20 @@ async function native(page, app) {
       if (args.initialPath !== main) throw new Error('Incorrect native picker initial path');
       return paths.shift();
     } };
-  }, { main: app.main, paths: [app.native, app.secondNative] });
+  }, { main: app.main, paths: [app.native, app.secondNative, null] });
   await page.goto(`${app.url}/?t=fixture&open=t:1&tab=dock`);
   await page.locator(header).click();
   for (const path of [app.native, app.secondNative]) {
     await page.getByRole('button', { name: 'Browse Folder', exact: true }).last().click();
     await shown(page, '[data-folder-draft]', path);
   }
+  const draft = page.locator('[data-folder-ref]');
+  await draft.fill(app.ref);
+  await page.getByRole('button', { name: 'Browse Folder', exact: true }).last().click();
+  await page.waitForFunction(() => !document.querySelector('.folder-editor fieldset').disabled);
+  assert.equal(await draft.inputValue(), app.ref);
+  assert.equal(await page.locator('[data-folder-draft] li').count(), 2);
+  await draft.clear();
   await page.getByRole('button', { name: 'Save folders', exact: true }).click();
   await shown(page, detail, 'Reference folders 2');
   await shown(page, detail, 'Trust this folder');
@@ -125,6 +132,6 @@ async function remote(page, app) {
         assert.deepEqual(app.errors, []);
       } finally { await app.close(); }
     }
-    console.log('PASS Chrome: Korean web editing and trust management, English repeated Tauri selection and stale session response, mobile remote summary');
+    console.log('PASS Chrome: Korean web editing and trust management, English repeated Tauri selection, cancellation and stale session response, mobile remote summary');
   } finally { await browser.close(); }
 })().catch((error) => { console.error(error); process.exitCode = 1; });

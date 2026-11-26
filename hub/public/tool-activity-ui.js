@@ -212,12 +212,15 @@
         statusEl.textContent = '툴 대기';
       }
 
+      const barEl = $('[data-ts-bar]', hostEl);
       if (!folded.length) {
-        beatsEl.innerHTML = '<span class="ums" style="margin:0">아직 기록된 툴 호출이 없습니다</span>';
+        barEl?.classList.add('is-empty');
+        beatsEl.innerHTML = '<span class="ums" style="margin:0">활동 대기</span>';
         expandBtn.hidden = true;
         drawerEl.hidden = true;
         return;
       }
+      barEl?.classList.remove('is-empty');
 
       expandBtn.hidden = false;
       expandBtn.textContent = expanded ? '접기' : `목록 (${folded.length})`;

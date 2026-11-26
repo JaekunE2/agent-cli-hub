@@ -727,7 +727,12 @@ function bindProjectFlow(p, gen) {
 
   settlePositions();
   requestAnimationFrame(drawEdges);
-  window.onresize = () => { settlePositions(); drawEdges(); };
+  const onFlowResize = () => {
+    if (!canvas.isConnected) { window.removeEventListener('resize', onFlowResize); return; }
+    settlePositions();
+    drawEdges();
+  };
+  window.addEventListener('resize', onFlowResize);
 
   // Hover highlight + Multi-select + Group/Single Card Dragging
   let dragState = null;

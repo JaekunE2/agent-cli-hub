@@ -84,8 +84,8 @@ function paintCalendar() {
   const row = (it, showSource = false) => `<div class="crow" data-cit="${esc(it.id)}"><span class="cdot ${CAL_KIND[it.kind].cls}"></span><span class="ct">${it.time ? `<b>${esc(it.time)}</b> ` : ''}${esc(it.title)}${showSource ? ` <span class="badge">${CAL_KIND[it.kind].label}</span>` : ''}${it.who ? ` <span class="empty">@${esc(it.who)}</span>` : ''}</span></div>`;
   const groups = [];
   for (const it of soon) { if (!groups.length || groups[groups.length - 1][0] !== it.date) groups.push([it.date, []]); groups[groups.length - 1][1].push(it); }
-  const agenda = `${over.length ? `<div class="cag warn"><b>지난 마감 · 미완료 ${over.length}</b>${over.map((it) => row(it).replace('</span></div>', ` <span class="empty">${esc(dDay(it.date))}</span></span></div>`)).join('')}</div>` : ''}
-    ${groups.map(([ds, xs]) => `<div class="cag"><b>${ds === t ? '오늘 · ' : ''}${esc(calDayLabel(ds))} <span class="empty">${dDay(ds)}</span></b>${xs.map((it) => row(it)).join('')}</div>`).join('') || '<div class="empty">앞으로 2주 동안 일정이 없습니다</div>'}`;
+  const overBlock = over.length ? `<div class="cag warn"><b>지난 마감 · 미완료 ${over.length}</b>${over.map((it) => row(it).replace('</span></div>', ` <span class="empty">${esc(dDay(it.date))}</span></span></div>`)).join('')}</div>` : '';
+  const agenda = `${groups.map(([ds, xs]) => `<div class="cag"><b>${ds === t ? '오늘 · ' : ''}${esc(calDayLabel(ds))} <span class="empty">${dDay(ds)}</span></b>${xs.map((it) => row(it)).join('')}</div>`).join('') || '<div class="empty">앞으로 2주 동안 일정이 없습니다</div>'}`;
 
   const gNote = g.connected ? `구글: ${esc(g.account || '연결됨')}${g.error ? ` · <span style="color:var(--danger)">${esc(g.error)}</span>` : ''}` : '';
   const msNote = ms.connected ? `Teams: ${esc(ms.label || '연결됨')} (${ms.count || 0}건)${ms.error ? ` · <span style="color:var(--danger)">${esc(ms.error)}</span>` : ''}` : '';
@@ -95,8 +95,8 @@ function paintCalendar() {
         <span class="ck-legend"><span class="cdot ck-ev"></span>일정 <span class="cdot ck-task"></span>할 일 <span class="cdot ck-ms"></span>마일스톤 <span class="cdot ck-ms365"></span>Teams <span class="cdot ck-g"></span>구글</span>
         <span>${extSummary}</span>
       </div></div>
-    <div class="calside"><section class="cag cal-selected" aria-live="polite"><h2>${esc(calDayLabel(selected))}</h2>${selectedItems.map((it) => row(it, true)).join('') || '<div class="empty">등록된 일정이 없습니다</div>'}</section>
-      <details class="cal-upcoming" data-day="${esc(selected)}"${(upcomingOpen ?? !selectedItems.length) ? ' open' : ''}><summary>다가오는 일정 및 지난 마감</summary>${agenda}</details></div></div></div></div>`;
+    <div class="calside">${overBlock}<section class="cag cal-selected" aria-live="polite"><h2>${esc(calDayLabel(selected))}</h2>${selectedItems.map((it) => row(it, true)).join('') || '<div class="empty">등록된 일정이 없습니다</div>'}</section>
+      <details class="cal-upcoming" data-day="${esc(selected)}"${(upcomingOpen ?? !selectedItems.length) ? ' open' : ''}><summary>다가오는 일정</summary>${agenda}</details></div></div></div></div>`;
 }
 
 async function calSyncAll() {
@@ -230,38 +230,55 @@ function calIntegrationsDrawer() {
 }
 
 function calEventDialog(ev) {
-  const body = `
-    <label>제목<br><input id="ceT" style="width:100%" value="${esc(ev.title || '')}" placeholder="예: 서버 설치"></label>
-    <div class="row" style="gap:8px;flex-wrap:wrap"><label>날짜<br><input id="ceD" type="date" value="${esc(ev.date || todayStr())}"></label>
+  const body = `<form id="calEvForm" style="display:flex;flex-direction:column;gap:10px">
+    <label>제목<br><input id="ceT" style="width:100%" value="${esc(ev.title || '')}" placeholder="예: 서버 설치" required></label>
+    <div class="row" style="gap:8px;flex-wrap:wrap"><label>날짜<br><input id="ceD" type="date" value="${esc(ev.date || todayStr())}" required></label>
       <label>시작 (선택)<br><input id="ceS" type="time" value="${esc(ev.time || '')}"></label><label>끝 (선택)<br><input id="ceE" type="time" value="${esc(ev.end || '')}"></label></div>
     <label>메모<br><textarea id="ceN" rows="3" style="width:100%">${esc(ev.note || '')}</textarea></label>
-    <div class="empty" style="padding:0">마감이 있는 할 일은 “＋ 할 일”로 넣으면 todo.md에 들어가 다른 세션·위젯과 같이 관리됩니다.</div>`;
+    <div class="empty" style="padding:0">마감이 있는 할 일은 “＋ 할 일”로 넣으면 todo.md에 들어가 다른 세션·위젯과 같이 관리됩니다.</div></form>`;
   const d = openDrawer({ title: ev.id ? '일정 수정' : '새 일정', bodyHTML: body, footerHTML: '<button data-drw-close>취소</button><button class="primary" data-ok>저장</button>', width: 440 });
   d.classList.add('drw-compact');
+  const form = $('#calEvForm', d), okBtn = $('[data-ok]', d);
   $('#ceT', d).focus();
-  d.addEventListener('click', async (e) => {
-    if (!e.target.closest('[data-ok]')) return;
-    const payload = { event: { id: ev.id, title: $('#ceT', d).value.trim(), date: $('#ceD', d).value, time: $('#ceS', d).value || null, end: $('#ceE', d).value || null, note: $('#ceN', d).value.trim() } };
-    const r = await api('/api/calendar/event', { method: 'POST', body: payload }).catch((er) => ({ error: er.message }));
-    if (r.error) return toast(r.error, 6000, 'danger');
-    d.close(); toast('저장했습니다'); await loadCalendar(); paintCalendar();
-  });
+  const submit = async () => {
+    if (okBtn.disabled) return;
+    const title = $('#ceT', d).value.trim(), date = $('#ceD', d).value, time = $('#ceS', d).value || null, end = $('#ceE', d).value || null;
+    if (!title) { toast('일정 제목을 입력하세요', 3000, 'danger'); return $('#ceT', d).focus(); }
+    if (time && end && end < time) return toast('종료 시각은 시작 시각보다 늦어야 합니다', 4000, 'danger');
+    okBtn.disabled = true;
+    try {
+      const payload = { event: { id: ev.id, title, date, time, end, note: $('#ceN', d).value.trim() } };
+      const r = await api('/api/calendar/event', { method: 'POST', body: payload }).catch((er) => ({ error: er.message }));
+      if (r.error) return toast(r.error, 6000, 'danger');
+      d.close(); toast('저장했습니다'); await loadCalendar(); paintCalendar();
+    } finally { if (d.isConnected) okBtn.disabled = false; }
+  };
+  form.onsubmit = (e) => { e.preventDefault(); submit(); };
+  okBtn.onclick = submit;
 }
 
 function calTaskDialog(date) {
-  const body = `
-    <label>할 일<br><input id="ctT" style="width:100%" placeholder="예: 서버 설치 전 랙 공간 확인"></label>
-    <div class="row" style="gap:8px"><label>마감<br><input id="ctD" type="date" value="${esc(date)}"></label><label style="flex:1">태그 (선택, 띄어쓰기로 구분)<br><input id="ctG" style="width:100%" placeholder="행정 서버"></label></div>
-    <div class="empty" style="padding:0">todo.md의 “대기 중” 목록 끝에 <span class="mono">- [ ] **할 일** #태그 @due(날짜)</span>로 추가됩니다.</div>`;
+  const body = `<form id="calTaskForm" style="display:flex;flex-direction:column;gap:10px">
+    <label>할 일<br><input id="ctT" style="width:100%" placeholder="예: 서버 설치 전 랙 공간 확인" required></label>
+    <div class="row" style="gap:8px"><label>마감<br><input id="ctD" type="date" value="${esc(date)}" required></label><label style="flex:1">태그 (선택, 띄어쓰기로 구분)<br><input id="ctG" style="width:100%" placeholder="행정 서버"></label></div>
+    <div class="empty" style="padding:0">할 일 목록(todo.md)에 마감일과 함께 추가됩니다.</div></form>`;
   const d = openDrawer({ title: '＋ 할 일 (todo.md)', bodyHTML: body, footerHTML: '<button data-drw-close>취소</button><button class="primary" data-ok>추가</button>', width: 440 });
   d.classList.add('drw-compact');
+  const form = $('#calTaskForm', d), okBtn = $('[data-ok]', d);
   $('#ctT', d).focus();
-  d.addEventListener('click', async (e) => {
-    if (!e.target.closest('[data-ok]')) return;
-    const r = await api('/api/calendar/task/add', { method: 'POST', body: { title: $('#ctT', d).value.trim(), date: $('#ctD', d).value, tags: $('#ctG', d).value.split(/\s+/).map((x) => x.replace(/^#/, '')).filter(Boolean) } }).catch((er) => ({ error: er.message }));
-    if (r.error) return toast(r.error, 6000, 'danger');
-    d.close(); toast('todo.md에 추가했습니다'); await loadCalendar(); paintCalendar();
-  });
+  const submit = async () => {
+    if (okBtn.disabled) return;
+    const title = $('#ctT', d).value.trim();
+    if (!title) { toast('할 일 내용을 입력하세요', 3000, 'danger'); return $('#ctT', d).focus(); }
+    okBtn.disabled = true;
+    try {
+      const r = await api('/api/calendar/task/add', { method: 'POST', body: { title, date: $('#ctD', d).value, tags: $('#ctG', d).value.split(/\s+/).map((x) => x.replace(/^#/, '')).filter(Boolean) } }).catch((er) => ({ error: er.message }));
+      if (r.error) return toast(r.error, 6000, 'danger');
+      d.close(); toast('todo.md에 추가했습니다'); await loadCalendar(); paintCalendar();
+    } finally { if (d.isConnected) okBtn.disabled = false; }
+  };
+  form.onsubmit = (e) => { e.preventDefault(); submit(); };
+  okBtn.onclick = submit;
 }
 
 function calGoogleSetup() {
@@ -279,21 +296,32 @@ function calGoogleSetup() {
 
 function calMsSetup() {
   const ms = CAL.data?.ms || {};
-  const body = `<div class="empty" style="padding:0">Outlook 웹 → 설정 → 캘린더 → 공유 캘린더 → 캘린더 게시에서 복사한 <b>ICS 링크</b>를 넣으면 Teams 일정이 읽기 전용으로 함께 표시됩니다.</div>
+  const body = `<form id="calMsForm" style="display:flex;flex-direction:column;gap:10px">
+    <div class="empty" style="padding:0">Outlook 웹 → 설정 → 캘린더 → 공유 캘린더 → 캘린더 게시에서 복사한 <b>ICS 링크</b>를 넣으면 Teams 일정이 읽기 전용으로 함께 표시됩니다.</div>
     <label>표시 이름<br><input id="msLbl" style="width:100%" value="${esc(ms.label || 'Teams')}"></label>
-    <label>ICS URL<br><input id="msUrl" style="width:100%" placeholder="https://outlook.office365.com/owa/calendar/.../calendar.ics"></label>`;
+    <label>ICS URL<br><input id="msUrl" style="width:100%" value="${esc(ms.url || '')}" placeholder="https://outlook.office365.com/owa/calendar/.../calendar.ics"></label>
+    ${ms.connected && !ms.url ? '<div class="ums">보안상 기존 ICS URL은 표시되지 않습니다. URL 변경 시 새 링크를 입력하세요.</div>' : ''}</form>`;
   const foot = `${ms.connected ? '<button class="danger ghost" data-del>연결 해제</button><span class="sp"></span>' : ''}<button data-drw-close>취소</button><button class="primary" data-ok>연결 및 동기화</button>`;
   const d = openDrawer({ title: 'Microsoft Teams / Outlook 캘린더 연결 (ICS)', bodyHTML: body, footerHTML: foot, width: 460 });
+  const okBtn = $('[data-ok]', d);
+  const submit = async () => {
+    if (okBtn.disabled) return;
+    const url = $('#msUrl', d).value.trim(), label = $('#msLbl', d).value.trim() || 'Teams';
+    if (!url) return toast('ICS URL을 입력하세요', 4000, 'danger');
+    okBtn.disabled = true;
+    try {
+      const r = await api('/api/calendar/ms/connect', { method: 'POST', body: { url, label } }).catch((er) => ({ error: er.message }));
+      if (!r.ok) return toast(r.error || '연결 실패', 7000, 'danger');
+      d.close(); toast(`Teams 캘린더 연결됨 (${r.count}건)`); await loadCalendar(); paintCalendar();
+    } finally { if (d.isConnected) okBtn.disabled = false; }
+  };
+  $('#calMsForm', d).onsubmit = (e) => { e.preventDefault(); submit(); };
   d.addEventListener('click', async (e) => {
     if (e.target.closest('[data-del]')) {
+      if (!confirm('Teams 캘린더 연결을 해제할까요?')) return;
       await api('/api/calendar/ms/disconnect', { method: 'POST', body: {} });
       d.close(); toast('Teams 캘린더 연결 해제됨'); await loadCalendar(); return paintCalendar();
     }
-    if (!e.target.closest('[data-ok]')) return;
-    const url = $('#msUrl', d).value.trim(), label = $('#msLbl', d).value.trim() || 'Teams';
-    if (!url) return toast('ICS URL을 입력하세요');
-    const r = await api('/api/calendar/ms/connect', { method: 'POST', body: { url, label } }).catch((er) => ({ error: er.message }));
-    if (!r.ok) return toast(r.error || '연결 실패', 7000, 'danger');
-    d.close(); toast(`Teams 캘린더 연결됨 (${r.count}건)`); await loadCalendar(); paintCalendar();
+    if (e.target.closest('[data-ok]')) submit();
   });
 }

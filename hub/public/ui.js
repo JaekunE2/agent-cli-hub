@@ -76,11 +76,17 @@
     n.className = `toast-item${tone === 'danger' ? ' danger' : ''}`;
     n.setAttribute('role', tone === 'danger' ? 'alert' : 'status');
     const txt = document.createElement('span');
+    txt.style.flex = '1';
     txt.textContent = String(msg ?? '');
     n.appendChild(txt);
-    const timer = setTimeout(() => n.remove(), ms);
+    let timer = null;
+    const arm = () => { if (ms > 0) timer = setTimeout(() => n.remove(), ms); };
+    const disarm = () => { if (timer) { clearTimeout(timer); timer = null; } };
+    arm();
+    n.addEventListener('mouseenter', disarm);
+    n.addEventListener('mouseleave', arm);
     const origRemove = n.remove.bind(n);
-    n.remove = () => { clearTimeout(timer); origRemove(); };
+    n.remove = () => { disarm(); origRemove(); };
     if (action && action.label && action.onClick) {
       const b = document.createElement('button');
       b.type = 'button';
@@ -89,6 +95,13 @@
       b.onclick = (e) => { e.stopPropagation(); n.remove(); action.onClick(); };
       n.appendChild(b);
     }
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'toast-close';
+    closeBtn.setAttribute('aria-label', '알림 닫기');
+    closeBtn.innerHTML = UI_ICO.close;
+    closeBtn.onclick = (e) => { e.stopPropagation(); n.remove(); };
+    n.appendChild(closeBtn);
     if (action && action.onBodyClick) {
       n.style.cursor = 'pointer';
       n.onclick = () => { n.remove(); action.onBodyClick(); };
@@ -181,7 +194,12 @@
         list[next].focus();
       }
     };
-    const onScroll = (e) => { if (!e?.target || !menu.contains(e.target)) closeMoreMenu(); };
+    const onScroll = (e) => {
+      const t = e?.target;
+      if (!t || menu.contains(t)) return;
+      if (t instanceof Element && t.closest('.chat-scroll, .xterm-viewport, .tsplit-body, .sidechat-msgs, .pj-subchat-msgs')) return;
+      closeMoreMenu();
+    };
     setTimeout(() => {
       document.addEventListener('click', onDocClick, true);
       document.addEventListener('keydown', onKey, true);
@@ -195,7 +213,7 @@
   window.openMoreMenu = openMoreMenu;
 
   // ---------- Lightweight Estimate Dialog (replaces window.prompt) ----------
-  function openEstimateDialog({ title = '예상 시간 설정', onSubmit }) {
+  function openEstimateDialog({ title = '예상 시간 설정', initialValue = '', onSubmit }) {
     const d = document.createElement('dialog');
     d.className = 'pj-dialog est-dialog';
     d.setAttribute('aria-label', title);
@@ -208,23 +226,34 @@
         <button type="button" class="btn-sm" data-preset="2h">2시간</button>
         <button type="button" class="btn-sm" data-preset="4h">4시간</button>
       </div>
-      <label>직접 입력 (예: 90m, 1h30m 또는 종료 시각 01:30)<input name="val" placeholder="예: 90m 또는 01:30" required></label>
+      <label>직접 입력 (예: 90m, 1h30m 또는 종료 시각 01:30)<input name="val" placeholder="예: 90m 또는 01:30" value="${escTxt(initialValue)}" required></label>
       <div class="dlg-foot"><button type="button" data-cancel>취소</button><button class="primary" type="submit">적용</button></div>
     </form>`;
     document.body.appendChild(d);
     const inp = d.querySelector('input[name=val]');
+    const submitBtn = d.querySelector('button[type=submit]');
     d.querySelectorAll('[data-cancel]').forEach((b) => (b.onclick = () => d.close()));
-    d.querySelectorAll('[data-preset]').forEach((b) => (b.onclick = () => { inp.value = b.dataset.preset; d.querySelector('form').requestSubmit(); }));
+    d.querySelectorAll('[data-preset]').forEach((b) => (b.onclick = () => {
+      inp.value = b.dataset.preset;
+      inp.focus();
+      inp.select();
+    }));
     d.onclose = () => d.remove();
     d.querySelector('form').onsubmit = async (e) => {
       e.preventDefault();
       const v = inp.value.trim();
-      if (!v) return;
-      d.close();
-      await onSubmit?.(v);
+      if (!v || submitBtn.disabled) return;
+      submitBtn.disabled = true;
+      try {
+        const res = await onSubmit?.(v);
+        if (res !== false) d.close();
+      } finally {
+        if (d.isConnected) submitBtn.disabled = false;
+      }
     };
     d.showModal();
     inp.focus();
+    inp.select();
     return d;
   }
   window.openEstimateDialog = openEstimateDialog;

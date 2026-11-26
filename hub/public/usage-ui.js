@@ -95,10 +95,10 @@ async function openAgyUsage(btn) {
 }
 // ---------- reusable right-side Drawer (Astryx Drawer surface) ----------
 function openDrawer({ title, bodyHTML = '', footerHTML = '', width = 460, focus = false, parent = document.body, onClose } = {}) {
-  const trigger = focus ? document.activeElement : null;
+  const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const d = document.createElement('div');
   d.className = 'drw-backdrop';
-  d.innerHTML = `<div class="drw-panel" style="--drw-w:${width}px" role="dialog" aria-label="${esc(title || '')}">
+  d.innerHTML = `<div class="drw-panel" style="--drw-w:${width}px" role="dialog" aria-modal="true" aria-label="${esc(title || '')}">
     <div class="drw-head"><h2>${esc(title || '')}</h2><button class="ghost icon-btn btn-sm" data-drw-close aria-label="닫기" title="닫기 (Esc)">${ICO.close}</button></div>
     <div class="drw-body">${bodyHTML}</div>
     ${footerHTML ? `<div class="drw-foot">${footerHTML}</div>` : ''}
@@ -108,7 +108,7 @@ function openDrawer({ title, bodyHTML = '', footerHTML = '', width = 460, focus 
     document.removeEventListener('keydown', onKey);
     d.remove();
     onClose?.();
-    trigger?.focus();
+    if (trigger && trigger.isConnected) trigger.focus({ preventScroll: true });
   };
   const onKey = (e) => {
     if (e.defaultPrevented || (e.key !== 'Escape' && e.key !== 'Tab')) return;
@@ -118,7 +118,6 @@ function openDrawer({ title, bodyHTML = '', footerHTML = '', width = 460, focus 
       close();
       return;
     }
-    if (!focus) return;
     const controls = [...d.querySelectorAll('a[href], button, input, select, textarea, [tabindex]')]
       .filter(el => el.tabIndex >= 0 && !el.matches(':disabled') && el.getClientRects().length
         && getComputedStyle(el).visibility === 'visible');
@@ -272,9 +271,9 @@ function agyDrawerBodyHTML(q, swapAcc) {
     ${src.groups.map((g) => `<div class="ugrp"><div class="ugrp-title">${esc(g.name)}</div>
       ${g.models ? `<div class="ums" style="margin-top:-2px">${esc(g.models)}</div>` : ''}
       ${g.fiveH != null ? `<div class="um"><div class="umt"><span>5시간 한도</span><span class="up ${level(g.fiveH)}"><b>${g.fiveHRem}% 남음</b> <span style="font-weight:400;color:var(--muted)">(${pctTxt(g.fiveH)}% 사용)</span></span></div>
-        ${bar(g.fiveH)}<div class="ums">${esc(agyResetDetail(g.fiveHResetAt, g.fiveHReset))}</div></div>` : ''}
+        ${remainingBar(g.fiveH, g.fiveHRem)}<div class="ums">${esc(agyResetDetail(g.fiveHResetAt, g.fiveHReset))}</div></div>` : ''}
       ${g.weekly != null ? `<div class="um"><div class="umt"><span>주간 한도</span><span class="up ${level(g.weekly)}"><b>${g.weeklyRem}% 남음</b> <span style="font-weight:400;color:var(--muted)">(${pctTxt(g.weekly)}% 사용)</span></span></div>
-        ${bar(g.weekly)}<div class="ums">${esc(agyResetDetail(g.weeklyResetAt, g.weeklyReset))}</div></div>` : ''}</div>`).join('')}
+        ${remainingBar(g.weekly, g.weeklyRem)}<div class="ums">${esc(agyResetDetail(g.weeklyResetAt, g.weeklyReset))}</div></div>` : ''}</div>`).join('')}
     ${q?.fetchedAt ? `<div class="ums">마지막 조회: ${esc(new Date(q.fetchedAt).toLocaleTimeString(uiLocale()))} (${esc(ago(Date.parse(q.fetchedAt)))})</div>` : ''}`;
 }
 function openAgyDetailDrawer(cardId = 'agy') {
@@ -320,7 +319,7 @@ function openUsageDetailDrawer(a) {
     const used = m.usedPercent != null ? Math.round(Number(m.usedPercent)) : null;
     const rem = used != null ? Math.max(0, 100 - used) : null;
     return `<div class="um"><div class="umt"><span>${esc(m.name)}</span>${used != null ? `<span class="up ${level(used)}"><b>${rem}% 남음</b> <span style="font-weight:400;color:var(--muted)">(${used}% 사용)</span></span>` : ''}</div>
-    ${used != null ? bar(used) : ''}<div class="ums">${[m.resetsAt ? shortResetAt(m.resetsAt) : '', m.detail ? esc(m.detail) : ''].filter(Boolean).join(' · ')}</div></div>`;
+    ${used != null ? remainingBar(used, rem) : ''}<div class="ums">${[m.resetsAt ? shortResetAt(m.resetsAt) : '', m.detail ? esc(m.detail) : ''].filter(Boolean).join(' · ')}</div></div>`;
   };
   const footNotes = [
     a.billing?.at ? `${esc(a.billing.label)}: ${esc(new Date(a.billing.at).toLocaleDateString(uiLocale()))}` : '',
@@ -493,7 +492,7 @@ function paintUsage() {
       : tightMeter?.resetsAt
         ? `${tightMeter.name} · ${untilText(tightMeter.resetsAt)}`
         : tightMeter?.detail || a.plan || '상세 보기';
-    return { attention: !a.ok || (worst ?? 0) >= 90, html: `<div class="ucard click${soon ? ' reset-soon' : ''}" data-usage-card="${esc(a.id || a.label)}">
+    return { attention: !a.ok || (worst ?? 0) >= 90, worst, label: String(a.label || ''), html: `<div class="ucard click${soon ? ' reset-soon' : ''}" data-usage-card="${esc(a.id || a.label)}">
       <div class="uh">${agentIcon(kind, a.live ? 'idle' : '')}<b>${esc(shortLabel(a))}</b>${!a.ok ? '<span class="badge lim">조회 실패</span>' : ''}${soon ? `<span class="badge soon">${ICO.clock} 금일 리셋</span>` : ''}</div>
       <div>
         <div class="ucard-hero"><span class="ucard-big ${worst != null ? level(worst) : ''}"${rem == null ? ' style="font-size:18px;font-weight:650;color:var(--muted)"' : ''}>${rem != null ? `${rem}%` : a.ok ? '유효' : '—'}</span><span class="ums" style="margin:0">${rem != null ? '남음' : a.ok ? '인증 상태' : '조회 실패'}</span></div>
@@ -502,8 +501,29 @@ function paintUsage() {
       <div class="ucard-foot"><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(resetHint)}</span><span class="ico">${ICO.chevRight}</span></div>
     </div>` };
   });
-  for (const sa of shownSwapAgy) cards.push({ attention: (swapWorstOf(sa) ?? 0) >= 90, html: agyCardHTML(sa) });
-  if (showFallbackAgy) cards.push({ attention: (agyWorst ?? 0) >= 90, html: agyCardHTML() });
+  for (const sa of shownSwapAgy) {
+    const sw = swapWorstOf(sa);
+    cards.push({ attention: (sw ?? 0) >= 90, worst: sw, label: String(sa.name || sa.email || 'Antigravity'), html: agyCardHTML(sa) });
+  }
+  if (showFallbackAgy) {
+    cards.push({ attention: (agyWorst ?? 0) >= 90, worst: agyWorst, label: 'Antigravity', html: agyCardHTML() });
+  }
+  cards.sort((a, b) => {
+    const wa = a.worst, wb = b.worst;
+    if (us === 'headroom-desc') {
+      if (wa == null && wb == null) return 0;
+      if (wa == null) return 1;
+      if (wb == null) return -1;
+      return wa - wb;
+    }
+    if (us === 'headroom-asc') {
+      if (wa == null && wb == null) return 0;
+      if (wa == null) return 1;
+      if (wb == null) return -1;
+      return wb - wa;
+    }
+    return a.label.localeCompare(b.label, 'ko');
+  });
   const needsAttention = cards.filter((x) => x.attention).map((x) => x.html).join('');
   const others = cards.filter((x) => !x.attention).map((x) => x.html).join('');
   $('#view').innerHTML = `<div class="sys-shell">${sysTop}<div class="sys-body"><div class="page-wrap usage-page">${controls}

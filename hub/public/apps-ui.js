@@ -26,38 +26,58 @@
   }
 
   function statusBadge(st) {
-    if (st === 'running') return '<span class="pill busy">실행 중</span>';
-    if (st === 'error') return '<span class="pill danger">오류</span>';
-    if (st === 'ok') return '<span class="pill done">완료</span>';
-    if (st === 'cancelled') return '<span class="pill">중단됨</span>';
-    return '<span class="pill">대기</span>';
+    if (st === 'running') return '<span class="pill warn">실행 중</span>';
+    if (st === 'error') return '<span class="pill bad">오류</span>';
+    if (st === 'ok') return '<span class="pill ok">완료</span>';
+    if (st === 'cancelled') return '<span class="pill muted">중단됨</span>';
+    return '<span class="pill muted">대기</span>';
   }
 
   function openModal(title, bodyHtml, onMount) {
+    const prevFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const wrap = document.createElement('div');
-    wrap.className = 'modal-bg';
-    wrap.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;z-index:9999;padding:16px;';
-    wrap.innerHTML = `<div class="card" style="width:min(640px,100%);max-height:88vh;overflow:auto;padding:20px 22px;background:var(--bg-elev, #fff);border-radius:14px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
-        <h3 style="margin:0;font-size:1.08rem;">${esc(title)}</h3>
-        <button type="button" class="ghost icon-btn btn-sm" data-close>${ICO.close}</button>
+    wrap.className = 'modal-bg dlg';
+    wrap.setAttribute('role', 'dialog');
+    wrap.setAttribute('aria-modal', 'true');
+    wrap.setAttribute('aria-label', title);
+    wrap.style.cssText = 'position:fixed;inset:0;background:rgba(9,11,16,.48);backdrop-filter:blur(2px);display:flex;align-items:center;justify-content:center;z-index:60;padding:44px 16px 16px;';
+    wrap.innerHTML = `<div class="box" style="width:min(640px,100%);max-height:calc(100dvh - 64px);overflow:auto;padding:20px 22px;background:var(--popover);color:var(--text);border:1px solid var(--line-strong);border-radius:var(--radius-xl);box-shadow:var(--shadow-high);">
+      <div class="dlg-head" style="margin-bottom:6px;">
+        <h3>${esc(title)}</h3>
+        <button type="button" class="ghost icon-btn btn-sm" data-close aria-label="닫기">${ICO.close}</button>
       </div>
       <div class="m-body">${bodyHtml}</div>
     </div>`;
-    const close = () => wrap.remove();
-    wrap.addEventListener('click', (e) => { if (e.target === wrap || e.target.closest('[data-close]')) close(); });
+    let downOnBackdrop = false;
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); close(); }
+    };
+    const close = () => {
+      document.removeEventListener('keydown', onKey, true);
+      wrap.remove();
+      if (prevFocus && prevFocus.isConnected) prevFocus.focus({ preventScroll: true });
+    };
+    wrap.addEventListener('pointerdown', (e) => { downOnBackdrop = e.target === wrap; });
+    wrap.addEventListener('click', (e) => {
+      if (e.target.closest('[data-close]') || (e.target === wrap && downOnBackdrop)) close();
+      downOnBackdrop = false;
+    });
+    document.addEventListener('keydown', onKey, true);
     document.body.appendChild(wrap);
     onMount?.(wrap, close);
+    const firstInput = wrap.querySelector('input:not([type=hidden]), select, textarea, button:not([data-close])');
+    firstInput?.focus({ preventScroll: true });
   }
 
   function showAppFormModal(existing = null) {
     const isEdit = Boolean(existing);
     const firstAct = existing?.actions?.[0] || { id: 'run', label: '실행', kind: 'command', cmd: '', prompt: '' };
     const html = `
-      ${!isEdit ? `<div style="padding:10px 12px;border:1px dashed var(--bd);border-radius:10px;margin-bottom:14px;">
+      ${!isEdit ? `<div style="padding:10px 12px;border:1px dashed var(--line-strong);border-radius:10px;margin-bottom:14px;">
         <div style="font-weight:600;font-size:.88rem;margin-bottom:6px;">폴더에서 app.json 가져오기 (Import)</div>
-        <div style="display:flex;gap:8px;">
+        <div style="display:flex;gap:6px;">
           <input id="impDir" class="btn-sm" style="flex:1;" placeholder="예: D:\\Gitsource\\...\\동향파악">
+          <button type="button" class="btn-sm" id="btnPickImpDir">폴더 선택</button>
           <button type="button" class="btn-sm" id="btnImportDir">가져오기</button>
         </div>
       </div>` : ''}
@@ -77,10 +97,15 @@
               <option value="command" ${existing?.type === 'command' ? 'selected' : ''}>커맨드/도구</option>
             </select>
           </label>
-          <label>작업 폴더 (cwd) <input name="cwd" value="${esc(existing?.cwd || '')}" placeholder="D:\\path\\to\\app" class="btn-sm" style="width:100%;margin-top:4px;"></label>
+          <label>작업 폴더 (cwd)
+            <div style="display:flex;gap:6px;margin-top:4px;">
+              <input name="cwd" value="${esc(existing?.cwd || '')}" placeholder="D:\\path\\to\\app" class="btn-sm" style="flex:1;">
+              <button type="button" class="btn-sm" id="btnPickAppCwd">폴더 선택</button>
+            </div>
+          </label>
         </div>
-        <label>웹 URL (유형이 url일 때) <input name="entryUrl" value="${esc(existing?.entryUrl || '')}" placeholder="http://127.0.0.1:8080" class="btn-sm" style="width:100%;margin-top:4px;"></label>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <label data-app-f="url">웹 URL <input name="entryUrl" value="${esc(existing?.entryUrl || '')}" placeholder="http://127.0.0.1:8080" class="btn-sm" style="width:100%;margin-top:4px;"></label>
+        <div data-app-f="dirs" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
           <label>뷰 폴더 (viewDir) <input name="viewDir" value="${esc(existing?.outputs?.viewDir || '산출물')}" class="btn-sm" style="width:100%;margin-top:4px;"></label>
           <label>데이터 폴더 (dataDir) <input name="dataDir" value="${esc(existing?.outputs?.dataDir || 'data')}" class="btn-sm" style="width:100%;margin-top:4px;"></label>
         </div>
@@ -92,9 +117,9 @@
               <option value="pipeline" ${firstAct.kind === 'pipeline' ? 'selected' : ''}>pipeline (코드+LLM)</option>
             </select>
           </label>
-          <label>실행 명령어 (cmd) <input name="actionCmd" value="${esc(firstAct.cmd || '')}" placeholder=".venv\\Scripts\\python.exe run.py" class="btn-sm" style="width:100%;margin-top:4px;"></label>
+          <label data-app-f="cmd">실행 명령어 (cmd) <input name="actionCmd" value="${esc(firstAct.cmd || '')}" placeholder=".venv\\Scripts\\python.exe run.py" class="btn-sm" style="width:100%;margin-top:4px;"></label>
         </div>
-        <label>에이전트 프롬프트 (agent/pipeline일 때) <textarea name="actionPrompt" rows="2" class="btn-sm" style="width:100%;margin-top:4px;">${esc(firstAct.prompt || '')}</textarea></label>
+        <label data-app-f="prompt">에이전트 프롬프트 <textarea name="actionPrompt" rows="2" class="btn-sm" style="width:100%;margin-top:4px;">${esc(firstAct.prompt || '')}</textarea></label>
         <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px;">
           <button type="button" class="btn-sm" data-close>취소</button>
           <button type="submit" class="primary btn-sm">${isEdit ? '저장' : '등록'}</button>
@@ -102,6 +127,31 @@
       </form>`;
 
     openModal(isEdit ? `앱 설정: ${existing.name}` : '새 앱 추가', html, (wrap, close) => {
+      const form = wrap.querySelector('#appForm');
+      const syncAppFields = () => {
+        const tp = form.querySelector('[name=type]').value;
+        const ak = form.querySelector('[name=actionKind]').value;
+        const urlEl = form.querySelector('[data-app-f="url"]');
+        const dirsEl = form.querySelector('[data-app-f="dirs"]');
+        const promptEl = form.querySelector('[data-app-f="prompt"]');
+        if (urlEl) urlEl.hidden = tp !== 'url';
+        if (dirsEl) dirsEl.hidden = tp === 'url';
+        if (promptEl) promptEl.hidden = ak === 'command';
+      };
+      form.querySelector('[name=type]')?.addEventListener('change', syncAppFields);
+      form.querySelector('[name=actionKind]')?.addEventListener('change', syncAppFields);
+      syncAppFields();
+      wrap.querySelector('#btnPickImpDir')?.addEventListener('click', () => {
+        if (typeof openFolderPickerDialog === 'function') {
+          openFolderPickerDialog(wrap.querySelector('#impDir').value.trim(), (chosen) => { if (chosen) wrap.querySelector('#impDir').value = chosen; });
+        }
+      });
+      wrap.querySelector('#btnPickAppCwd')?.addEventListener('click', () => {
+        const cwdIn = form.querySelector('[name=cwd]');
+        if (typeof openFolderPickerDialog === 'function') {
+          openFolderPickerDialog(cwdIn.value.trim(), (chosen) => { if (chosen) cwdIn.value = chosen; });
+        }
+      });
       wrap.querySelector('#btnImportDir')?.addEventListener('click', async () => {
         const dir = wrap.querySelector('#impDir').value.trim();
         if (!dir) return toast('폴더 경로를 입력하세요');
@@ -204,7 +254,7 @@
     const needsAgent = app.actions?.some((action) => action.kind === 'agent') && !app.linkedSession?.actionTermId;
     const actionsHtml = (app.actions || []).map((act) => {
       const paramsHtml = (act.params || []).map((pm) =>
-        `<input class="btn-sm app-param" data-action="${esc(act.id)}" data-key="${esc(pm.key)}" placeholder="${esc(pm.label || pm.key)}" value="${esc(pm.default || '')}" style="width:140px;">`
+        `<label style="display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--muted)"><span>${esc(pm.label || pm.key)}</span><input class="btn-sm app-param" data-action="${esc(act.id)}" data-key="${esc(pm.key)}" placeholder="${esc(pm.label || pm.key)}" value="${esc(pm.default || '')}" style="width:130px;"></label>`
       ).join('');
       const blocked = needsAgent && act.kind === 'agent';
       return `${paramsHtml}<button type="button" class="primary btn-sm app-run-btn" data-action="${esc(act.id)}" ${app.status === 'running' || blocked ? 'disabled' : ''} ${blocked ? 'aria-describedby="appAgentHelp"' : ''}>${ICO.play} ${esc(act.label)}</button>`;
@@ -289,7 +339,7 @@
 
   async function renderViewTab(app, box) {
     if (app.type === 'url' && app.entryUrl) {
-      box.innerHTML = `<iframe src="${esc(app.entryUrl)}" style="width:100%;height:72vh;border:1px solid var(--bd);border-radius:12px;background:#fff;"></iframe>`;
+      box.innerHTML = `<iframe src="${esc(app.entryUrl)}" style="width:100%;height:72vh;border:1px solid var(--line-strong);border-radius:12px;background:#fff;"></iframe>`;
       return;
     }
     const { views = [] } = await api(`/api/apps/${encodeURIComponent(app.id)}/files`).catch(() => ({ views: [] }));
@@ -306,7 +356,7 @@
         <a class="btn-sm" href="${viewUrl}" target="_blank" rel="noopener">${ICO.external} 새 창에서 열기</a>
         <button type="button" class="btn-sm" id="btnAskView">${ICO.clip} 이 결과로 채팅 질문</button>
       </div>
-      <iframe src="${viewUrl}" sandbox="allow-scripts allow-popups" style="width:100%;height:74vh;border:1px solid var(--bd);border-radius:12px;background:#fff;"></iframe>`;
+      <iframe src="${viewUrl}" sandbox="allow-scripts allow-popups" style="width:100%;height:74vh;border:1px solid var(--line-strong);border-radius:12px;background:#fff;"></iframe>`;
     box.querySelector('#selViewFile').onchange = (e) => { selectedViewFile = e.target.value; renderViewTab(app, box); };
     box.querySelector('#btnAskView').onclick = () => sendToChat(app, curFile, `${curFile} 내용을 바탕으로 핵심만 요약해 주세요.`);
   }
@@ -321,7 +371,7 @@
     selectedDataFile = curFile;
     const detail = await api(`/api/apps/${encodeURIComponent(app.id)}/data?file=${encodeURIComponent(curFile)}`).catch((e) => ({ error: e.message }));
     const rows = data.map((d) => `
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border-bottom:1px solid var(--bd);">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border-bottom:1px solid var(--line-strong);">
         <button type="button" class="ghost btn-sm data-pick" data-file="${esc(d.name)}" style="font-weight:${d.name === curFile ? '700' : '400'};">${esc(d.name)} <span style="color:var(--muted);">(${(d.size / 1024).toFixed(1)} KB)</span></button>
         <div style="display:flex;gap:6px;">
           <button type="button" class="btn-sm data-chat" data-file="${esc(d.name)}">${ICO.clip} 채팅 전달</button>
@@ -352,6 +402,7 @@
       };
     });
     box.querySelector('#btnPurge30').onclick = async () => {
+      if (!confirm('30일 이전의 데이터 파일을 모두 삭제할까요?')) return;
       const r = await api(`/api/apps/${encodeURIComponent(app.id)}/data?olderThanDays=30`, { method: 'DELETE' });
       toast(`30일 이전 파일 ${r.deleted?.length || 0}건을 정리했습니다`);
       await fetchApps();
@@ -374,7 +425,7 @@
           ${run.status === 'running' ? '' : `<button type="button" class="btn-sm" data-remove-run="${esc(run.runId)}">기록 삭제</button>`}
         </div>
         ${run.stdout ? `<pre style="max-height:180px;overflow:auto;font-size:.78rem;background:var(--bg);padding:8px;border-radius:8px;margin:6px 0 0;">${esc(run.stdout)}</pre>` : ''}
-        ${run.stderr ? `<pre style="max-height:140px;overflow:auto;font-size:.78rem;background:#fef2f2;color:#991b1b;padding:8px;border-radius:8px;margin:6px 0 0;">${esc(run.stderr)}</pre>` : ''}
+        ${run.stderr ? `<pre style="max-height:140px;overflow:auto;font-size:.78rem;background:color-mix(in srgb, var(--danger) 11%, var(--bg));color:var(--danger);border:1px solid color-mix(in srgb, var(--danger) 30%, transparent);padding:8px;border-radius:8px;margin:6px 0 0;">${esc(run.stderr)}</pre>` : ''}
       </div>`).join('');
     box.querySelectorAll('[data-remove-run]').forEach((button) => {
       button.onclick = async () => {
@@ -399,7 +450,7 @@
       if (a.latestData) rows.push({ app: a.name, kind: '데이터', name: a.latestData.name, path: a.latestData.path });
     }
     const html = rows.length
-      ? rows.map((r, i) => `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--bd);">
+      ? rows.map((r, i) => `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--line-strong);">
           <div><strong>[${esc(r.app)}]</strong> <span class="pill">${esc(r.kind)}</span> ${esc(r.name)}</div>
           <button type="button" class="primary btn-sm pick-out" data-idx="${i}">첨부</button>
         </div>`).join('')
@@ -486,9 +537,14 @@
         try { await fetchApps(); } catch { return; }
         if (!isCurrent()) return;
         const cur = currentApp();
-        if (cur?.status !== 'running') stopPoll();
+        const stillRunning = cur?.status === 'running';
+        if (!stillRunning) stopPoll();
         showCompletedReport(cur);
-        renderAppBody(cur);
+        if (stillRunning && activeTab === 'runs') {
+          const tabBox = $('#appTabBox');
+          if (tabBox) { await renderRunsTab(cur, tabBox); return; }
+        }
+        if (!stillRunning) renderAppBody(cur);
       }, 2500);
     }
   };

@@ -22,6 +22,7 @@ function openScheduleForm({ item, projects, capabilities, onSaved, onClose }) {
             </select></label>
             <label>제한 시간 (초) <input name="timeoutSec" type="number" required min="30" max="3600" value="${item?.timeoutSec ?? 900}"></label>
           </div>
+          <p class="sch-help">동시 실행: 이전 작업이 안 끝났을 때의 동작 · 놓친 실행(Misfire): PC 절전/종료로 예약 시각을 놓쳤을 때의 동작입니다.</p>
         </div>
       </details>
       <p role="status" data-form-error></p>
@@ -58,6 +59,7 @@ function openScheduleForm({ item, projects, capabilities, onSaved, onClose }) {
     try {
       await scheduleRequest(item ? schedulePath(item.id) : '', { method: item ? 'PATCH' : 'POST', body });
       drawer.close();
+      if (!item) toast('스케줄을 저장했습니다 (일시정지 상태 · 실행하려면 재개를 누르세요)');
       onSaved();
     } catch (cause) {
       error.textContent = cause.message;

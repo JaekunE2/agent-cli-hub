@@ -114,6 +114,13 @@ function paintBrandStatus() {
   }
   const pop = document.getElementById('srvStatusPop');
   if (pop) paintServerStatusPopover(pop);
+  const banner = document.getElementById('diskBanner');
+  if (banner) {
+    const msgs = [];
+    if (!hubOk) msgs.push('⚠ 허브 서버(:7777)와 연결이 끊어졌습니다. 자동 재연결을 시도 중입니다.');
+    if (state.disk) msgs.push(`⚠ ${esc(state.disk.drive)} 남은 공간 ${state.disk.freeGB} GB — 디스크가 가득 차면 세션이 멈춥니다.`);
+    banner.innerHTML = msgs.join(' &nbsp;·&nbsp; ');
+  }
 }
 function paintServerStatusPopover(pop) {
   const { hubOk, usageOk, ptyOk, agyOk } = computeHubHealth();
@@ -205,15 +212,27 @@ function toggleServerStatusPopover(anchor) {
   document.body.appendChild(pop);
   if (anchor) {
     const r = anchor.getBoundingClientRect();
-    pop.style.top = `${Math.round(r.bottom + 6)}px`;
-    pop.style.left = `${Math.max(8, Math.round(r.left))}px`;
+    const minTop = document.documentElement.classList.contains('is-tauri') ? 38 : 8;
+    const maxLeft = Math.max(8, window.innerWidth - 304);
+    pop.style.top = `${Math.max(minTop, Math.round(r.bottom + 6))}px`;
+    pop.style.left = `${Math.min(maxLeft, Math.max(8, Math.round(r.left)))}px`;
   }
-  const onDoc = (e) => {
-    if (pop.contains(e.target) || anchor?.contains(e.target)) return;
+  const closePop = () => {
     document.removeEventListener('click', onDoc, true);
+    document.removeEventListener('keydown', onKey, true);
     pop.remove();
   };
-  setTimeout(() => document.addEventListener('click', onDoc, true), 0);
+  const onDoc = (e) => {
+    if (pop.contains(e.target) || anchor?.contains(e.target)) return;
+    closePop();
+  };
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); closePop(); anchor?.focus?.(); }
+  };
+  setTimeout(() => {
+    document.addEventListener('click', onDoc, true);
+    document.addEventListener('keydown', onKey, true);
+  }, 0);
 }
 function updateDocTitle() {
   const n = state.unreadTerms.size;
@@ -710,6 +729,7 @@ function systemTopHTML(activeTab, actionsHTML = '') {
       ${tab('gpu', ICO.gpu, 'GPU 대기열', gpuWait ? ` <span class="badge lim" style="margin-left:3px">${gpuWait}</span>` : '')}
       ${tab('vault', ICO.layers, '공통 자원')}
       ${tab('operator', ICO.settings, '관제 세션')}
+      ${tab('trusted-folders', ICO.folder, '신뢰 폴더')}
     </div>
     ${actionsHTML ? `<div class="sys-acts">${actionsHTML}</div>` : ''}
   </div>`;

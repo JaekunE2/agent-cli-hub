@@ -39,6 +39,22 @@ Organize multi-step coding work under **Project** in the Linear-style sidebar:
 
 ![Workflow DAG](docs/images/en/17-project-flow.png)
 
+### Schedules
+
+1. Open **Schedules** in the sidebar (or open the hub with `?open=schedules`) and choose **Create schedule**. Select a project, version, and optional task, then set the prompt and any reference folders. The current capability lists Codex with the default account.
+2. Choose an interval from 1 to 10,080 minutes, or enter a five-field Cron expression and an IANA time zone. For example, `0 9 * * 1-5` in `Asia/Seoul` means 09:00 on weekdays. Use **Preview next runs** to check the upcoming times before saving.
+3. Set the overlap policy. `skip` records a skipped run while a run is active or queued, `queue` allows one waiting run per schedule, and `replace` replaces the queued run and requests cancellation of the active one. A slot more than 60 seconds overdue counts as a misfire. `skip` records the missed range as skipped, and `run_once` catches up once at the latest due slot. Set a timeout between 30 and 3,600 seconds.
+4. New schedules are paused. The list shows the next execution time, countdown, and latest result. Open **Run history** to see scheduled and manual runs, their status, timing, and available output or error summaries. With a runner available, **Resume** schedules the next slot, **Run now** also works while paused, and **Pause** cancels waiting runs.
+
+The current hub reports `RUNNER_UNAVAILABLE`. You can create and edit schedules and preview execution times locally. Resume, Run now, and automatic execution require the runner. Authenticated remote access shows the list and history with sensitive details omitted.
+
+### Session folders and trust
+
+1. Select the folder badge on a session or terminal to open **Session folders**. The badge shows the primary folder name, reference count, and trust state. On this PC the panel shows full paths, known observed folders, and trust for individual paths.
+2. For an editable session, set **Primary folder**, add up to 16 reference folders with **Add reference**, and save. In the desktop app, **Browse Folder** opens the native picker. In the browser, enter a local path on the PC running the hub.
+3. Under **Settings → Trusted folders**, register a folder and explicitly choose whether to include descendants. You can change that scope or revoke trust there. **Trust this folder** in the session panel approves the selected path only.
+4. Start or resume through the hub to apply the saved folders. Managed sessions with untrusted folders or changed folder settings can be blocked from starting, resuming, or sending input until the applicable folders are trusted and a fresh launch applies the settings. Remote folder views show a summary.
+
 ### 🗺 Floorplan — Interactive Code Architecture Map & Report (`코드 구조`)
 Available inside every **Project**, **Terminal**, **External Console**, and **Transcript** tab:
 - **Ranked Core Hub Summary (`핵심 요약 · 모듈 목록`):** Zero-dependency static scanner ([`hub/workspace-floorplan.js`](hub/workspace-floorplan.js)) respects `.gitignore`, scans JS/TS/Python/Go files, ranks true architectural hubs by incoming references & API endpoints, and opens a File Detail Drawer on click.

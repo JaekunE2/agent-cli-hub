@@ -760,6 +760,8 @@
         const r = await api('/api/vault/autoload', { method: 'POST', body: { enabled: !!autoChk.checked } });
         if (r.error) return toast(r.error, 4000, 'danger');
         vaultState = r.state;
+        const subEl = $('.v-diag-sub', body);
+        if (subEl) subEl.textContent = autoChk.checked ? '실행 시 자동 동기화 활성' : '수동 동기화 모드';
         toast(autoChk.checked ? 'CLI 실행 시 공통 자원을 자동 로드합니다' : 'CLI 실행 시 자동 로드를 껐습니다');
       };
     }

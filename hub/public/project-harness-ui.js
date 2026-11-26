@@ -192,6 +192,8 @@ async function openProjectHarnessDrawer() {
         effort: cur.effort || '',
         model: String(cur.model || '').trim(),
         account: String(cur.account || '').trim(),
+        readOnly: !!cur.readOnly,
+        writableGlobs: String(cur.writableGlobs || '').trim(),
         template: String(cur.template || '').trim(),
       };
     }

@@ -455,6 +455,11 @@ function projectFollowupForm(p, versionMode = false, existingVersion = '') {
     const tasks = number ? generated.map((task) => ({ ...task, version: number })) : generated;
     await saveProject({ ...latest, versions: mode === 'version' ? [...versions, { number, goal: draft.goal }] : versions, tasks: [...latest.tasks, ...tasks] }, 'flow', number);
   }, '', '작업 흐름 생성');
+  const resetDraftBtn = () => {
+    if (generated) $('.dlg-foot .primary', dialog).textContent = '작업 흐름 생성';
+  };
+  dialog.querySelector('form')?.addEventListener('input', resetDraftBtn);
+  dialog.querySelector('form')?.addEventListener('change', resetDraftBtn);
   dialog.querySelector('[name=mode]')?.addEventListener('change', (e) => {
     const version = e.target.value === 'version';
     const field = dialog.querySelector('[data-version-field]');
@@ -555,6 +560,7 @@ function projectVersions(p) {
   const canSave = !needsWorkspace;
   const list = [...versions].reverse();
   view.innerHTML = `<div class="row pj-version-actions">
+      <button type="button" class="btn-sm" id="projectNewVersion">새 버전업 설계</button>
       ${canSave ? `<button type="button" class="${selected ? 'btn-sm' : 'primary'}" id="projectSaveSnapshot" title="현재 작업 폴더의 파일 상태를 스냅샷으로 저장해 나중에 복원하거나 이어 작업할 수 있습니다">작업 파일 스냅샷 저장</button>` : ''}
       ${selected && canSave ? `
       <button type="button" class="primary" id="projectVersionTask">이 버전에 작업 추가</button>` : ''}

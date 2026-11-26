@@ -83,7 +83,7 @@ function renderSide() {
   const focusedSession = focusedControl?.closest?.('[data-key]')?.dataset.key;
   const folded = sideFolded();
   const curKind = state.sel.kind;
-  const isSys = ['usage', 'gpu', 'vault', 'operator'].includes(curKind);
+  const isSys = ['usage', 'gpu', 'vault', 'operator', 'trusted-folders'].includes(curKind);
 
   const calItems = ((typeof CAL !== 'undefined' && CAL?.data?.items) || []).filter((x) => !(x.kind === 'task' && x.done));
   const now = new Date();
@@ -197,7 +197,7 @@ function renderSide() {
         ${hasBusy ? `<span class="srow-tag busy">${ver ? `v${esc(ver.number)} · ` : ''}실행 중</span>` : `<span class="srow-meta">${esc(metaLabel)}</span>`}
       </span>
     </div>`;
-  }).join('') || '<div class="srow-empty">Project 없음</div>');
+  }).join('') || `<div class="srow-empty">${fTerms.length ? '필터 일치 항목 없음' : 'Project 없음'}</div>`);
   let h = `${navigation}<div class="ssec">
     <div class="ssec-hd">
       ${foldBtnHTML('projects', pjFolded, 'Project')}
@@ -413,9 +413,10 @@ function renderSide() {
 
   const banner = $('#diskBanner');
   if (banner) {
-    banner.innerHTML = state.disk
-      ? `⚠ ${esc(state.disk.drive)} 남은 공간 ${state.disk.freeGB} GB — 디스크가 가득 차면 세션이 멈춥니다.`
-      : '';
+    const msgs = [];
+    if (state.hubDown) msgs.push('⚠ 허브 서버(:7777)와 연결이 끊어졌습니다. 자동 재연결을 시도 중입니다.');
+    if (state.disk) msgs.push(`⚠ ${esc(state.disk.drive)} 남은 공간 ${state.disk.freeGB} GB — 디스크가 가득 차면 세션이 멈춥니다.`);
+    banner.innerHTML = msgs.join(' &nbsp;·&nbsp; ');
   }
   if (booted && state.sel.kind === 'terms' && state.termsTab !== 'active') paintTermsBody();
 }
@@ -442,6 +443,7 @@ $('#side')?.addEventListener('click', async (e) => {
     e.stopPropagation();
     const exitedIds = state.terms.filter((t) => t.exited !== null).map((t) => t.id);
     if (!exitedIds.length) return;
+    if (!confirm(`종료된 터미널 ${exitedIds.length}개를 목록에서 모두 정리할까요?`)) return;
     for (const id of exitedIds) await api('/api/term/close', { method: 'POST', body: { id } }).catch(() => {});
     await refreshOverview();
     toast(`종료된 터미널 ${exitedIds.length}개를 정리했습니다`);

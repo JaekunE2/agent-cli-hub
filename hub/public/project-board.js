@@ -135,7 +135,33 @@ function projectBoard(p) {
     if (cardEl) openProjectTaskDrawer(p, p.tasks.find((x) => x.id === cardEl.dataset.task));
   };
   const dragType = 'application/x-hub-task';
-  host.ondragstart = (e) => { const t = e.target.closest('[data-task]'); if (t) e.dataTransfer.setData(dragType, t.dataset.task); };
-  host.ondragover = (e) => { if (e.target.closest('[data-drop]') && e.dataTransfer.types.includes(dragType)) e.preventDefault(); };
-  host.ondrop = (e) => { const col = e.target.closest('[data-drop]'); if (!col || !e.dataTransfer.types.includes(dragType)) return; e.preventDefault(); move(e.dataTransfer.getData(dragType), col.dataset.drop); };
+  const clearDragUI = () => {
+    host.querySelectorAll('.drag-over').forEach((el) => el.classList.remove('drag-over'));
+    host.querySelectorAll('.is-dragging').forEach((el) => el.classList.remove('is-dragging'));
+  };
+  host.ondragstart = (e) => {
+    const t = e.target.closest('[data-task]');
+    if (!t) return;
+    e.dataTransfer.setData(dragType, t.dataset.task);
+    t.classList.add('is-dragging');
+  };
+  host.ondragend = clearDragUI;
+  host.ondragover = (e) => {
+    const col = e.target.closest('[data-drop]');
+    if (!col || !e.dataTransfer.types.includes(dragType)) return;
+    e.preventDefault();
+    host.querySelectorAll('.drag-over').forEach((el) => { if (el !== col) el.classList.remove('drag-over'); });
+    col.classList.add('drag-over');
+  };
+  host.ondragleave = (e) => {
+    const col = e.target.closest('[data-drop]');
+    if (col && !col.contains(e.relatedTarget)) col.classList.remove('drag-over');
+  };
+  host.ondrop = (e) => {
+    const col = e.target.closest('[data-drop]');
+    clearDragUI();
+    if (!col || !e.dataTransfer.types.includes(dragType)) return;
+    e.preventDefault();
+    move(e.dataTransfer.getData(dragType), col.dataset.drop);
+  };
 }

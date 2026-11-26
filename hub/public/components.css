@@ -228,9 +228,11 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height:
 .mermaid-host .mdpre { width: 100%; border-radius: var(--radius-sm); }
 .mermaid-src { border-top: 1px solid var(--line) !important; }
 .pv-shell { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; background: var(--bg); }
-.pv-bar { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--panel); flex: none; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
-.pv-bar [data-pv-pick] { flex: 1 1 0; min-width: 48px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pv-bar { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--panel); flex: none; min-width: 0; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+.pv-bar::-webkit-scrollbar { display: none; }
+.pv-bar [data-pv-pick] { flex: 1 1 80px; min-width: 64px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pv-bar [data-pv-modes] { flex: none; }
+.pv-bar [data-pv-close] { position: sticky; right: 0; flex: none; background: var(--panel); box-shadow: -8px 0 10px var(--panel); }
 .pv-body { flex: 1; min-height: 0; min-width: 0; overflow: auto; scrollbar-gutter: stable; display: flex; flex-direction: column; }
 .pv-frame { width: 100%; height: 100%; flex: 1; min-height: 240px; border: 0; background: #fff; }
 .pv-doc { padding: 18px 22px 36px; overflow: auto; flex: 1; min-width: 0; background: var(--panel); }
@@ -305,6 +307,7 @@ textarea { font: inherit; color: inherit; background: var(--panel); border: 1px 
 .dock-hd-title { font-weight: 650; color: var(--text); white-space: nowrap; }
 .dock-hd-extra { display: inline-flex; align-items: center; gap: 6px; flex: 1; min-width: 0; overflow: hidden; }
 .dock-hd-acts { display: inline-flex; align-items: center; gap: 2px; flex: none; margin-left: auto; }
+.dock-pane.single > .dock-hd { display: none; }
 .dock-pane.single .dock-hd-acts [data-dock-mv],
 .dock-pane.single .dock-hd-acts [data-dock-close] { display: none; }
 .dock-body { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
@@ -594,7 +597,7 @@ body.remote .desk { display: none; }
   .swrow { flex-wrap: wrap; } .swl { flex-basis: calc(100% - 30px); }
   /* Mobile ergonomics: prevent iOS/Android auto-zoom, safe-area composer, full-width drawers & modals */
   input, select, textarea { font-size: 16px; }
-  .chat-reply { padding: 8px 10px max(10px, env(safe-area-inset-bottom)); }
+  .chat-reply-bar { padding: 8px 10px max(10px, env(safe-area-inset-bottom)); }
   .chat-reply-in textarea { font-size: 16px; min-height: 40px; }
   .chat-reply-in button.primary { min-height: 40px; height: 40px; padding: 0 14px; font-size: 14px; }
   .drw-panel { width: 100vw; max-width: 100vw; border-left: 0; }

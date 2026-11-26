@@ -699,10 +699,18 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
       const earlyLineage = d.lineage?.parent
         ? `<div class="chat-lineage" style="margin-bottom:10px"><button type="button" class="msg-branch-chip" data-open-parent-sid="${esc(d.lineage.parent.parentSessionId)}" data-open-parent-at="${d.lineage.parent.atIndex}" title="${esc(earlyParentTxt)}">${ICO.branch} <span class="br-chip-txt">${esc(earlyParentTxt)}</span></button></div>`
         : '';
-      msgsHost.innerHTML = `${earlyLineage}<div class="h-empty-card" style="margin:24px auto;max-width:480px">
-        <b>대화 기록을 준비 중입니다 (${esc(curSid.slice(0, 8))})</b>
-        <span class="ums">에이전트가 첫 응답을 기록하면 자동으로 대화 내역이 나타납니다.</span>
-      </div>`;
+      const isMissing = /(not\s*found|enoent|없음|404|empty)/i.test(String(d.error || ''));
+      msgsHost.innerHTML = isMissing
+        ? `${earlyLineage}<div class="h-empty-card" style="margin:24px auto;max-width:480px">
+            <b>대화 기록을 준비 중입니다 (${esc(curSid.slice(0, 8))})</b>
+            <span class="ums">에이전트가 첫 응답을 기록하면 자동으로 대화 내역이 나타납니다.</span>
+          </div>`
+        : `${earlyLineage}<div class="h-empty-card" style="margin:24px auto;max-width:480px">
+            <b>대화 기록을 불러오지 못했습니다</b>
+            <span class="ums">${esc(d.error)}</span>
+            <button type="button" class="btn-sm" data-retry-transcript="1">다시 시도</button>
+          </div>`;
+      $('[data-retry-transcript]', msgsHost)?.addEventListener('click', () => { lastSig = ''; tick(true); });
     } else if (sig !== lastSig && (force || (!selectionIn(msgsHost) && !$('.msg-edit-box', msgsHost)))) { // keep active copy selection or inline editor unless forced
       lastSig = sig;
       lastMessages = d.messages || [];
@@ -741,10 +749,18 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
       };
       const flushTools = () => {
         if (!toolBuf.length) return;
-        const tgKey = `${toolBuf[0].gi}:${toolBuf.length}`;
-        const isOpen = openToolIds.has(tgKey) || openToolIds.has(String(toolBuf[0].gi));
+        const tgKey = String(toolBuf[0].gi);
+        const isOpen = openToolIds.has(tgKey);
         const toolBranches = toolBuf.map((x) => branchChipsHTML(x.gi)).filter(Boolean).join('');
-        parts.push(`<details class="toolgrp" data-tg-key="${esc(tgKey)}"${isOpen ? ' open' : ''}><summary>도구 실행 ${toolBuf.length}건</summary><div class="toolgrp-body">${toolBuf.map((x) => `<div>${linkPaths(hl(x.m.text, terms))}</div>`).join('')}</div></details>${toolBranches}`);
+        const counts = new Map();
+        for (const x of toolBuf) {
+          const m = String(x.m.text || '').match(/^⚙\s*([^\s(:[]+)/);
+          const name = m ? m[1] : '도구';
+          counts.set(name, (counts.get(name) || 0) + 1);
+        }
+        const summaryHint = [...counts.entries()].slice(0, 3).map(([k, v]) => (v > 1 ? `${k} ×${v}` : k)).join(', ');
+        const summaryMore = counts.size > 3 ? ` 외 ${counts.size - 3}종` : '';
+        parts.push(`<details class="toolgrp" data-tg-key="${esc(tgKey)}"${isOpen ? ' open' : ''}><summary>도구 실행 ${toolBuf.length}건${summaryHint ? ` · ${esc(summaryHint + summaryMore)}` : ''}</summary><div class="toolgrp-body">${toolBuf.map((x) => `<div>${linkPaths(hl(x.m.text, terms))}</div>`).join('')}</div></details>${toolBranches}`);
         toolBuf = [];
       };
       let lastDay = '';
@@ -789,7 +805,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
       const prevHeight = v.scrollHeight;
       const prevTop = v.scrollTop;
       const olderBanner = b > 0
-        ? `<div class="row" style="justify-content:center;gap:8px;margin-bottom:8px"><span class="ums" style="margin:0">… 이전 메시지 ${b}개 생략</span>${!jump ? `<button type="button" class="btn-sm" data-load-older="1">이전 메시지 더 보기</button>` : ''}</div>`
+        ? `<div class="row" style="justify-content:center;gap:8px;margin-bottom:8px"><span class="ums" style="margin:0">… 이전 메시지 ${b}개 생략${!jump && msgLimit >= 2000 ? ' (최대 2,000건 표시됨)' : ''}</span>${!jump && msgLimit < 2000 ? `<button type="button" class="btn-sm" data-load-older="1">이전 메시지 더 보기</button>` : ''}</div>`
         : '';
       msgsHost.innerHTML = lineageBanner + olderBanner + (parts.join('') || '<div class="empty">메시지 없음</div>') + more;
       const loadOlderBtn = $('[data-load-older]', msgsHost);
@@ -841,15 +857,19 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
           msgEl.innerHTML = `<div class="msg-edit-box">
             <textarea>${esc(m.text)}</textarea>
             <div class="msg-edit-foot">
-              <button type="button" class="ghost btn-sm" data-ed-cancel>취소</button>
-              <button type="button" class="btn-sm" data-ed-save title="기록된 텍스트만 수정합니다">내용만 수정</button>
+              <button type="button" class="ghost btn-sm" data-ed-cancel>취소 (Esc)</button>
+              <button type="button" class="primary btn-sm" data-ed-save title="기록된 텍스트만 수정합니다 (Ctrl+Enter)">내용만 수정</button>
               ${canRewind ? `<button type="button" class="btn-sm" data-ed-rewind title="이 시점 이전으로 대화를 되감고 수정된 내용으로 재실행합니다">되감고 재실행</button>` : ''}
-              <button type="button" class="primary btn-sm" data-ed-fork title="이 시점까지 맥락으로 새 분기 대화를 열고 수정된 내용을 전송합니다">${ICO.branch} 분기해서 재실행</button>
+              <button type="button" class="btn-sm" data-ed-fork title="이 시점까지 맥락으로 새 분기 대화를 열고 수정된 내용을 전송합니다">${ICO.branch} 분기해서 재실행</button>
             </div>
           </div>`;
           const ta = $('textarea', msgEl);
           ta.focus();
           ta.setSelectionRange(ta.value.length, ta.value.length);
+          ta.addEventListener('keydown', (ke) => {
+            if (ke.key === 'Escape') { ke.preventDefault(); lastSig = ''; tick(true); }
+            else if (ke.key === 'Enter' && (ke.ctrlKey || ke.metaKey) && !ke.isComposing) { ke.preventDefault(); runEditAction('save'); }
+          });
           const runEditAction = async (mode) => {
             const text = ta.value.trim();
             if (!text) return toast('수정할 내용을 입력하세요', 3000, 'danger');

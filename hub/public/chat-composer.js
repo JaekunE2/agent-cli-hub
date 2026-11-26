@@ -179,6 +179,7 @@ function viewTranscript() {
   $('#bar h2')?.addEventListener('dblclick', doRenameSess);
   $('#bar').onclick = async (e) => {
     if (openSessionOrigin(e.target)) return;
+    if (e.target.closest('[data-face-toggle]')) { toggleTuiGuiFace?.(); return; }
     if (e.target.closest('#btnBackRecent')) {
       if (state.sel.fromSearch) return select({ kind: 'search', restoreScroll: true });
       state.termsTab = 'recent'; return select({ kind: 'terms' });
@@ -341,8 +342,8 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       <button type="button" class="ghost icon-btn btn-sm" data-chat-quote-clear aria-label="참조 해제" title="참조 해제">${ICO.close}</button>
     </div>
     <div class="chat-reply-in">
-      <label class="ghost icon-btn btn-sm filebtn" title="파일 · 이미지 첨부 (드래그&드롭 / 붙여넣기)" style="flex:none;height:38px;min-height:38px;width:36px;justify-content:center;border-radius:10px;border:1px solid var(--line-strong)">${ICO.clip}<input type="file" class="fpick" multiple hidden></label>
-      <button type="button" class="ghost icon-btn btn-sm" data-chat-app-pick title="앱 결과물 첨부" aria-label="앱 결과물 첨부" style="flex:none;height:38px;min-height:38px;width:36px;justify-content:center;border-radius:10px;border:1px solid var(--line-strong)">${ICO.grid}</button>
+      <label class="ghost icon-btn btn-sm filebtn" title="파일 · 이미지 첨부 (드래그&드롭 / 붙여넣기)">${ICO.clip}<input type="file" class="fpick" multiple hidden></label>
+      <button type="button" class="ghost icon-btn btn-sm" data-chat-app-pick title="앱 결과물 첨부" aria-label="앱 결과물 첨부">${ICO.grid}</button>
       <textarea rows="1" aria-label="대화 프롬프트" placeholder="대화 프롬프트 · Enter 전송"></textarea>
       <button type="button" class="primary">대화 전송</button>
     </div>

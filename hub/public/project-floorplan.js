@@ -296,7 +296,7 @@
       { id: 'api', title: '서버 · API', tone: 'tag' },
       { id: 'service', title: '코어 로직', tone: 'tag' },
       { id: 'data', title: '데이터 · 저장', tone: 'tag' },
-      { id: 'config', title: '설정 · 문서', tone: 'tag' },
+      { id: 'test', title: '설정 · 문서 · 테스트', tone: 'tag' },
     ];
 
     const edgesForNode = (nid) => {
@@ -746,24 +746,32 @@
 
       const srch = $('#fmSearchIn', host);
       if (srch) {
-        srch.oninput = () => {
+        let composing = false;
+        const applySrch = () => {
           filterQuery = srch.value;
           const pos = srch.selectionStart;
           paint();
           const nextIn = $('#fmSearchIn', host);
           if (nextIn) { nextIn.focus(); try { nextIn.setSelectionRange(pos, pos); } catch {} }
         };
+        srch.addEventListener('compositionstart', () => { composing = true; });
+        srch.addEventListener('compositionend', () => { composing = false; applySrch(); });
+        srch.oninput = (ev) => { if (!composing && !ev.isComposing) applySrch(); };
       }
 
       const mapSrch = $('#fmMapSearchIn', host);
       if (mapSrch) {
-        mapSrch.oninput = () => {
+        let composing = false;
+        const applyMapSrch = () => {
           mapQuery = mapSrch.value;
           const pos = mapSrch.selectionStart;
           paint();
           const nextIn = $('#fmMapSearchIn', host);
           if (nextIn) { nextIn.focus(); try { nextIn.setSelectionRange(pos, pos); } catch {} }
         };
+        mapSrch.addEventListener('compositionstart', () => { composing = true; });
+        mapSrch.addEventListener('compositionend', () => { composing = false; applyMapSrch(); });
+        mapSrch.oninput = (ev) => { if (!composing && !ev.isComposing) applyMapSrch(); };
       }
 
       const vp = $('#fmMapVp', host);

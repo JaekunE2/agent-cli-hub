@@ -195,6 +195,7 @@ function viewConsole() {
 
   let dock = null;
   $('#bar').onclick = (e) => {
+    if (e.target.closest('[data-face-toggle]')) { toggleTuiGuiFace?.(); return; }
     const dt = e.target.closest('[data-dock-toggle]');
     if (dt) {
       const p = dt.dataset.dockToggle;
@@ -677,9 +678,16 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
     if (k) { send(PTY_KEYS[k]); if (!IS_MOBILE) xterm?.focus(); }
   });
   bindFilePick(fullEl, insert, t?.cwd, { onFiles: onTermFiles });
-  window.onresize = resize;
-  window.onfocus = resize;
-  document.onvisibilitychange = () => { if (!document.hidden) resize(); };
+  const onResizeEv = () => { if (!fullEl.isConnected) return cleanupTermListeners(); resize(); };
+  const onVisEv = () => { if (!fullEl.isConnected) return cleanupTermListeners(); if (!document.hidden) resize(); };
+  const cleanupTermListeners = () => {
+    window.removeEventListener('resize', onResizeEv);
+    window.removeEventListener('focus', onResizeEv);
+    document.removeEventListener('visibilitychange', onVisEv);
+  };
+  window.addEventListener('resize', onResizeEv);
+  window.addEventListener('focus', onResizeEv);
+  document.addEventListener('visibilitychange', onVisEv);
   const syncChatPane = (next) => {
     if (!!next === !!chatHost) return;
     chatHost = next;

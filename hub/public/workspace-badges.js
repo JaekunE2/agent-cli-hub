@@ -11,12 +11,13 @@ function folderTarget(item, term = false, readOnly = false) {
   count: context?.referenceCount, trust: context?.trustState };
 }
 
-function folderBadgeContent({ primaryCwd, count }) {
+function folderBadgeContent({ primaryCwd, count, trust }) {
   const refBadge = count > 0 ? `<span class="badge c">+${count}</span>` : '';
-  return `<span class="folder-short">${esc(primaryCwd ? base(primaryCwd) : '참조 폴더')}</span>${refBadge}`;
+  const warnBadge = trust === 'untrusted' ? '<span class="badge warn" title="미신뢰 폴더">!</span>' : '';
+  return `<span class="folder-short">${esc(primaryCwd ? base(primaryCwd) : '참조 폴더')}</span>${refBadge}${warnBadge}`;
 }
 
-const folderBadgeTitle = (target) => ['참조 폴더 설정', target.primaryCwd, target.count > 0 ? `참조 ${target.count}개` : '']
+const folderBadgeTitle = (target) => ['참조 폴더 설정', target.primaryCwd, target.count > 0 ? `참조 ${target.count}개` : '', target.trust ? folderStateLabel(target.trust) : '']
   .filter(Boolean).join(' · ');
 
 function folderBadge(target) {
@@ -45,9 +46,5 @@ function updateFolderBadges() {
 }
 
 function positionFolderToolbox() {
-  const badge = $('#bar [data-workspace-folder]');
-  if (!badge) return;
-  for (const toolbox of document.querySelectorAll('#view [data-ts-bar] .ts-right')) {
-    if (!$('[data-workspace-folder]', toolbox)) toolbox.prepend(badge.cloneNode(true));
-  }
+  // Single folder badge lives in #bar .session-actions to avoid duplicating it inside .tool-stream-bar.
 }

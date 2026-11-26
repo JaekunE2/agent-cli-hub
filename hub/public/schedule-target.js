@@ -79,15 +79,22 @@ function bindScheduleTarget(fields, projects, capabilities, previous = {}) {
   for (const btn of modeBtns) btn.onclick = () => { mode = btn.dataset.schMode; syncMode(); };
   const pickBtn = $('[data-sch-pick-cwd]', form);
   if (pickBtn) pickBtn.onclick = async () => {
-    if (typeof pickNativeFolder !== 'function') return;
-    const picked = await pickNativeFolder({ title: '스케줄 작업 폴더 선택', defaultPath: cwd.value.trim() || undefined });
-    if (picked) cwd.value = picked;
+    if (typeof pickNativeFolder === 'function') {
+      const picked = await pickNativeFolder({ title: '스케줄 작업 폴더 선택', defaultPath: cwd.value.trim() || undefined });
+      if (picked) { cwd.value = picked; return; }
+    }
+    if (typeof openFolderPickerDialog === 'function') {
+      openFolderPickerDialog(cwd.value.trim(), (chosen) => { if (chosen) cwd.value = chosen; });
+    }
   };
 
   fill(projectId, [['', '프로젝트 선택'], ...projects.map(item => [item.id, item.name])],
     previous.projectId ?? (projects.length === 1 ? projects[0].id : ''));
   versions(previous.version, previous.taskId || '');
-  const cliLabel = item => item.label || ({ codex: 'Codex', claude: 'Claude', agy: 'Antigravity' }[item.id] || item.id);
+  const cliLabel = item => {
+    const baseName = item.label || ({ codex: 'Codex', claude: 'Claude', agy: 'Antigravity' }[item.id] || item.id);
+    return item.available === false ? `${baseName} (실행기 비활성)` : baseName;
+  };
   fill(cli, capabilities.map(item => [item.id, cliLabel(item)]), previous.cli);
   accounts(previous.accountId);
   referenceDirs.value = (previous.referenceDirs || []).join('\n');

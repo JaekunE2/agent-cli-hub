@@ -17,7 +17,7 @@ function openScheduleHistory(item, onClose) {
     focus: true,
     onClose,
     bodyHTML: `<h3>${esc(item.name)}</h3><p role="status" data-run-error></p>
-      <ol class="schedule-runs" aria-label="실행 이력"></ol><p data-run-empty hidden>아직 실행 이력이 없습니다.</p>
+      <ol class="schedule-runs" aria-label="실행 이력" aria-live="polite"></ol><p data-run-empty hidden>아직 실행 이력이 없습니다.</p>
       <button type="button" data-run-more hidden>이전 실행 더 보기</button>`,
   });
   const error = $('[data-run-error]', drawer);
@@ -60,9 +60,11 @@ function scheduleRunRow(run) {
     .map(text => `<pre>${esc(text)}</pre>`).join('');
   const sessionLink = run.sessionId && recentSession(run.sessionId)
     ? `<a href="#recent:${encodeURIComponent(run.sessionId)}:chat" data-schedule-session="${esc(run.sessionId)}">대화 열기</a>` : '';
+  const durSec = run.startedAt && run.finishedAt ? Math.max(0, Math.round((Date.parse(run.finishedAt) - Date.parse(run.startedAt)) / 1000)) : null;
+  const durTxt = durSec == null ? '' : durSec >= 60 ? ` · ${Math.floor(durSec / 60)}분 ${durSec % 60}초` : ` · ${durSec}초`;
   return `<li><div class="schedule-row">
     <strong>${run.trigger === 'manual' ? '즉시 실행' : '예약 실행'}</strong>
-    ${scheduleRunBadge(run)} <time>${esc(scheduleDate(run.startedAt || run.createdAt))}</time>
+    ${scheduleRunBadge(run)} <time>${esc(scheduleDate(run.startedAt || run.createdAt))}${esc(durTxt)}</time>
     </div>${run.reason ? `<p><code>${esc(run.reason)}</code></p>` : ''}${summary}${sessionLink}</li>`;
 }
 

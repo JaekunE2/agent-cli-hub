@@ -541,7 +541,8 @@
 
       // Auto-split the Canvas Preview inside Conversation History whenever previewable blocks exist
       const sid = getSessionId?.() || '';
-      const wideEnough = !splitEl || splitEl.getBoundingClientRect().width >= 560 || window.innerWidth > 900;
+      const splitWidth = splitEl ? splitEl.getBoundingClientRect().width : window.innerWidth;
+      const wideEnough = splitWidth >= 680 && window.innerWidth > 900;
       if ((chatItems.length > 0 || manualItems.length > 0) && !isDismissed(sid) && wideEnough) {
         setVisible(true);
       } else if (!chatItems.length && !manualItems.length && !isPaneVisible) {

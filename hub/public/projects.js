@@ -669,7 +669,7 @@ async function viewProjects() {
     if (current) projectVersionPreference(p.id, current.number);
     const displayCwd = current?.workspace || (!current ? p.cwd : '');
     const total = p.tasks.length;
-    const cnt = { planned: 0, doing: 0, review: 0, done: 0 };
+    const cnt = { planned: 0, doing: 0, review: 0, merge: 0, done: 0 };
     for (const t of p.tasks) cnt[t.stage] = (cnt[t.stage] || 0) + 1;
     const pct = total ? Math.round((cnt.done / total) * 100) : 0;
     const segW = (n) => (total ? ((n / total) * 100).toFixed(1) : 0);
@@ -684,17 +684,18 @@ async function viewProjects() {
             ${[...p.versions].reverse().map((v) => `<option value="${esc(v.number)}"${v === current ? ' selected' : ''}>v${esc(v.number)}</option>`).join('')}
             <option value=""${!current ? ' selected' : ''}>기본 작업</option>
           </select>` : ''}
-          ${displayCwd ? `<span class="pj-cwd" title="${esc(displayCwd)}">${ico.folder || ''}${esc(current ? '버전 작업 폴더' : base(displayCwd) || displayCwd)}</span>` : ''}
+          ${displayCwd ? `<button type="button" class="ghost pj-cwd" data-copy-cwd="${esc(displayCwd)}" title="${esc(displayCwd)}" aria-label="경로 복사">${ico.folder || ''}${esc(current ? '버전 작업 폴더' : base(displayCwd) || displayCwd)}</button>` : ''}
         </div>
         <div class="pj-top-right">
           <button id="projectTokens" class="pj-tok-pill" title="누적 토큰 상세">${current ? '버전 토큰' : '토큰'} <b>${tokFmt(totalTok)}</b></button>
           ${(() => {
             const progLabel = '작업 진행률';
-            const progTip = `완료 ${cnt.done} · 검토 ${cnt.review} · 진행 ${cnt.doing} · 대기 ${cnt.planned}`;
+            const progTip = `완료 ${cnt.done}${cnt.merge ? ` · 병합 ${cnt.merge}` : ''} · 검토 ${cnt.review} · 진행 ${cnt.doing} · 대기 ${cnt.planned}`;
             return `<div class="pj-prog" role="progressbar" aria-label="${progLabel}" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" title="${esc(progTip)}">`;
           })()}
             <div class="pj-stackbar">
               ${cnt.done ? `<i class="done" style="width:${segW(cnt.done)}%"></i>` : ''}
+              ${cnt.merge ? `<i class="merge" style="width:${segW(cnt.merge)}%"></i>` : ''}
               ${cnt.review ? `<i class="review" style="width:${segW(cnt.review)}%"></i>` : ''}
               ${cnt.doing ? `<i class="doing" style="width:${segW(cnt.doing)}%"></i>` : ''}
             </div>
@@ -737,6 +738,7 @@ async function viewProjects() {
       <div id="projectContent" role="tabpanel" aria-labelledby="project-tab-${projectTab}" tabindex="0"></div>
     </div>`;
     $('#projectPick').onchange = e => openProject(e.target.value);
+    $('[data-copy-cwd]')?.addEventListener('click', (e) => copyText(e.currentTarget.dataset.copyCwd));
     $('#projectVersionPick')?.addEventListener('change', async (e) => {
       const nextView = viewGen + 1;
       projectVersionPreference(p.id, e.target.value);
