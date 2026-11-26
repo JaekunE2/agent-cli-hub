@@ -1394,20 +1394,27 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
     }
     if (p === '/api/term/windows') {
       const id = url.searchParams.get('id') || '', pidParam = Number(url.searchParams.get('pid') || 0);
-      const showAll = url.searchParams.get('all') !== '0';
+      const showAll = url.searchParams.get('all') === '1';
       const t = id ? hub.terms.get(id) : null;
       const termPidSet = new Set();
       if (t?.pid) termPidSet.add(t.pid);
+      if (t?.proc?.pid) termPidSet.add(t.proc.pid);
       if (pidParam > 0) termPidSet.add(pidParam);
+      const tSid = t ? hub.termSessionId?.(t) : null;
+      if (tSid) {
+        for (const ls of hub.liveSessions?.() || []) {
+          if (ls?.sessionId === tSid && ls?.pid) termPidSet.add(ls.pid);
+        }
+      }
       const pidSet = new Set(termPidSet);
       const ptyHostPid = hub.getPtyHostPid?.();
       if (ptyHostPid) pidSet.add(ptyHostPid);
       pidSet.add(process.pid);
       for (const tm of hub.terms.values()) {
-        if (tm.exited === null && tm.pid) pidSet.add(tm.pid);
-      }
-      for (const ls of hub.liveSessions?.() || []) {
-        if (ls?.pid) pidSet.add(ls.pid);
+        if (tm.exited === null) {
+          if (tm.pid) pidSet.add(tm.pid);
+          if (tm.proc?.pid) pidSet.add(tm.proc.pid);
+        }
       }
       const r = await hub.helperCall({ op: 'list_windows', term_pids: [...termPidSet], pids: [...pidSet], all: showAll });
       send(res, 200, { ok: r.ok !== false, windows: r.windows || [], error: r.error || null });

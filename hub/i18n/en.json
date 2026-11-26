@@ -3546,5 +3546,12 @@
   "실행 창": "Running window",
   "실행 중인 서브에이전트:": "Running subagents:",
   "서브에이전트 기록 보기": "View subagent history",
-  "건 보기": " items"
+  "건 보기": " items",
+  "현재 세션이 제어하는 창 외에 PC의 모든 열린 창 표시": "Show all open PC windows in addition to windows controlled by this session",
+  "감지된 열린 창이 없습니다": "No open windows detected",
+  "이 세션에서 제어 중인 창이 없습니다": "No windows controlled by this session",
+  "실행 중인 데스크톱 창이나 브라우저가 열리면 여기에 미리보기가 표시됩니다.": "Open desktop windows or browsers will appear here with live previews.",
+  "에이전트가 브라우저(Playwright·AGY), GUI 앱 또는 새 창을 실행하면 자동으로 표시됩니다. PC의 다른 창을 보려면 우측 상단 \"전체 창\"을 켜세요.": "Windows launched or controlled by this session (Playwright/AGY browsers, GUI apps, consoles) appear here automatically. Enable \"All windows\" above to view other PC windows.",
+  "세션 제어": "Session",
+  "자동 제어": "Automated"
 }

@@ -74,7 +74,7 @@
     let winList = [];
     let selectedHwnd = 'all';
     let winAuto = true;
-    let winShowAll = true;
+    let winShowAll = false;
     let snapNonce = Date.now();
     let winPollTimer = null;
     let snapTimer = null;
@@ -83,7 +83,7 @@
         <div class="win-tabs" data-w-tabs></div>
         <div class="row" style="gap:6px;flex:none">
           <button type="button" class="btn-sm primary" data-w-new title="새 창 · 터미널 · PowerShell · cmd · Ubuntu 열기">${UI_ICO.plus}<span>새 창 열기</span></button>
-          <label class="win-auto-lbl"><input type="checkbox" data-w-all checked> 전체 창</label>
+          <label class="win-auto-lbl" title="현재 세션이 제어하는 창 외에 PC의 모든 열린 창 표시"><input type="checkbox" data-w-all> 전체 창</label>
           <label class="win-auto-lbl"><input type="checkbox" data-w-auto checked> 자동 갱신</label>
           <button type="button" class="btn-sm" data-w-refresh title="창 목록 · 스냅샷 새로고침">${UI_ICO.refresh}<span>새로고침</span></button>
         </div>
@@ -137,8 +137,10 @@
 
       if (!winList.length) {
         bodyEl.innerHTML = `<div class="h-empty-card" style="margin:12px auto">
-          <b>연결된 창이나 열린 브라우저가 없습니다</b>
-          <span class="ums">에이전트가 Chrome, Edge 또는 앱 창을 열면 이곳에서 여러 창을 동시에 미리보고 제어할 수 있습니다.</span>
+          <b>${winShowAll ? '감지된 열린 창이 없습니다' : '이 세션에서 제어 중인 창이 없습니다'}</b>
+          <span class="ums">${winShowAll
+            ? '실행 중인 데스크톱 창이나 브라우저가 열리면 여기에 미리보기가 표시됩니다.'
+            : '에이전트가 브라우저(Playwright·AGY), GUI 앱 또는 새 창을 실행하면 자동으로 표시됩니다. PC의 다른 창을 보려면 우측 상단 "전체 창"을 켜세요.'}</span>
         </div>`;
         return;
       }
@@ -147,11 +149,12 @@
       const singleMode = targets.length === 1;
       const widthParam = singleMode ? 1080 : 620;
       const cardsHTML = targets.map((w) => {
-        const originBadge = w.linked ? '<span class="badge c">연결됨</span>'
-          : w.hubChild ? '<span class="badge c">Hub 실행</span>'
-            : w.browser ? '<span class="badge">브라우저</span>'
-              : w.cliApp ? '<span class="badge">앱 · CLI</span>'
-                : '<span class="badge">실행 창</span>';
+        const originBadge = w.linked ? '<span class="badge c">세션 제어</span>'
+          : w.controlled ? '<span class="badge c">자동 제어</span>'
+            : w.hubChild ? '<span class="badge">Hub 실행</span>'
+              : w.browser ? '<span class="badge">브라우저</span>'
+                : w.cliApp ? '<span class="badge">앱 · CLI</span>'
+                  : '<span class="badge">실행 창</span>';
         const sz = w.minimized ? '최소화됨' : `${w.rect.width}×${w.rect.height}`;
         const authTok = typeof TOKEN !== 'undefined' ? TOKEN : (window.TOKEN || '');
         const shotHtml = w.minimized

@@ -23,6 +23,60 @@ try:
     dwm.DwmGetWindowAttribute.restype = ctypes.c_long
 except Exception:
     dwm = None
+try:
+    ntdll = ctypes.WinDLL("ntdll")
+except Exception:
+    ntdll = None
+k32.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+k32.OpenProcess.restype = wt.HANDLE
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+PROCESS_COMMAND_LINE_INFO = 60
+
+
+class _UNICODE_STRING(ctypes.Structure):
+    _fields_ = [("Length", wt.USHORT), ("MaximumLength", wt.USHORT), ("Buffer", ctypes.c_void_p)]
+
+
+AUTOMATION_CMD_TOKENS = (
+    "--remote-debugging-port", "--remote-debugging-pipe", "--enable-automation",
+    "--test-type=webdriver", "playwright", "puppeteer", "antigravity",
+    "browser_subagent", "selenium", "chromedriver", "msedgedriver",
+)
+_CMDLINE_CACHE = {}
+
+
+def _proc_cmdline(pid):
+    now = time.monotonic()
+    hit = _CMDLINE_CACHE.get(pid)
+    if hit and now - hit[0] < 8.0:
+        return hit[1]
+    out = ""
+    if ntdll is not None:
+        h = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if h:
+            try:
+                buf = (ctypes.c_byte * 8192)()
+                ret = wt.ULONG(0)
+                st = ntdll.NtQueryInformationProcess(h, PROCESS_COMMAND_LINE_INFO, buf, ctypes.sizeof(buf), ctypes.byref(ret))
+                if st == 0:
+                    us = _UNICODE_STRING.from_buffer(buf)
+                    if us.Length and us.Buffer:
+                        out = ctypes.wstring_at(us.Buffer, us.Length // 2)
+            except Exception:
+                out = ""
+            finally:
+                k32.CloseHandle(h)
+    if len(_CMDLINE_CACHE) > 256:
+        _CMDLINE_CACHE.clear()
+    _CMDLINE_CACHE[pid] = (now, out)
+    return out
+
+
+def _is_automated_browser(pid):
+    low = _proc_cmdline(pid).lower()
+    if not low:
+        return False
+    return any(tok in low for tok in AUTOMATION_CMD_TOKENS)
 
 GENERIC_READ, GENERIC_WRITE = 0x80000000, 0x40000000
 FILE_SHARE_RW = 0x3
@@ -381,7 +435,7 @@ def _is_cloaked(hwnd):
 
 
 def cmd_list_windows(req):
-    """List visible top-level windows, prioritizing terminal/Hub descendants, browsers, and CLI apps."""
+    """List windows controlled by the session (or all visible desktop windows when all=True)."""
     procs = processes()
     if "term_pids" in req:
         term_roots = list(req.get("term_pids") or [])
@@ -392,7 +446,7 @@ def cmd_list_windows(req):
     hub_roots = list(req.get("pids") or []) + term_roots
     term_desc = _descendant_pids(procs, term_roots)
     hub_desc = _descendant_pids(procs, hub_roots)
-    include_all = req.get("all") is not False
+    include_all = bool(req.get("all"))
     found = []
 
     def enum_cb(hwnd, _lp):
@@ -423,8 +477,9 @@ def cmd_list_windows(req):
         linked = pid_val in term_desc
         hub_child = (not linked) and (pid_val in hub_desc)
         is_browser = exe_low in BROWSER_EXES
+        controlled = linked or (is_browser and _is_automated_browser(pid_val))
         is_cli_app = exe_low in CLI_APP_EXES or cls_buf.value == "ConsoleWindowClass"
-        if not (include_all or linked or hub_child or is_browser or is_cli_app):
+        if not (include_all or linked or controlled):
             return True
         rect = wt.RECT()
         u32.GetWindowRect(hwnd, ctypes.byref(rect))
@@ -439,6 +494,7 @@ def cmd_list_windows(req):
             "exe": exe or "app",
             "title": title[:160],
             "linked": linked,
+            "controlled": controlled,
             "hubChild": hub_child,
             "browser": is_browser,
             "cliApp": is_cli_app,
@@ -449,7 +505,7 @@ def cmd_list_windows(req):
 
     cb = _WNDENUMPROC(enum_cb)
     u32.EnumWindows(cb, 0)
-    found.sort(key=lambda x: (not x["linked"], not x["hubChild"], x["minimized"], not x["browser"], not x["cliApp"], x["title"].lower()))
+    found.sort(key=lambda x: (not x["linked"], not x["controlled"], not x["hubChild"], x["minimized"], not x["browser"], not x["cliApp"], x["title"].lower()))
     return {"windows": found[:60]}
 
 
