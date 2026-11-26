@@ -83,7 +83,7 @@ function homeListsHTML() {
       return `<div class="m-row" data-open-term="${esc(t.id)}">
         ${agentIcon(kind, meta.dot)}
         <div class="m-row-main"><div class="m-row-t">${esc(termLabel(t))}</div><div class="m-row-s">${esc(termKindLabel(t))}${showCwd}</div></div>
-        <div class="m-row-end">${branchTagHTML(t.branch)}${pj ? `<span class="badge tag">${esc(pj.name)}</span>` : ''}<span class="badge ${meta.badgeClass}" title="${esc(meta.title)}">${esc(meta.shortLabel)}</span></div>
+        <div class="m-row-end">${folderBadge(folderTarget(t, true))}${branchTagHTML(t.branch)}${pj ? `<span class="badge tag">${esc(pj.name)}</span>` : ''}<span class="badge ${meta.badgeClass}" title="${esc(meta.title)}">${esc(meta.shortLabel)}</span></div>
       </div>`;
     }
     const c = entry.item;
@@ -91,7 +91,7 @@ function homeListsHTML() {
     return `<div class="m-row" data-open-con="${esc(c.id)}">
       ${agentIcon(sessionOfConsole(c) ? 'claude' : 'shell', st === 'busy' ? 'busy' : 'idle')}
       <div class="m-row-main"><div class="m-row-t">${esc(consoleLabel(c))}</div><div class="m-row-s">외부 콘솔</div></div>
-      <div class="m-row-end"><span class="badge agy">콘솔</span><span class="badge ${st === 'busy' ? 'warn' : 'ok'}">${st === 'busy' ? '실행 중' : '대기'}</span></div>
+      <div class="m-row-end">${folderBadge(folderTarget(sessionOfConsole(c) || c, false, true))}<span class="badge agy">콘솔</span><span class="badge ${st === 'busy' ? 'warn' : 'ok'}">${st === 'busy' ? '실행 중' : '대기'}</span></div>
     </div>`;
   }).join('') || '<div class="empty" style="padding:24px 16px;text-align:center">열린 터미널이 없습니다. 위에서 바로 시작해 보세요.</div>';
 
@@ -103,7 +103,7 @@ function homeListsHTML() {
     return `<div class="m-row" data-hrecent="${esc(r.sessionId)}">
       ${agentIcon(ag)}
       <div class="m-row-main"><div class="m-row-t">${esc(sessionLabel(r))}</div><div class="m-row-s">${esc([r.branch?.isBranch && r.branch?.parentTitle ? `원본: ${r.branch.parentTitle}` : '', base(r.cwd), ago(r.mtime)].filter(Boolean).join(' · '))}</div></div>
-      <div class="m-row-end">${branchTagHTML(r.branch)}<button class="btn-sm" data-hresume="${esc(r.sessionId)}">이어하기</button></div>
+      <div class="m-row-end">${folderBadge(folderTarget(r))}${branchTagHTML(r.branch)}<button class="btn-sm" data-hresume="${esc(r.sessionId)}">이어하기</button></div>
     </div>`;
   }).join('') || '<div class="empty" style="padding:24px 16px;text-align:center">최근 대화 기록이 없습니다.</div>';
 
@@ -138,14 +138,14 @@ function termCardHTML(t, extraBadge = '') {
     : '';
   return `<div class="card" data-term="${t.id}"><div class="hd">${agentIcon(kind, dot)}
     <span class="t">${esc(termLabel(t))}</span>
-    ${branchTagHTML(t.branch)}${pjBadge}${extraBadge}${kindBadge}${stBadge}${closeBtn}</div>
+    ${folderBadge(folderTarget(t, true))}${branchTagHTML(t.branch)}${pjBadge}${extraBadge}${kindBadge}${stBadge}${closeBtn}</div>
     <div class="mini" id="mini-${t.id}"><div class="mini-in"></div></div></div>`;
 }
 function conCardHTML(c) {
   const s = sessionOfConsole(c);
   const st = consoleStateOf(c);
   return `<div class="card" data-id="${c.id}"><div class="hd"><span class="dot ${st === 'busy' ? 'busy' : 'idle'}"></span>
-    <span class="t">${esc(consoleLabel(c))}</span>${s?.limit ? '<span class="badge lim">한도</span>' : ''}<span class="badge agy">외부 콘솔</span><span class="badge ${st === 'busy' ? 'warn' : 'ok'}">${st === 'busy' ? '실행 중' : '대기'}</span></div>
+    <span class="t">${esc(consoleLabel(c))}</span>${folderBadge(folderTarget(s || c, false, true))}${s?.limit ? '<span class="badge lim">한도</span>' : ''}<span class="badge agy">외부 콘솔</span><span class="badge ${st === 'busy' ? 'warn' : 'ok'}">${st === 'busy' ? '실행 중' : '대기'}</span></div>
     <pre class="screen" id="scr-${c.id}">불러오는 중…</pre></div>`;
 }
 function bindMiniTerminals(gen, terms, cons) {
@@ -242,6 +242,7 @@ function recentRowHTML(r) {
     ${agentIcon(ag)}
     <div class="m-row-main"><div class="m-row-t">${esc(sessionLabel(r))}</div><div class="m-row-s">${esc(sub)}</div></div>
     <div class="m-row-end">
+      ${folderBadge(folderTarget(r))}
       ${branchTagHTML(r.branch)}
       <span class="fav${on ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${on ? '즐겨찾기 해제' : '즐겨찾기'}">${on ? ICO.starFill : ICO.star}</span>
       <button class="record-delete danger ghost icon-btn btn-sm" data-hide-record="${esc(r.sessionId)}" title="${delRecTitle}" aria-label="${esc(delRecAria)}">${ICO.trash}</button>
@@ -307,6 +308,7 @@ function paintTermsBody() {
             ${agentIcon(kind, meta.dot)}
             <div class="m-row-main"><div class="m-row-t">${esc(termLabel(t))}</div><div class="m-row-s">${esc(termKindLabel(t))}${base(t.cwd) ? ` · ${esc(base(t.cwd))}` : ''}</div></div>
             <div class="m-row-end">
+              ${folderBadge(folderTarget(t, true))}
               ${branchTagHTML(t.branch)}
               ${fk ? `<span class="fav${on ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0">${on ? ICO.starFill : ICO.star}</span>` : ''}
               ${pj ? `<span class="badge c">${esc(pj.name)}</span>` : ''}
@@ -320,7 +322,7 @@ function paintTermsBody() {
         return `<div class="m-row" data-open-con="${esc(c.id)}">
           ${agentIcon(sessionOfConsole(c) ? 'claude' : 'shell', st === 'busy' ? 'busy' : 'idle')}
           <div class="m-row-main"><div class="m-row-t">${esc(consoleLabel(c))}</div><div class="m-row-s">외부 콘솔</div></div>
-          <div class="m-row-end"><span class="badge agy">외부 콘솔</span><span class="badge ${st === 'busy' ? 'warn' : 'ok'}">${st === 'busy' ? '실행 중' : '대기'}</span></div>
+          <div class="m-row-end">${folderBadge(folderTarget(sessionOfConsole(c) || c, false, true))}<span class="badge agy">외부 콘솔</span><span class="badge ${st === 'busy' ? 'warn' : 'ok'}">${st === 'busy' ? '실행 중' : '대기'}</span></div>
         </div>`;
       }).join('');
       body = `<div class="sheet">${rows}</div>`;

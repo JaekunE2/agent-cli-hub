@@ -79,10 +79,11 @@ function renderSide() {
   const prevTop = side.scrollTop;
   const prevHistoryTop = $('.side-history', side)?.scrollTop || 0;
   const focusedNav = side.contains(document.activeElement) && document.activeElement.closest('.snav-item')?.dataset.key;
-  const focusedSession = side.contains(document.activeElement) && document.activeElement.closest('.srow-open')?.closest('[data-key]')?.dataset.key;
+  const focusedControl = side.contains(document.activeElement) && document.activeElement.closest('.srow-open, .folder-badge');
+  const focusedSession = focusedControl?.closest?.('[data-key]')?.dataset.key;
   const folded = sideFolded();
   const curKind = state.sel.kind;
-  const isSys = ['usage', 'gpu', 'vault'].includes(curKind);
+  const isSys = ['usage', 'gpu', 'vault', 'operator', 'trusted-folders'].includes(curKind);
 
   const calItems = ((typeof CAL !== 'undefined' && CAL?.data?.items) || []).filter((x) => !(x.kind === 'task' && x.done));
   const now = new Date();
@@ -297,6 +298,7 @@ function renderSide() {
       return `<div class="srow${isSel ? ' sel' : ''}${unread ? ' just-done' : ''}" data-key="term:${esc(t.id)}" title="${esc([termLabel(t), pj?.name, t.cwd, brTip].filter(Boolean).join(' · '))}">
         ${agentIcon(kind, dot)}
         <button type="button" class="ghost srow-main srow-open"><span class="srow-t">${esc(termLabel(t))}</span><span class="srow-s">${tags}</span></button>
+        ${folderBadge(folderTarget(t, true))}
         <span class="srow-end">${t.operator ? '' : renameButton}${unread ? '<span class="srow-unread" title="방금 작업 완료"></span>' : ''}${fk ? `<span class="fav${isStar ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${isStar ? '즐겨찾기 해제' : '즐겨찾기'}">${isStar ? ICO.starFill : ICO.star}</span>` : ''}</span>
       </div>`;
     }
@@ -308,6 +310,7 @@ function renderSide() {
       return `<div class="srow${isSel ? ' sel' : ''}" data-key="console:${esc(c.id)}">
         ${agentIcon(cs ? (cs.agent || 'claude') : 'shell', st === 'busy' ? 'busy' : 'idle')}
         <button type="button" class="ghost srow-main srow-open"><span class="srow-t">${esc(consoleLabel(c))}</span><span class="srow-s"><span class="srow-tag con">콘솔</span>${sideLiveStateTag(st)}</span></button>
+        ${folderBadge(folderTarget(cs || c, false, true))}
       </div>`;
     }
     const r = entry.item;
@@ -328,6 +331,7 @@ function renderSide() {
     return `<div class="srow${isSel ? ' sel' : ''}" data-key="recent:${esc(r.sessionId)}" title="${esc([sessionLabel(r), r.cwd, brTip].filter(Boolean).join(' · '))}">
       ${agentIcon(ag, liveDot)}
       <button type="button" class="ghost srow-main srow-open"><span class="srow-t">${esc(sessionLabel(r))}</span><span class="srow-s">${subHTML}</span></button>
+      ${folderBadge(folderTarget(r))}
       <span class="srow-end">
         ${renameButton}
         <span class="fav${on ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${on ? '즐겨찾기 해제' : '즐겨찾기'}">${on ? ICO.starFill : ICO.star}</span>
@@ -393,7 +397,8 @@ function renderSide() {
   if (historyList) historyList.scrollTop = prevHistoryTop;
   side.scrollTop = prevTop;
   if (focusedNav) [...side.querySelectorAll('.snav-item')].find((nav) => nav.dataset.key === focusedNav)?.focus({ preventScroll: true });
-  if (focusedSession) [...side.querySelectorAll('.side-history [data-key]')].find((row) => row.dataset.key === focusedSession)?.querySelector('.srow-open')?.focus({ preventScroll: true });
+  if (focusedSession) [...side.querySelectorAll('.side-history [data-key]')].find((row) => row.dataset.key === focusedSession)
+    ?.querySelector(focusedControl.matches('.folder-badge') ? '.folder-badge' : '.srow-open')?.focus({ preventScroll: true });
 
   const banner = $('#diskBanner');
   if (banner) {
@@ -464,7 +469,7 @@ $('#side')?.addEventListener('click', async (e) => {
   if (k === 'home') return select({ kind: 'home' });
   if (k === 'cmdk') return openCommandPalette();
   if (k === 'search') return select({ kind: 'search' });
-  if (k === 'system') return select({ kind: ['usage', 'gpu', 'vault', 'operator'].includes(state.sysTab) ? state.sysTab : 'usage' });
+  if (k === 'system') return select({ kind: state.sysTab });
   if (k === 'calendar') return select({ kind: 'calendar' });
   if (k === 'apps') return select({ kind: 'apps' });
   if (k === 'terms') { state.termsTab = 'active'; return select({ kind: 'terms' }); }

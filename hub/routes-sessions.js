@@ -19,11 +19,12 @@ const { sessionStartupBlock, waitForTerminalInput, dismissProjectHookMenu, dispa
 const { hasAgyCliConversation } = require('./agy-session');
 const { collectSessionTraces } = require('./session-traces');
 const { createWorkspaceSessions } = require('./workspace-sessions');
+const { createFolderListSummaries } = require('./routes-workspace-folders');
 
 const OV_TTL = 2500;
 
 /** Create transcript, overview, search, console/terminal interaction, and launch routes. */
-function createSessionRoutes(hub) {
+function createSessionRoutes(hub, workspaceContexts, logError) {
   const {
     baseDir, port, config, buildId, claudeDir, index, projects, accountPrefs, conversationBranches, termEvents,
     sessionDisplayTitle, branchBackupDir, forkClaudeJsonlAt, editClaudeJsonlAt, editCodexJsonlAt,
@@ -949,7 +950,13 @@ function createSessionRoutes(hub) {
   async function handleSessionRoutes(p, url, req, res, body, send, authed) {
     if (!authed(req, url)) { send(res, 401, { error: 'bad token' }); return true; }
 
-    if (p === '/api/overview') { send(res, 200, await overviewSnapshot()); return true; }
+    if (p === '/api/overview') {
+      const overview = await overviewSnapshot();
+      const terms = await folderList(overview.terms, req, (item) => `term:${item.id}`);
+      const live = await folderList(overview.live, req, nativeFolderKey);
+      send(res, 200, { ...overview, terms, live });
+      return true;
+    }
     if (req.method === 'GET' && (p === '/api/session/subagents' || p === '/api/session/subagent-detail')) {
       const params = Object.fromEntries(url.searchParams);
       const isDetail = p.endsWith('/subagent-detail');
@@ -1005,7 +1012,7 @@ function createSessionRoutes(hub) {
         const ideOnly = (s.agent || 'claude') === 'agy' && !hasAgyCliConversation(s.sessionId);
         return { ...s, title: customTitle || fallbackBranchTitle || conversationBranches.baseTitle(s.sessionId, s.title), projectId: owner?.projectId, ...(branch ? { branch } : {}), ...(ideOnly ? { ideOnly: true } : {}) };
       });
-      send(res, 200, { sessions });
+      send(res, 200, { sessions: await folderList(sessions, req, nativeFolderKey) });
       return true;
     }
     if (p === '/api/recent/hide' && req.method === 'POST') {
@@ -1500,6 +1507,9 @@ function createSessionRoutes(hub) {
   }
 
   const workspaceSessions = createWorkspaceSessions(hub, liveSessions);
+  const folderList = workspaceContexts ? createFolderListSummaries(workspaceContexts, workspaceSessions.resolveMany, logError)
+    : async (entries) => entries;
+  const nativeFolderKey = (item) => `session:${item.agent || 'claude'}:${item.sessionId}`;
   return { liveSessions, transcript, overviewStale, overviewSnapshot, handleSessionRoutes,
     folderSession: workspaceSessions.resolve, folderSessionLinks: workspaceSessions.sessionLinks };
 }

@@ -233,8 +233,8 @@ const projectRoutes = createProjectRoutes(hub);
 const hookTransport = createHookTransport(hub);
 hub.toolHooks = hookTransport.toolHooks;
 hub.artifacts = artifactsMod;
-const sessionRoutes = createSessionRoutes(hub);
 const workspaceContexts = createWorkspaceContexts(path.join(__dirname, 'data', 'workspace-contexts.json'));
+const sessionRoutes = createSessionRoutes(hub, workspaceContexts, logServerError);
 const workspaceFolderRoutes = createWorkspaceFolderRoutes(workspaceContexts, sessionRoutes.folderSession, logServerError);
 Object.assign(hub, {
   ...projectRoutes,
@@ -368,6 +368,9 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.
 const STATIC = {
   '/styles.css': 'public/styles.css', '/components.css': 'public/components.css',
   '/ui.js': 'public/ui.js', '/app-core.js': 'public/app-core.js', '/sidebar-ui.js': 'public/sidebar-ui.js',
+  '/workspace-badges.js': 'public/workspace-badges.js', '/workspace-folder-edit.js': 'public/workspace-folder-edit.js',
+  '/workspace-folder-detail.js': 'public/workspace-folder-detail.js', '/workspace-panel.js': 'public/workspace-panel.js',
+  '/workspace-trust-ui.js': 'public/workspace-trust-ui.js',
   '/home-terms-ui.js': 'public/home-terms-ui.js', '/terminals-ui.js': 'public/terminals-ui.js',
   '/tool-activity-ui.js': 'public/tool-activity-ui.js',
   '/tool-stream-ui.js': 'public/tool-stream-ui.js',

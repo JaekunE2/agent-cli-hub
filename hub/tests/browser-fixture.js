@@ -2,7 +2,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { WebSocketServer } = require('ws');
-module.exports = async function fixture(store, handleRoute) {
+module.exports = async function fixture(store, handleRoute, { language = 'ko' } = {}) {
   const root = path.resolve(__dirname, '..');
   const assets = {
     '/': path.join(root, 'public/index.html'),
@@ -107,6 +107,11 @@ module.exports = async function fixture(store, handleRoute) {
     if (url.pathname.startsWith('/api/')) return json(responses[url.pathname] || {});
     const file = assets[url.pathname] || path.join(root, 'public', path.basename(url.pathname));
     res.setHeader('content-type', file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html');
+    if (language === 'en' && file.startsWith(path.join(root, 'public')) && fs.existsSync(file)) {
+      const i18n = require('../i18n');
+      if (file.endsWith('.html')) return res.end(i18n.translateHtml(fs.readFileSync(file, 'utf8')).replace('lang="ko"', 'lang="en"'));
+      if (file.endsWith('.js')) return res.end(i18n.translateJs(fs.readFileSync(file, 'utf8')));
+    }
     fs.createReadStream(file).on('error', () => { res.statusCode = 404; res.end(); }).pipe(res);
   });
   const ws = new WebSocketServer({ server });

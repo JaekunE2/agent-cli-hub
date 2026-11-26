@@ -190,7 +190,8 @@ function viewConsole() {
   const title = esc(c ? consoleLabel(c) : 'pid ' + state.sel.id);
   setSessionBar(`<h2 title="${title}"><span>${title}</span></h2>`,
     dockTopSegHTML({ openSet: new Set(initialPanels), isContentTab, hasTerm: true, hasChat: !!sid, showFiles: !!sid, curTab: state.tab }),
-    `<button id="btnConMore" class="ghost icon-btn btn-sm desk" aria-label="콘솔 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`, sid ? { sessionId: sid } : null);
+    `<button id="btnConMore" class="ghost icon-btn btn-sm desk" aria-label="콘솔 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`,
+    sid ? { sessionId: sid } : null, folderTarget(s || c || {}, false, true));
 
   let dock = null;
   $('#bar').onclick = (e) => {
@@ -733,7 +734,7 @@ function viewTerm() {
     <div class="session-meta">${sessionOriginButton(t?.branch)}${branchTagHTML(t?.branch)}${t?.account ? `<span class="badge c">${esc(t.account.label.replace(/@.*/, ''))}</span>` : ''}${(t?.model || t?.effort) ? `<span class="badge" title="선택된 모델 · 추론 성능">${esc([t.model, t.effort].filter(Boolean).join(' · '))}</span>` : ''}</div>`,
     dockTopSegHTML({ openSet: new Set(initialPanels), isContentTab, hasTerm: true, hasChat: true, showFiles: true, curTab: state.tab }),
     `<button id="btnTermMore" class="ghost icon-btn btn-sm" aria-label="터미널 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`,
-    { termId: String(id), sessionId: sid, cwd: t?.cwd });
+    { termId: String(id), sessionId: sid, cwd: t?.cwd }, folderTarget(t || { id }, true));
 
   let dock = null;
   const doRenameTerm = () => {
