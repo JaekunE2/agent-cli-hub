@@ -510,24 +510,27 @@ async function uploadArtifactToDrive(item, { btn, sid, termId } = {}) {
         return true;
       }
       if (j.code === 'NOT_CONNECTED' || j.code === 'NOT_CONFIGURED') {
+        const authRes = j.code === 'NOT_CONNECTED' ? await api('/api/drive/auth').catch((err) => ({ error: err.message })) : null;
+        const authUrl = authRes?.url || '';
         const d = openDrawer({
           title: 'Google Drive 연결',
           bodyHTML: j.code === 'NOT_CONFIGURED'
             ? `<p>Google OAuth 클라이언트 파일이 필요합니다.</p><p class="ums"><code>hub/data/secrets/google-oauth-client.json</code> 파일을 설정한 뒤 다시 시도하세요 (Google 캘린더와 동일).</p>`
             : `<p>선택한 산출물을 Google Drive의 <b>Agent CLI Hub</b> 폴더에 올리려면 먼저 Google 계정을 연결하세요.</p>
-               <div class="row" style="gap:8px;margin-top:10px">
-                 <button type="button" class="primary" id="gdAuthBtn">Google Drive 연결</button>
+               ${authRes?.error ? `<p class="err">${esc(authRes.error)}</p>` : ''}
+               <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">
+                 ${authUrl ? `<a class="btnlike primary" id="gdAuthBtn" href="${esc(authUrl)}" target="_blank">Google Drive 연결</a>` : '<button type="button" class="primary" id="gdAuthBtn">Google Drive 연결</button>'}
                  <button type="button" id="gdRetryBtn">연결 완료 후 다시 업로드</button>
                </div>`,
           footerHTML: '<button data-drw-close>닫기</button>',
           width: 440,
         });
         const authBtn = $('#gdAuthBtn', d);
-        if (authBtn) authBtn.onclick = async () => {
+        if (authBtn && authBtn.tagName === 'BUTTON') authBtn.onclick = async () => {
           try {
             const ar = await api('/api/drive/auth');
             if (ar.error) throw new Error(ar.error);
-            if (ar.url) window.open(ar.url, '_blank', 'noopener');
+            if (ar.url) window.open(ar.url, '_blank');
           } catch (err) { toast(err.message, 5000, 'danger'); }
         };
         const retryBtn = $('#gdRetryBtn', d);
