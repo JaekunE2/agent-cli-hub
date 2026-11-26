@@ -235,23 +235,16 @@ function createDriveSync({ baseDir, port, config = {} }) {
     return { ok: true, updated, ...syncMap[abs] };
   }
 
-  async function oauthCallback(url, res) {
-    const html = (code, msg) => {
-      res.writeHead(code, { 'content-type': 'text/html; charset=utf-8' });
-      res.end(`<!doctype html><meta charset="utf-8"><body style="font:16px system-ui;padding:40px;background:#17171a;color:#ecebe6">${msg}<p><a style="color:#e0825f" href="/">대시보드로 돌아가기</a></p></body>`);
-    };
-    if (!oauthNonce || url.searchParams.get('state') !== oauthNonce) {
-      return html(400, '잘못된 요청입니다 (연결을 대시보드에서 다시 시작하세요).');
-    }
+  async function exchangeCode(code, state) {
+    if (!oauthNonce || state !== oauthNonce) throw new Error('잘못된 요청입니다 (연결을 다시 시작하세요).');
     oauthNonce = null;
-    if (url.searchParams.get('error')) return html(400, `Google Drive 연결이 취소되었습니다: ${url.searchParams.get('error')}`);
     const c = client();
-    if (!c) return html(400, `OAuth 클라이언트 파일이 없습니다: ${CLIENT}`);
+    if (!c) throw new Error(`OAuth 클라이언트 파일이 없습니다: ${CLIENT}`);
     const r = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
-        code: url.searchParams.get('code') || '',
+        code: code || '',
         client_id: c.client_id,
         client_secret: c.client_secret || '',
         redirect_uri: REDIRECT,
@@ -259,7 +252,7 @@ function createDriveSync({ baseDir, port, config = {} }) {
       }),
     });
     const j = await r.json().catch(() => ({}));
-    if (!r.ok || !j.refresh_token) return html(400, `토큰을 받지 못했습니다: ${j.error_description || j.error || r.status}`);
+    if (!r.ok || !j.refresh_token) throw new Error(`토큰을 받지 못했습니다: ${j.error_description || j.error || r.status}`);
     gState = {
       refresh_token: j.refresh_token,
       access_token: j.access_token,
@@ -271,7 +264,21 @@ function createDriveSync({ baseDir, port, config = {} }) {
       gState.account = about?.user?.emailAddress || null;
     } catch {}
     writeJson(TOKEN, gState);
-    return html(200, `✔ Google Drive 연결됨 (${gState.account || ''})<br>이제 산출물 탭에서 원하는 파일을 선택해 Drive로 업로드할 수 있습니다.`);
+    return gState;
+  }
+
+  async function oauthCallback(url, res) {
+    const html = (code, msg) => {
+      res.writeHead(code, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(`<!doctype html><meta charset="utf-8"><body style="font:16px system-ui;padding:40px;background:#17171a;color:#ecebe6">${msg}<p><a style="color:#e0825f" href="/">대시보드로 돌아가기</a></p></body>`);
+    };
+    if (url.searchParams.get('error')) return html(400, `Google Drive 연결이 취소되었습니다: ${url.searchParams.get('error')}`);
+    try {
+      await exchangeCode(url.searchParams.get('code') || '', url.searchParams.get('state') || '');
+      return html(200, `✔ Google Drive 연결됨 (${gState.account || ''})<br>이제 산출물 탭에서 원하는 파일을 선택해 Drive로 업로드할 수 있습니다.`);
+    } catch (e) {
+      return html(400, e.message);
+    }
   }
 
   async function handle(p, url, req, getBody, send) {
@@ -299,6 +306,16 @@ function createDriveSync({ baseDir, port, config = {} }) {
         ...(ACCOUNT ? { login_hint: ACCOUNT } : {}),
       });
       return send(200, { url: 'https://accounts.google.com/o/oauth2/v2/auth?' + q });
+    }
+    if (p === '/api/drive/exchange' && req.method === 'POST') {
+      const b = await getBody();
+      try {
+        const parsed = new URL(String(b.callbackUrl || '').trim());
+        await exchangeCode(parsed.searchParams.get('code') || '', parsed.searchParams.get('state') || '');
+        return send(200, { ok: true, account: gState?.account || null });
+      } catch (e) {
+        return send(400, { error: e.message || '콜백 URL을 해석하지 못했습니다.' });
+      }
     }
     if (p === '/api/drive/disconnect' && req.method === 'POST') {
       gState = null;
