@@ -3509,5 +3509,10 @@
   "다음 실행": "Next run",
   "최근 실행 결과": "Latest run result",
   "일시정지됨": "Paused",
-  "편집": "Edit"
+  "편집": "Edit",
+  "로그인 URL 복사": "Copy sign-in URL",
+  "브라우저에서 Google 로그인을 완료한 뒤 돌아오세요.": "Finish signing in to Google in your browser, then return here.",
+  "로그인 주소를 클립보드에 복사했습니다.": "Sign-in URL copied to clipboard.",
+  "주소 복사에 실패했습니다.": "Failed to copy URL.",
+  "복사한 콜백 URL을 붙여넣어 주세요.": "Paste the copied callback URL."
 }

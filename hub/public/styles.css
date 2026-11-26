@@ -135,8 +135,8 @@ button:active:not(:disabled) { transform: translateY(0.5px); }
 button:disabled { opacity: .48; cursor: not-allowed; transform: none; }
 button.btn-sm { min-height: var(--ctrl-h-sm); height: var(--ctrl-h-sm); padding: 0 9px; font-size: 12px; border-radius: var(--radius-sm); gap: 4px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-button.primary { background: var(--accent-fill); color: var(--on-accent); border-color: var(--accent-fill); font-weight: 600; box-shadow: var(--shadow-xs); }
-button.primary:hover { filter: brightness(1.06); background: var(--accent-fill); border-color: var(--accent-fill); }
+button.primary, .btnlike.primary { background: var(--accent-fill); color: var(--on-accent); border-color: var(--accent-fill); font-weight: 600; box-shadow: var(--shadow-xs); }
+button.primary:hover, .btnlike.primary:hover { filter: brightness(1.06); background: var(--accent-fill); border-color: var(--accent-fill); color: var(--on-accent); }
 button.ghost { background: transparent; border-color: transparent; color: var(--muted); box-shadow: none; }
 button.ghost:hover { background: color-mix(in srgb, var(--text) 6%, transparent); border-color: transparent; color: var(--text); }
 button.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 38%, var(--line)); background: transparent; }

@@ -427,7 +427,7 @@ async function renderArtifacts(sid, gen, termId = '', host = $('#view')) {
         <span class="ameta"><b title="${esc(it.path)}">${esc(it.title || it.name)}</b>
           <span class="artifact-location" title="${esc(it.path)}">${esc(location)}</span>
           <span class="ums">${esc(it.ext.toUpperCase())} · ${fmtSize(it.size)} · ${relTime(it.mtime)}${it.source === 'pinned' ? ' · 지정됨' : ''}</span></span></button>
-        <button class="adrive" data-adrive="${i}" aria-label="Google Drive에 업로드" title="Google Drive에 업로드">${ICO.upload}</button><button class="ahide" data-ahide="${i}" aria-label="목록에서 숨기기" title="목록에서 숨기기">${ICO.close}</button><button class="asend" data-asend="${i}" aria-label="세션에 보내기" title="이 파일을 세션에 보내기 (경로 멘션)">${ICO.arrowUpRight}</button></div>`;
+        <button type="button" class="adrive" data-adrive="${i}" aria-label="Google Drive에 업로드" title="Google Drive에 업로드">${ICO.upload}</button><button type="button" class="ahide" data-ahide="${i}" aria-label="목록에서 숨기기" title="목록에서 숨기기">${ICO.close}</button><button type="button" class="asend" data-asend="${i}" aria-label="세션에 보내기" title="이 파일을 세션에 보내기 (경로 멘션)">${ICO.arrowUpRight}</button></div>`;
     };
     host.innerHTML = `<div class="subtoolbar">
         <div class="seg" role="tablist" aria-label="산출물 범위">
@@ -492,7 +492,7 @@ async function renderArtifacts(sid, gen, termId = '', host = $('#view')) {
   };
   paint();
 }
-async function uploadArtifactToDrive(item, { btn, sid, termId } = {}) {
+async function uploadArtifactToDrive(item, { btn, sid, termId, drawerOptions = {} } = {}) {
   const t = (state.terms || []).find((x) => String(x.id) === String(termId))
     || (state.recent || []).find((x) => x.sessionId === sid);
   const folderName = (t?.cwd ? base(t.cwd) : '') || t?.title || 'Session';
@@ -521,7 +521,8 @@ async function uploadArtifactToDrive(item, { btn, sid, termId } = {}) {
                ${isLocal ? '' : '<p class="ums">구글 로그인 후 돌아오는 주소가 이 PC(127.0.0.1)라서, 이 PC 브라우저에서 연결하거나 로그인 후 실패한 주소창 URL을 아래에 붙여넣으세요.</p>'}
                ${authRes?.error ? `<p class="err">${esc(authRes.error)}</p>` : ''}
                <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">
-                 ${authUrl ? `<a class="btnlike primary" id="gdAuthBtn" href="${esc(authUrl)}" target="_blank">Google Drive 연결</a>` : '<button type="button" class="primary" id="gdAuthBtn">Google Drive 연결</button>'}
+                 ${authUrl ? `<a class="btnlike primary" id="gdAuthBtn" href="${esc(authUrl)}" target="_blank" rel="noopener noreferrer">Google Drive 연결</a>` : '<button type="button" class="primary" id="gdAuthBtn">Google Drive 연결</button>'}
+                 ${authUrl ? '<button type="button" id="gdCopyUrlBtn">로그인 URL 복사</button>' : ''}
                  <button type="button" id="gdRetryBtn">연결 완료 후 다시 업로드</button>
                </div>
                ${isLocal ? '' : `<div style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap">
@@ -530,30 +531,49 @@ async function uploadArtifactToDrive(item, { btn, sid, termId } = {}) {
                </div>`}`,
           footerHTML: '<button data-drw-close>닫기</button>',
           width: 440,
+          ...drawerOptions,
         });
         const authBtn = $('#gdAuthBtn', d);
         if (authBtn && authBtn.tagName === 'BUTTON') authBtn.onclick = async () => {
+          authBtn.disabled = true;
           try {
             const ar = await api('/api/drive/auth');
             if (ar.error) throw new Error(ar.error);
-            if (ar.url) window.open(ar.url, '_blank');
+            if (ar.url) window.open(ar.url, '_blank', 'noopener,noreferrer');
           } catch (err) { toast(err.message, 5000, 'danger'); }
+          finally { authBtn.disabled = false; }
+        };
+        else if (authBtn) authBtn.onclick = () => {
+          toast('브라우저에서 Google 로그인을 완료한 뒤 돌아오세요.', 4000);
+        };
+        const copyBtn = $('#gdCopyUrlBtn', d);
+        if (copyBtn && authUrl) copyBtn.onclick = async () => {
+          try {
+            await navigator.clipboard.writeText(authUrl);
+            toast('로그인 주소를 클립보드에 복사했습니다.');
+          } catch {
+            toast('주소 복사에 실패했습니다.', 4000, 'danger');
+          }
         };
         const exBtn = $('#gdExchangeBtn', d);
+        const cbInput = $('#gdCallbackUrl', d);
         if (exBtn) exBtn.onclick = async () => {
-          const cb = $('#gdCallbackUrl', d)?.value?.trim();
-          if (!cb) return;
+          const cb = cbInput?.value?.trim();
+          if (!cb) return toast('복사한 콜백 URL을 붙여넣어 주세요.', 3500, 'danger');
           exBtn.disabled = true;
           try {
             const er = await api('/api/drive/exchange', { method: 'POST', body: { callbackUrl: cb } });
             if (er.error) throw new Error(er.error);
-            if (await tryUpload()) d.close();
+            d.close();
+            await tryUpload();
           } catch (err) { toast(err.message, 5000, 'danger'); }
           finally { exBtn.disabled = false; }
         };
+        if (cbInput && exBtn) cbInput.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); exBtn.click(); } };
         const retryBtn = $('#gdRetryBtn', d);
         if (retryBtn) retryBtn.onclick = async () => {
-          if (await tryUpload()) d.close();
+          d.close();
+          await tryUpload();
         };
         return false;
       }
@@ -594,7 +614,7 @@ async function openArtifact(sid, it, url = artUrl(sid, it.path)) {
   d.setAttribute('aria-labelledby', 'avTitle');
   d.innerHTML = `<span class="sr-only" tabindex="0" data-av-edge="start"></span>
     <div class="box wide aview"><div class="row avhead artifact-preview-head"><b id="avTitle" title="${esc(it.path)}">${ART_ICON[it.kind] || ''} ${esc(it.title || it.name)}</b>
-      <a class="btnlike btn-sm" href="${url}" target="_blank" rel="noopener">${ICO.external} 새 탭</a><a class="btnlike btn-sm" href="${url}&dl=1" download="${esc(it.name)}">다운로드</a><button class="primary btn-sm" id="avSend" title="이 파일 경로를 세션에 보내기">${ICO.arrowUpRight} 세션에</button><button class="ghost icon-btn btn-sm" id="avClose" autofocus aria-label="닫기">${ICO.close}</button></div>
+      <a class="btnlike btn-sm" href="${url}" target="_blank" rel="noopener">${ICO.external} 새 탭</a><a class="btnlike btn-sm" href="${url}&dl=1" download="${esc(it.name)}">다운로드</a><button type="button" class="btn-sm" id="avDrive" title="Google Drive에 업로드">${ICO.upload} Drive</button><button class="primary btn-sm" id="avSend" title="이 파일 경로를 세션에 보내기">${ICO.arrowUpRight} 세션에</button><button class="ghost icon-btn btn-sm" id="avClose" autofocus aria-label="닫기">${ICO.close}</button></div>
     <div class="ums mono" style="word-break:break-all">${esc(it.path)} · ${fmtSize(it.size)}</div>
     <div id="avBody" class="avbody" tabindex="0" role="region" aria-label="미리보기 내용">불러오는 중…</div></div>
     <span class="sr-only" tabindex="0" data-av-edge="end"></span>`;
@@ -614,6 +634,18 @@ async function openArtifact(sid, it, url = artUrl(sid, it.path)) {
   d.onclose = () => d.remove();
   d.onclick = (e) => {
     if (e.target === d || e.target.closest('#avClose')) d.close();
+    if (e.target.closest('#avDrive')) {
+      const drvBtn = e.target.closest('#avDrive');
+      uploadArtifactToDrive(it, {
+        btn: drvBtn,
+        sid,
+        drawerOptions: { parent: d, focus: true, onClose: () => { box.inert = false; drvBtn.focus(); } },
+      });
+      if ($('.drw-backdrop', d)) {
+        box.inert = true;
+        d.append(end);
+      }
+    }
     if (e.target.closest('#avSend')) {
       sendPathDialog(it.abs || it.path, { parent: d, focus: true, onClose: () => { box.inert = false; send.focus(); } });
       box.inert = true;
