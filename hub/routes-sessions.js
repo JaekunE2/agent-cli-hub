@@ -1940,6 +1940,9 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       return true;
     }
     if (p === '/api/hooks/install-claude' && req.method === 'POST') {
+      // writes the user's global ~/.claude/settings.json: only the main hub may do that (a side instance would point every
+      // Claude session at its own hook script)
+      if (hub.instance && !hub.instance.main) { send(res, 403, { error: 'side hub instance: install the hook from the main hub' }); return true; }
       send(res, 200, hub.toolHooks ? hub.toolHooks.installClaudeHook() : { ok: false });
       return true;
     }
