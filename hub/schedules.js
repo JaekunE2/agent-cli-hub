@@ -195,7 +195,8 @@ function createScheduleEngine({
         throw error('CAPABILITY_UNSUPPORTED', 'Read-only schedule runner is unavailable');
       }
       spec = {
-        runId: run.id, cwd: resolved.cwd, cmd: resolved.cmd, args: resolved.args, env: resolved.env ?? {},
+        runId: run.id, cli: resolved.cli || item.target.cli || 'codex',
+        cwd: resolved.cwd, cmd: resolved.cmd, args: resolved.args, env: resolved.env ?? {},
         stdinText, timeoutMs: item.timeoutSec * 1000,
         sensitive: [item.prompt, resolved.taskText, ...item.target.referenceDirs].filter(Boolean),
       };

@@ -54,4 +54,47 @@ function codexOutput() {
   };
 }
 
-module.exports = { summarize, codexOutput };
+function cliOutput() {
+  let raw = '';
+  const MAX = 131_072;
+  const result = { completed: false, failed: false, sessionId: null, outputSummary: '', errorSummary: '' };
+  return {
+    result,
+    feed(chunk) {
+      if (raw.length < MAX) raw += String(chunk || '').slice(0, MAX - raw.length);
+    },
+    finish(exitCode) {
+      const text = raw.trim();
+      if (!text) {
+        if (exitCode === 0) result.completed = true;
+        return;
+      }
+      const tryParse = (s) => { try { return JSON.parse(s); } catch { return null; } };
+      let parsed = tryParse(text);
+      if (!parsed) {
+        const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const obj = tryParse(lines[i]);
+          if (obj && typeof obj === 'object') { parsed = obj; break; }
+        }
+      }
+      if (parsed && typeof parsed === 'object') {
+        const sid = parsed.session_id || parsed.sessionId || parsed.conversation_id || parsed.conversationId || parsed.thread_id;
+        if (typeof sid === 'string' && /^[\w-]{1,128}$/.test(sid)) result.sessionId = sid;
+        if (parsed.is_error || parsed.error) {
+          result.failed = true;
+          result.errorSummary = String(parsed.error?.message || parsed.error || parsed.result || 'CLI reported failure');
+          return;
+        }
+        const msg = parsed.result ?? parsed.response ?? parsed.content ?? parsed.text ?? parsed.output ?? '';
+        result.outputSummary = typeof msg === 'string' ? msg : JSON.stringify(msg);
+        result.completed = exitCode === 0;
+        return;
+      }
+      result.outputSummary = text;
+      result.completed = exitCode === 0;
+    },
+  };
+}
+
+module.exports = { summarize, codexOutput, cliOutput };

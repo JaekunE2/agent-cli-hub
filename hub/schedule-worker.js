@@ -5,7 +5,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const { read, publish } = require('./schedule-store');
-const { summarize, codexOutput } = require('./schedule-result');
+const { summarize, codexOutput, cliOutput } = require('./schedule-result');
 
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const stamp = () => new Date().toISOString();
@@ -131,8 +131,11 @@ async function worker(dir) {
     runId: spec.runId, token, state: 'claimed', pid: process.pid, startedAt, worker: __filename,
   }, false)) return;
 
-  const output = codexOutput();
-  const child = spawn(spec.cmd, spec.args, { cwd: spec.cwd, env: spec.env, windowsHide: true });
+  const output = spec.cli && spec.cli !== 'codex' ? cliOutput(spec.cli) : codexOutput();
+  const isWinBatch = process.platform === 'win32' && /\.(cmd|bat)$/i.test(spec.cmd || '');
+  const spawnCmd = isWinBatch ? (process.env.COMSPEC || 'cmd.exe') : spec.cmd;
+  const spawnArgs = isWinBatch ? ['/d', '/s', '/c', spec.cmd, ...(spec.args || [])] : spec.args;
+  const child = spawn(spawnCmd, spawnArgs, { cwd: spec.cwd, env: spec.env, windowsHide: true });
   let reason = null;
   let stderr = '';
   let launchError = null;
@@ -162,6 +165,7 @@ async function worker(dir) {
   clearInterval(heartbeat);
   clearInterval(cancel);
   output.feed('\n');
+  output.finish?.(exitCode);
   const { completed, failed, sessionId, outputSummary, errorSummary } = output.result;
   if (!reason && (exitCode !== 0 || launchError || failed || !completed)) reason = 'CLI_FAILED';
   const sensitive = [

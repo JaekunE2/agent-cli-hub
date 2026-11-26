@@ -30,7 +30,7 @@ const { createAccountPrefsStore, buildRecoveryLaunchArgs } = require('./account-
 const { createProjectHarnessStore } = require('./project-harness');
 const { createProjectRefsStore } = require('./project-refs');
 const { checkAutopilotCompletions } = require('./project-autopilot');
-const { generatePlan, generateSubtasks, cliModelEffortArgs, inspectWorkspace } = require('./project-plan');
+const { generatePlan, generateSubtasks, cliModelEffortArgs, inspectWorkspace, resolveCliExecutable, enrichedCliEnv } = require('./project-plan');
 const { scanFloorplan } = require('./workspace-floorplan');
 const { runTaskSubChatTurn } = require('./task-subchat');
 const { deleteCliRecord, uuid: recordUuid } = require('./delete-cli-record');
@@ -250,31 +250,97 @@ const sessionRoutes = createSessionRoutes(hub, workspaceContexts, logServerError
 hub.workspaceExecution = createWorkspaceExecution(workspaceContexts, sessionRoutes.folderSession);
 const workspaceFolderRoutes = createWorkspaceFolderRoutes(workspaceContexts, sessionRoutes.folderSession, logServerError);
 let scheduleEngine;
-const scheduleRunnerAvailable = false; // The workspace CLI adapter supplies the verified read-only runner.
-const scheduleCapabilities = {
-  cli: [
-    { id: 'codex', label: 'Codex', accountIds: ['default'], referenceMode: 'context', available: scheduleRunnerAvailable, reason: scheduleRunnerAvailable ? null : 'RUNNER_UNAVAILABLE' },
-    { id: 'claude', label: 'Claude', accountIds: ['default'], referenceMode: 'add-dir', available: scheduleRunnerAvailable, reason: scheduleRunnerAvailable ? null : 'RUNNER_UNAVAILABLE' },
-    { id: 'agy', label: 'Antigravity', accountIds: ['default'], referenceMode: 'context', available: scheduleRunnerAvailable, reason: scheduleRunnerAvailable ? null : 'RUNNER_UNAVAILABLE' },
-  ],
-};
+function detectScheduleCli(cliId) {
+  const raw = cliId === 'codex'
+    ? (hub.codexExe?.() || 'codex.exe')
+    : cliId === 'agy'
+      ? (hub.agyExe?.() || 'agy.exe')
+      : 'claude.exe';
+  const resolved = resolveCliExecutable(raw);
+  if (resolved && path.isAbsolute(resolved) && fs.existsSync(resolved)) return resolved;
+  const dirs = String(enrichedCliEnv().PATH || process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  const names = process.platform === 'win32'
+    ? (/\.(exe|cmd|bat)$/i.test(resolved) ? [resolved] : [`${resolved}.exe`, `${resolved}.cmd`, `${resolved}.bat`, resolved])
+    : [resolved];
+  for (const dir of dirs) {
+    for (const name of names) {
+      const candidate = path.join(dir, name);
+      try { if (fs.statSync(candidate).isFile()) return candidate; } catch {}
+    }
+  }
+  return null;
+}
+function buildScheduleCapabilities() {
+  const specs = [
+    { id: 'codex', label: 'Codex', referenceMode: 'context' },
+    { id: 'claude', label: 'Claude', referenceMode: 'add-dir' },
+    { id: 'agy', label: 'Antigravity', referenceMode: 'context' },
+  ];
+  return {
+    cli: specs.map(s => {
+      const cmd = detectScheduleCli(s.id);
+      return {
+        id: s.id, label: s.label, accountIds: ['default'], referenceMode: s.referenceMode,
+        available: Boolean(cmd), reason: cmd ? null : 'RUNNER_UNAVAILABLE',
+      };
+    }),
+  };
+}
+const scheduleCapabilities = buildScheduleCapabilities();
+const scheduleRunnerAvailable = scheduleCapabilities.cli.some(c => c.available);
 const scheduleRoutes = createScheduleRoutes(() => scheduleEngine, scheduleCapabilities, logServerError);
 const scheduleTransport = createScheduleTransport(() => scheduleEngine, logServerError);
 
-function resolveScheduleTarget({ projectId, version, taskId, cwd }) {
+function resolveScheduleTarget({ projectId, version, taskId, cwd, cli = 'codex', accountId = 'default', referenceDirs = [] }) {
+  let workCwd = '';
+  let taskText = '';
   if (!projectId && cwd) {
     try {
       if (!fs.statSync(cwd).isDirectory()) throw new Error('not dir');
-      return;
+      workCwd = cwd;
     } catch {
       throw scheduleError('TARGET_MISSING', 'Schedule working folder not found');
     }
+  } else {
+    const project = projects.list().find(item => item.id === projectId);
+    if (!project?.versions?.some(item => item.number === version)
+        || (taskId && !project.tasks.some(task => task.id === taskId && task.version === version))) {
+      throw scheduleError('TARGET_MISSING', 'Schedule project, version or task not found');
+    }
+    workCwd = project.cwd || '';
+    if (!workCwd || !fs.existsSync(workCwd)) {
+      throw scheduleError('TARGET_MISSING', 'Schedule project folder not found');
+    }
+    const task = taskId ? project.tasks.find(t => t.id === taskId && t.version === version) : null;
+    if (task) taskText = `[Project: ${project.name} v${version} / Task: ${task.title || task.id}]\n${task.prompt || ''}`.trim();
   }
-  const project = projects.list().find(item => item.id === projectId);
-  if (!project?.versions?.some(item => item.number === version)
-      || (taskId && !project.tasks.some(task => task.id === taskId && task.version === version))) {
-    throw scheduleError('TARGET_MISSING', 'Schedule project, version or task not found');
+  const cmd = detectScheduleCli(cli);
+  if (!cmd) throw scheduleError('CAPABILITY_UNSUPPORTED', `Schedule CLI (${cli}) is unavailable`);
+  const validRefs = (Array.isArray(referenceDirs) ? referenceDirs : []).filter(d => {
+    try { return typeof d === 'string' && d.trim() && fs.statSync(d).isDirectory(); } catch { return false; }
+  });
+  const env = enrichedCliEnv();
+  for (const k of Object.keys(env)) {
+    if (/^(CLAUDECODE|CLAUDE_PID|CLAUDE_CODE_)/i.test(k)) delete env[k];
   }
+  if (cli === 'codex' && accountId && accountId !== 'default') {
+    const acc = CA.listAccounts?.().find(a => a.id === accountId);
+    if (acc?.home) env.CODEX_HOME = acc.home;
+  } else if (cli === 'claude' && accountId && accountId !== 'default') {
+    const acc = (CONFIG.accounts || []).find(a => a.id === accountId);
+    if (acc?.dir) env.CLAUDE_CONFIG_DIR = acc.dir;
+  }
+  let args;
+  if (cli === 'claude') {
+    args = ['--print', '--permission-mode', 'plan', '--output-format', 'json', ...validRefs.flatMap(d => ['--add-dir', d])];
+  } else if (cli === 'agy') {
+    args = ['--print', '--output-format', 'json'];
+    if (validRefs.length) taskText = [taskText, `[참고 폴더]\n${validRefs.join('\n')}`].filter(Boolean).join('\n\n');
+  } else {
+    args = ['exec', '--json', '--skip-git-repo-check', '--sandbox', 'read-only', '-'];
+    if (validRefs.length) taskText = [taskText, `[참고 폴더]\n${validRefs.join('\n')}`].filter(Boolean).join('\n\n');
+  }
+  return { cli, cwd: workCwd, cmd, args, env, taskText, referenceDirs: validRefs };
 }
 Object.assign(hub, {
   ...projectRoutes,

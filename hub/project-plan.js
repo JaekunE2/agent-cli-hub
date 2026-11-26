@@ -458,4 +458,4 @@ async function generateSubtasks(exe, project, task, cwd, env, { agent, model, ef
   return { tasks: readPlan(raw, project, { parentId: task.id, minItems: 2, maxItems: 6 }), sessionId };
 }
 
-module.exports = { generatePlan, generateSubtasks, buildPlanPrompt, buildSubtaskPrompt, readPlan, spawnCli, parseProgressLine, cliModelEffortArgs, inspectWorkspace };
+module.exports = { generatePlan, generateSubtasks, buildPlanPrompt, buildSubtaskPrompt, readPlan, spawnCli, parseProgressLine, cliModelEffortArgs, inspectWorkspace, resolveCliExecutable, enrichedCliEnv };
