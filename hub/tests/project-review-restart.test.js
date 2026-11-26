@@ -89,20 +89,26 @@ test('independent worktrees overlap and a junction to the same worktree waits', 
     ({ id: String(index), title: String(index), stage: 'doing', worktreePath })) };
   const started = [];
   const gate = Promise.withResolvers();
+  const firstStarted = Promise.withResolvers();
   const bothStarted = Promise.withResolvers();
   const hub = {
     projects: { list: () => [project], save: (next) => { project = next; } },
     reviewTask: async (_project, task) => {
       started.push(task.id);
+      if (started.length === 1) firstStarted.resolve();
       if (started.length === 2) bothStarted.resolve();
       await gate.promise;
       return { verdict: 'REJECT' };
     },
   };
-  const reviews = project.tasks.map(({ id }) => completeAutopilotTask(hub, project.id, id, { maxRetries: 0 }));
+  const review = (id) => completeAutopilotTask(hub, project.id, id, { maxRetries: 0 });
+  const reviews = [review('0')];
   try {
-    await Promise.race([bothStarted.promise, delay(1500, null, { ref: false })]);
-    assert.deepEqual(started, ['0', '2']);
+    await Promise.race([firstStarted.promise, delay(5000, null, { ref: false })]);
+    assert.deepEqual([...started], ['0']);
+    reviews.push(review('1'), review('2'));
+    await Promise.race([bothStarted.promise, delay(5000, null, { ref: false })]);
+    assert.deepEqual([...started], ['0', '2']);
   } finally {
     gate.resolve();
     await Promise.all(reviews);

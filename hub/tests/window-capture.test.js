@@ -23,11 +23,16 @@ assert png[:8] == b"\\x89PNG\\r\\n\\x1a\\n"
 p = subprocess.Popen(["powershell", "-NoProfile", "-Sta", "-Command",
   "Add-Type -AssemblyName System.Windows.Forms; $f=New-Object System.Windows.Forms.Form; $f.Text='AchWinTest'; $f.Width=320; $f.Height=220; $t=New-Object System.Windows.Forms.Timer; $t.Interval=2500; $t.Add_Tick({$f.Close()}); $t.Start(); [void]$f.ShowDialog()"])
 try:
-  time.sleep(0.9)
-  res = ch.cmd_list_windows({"pids": [p.pid]})
-  assert len(res["windows"]) >= 1, f"expected window in {res}"
-  w = res["windows"][0]
-  assert w["linked"] is True
+  deadline = time.monotonic() + 8
+  w = None
+  while p.poll() is None and time.monotonic() < deadline:
+    res = ch.cmd_list_windows({"pids": [p.pid]})
+    w = next((item for item in res["windows"] if item["pid"] == p.pid and item["title"] == "AchWinTest"), None)
+    if w:
+      break
+    time.sleep(0.1)
+  assert w is not None, "Test window did not appear"
+  assert w["linked"] is True, f"Test window is not linked: {w}"
   cap = ch.cmd_capture_window({"hwnd": w["hwnd"], "max_width": 240})
   assert cap["ok"] is True, f"capture failed: {cap}"
   raw = base64.b64decode(cap["png"])
