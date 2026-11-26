@@ -18,6 +18,7 @@ const { parentSession, transcriptFile } = require('./subagent-files');
 const { sessionStartupBlock, waitForTerminalInput, dismissProjectHookMenu, dispatchTerminalPrompt, submissionBlockMessage, terminalConfirmationMessage, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE } = require('./term-manager');
 const { hasAgyCliConversation } = require('./agy-session');
 const { collectSessionTraces } = require('./session-traces');
+const { createWorkspaceSessions } = require('./workspace-sessions');
 
 const OV_TTL = 2500;
 
@@ -1498,7 +1499,9 @@ function createSessionRoutes(hub) {
     return false;
   }
 
-  return { liveSessions, transcript, overviewStale, overviewSnapshot, handleSessionRoutes };
+  const workspaceSessions = createWorkspaceSessions(hub, liveSessions);
+  return { liveSessions, transcript, overviewStale, overviewSnapshot, handleSessionRoutes,
+    folderSession: workspaceSessions.resolve, folderSessionLinks: workspaceSessions.sessionLinks };
 }
 
 module.exports = { createSessionRoutes };

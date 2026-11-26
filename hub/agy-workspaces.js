@@ -24,17 +24,19 @@ function readSummaries(file) {
     const rows = [];
     for (const row of db.prepare(sql).iterate()) {
       let cwd = null;
+      let observedDirs = [];
       if (row.workspace_uris) {
         try {
           const uris = JSON.parse(row.workspace_uris);
           if (Array.isArray(uris)) {
             const folders = [...new Set(uris.filter((u) => typeof u === 'string' && u.startsWith('file:')).map((u) => fileURLToPath(u)))];
             if (folders.length === 1) cwd = folders[0];
+            else if (folders.length > 1) observedDirs = folders;
           }
         } catch {}
       }
       const title = hasTitle && typeof row.title === 'string' ? row.title.trim() : '';
-      if (cwd || title) rows.push({ id: row.conversation_id, cwd, title });
+      if (cwd || title || observedDirs.length) rows.push({ id: row.conversation_id, cwd, title, observedDirs });
     }
     dbCache.set(file, { sig, rows });
     return rows;
@@ -56,6 +58,7 @@ module.exports = function addAgyWorkspaces(brainRoots, docs) {
       if (!doc || doc.agent !== 'agy' || !doc.file.startsWith(prefix)) continue;
       if (!doc.cwd && row.cwd) doc.cwd = row.cwd;
       if (!doc.title && row.title) doc.title = row.title;
+      doc.observedDirs = row.observedDirs;
     }
   }
 };
