@@ -58,7 +58,7 @@ async function submitPrompt({ text, read, write, guard, waitFor, sleep, delay = 
     if (!m) return false;
     const count = Number(m[1]);
     if (count === text.length || count === Array.from(text).length) return true;
-    const lineDiff = (text.match(/\n/g) || []).length + 4;
+    const lineDiff = Math.max(32, (text.match(/\n/g) || []).length * 2 + 8);
     return pasted && (Math.abs(count - text.length) <= lineDiff || Math.abs(count - Array.from(text).length) <= lineDiff);
   };
   const current = async () => {
@@ -85,7 +85,13 @@ async function submitPrompt({ text, read, write, guard, waitFor, sleep, delay = 
       view = await current();
       return view.draft !== draft && (renderedMatch(view.draft) || freshPaste(view.draft) || visibleTail(view.draft));
     };
-    if (!await waitFor(hasPaste, 5000, 150)) throw new Error('CLI 입력창에서 전송한 내용을 확인하지 못했습니다.');
+    if (!await waitFor(hasPaste, 10000, 150)) {
+      try {
+        require('fs').appendFileSync(require('path').join(__dirname, 'server.log'),
+          `[${new Date().toISOString()}] [submitPrompt:hasPaste-timeout] cli=${pasteMarker} textLen=${text.length} draft=${JSON.stringify(draft)} lastDraft=${JSON.stringify(view?.draft)} cursorLine=${view?.cursorLine}\n`);
+      } catch {}
+      throw new Error('CLI 입력창에서 전송한 내용을 확인하지 못했습니다.');
+    }
     draft = view.draft;
     onDraft?.(draft);
     await sleep(delay);
@@ -100,6 +106,10 @@ async function submitPrompt({ text, read, write, guard, waitFor, sleep, delay = 
   }
   if (!sameDraft(view.draft)) {
     if (view.draft && !isPlaceholder(view.draft)) throw new Error(DRAFT);
+    try {
+      require('fs').appendFileSync(require('path').join(__dirname, 'server.log'),
+        `[${new Date().toISOString()}] [submitPrompt:sameDraft-fail] cli=${pasteMarker} textLen=${text.length} pasted=${pasted} draft=${JSON.stringify(draft)} viewDraft=${JSON.stringify(view?.draft)} cursorLine=${view?.cursorLine}\n`);
+    } catch {}
     throw new Error('CLI 입력창에서 전송한 내용을 확인하지 못했습니다.');
   }
   onDraft?.(view.draft);
