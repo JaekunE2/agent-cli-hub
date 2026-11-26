@@ -46,7 +46,9 @@ const { createSessionRoutes } = require('./routes-sessions');
 const { createHookTransport } = require('./session-hook-transport');
 const { createSystemRoutes } = require('./routes-system');
 const { createWorkspaceContexts } = require('./workspace-contexts');
-const { createWorkspaceFolderRoutes } = require('./routes-workspace-folders');
+const { createWorkspaceExecution } = require('./workspace-execution');
+const { WorkspaceError } = require('./workspace-paths');
+const { createWorkspaceFolderRoutes, workspaceFailure } = require('./routes-workspace-folders');
 const { createScheduleEngine } = require('./schedules');
 const { createScheduleRoutes } = require('./routes-schedules');
 const { createScheduleTransport } = require('./schedule-transport');
@@ -224,7 +226,7 @@ function makeApps() {
     terms: hub.terms,
     createTerm: hub.createTerm,
     liveSessions: () => hub.liveSessions(),
-    writeInteractiveTerm: hub.writeInteractiveTerm,
+    writeInteractiveTerm: (...args) => hub.writeInteractiveTerm(...args),
     artifactsMod,
     termInfo: hub.termInfo,
   });
@@ -240,6 +242,7 @@ hub.toolHooks = hookTransport.toolHooks;
 hub.artifacts = artifactsMod;
 const workspaceContexts = createWorkspaceContexts(path.join(__dirname, 'data', 'workspace-contexts.json'));
 const sessionRoutes = createSessionRoutes(hub, workspaceContexts, logServerError);
+hub.workspaceExecution = createWorkspaceExecution(workspaceContexts, sessionRoutes.folderSession);
 const workspaceFolderRoutes = createWorkspaceFolderRoutes(workspaceContexts, sessionRoutes.folderSession, logServerError);
 let scheduleEngine;
 const scheduleRunnerAvailable = false; // The workspace CLI adapter supplies the verified read-only runner.
@@ -435,6 +438,7 @@ hub.writeInteractiveTerm = async (t, data) => {
     if (t.meta?.projectAutoClose && t.lastInputAt === t.meta.spawnedAt) hub.touchUserInput(t);
   }
   const result = await t.proc.write(data);
+  if (result?.guardError) throw result.guardError;
   if (result?.ok && data.includes('\x03')) t._subagentsInterruptedAt = Date.now();
   if (result?.ok && /[\r\n]/.test(data)) hub.touchUserInput(t);
   return !!result?.ok;
@@ -468,6 +472,7 @@ const server = http.createServer(async (req, res) => {
     if (await systemRoutes.handleSystemRoutes(p, url, req, res, body, send, authed)) return;
     return send(res, 404, { error: 'unknown api' });
   } catch (e) {
+    if (e instanceof WorkspaceError) return send(res, e.status, workspaceFailure(e, req));
     return send(res, 500, { error: String(e.message || e) });
   }
 });
@@ -491,8 +496,10 @@ server.on('upgrade', (req, sock, head) => {
       let msg; try { msg = JSON.parse(m); } catch { return; }
       if (!msg) return;
       if (msg.type === 'input' && typeof msg.data === 'string' && msg.data) {
-        const inputError = () => {
-          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'input-error', error: '터미널에 키 입력을 전달하지 못했습니다.' }));
+        const inputError = (err) => {
+          if (err && !(err instanceof WorkspaceError)) logServerError('workspace-terminal-input', err);
+          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'input-error', ...(err instanceof WorkspaceError
+            ? workspaceFailure(err, req) : { error: '터미널에 키 입력을 전달하지 못했습니다.' }) }));
         };
         hub.writeInteractiveTerm(t, msg.data).then(ok => { if (!ok) inputError(); }, inputError);
       }

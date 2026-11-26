@@ -11,6 +11,9 @@ const { codexHistorySearchActive, flushNewAgyQueue } = require('./immediate-send
 const { hasCodexPasteDraft, submitPrompt } = require('./prompt-submission');
 const { agyStatusFromScreen: explicitAgyStatus } = require('./agy-session');
 const { requiredMcpMessage } = require('./vault-cli-ops');
+const { resolveLaunchFolders } = require('./workspace-launch');
+const { nativeFolderKey } = require('./workspace-execution');
+const { WorkspaceError } = require('./workspace-paths');
 
 const SESSION_ENV = /^(CLAUDECODE|CLAUDE_PID|CLAUDE_EFFORT|CLAUDE_CODE_(CHILD_SESSION|SESSION_ID|SESSION_ATTENDED|MESSAGING_SOCKET|MESSAGING_TOKEN|ENTRYPOINT|EXECPATH))$/;
 const CODEX_BUSY = /esc to interrupt|esc to cancel/i;
@@ -56,6 +59,7 @@ async function dismissProjectHookMenu(hub, term, screen) {
 
 async function writeProjectTerm(hub, term, data) {
   if (term.exited !== null || hub.terms && !hub.terms.has(term.id)) throw new Error('터미널 입력을 확인하지 못했습니다.');
+  await hub.workspaceExecution?.guardTerm(term);
   const result = await hub.ptyPost(term.id, '/write', { id: term.id, data });
   if (!result?.ok || term.exited !== null) throw new Error(result?.error || '터미널 입력을 확인하지 못했습니다.');
 }
@@ -134,14 +138,14 @@ async function dispatchTerminalPrompt(hub, term, text, { submitDraft = false, cl
       previousDraft, onDraft: (draft) => { term._pendingPromptDraft = { text, inputSeq, draft }; },
       paste: cli === 'codex' || (cli === 'agy' && text.length > 80) || /[\n\t]/.test(text) ? `\x1b[200~${text}\x1b[201~` : text,
       pasteMarker: cli,
-      write: (data) => {
+      write: async (data) => {
         guard(read());
+        hub.termMonitor?.onInput(term, data);
+        await writeProjectTerm(hub, term, data);
         if (term.meta?.projectAutoClose && !term.meta.projectSubmitted && (data === '\r' || data === '\t')) {
           term.meta.projectSubmitted = true;
           hub.ptyPost(term.id, '/meta', { id: term.id, meta: { projectSubmitted: true } });
         }
-        hub.termMonitor?.onInput(term, data);
-        return writeProjectTerm(hub, term, data);
       },
       queueKey: ({ busy, screen }) => immediate && cli === 'codex' && busy && /tab to (?:queue|steer)/i.test(screen) ? '\t' : '',
       flushQueue: immediate && cli === 'agy' ? flushNewAgyQueue : undefined,
@@ -397,6 +401,9 @@ function createTermManager(hub) {
     if (isAgyTerm(t)) return agySessionOf(t) || null;
     if (isCodexTerm(t)) return codexSessionOf(t) || null;
     const args = t.args || t.meta?.args || [];
+    if (t.meta?.workspaceFolders && args.includes('--fork-session') && args.includes('--session-id')) {
+      return args[args.indexOf('--session-id') + 1] || null;
+    }
     for (const flag of ['--resume', '--conversation']) {
       const i = args.indexOf(flag);
       if (i >= 0 && args[i + 1]) return args[i + 1];
@@ -440,11 +447,18 @@ function createTermManager(hub) {
     t.vt.onData((reply) => {
       if (!t.clients.size && t.exited === null && t.pid && typeof reply === 'string'
         && /^(?:\x1b\[(?:\??\d+(?:;\d+)*[Rcny]|0n)|\x1b\][0-9]+;[^\x07\x1b]*(?:\x07|\x1b\\))+$/.test(reply)) {
-        t.proc.write(reply);
+        ptyPost(id, '/write', { id, data: reply });
       }
     });
     t.proc = {
-      write: (data) => ptyPost(id, '/write', { id, data }),
+      write: async (data) => {
+        try { await hub.workspaceExecution?.guardTerm(t); }
+        catch (guardError) {
+          if (!(guardError instanceof WorkspaceError)) console.error('[workspace] terminal input:', guardError);
+          return { ok: false, error: guardError.message, guardError };
+        }
+        return ptyPost(id, '/write', { id, data });
+      },
       kill: () => ptyPost(id, '/kill', { id }),
       resize: (c, r) => ptyPost(id, '/resize', { id, cols: c, rows: r }),
     };
@@ -475,16 +489,21 @@ function createTermManager(hub) {
     return { kind, args: [...args, ...(prep?.extraArgs || [])], env: { ...env, ...prep?.env }, vault: prep?.vault, blocked: prep?.blocked };
   }
 
-  function createTerm({ cwd, cmd, args = [], title, customTitle, env = {}, account = null, model = '', effort = '', lastInputAt = 0, research = null, operator = false, projectTask, projectPrompt, parentTermId, agent, preparedVault }) {
+  function createTerm({ cwd, cmd, args = [], title, customTitle, env = {}, account = null, model = '', effort = '', lastInputAt = 0, research = null, operator = false, projectTask, projectPrompt, parentTermId, agent, preparedVault, workspaceLaunch, workspaceCli }) {
     const id = String(++termSeq);
-    if (!cwd || !fs.existsSync(cwd)) cwd = os.homedir();
+    const baseArgs = args;
+    const resolved = resolveLaunchFolders({ cli: workspaceCli, cmd, args, env, plan: workspaceLaunch });
+    ({ cmd, args, env } = resolved);
+    if (workspaceLaunch) cwd = resolved.cwd;
+    else if (!cwd || !fs.existsSync(cwd)) cwd = os.homedir();
     const me = cleanModelEffort(model, effort);
     const shared = launchSpecWithShared(cmd, args, env, agent, preparedVault);
     if (shared.blocked) throw new Error(`필수 MCP 준비 실패 · ${requiredMcpMessage(shared.blocked)}`);
     args = shared.args;
-    env = shared.env;
+    env = resolved.applied?.method === 'env'
+      ? { ...shared.env, HUB_REFERENCE_DIRS_JSON: resolved.env.HUB_REFERENCE_DIRS_JSON } : shared.env;
     if (projectTask) projects?.recordVaultRun?.(projectTask.projectId, [projectTask.taskId], 'terminal', shared.kind, shared.vault);
-    const envFlags = Object.fromEntries(Object.entries(env).filter(([k]) => !/TOKEN|KEY|SECRET/i.test(k)));
+    const envFlags = Object.fromEntries(Object.entries(env).filter(([k]) => k !== 'HUB_REFERENCE_DIRS_JSON' && !/TOKEN|KEY|SECRET/i.test(k)));
     if (/\bagy(?:\.exe)?$/i.test(cmd)) {
       const dir = path.join(baseDir, 'data', 'agy-logs');
       fs.mkdirSync(dir, { recursive: true });
@@ -504,6 +523,11 @@ function createTermManager(hub) {
     };
     if (projectTask) Object.assign(meta, { projectTask, projectPrompt,
       projectAutoClose: !args.some(a => /^(?:resume|--resume|--conversation|--continue)$/.test(a)) });
+    if (workspaceLaunch) {
+      hub.workspaceExecution.rememberLaunch(id, now, workspaceLaunch);
+      meta.workspaceFolders = { cli: workspaceCli, row: workspaceLaunch.row, applied: resolved.applied,
+        nativeKey: workspaceLaunch.resumeKey, baseArgs };
+    }
     const t = makeMirror({ id, meta });
     const terminalEnv = {
       ...cleanEnv(),
@@ -605,6 +629,10 @@ function createTermManager(hub) {
   }
 
   async function sendNoteWhenReady(t, note) {
+    const write = async (data) => {
+      const result = await t.proc.write(data);
+      if (!result?.ok) throw result?.guardError || new Error(result?.error || 'Terminal input failed');
+    };
     const head = note.slice(0, 12).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     for (let i = 0; i < 90 && t.exited === null; i++) {
       await sleep(700);
@@ -612,19 +640,28 @@ function createTermManager(hub) {
       if (terminalConfirmationMessage(sessionStartupBlock(scr))) return;
       if (/\? for shortcuts|bypass permissions|auto mode|accept edits|^\s*[>❯]\s*$/m.test(scr)) {
         await sleep(800);
-        t.proc.write(note);
-        await sleep(1200); t.proc.write('\r');
+        await write(note);
+        await sleep(1200); await write('\r');
         for (let k = 0; k < 6 && t.exited === null; k++) {
           await sleep(2500);
           if (!new RegExp(`^\\s*[>❯]\\s*${head}`, 'm').test(readTerm(t, 12).join('\n'))) break;
-          t.proc.write('\x1b[C '); await sleep(600); t.proc.write('\r');
+          await write('\x1b[C '); await sleep(600); await write('\r');
         }
         return;
       }
     }
   }
 
+  async function recoveryWorkspace(cli, sessionId, termKey, generation) {
+    const exec = hub.workspaceExecution;
+    if (!exec) return null;
+    const nativeKey = nativeFolderKey(cli, sessionId);
+    const source = termKey ? { termKey, generation, nativeKey } : exec.native(nativeKey);
+    return exec.plan({ source, resumeKey: nativeKey });
+  }
+
   async function resumeCut(s, note) {
+    const workspaceLaunch = await recoveryWorkspace('claude', s.id);
     let pick = { id: 'default', label: '이 PC 로그인' };
     try {
       const c = (await hub.switchCandidates('none')).candidates;
@@ -634,11 +671,12 @@ function createTermManager(hub) {
     const env = {};
     if (pick.id !== 'default') env.CLAUDE_CODE_OAUTH_TOKEN = hub.tokenAccounts().find((a) => a.id === pick.id).token();
     const t = createTerm({
-      cwd: s.cwd, cmd: 'claude.exe', args: ['--resume', s.id, '--dangerously-skip-permissions'], env,
+      cwd: s.cwd, cmd: 'claude.exe', args: ['--resume', s.id, ...(!workspaceLaunch ? ['--dangerously-skip-permissions'] : [])], env,
+      workspaceLaunch, workspaceCli: 'claude',
       title: `↻ ${s.title || s.id.slice(0, 8)}`, account: pick.id === 'default' ? null : { id: pick.id, label: pick.label },
     });
     t.meta.sessionId = s.id;
-    sendNoteWhenReady(t, note).catch(() => {});
+    sendNoteWhenReady(t, note).catch((error) => console.error('[pty] recovery note:', error.message));
     await sleep(2500);
   }
 
@@ -679,22 +717,47 @@ function createTermManager(hub) {
         if (acc) try { env.CLAUDE_CODE_OAUTH_TOKEN = acc.token(); } catch {}
       }
       const cliKind = isClaude ? 'claude' : isCodexTerm({ meta: m }) ? 'codex' : isAgyTerm({ meta: m }) ? 'agy' : '';
+      const workspaceCli = m.workspaceFolders?.cli || cliKind || agentOf({ meta: m });
+      let workspaceLaunch;
+      try { workspaceLaunch = await recoveryWorkspace(workspaceCli, x.sessionId, `term:${x.id}`, m.spawnedAt); }
+      catch (error) {
+        if (!(error instanceof WorkspaceError)) throw error;
+        console.error('[workspace] terminal recovery blocked:', error.code, error.message);
+        continue;
+      }
+      if (m.workspaceFolders && !workspaceLaunch) {
+        console.error('[workspace] terminal recovery blocked: folder settings missing', x.id);
+        continue;
+      }
       const savedME = cliKind ? accountPrefs.getForAccount(m.account?.id || '', cliKind) : { model: '', effort: '' };
       const recModel = m.model || savedME.model || '';
       const recEffort = m.effort || savedME.effort || '';
-      const args = cliKind
-        ? buildRecoveryLaunchArgs({ cli: cliKind, rawArgs: m.args || [], sessionId: x.sessionId, model: recModel, effort: recEffort, codexRecoveryArgs, cliModelEffortArgs })
-        : (m.args || []);
+      const savedArgs = m.workspaceFolders?.baseArgs || m.args || [];
+      const rawArgs = workspaceLaunch && cliKind === 'agy'
+        ? savedArgs.filter((arg, i) => !/^(-i|--prompt-interactive)$/.test(arg)
+          && !/^(-i|--prompt-interactive)$/.test(savedArgs[i - 1]) && !(x.sessionId && /^(--continue|-c)$/.test(arg)))
+        : savedArgs;
+      let args = cliKind
+        ? buildRecoveryLaunchArgs({ cli: cliKind, rawArgs, sessionId: x.sessionId, model: recModel, effort: recEffort, codexRecoveryArgs, cliModelEffortArgs })
+        : rawArgs;
+      if (workspaceLaunch) args = args.filter((arg) => !/^--dangerously-(?:skip-permissions|bypass-approvals-and-sandbox)$/.test(arg));
       const customTitle = x.sessionId && hub.conversationBranches?.hasTitleSetting(x.sessionId)
         ? hub.conversationBranches.getTitle(x.sessionId) : m.customTitle;
-      const t = createTerm({
+      let t;
+      try { t = createTerm({
         cwd: m.cwd, cmd: m.cmd, args, title: m.defaultTitle ?? m.title, customTitle, env, account: m.account,
         model: recModel, effort: recEffort, lastInputAt: m.lastInputAt || m.spawnedAt || 0,
         research: m.research, projectTask: m.projectTask, projectPrompt: m.projectPrompt, parentTermId: m.parentTermId,
-      });
+        workspaceLaunch, workspaceCli,
+      }); }
+      catch (error) {
+        if (!(error instanceof WorkspaceError)) throw error;
+        console.error('[workspace] terminal recovery blocked:', error.code, error.message);
+        continue;
+      }
       if (m.research) t.research = m.research;
       t.meta.sessionId = x.sessionId;
-      if (isClaude && x.busy && !m.research) sendNoteWhenReady(t, note).catch(() => {});
+      if (isClaude && x.busy && !m.research) sendNoteWhenReady(t, note).catch((error) => console.error('[pty] recovery note:', error.message));
     }
     return resumed;
   }
@@ -721,7 +784,14 @@ function createTermManager(hub) {
       const env = {};
       if (pick.id !== 'default') { try { env.CLAUDE_CODE_OAUTH_TOKEN = hub.tokenAccounts().find((a) => a.id === pick.id).token(); } catch { continue; } }
       const title = `⭐ ${d.title || d.firstPrompt?.split('\n')[0].slice(0, 40) || id.slice(0, 8)}`;
-      const t = createTerm({ cwd: d.cwd, cmd: 'claude.exe', args: ['--resume', id, '--dangerously-skip-permissions'], env, title, account: pick.id === 'default' ? null : { id: pick.id, label: pick.label } });
+      let workspaceLaunch;
+      try { workspaceLaunch = await recoveryWorkspace('claude', id); }
+      catch (error) {
+        if (!(error instanceof WorkspaceError)) throw error;
+        console.error('[workspace] favourite recovery blocked:', error.code, error.message);
+        continue;
+      }
+      const t = createTerm({ cwd: d.cwd, cmd: 'claude.exe', args: ['--resume', id, ...(!workspaceLaunch ? ['--dangerously-skip-permissions'] : [])], env, title, account: pick.id === 'default' ? null : { id: pick.id, label: pick.label }, workspaceLaunch, workspaceCli: 'claude' });
       t.meta.sessionId = id;
       await sleep(2500);
     }

@@ -19,7 +19,10 @@ const { sessionStartupBlock, waitForTerminalInput, dismissProjectHookMenu, dispa
 const { hasAgyCliConversation } = require('./agy-session');
 const { collectSessionTraces } = require('./session-traces');
 const { createWorkspaceSessions } = require('./workspace-sessions');
-const { createFolderListSummaries } = require('./routes-workspace-folders');
+const { nativeFolderKey } = require('./workspace-execution');
+const { unsupported } = require('./workspace-launch');
+const { WorkspaceError } = require('./workspace-paths');
+const { createFolderListSummaries, local, workspaceFailure } = require('./routes-workspace-folders');
 
 const OV_TTL = 2500;
 
@@ -321,6 +324,12 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
 
   async function handleStartOrNewTerm(p, req, res, body, send, { trackHandoff = false, continueFileRun = false } = {}) {
     let b = await body(req);
+    const folders = b.folders;
+    const requestedCwd = b.cwd;
+    const skipPermissions = b.skipPermissions;
+    const execution = hub.workspaceExecution;
+    if (folders !== undefined && !local(req)) throw new WorkspaceError(403, 'LOCAL_REQUIRED', 'Local access required');
+    if (folders !== undefined && !execution) throw unsupported();
     const parentTermId = b.parentTermId == null ? '' : String(b.parentTermId);
     if (parentTermId && (!/^\d+$/.test(parentTermId) || !hub.terms.has(parentTermId))) {
       return send(res, 400, { error: '터미널 ID가 올바르지 않습니다.' });
@@ -329,6 +338,23 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
     const submitDraft = retry && b.submitDraft === true;
     let projectTask, projectPrompt, launchAccount, projectRefsBlock = '';
     let reuseTerm, agentSource, preparedVault, mcpFallback;
+    let projectRoot, projectSource;
+    const sourceOf = (cli, resume) => {
+      const native = execution?.native(nativeFolderKey(index?.get(resume)?.agent || cli, resume));
+      if (execution?.hasContext(native)) return native;
+      return projectSource || (parentTermId ? execution?.forTerm(hub.terms.get(parentTermId)) : native);
+    };
+    const plan = (cli, cwd, resume) => execution?.plan({
+      source: sourceOf(cli, resume), folders, cwd, matchCwd: !!projectTask, projectRoot,
+      resumeKey: !b.fork && (cli !== 'agy' || hasAgyCliConversation(resume)) ? nativeFolderKey(cli, resume) : '',
+      skipPermissions, external: !projectTask && b.admin,
+    });
+    const existingInfo = async (t) => {
+      await execution?.guardTerm(t);
+      if (folders !== undefined) throw new WorkspaceError(409, 'FOLDERS_PENDING_RESTART', 'Restart the session to apply the folder settings');
+      const context = local(req) && await execution?.describe(t);
+      return { ...hub.termInfo(t), ...(context ? { folders: context } : {}), existing: true };
+    };
     const retryReset = { reviewPaused: false, reviewStatus: '', reviewNote: '', retryCount: 0 };
     if (p === '/api/projects/start') {
       if (hub.deletingProjects.has(b.projectId)) return send(res, 409, { error: 'Project 기록을 삭제 중입니다.' });
@@ -362,13 +388,21 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
           && (sameCli || sameFallback) && (!isolated || (t.cwd && path.relative(workspace, t.cwd) === ''));
       });
       const last = hub.terms.get(task.lastRun?.termId);
+      projectRoot = project.cwd || workspace;
+      projectSource = task.lastRun?.folderSource || (last && execution?.forTerm(last));
+      const worktree = !isolated && task.worktreePath;
+      const plannedCwd = worktree || workspace;
+      if (folders !== undefined && requestedCwd) {
+        await execution.plan({ folders, cwd: requestedCwd, projectRoot, skipPermissions });
+      }
+      await plan(kind, plannedCwd, b.resume);
       if (retry && last && task.reviewPaused && deliveryError(task.reviewNote) && projectDeliveryResult(hub, last)) {
         return send(res, 200, { ...hub.termInfo(last), existing: true, resultReceived: true });
       }
       if (existing) {
         const result = await existing.spawnResult;
         if (result?.error) return send(res, 502, { error: 'CLI를 시작하지 못했습니다. 설치 경로를 확인하세요.' });
-        const info = hub.termInfo(existing);
+        const info = await existingInfo(existing);
         if (result || existing.pid) hub.fileRuns?.recoverStart(existing);
         if (!retry || existing._projectDispatchPending) return send(res, 200, { ...info, existing: true });
         if (info.status === 'busy') {
@@ -409,7 +443,6 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       if (!hub.projectAgents.includes(kind)) return send(res, 400, { error: '작업 설계에서 CLI를 다시 선택하세요.' });
       if (!isolated) hub.ensureProjectDir(workspace);
       if (!path.isAbsolute(workspace) || !fs.statSync(workspace, { throwIfNoEntry: false })?.isDirectory()) return send(res, 400, { error: '작업 설계에서 존재하는 작업 폴더의 전체 경로를 입력하세요.' });
-      const worktree = !isolated && task.worktreePath;
       if (worktree && (!path.isAbsolute(worktree) || !fs.statSync(worktree, { throwIfNoEntry: false })?.isDirectory())) return send(res, 409, { error: '격리 작업 폴더를 찾을 수 없습니다.' });
       if (!reuseTerm) {
         const prepare = (cli, requiredSkills) => hub.unifiedVault?.prepareLaunch(cli, {
@@ -471,15 +504,22 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
     }
     if (b.resume && !b.fork && !projectTask) {
       const existingTerm = [...hub.terms.values()].find((x) => x.exited === null && hub.termSessionId(x) === b.resume);
-      if (existingTerm) return send(res, 200, { ...hub.termInfo(existingTerm), existing: true });
+      if (existingTerm) {
+        await plan(b.kind, requestedCwd, b.resume);
+        return send(res, 200, await existingInfo(existingTerm));
+      }
     }
-    const yolo = b.skipPermissions !== false;
+    let workspaceLaunch = await plan(b.kind, projectTask ? b.cwd : requestedCwd, b.resume);
+    const yolo = !workspaceLaunch && b.skipPermissions !== false;
     let cmd, args = [], title;
     if (b.kind === 'claude') {
       cmd = 'claude.exe';
       if (projectTask && !b.resume) args.push('--session-id', crypto.randomUUID());
       if (b.resume) args.push('--resume', b.resume);
-      if (b.resume && b.fork) args.push('--fork-session');
+      if (b.resume && b.fork) {
+        args.push('--fork-session');
+        if (workspaceLaunch) args.push('--session-id', crypto.randomUUID());
+      }
       if (yolo) args.push('--dangerously-skip-permissions');
       args.push(...cliModelEffortArgs('claude', b.model, b.effort));
       title = b.resume ? `claude --resume ${b.resume.slice(0, 8)}` : 'claude';
@@ -556,7 +596,13 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       if (b._autoDispatch && !submitDraft) b._rawPrompt = prepareProjectPrompt(baseDir, b._rawPrompt, reuseTerm?.meta?.cmd || cmd);
       if (b._autoDispatch) projectPrompt = fingerprint(b._rawPrompt);
     }
-    const t = reuseTerm || hub.createTerm({ cwd, cmd, args, title: b.title || title, ...launchAccount, model: b.model || '', effort: b.effort || '', projectTask, projectPrompt, parentTermId, agent: projectTask ? b.kind : undefined, preparedVault });
+    if (reuseTerm) await execution?.guardTerm(reuseTerm);
+    else {
+      const current = await plan(b.kind, projectTask ? cwd : requestedCwd, b.resume);
+      if (!!current !== !!workspaceLaunch) throw new WorkspaceError(409, 'REVISION_CONFLICT', 'Folder settings changed during launch');
+      workspaceLaunch = current;
+    }
+    const t = reuseTerm || hub.createTerm({ cwd, cmd, args, title: b.title || title, ...launchAccount, model: b.model || '', effort: b.effort || '', projectTask, projectPrompt, parentTermId, agent: projectTask ? b.kind : undefined, preparedVault, workspaceLaunch, workspaceCli: b.kind });
     const result = await t.spawnResult;
     if (result?.error || (!result && !reuseTerm)) {
       if (!reuseTerm) hub.terms.delete(t.id);
@@ -577,6 +623,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       if (!latestTask) return send(res, 404, { error: 'Project 작업을 찾을 수 없습니다.' });
       if (retry && latestTask.stage !== 'doing') return send(res, 409, { error: '진행 단계의 작업만 다시 시작할 수 있습니다.' });
       const run = { agent: hub.agentOf(t) || b.kind, source: agentSource, termId: t.id, ...(mcpFallback ? { mcpFallback } : {}) };
+      if (t.meta?.spawnedAt) run.folderSource = { termKey: `term:${t.id}`, generation: t.meta.spawnedAt };
       if (fileRun) run.fileRunId = fileRun.id;
       projects.save({
         ...latest,
@@ -664,7 +711,8 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
         }).finally(() => { t._projectDispatchPending = false; });
       }
     }
-    return send(res, 200, { ...hub.termInfo(t), ...(projectRefsBlock ? { refsBlock: projectRefsBlock } : {}), ...(retry ? { restarted: true } : {}) });
+    const context = local(req) && await execution?.describe(t);
+    return send(res, 200, { ...hub.termInfo(t), ...(context ? { folders: context } : {}), ...(projectRefsBlock ? { refsBlock: projectRefsBlock } : {}), ...(retry ? { restarted: true } : {}) });
   }
 
   async function startProjectTask(req, res, draft, send, options) {
@@ -672,6 +720,10 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
     if (startingTasks.has(key)) return send(res, 409, { error: '작업을 시작하는 중입니다.' });
     startingTasks.add(key);
     try { return await handleStartOrNewTerm('/api/projects/start', req, res, async () => draft, send, options); }
+    catch (error) {
+      if (!(error instanceof WorkspaceError)) throw error;
+      return send(res, error.status, workspaceFailure(error, req));
+    }
     finally { startingTasks.delete(key); }
   }
 
@@ -860,6 +912,11 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
     }
 
     const targetAgent = ['claude', 'codex', 'agy'].includes(b.targetAgent) ? b.targetAgent : (sourceAgent || 'claude');
+    const execution = hub.workspaceExecution;
+    const folderSource = execution?.native(nativeFolderKey(sourceAgent, id));
+    const branchPlan = (agent, resumeId) => execution?.plan({ source: folderSource, cwd: b.cwd,
+      matchCwd: !!b.cwd, resumeKey: nativeFolderKey(agent, resumeId) });
+    const inherited = await branchPlan(targetAgent);
     let launchAccount;
     try { launchAccount = hub.projectAccounts.resolve(targetAgent, String(b.account || '')); }
     catch (e) { return send(res, 400, { error: e.message }); }
@@ -873,28 +930,34 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
     const reqME = cleanModelEffort(b.model, b.effort);
     accountPrefs.save({ account: launchAccount?.account?.id || b.account || '', agent: targetAgent, model: reqME.model, effort: reqME.effort });
     const launchAndDeliver = async ({ agent, resumeId, title, promptToSend }) => {
+      const workspaceLaunch = await branchPlan(agent, resumeId);
+      if (!!workspaceLaunch !== !!inherited) throw new WorkspaceError(409, 'REVISION_CONFLICT', 'Folder settings changed during launch');
       let cmd, args = [];
       if (agent === 'codex') {
-        ({ cmd, args } = hub.codexLaunch(['--dangerously-bypass-approvals-and-sandbox', ...cliModelEffortArgs('codex', reqME.model, reqME.effort), ...(resumeId ? ['resume', resumeId] : []), ...(!resumeId && promptToSend ? [promptToSend] : [])]));
+        ({ cmd, args } = hub.codexLaunch([...(!workspaceLaunch ? ['--dangerously-bypass-approvals-and-sandbox'] : []), ...cliModelEffortArgs('codex', reqME.model, reqME.effort), ...(resumeId ? ['resume', resumeId] : []), ...(!resumeId && promptToSend ? [promptToSend] : [])]));
       } else if (agent === 'agy') {
         cmd = hub.agyExe();
         if (resumeId) args.push('--conversation', resumeId);
-        args.push('--dangerously-skip-permissions', ...cliModelEffortArgs('agy', reqME.model, reqME.effort));
+        args.push(...(!workspaceLaunch ? ['--dangerously-skip-permissions'] : []), ...cliModelEffortArgs('agy', reqME.model, reqME.effort));
         if (!resumeId && promptToSend) args.push('--prompt-interactive', promptToSend);
       } else {
         cmd = 'claude.exe';
         if (resumeId) args.push('--resume', resumeId);
-        args.push('--dangerously-skip-permissions', ...cliModelEffortArgs('claude', reqME.model, reqME.effort));
+        args.push(...(!workspaceLaunch ? ['--dangerously-skip-permissions'] : []), ...cliModelEffortArgs('claude', reqME.model, reqME.effort));
       }
-      const term = hub.createTerm({ cwd, cmd, args, env: launchAccount?.env || {}, title, account: launchAccount?.account || null, model: reqME.model, effort: reqME.effort });
+      const term = hub.createTerm({ cwd, cmd, args, env: launchAccount?.env || {}, title, account: launchAccount?.account || null, model: reqME.model, effort: reqME.effort, workspaceLaunch, workspaceCli: agent });
       if (promptToSend && (agent === 'claude' || resumeId)) {
         (async () => {
           if (await hub.waitFor(() => term.exited === null && hub.inputReady(term), 45000, 700)) {
             await hub.sleep(600);
             const payload = /\r|\n/.test(promptToSend) ? `\x1b[200~${promptToSend.replace(/\r\n/g, '\n')}\x1b[201~` : promptToSend;
-            term.proc.write(payload); await hub.sleep(hub.SUBMIT_DELAY); term.proc.write('\r');
+            const pasted = await term.proc.write(payload);
+            if (!pasted?.ok) throw pasted?.guardError || new Error(pasted?.error || 'Terminal input failed');
+            await hub.sleep(hub.SUBMIT_DELAY);
+            const submitted = await term.proc.write('\r');
+            if (!submitted?.ok) throw submitted?.guardError || new Error(submitted?.error || 'Terminal input failed');
           }
-        })().catch(() => {});
+        })().catch((error) => console.error('[transcript] follow-up:', error.message));
       }
       return term;
     };
@@ -907,7 +970,12 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
         const pidSet = new Set(cons.find((c) => c.pids.includes(live.pid))?.pids || []);
         const openTerm = [...hub.terms.values()].find((x) => x.exited === null && x.pid && pidSet.has(x.pid));
         if (!openTerm) return send(res, 409, { error: `이 세션이 외부 창(pid ${live.pid})에서 실행 중입니다. 먼저 닫거나 분기 재실행을 사용하세요.` });
-        openTerm.proc.write('\x1b'); await hub.sleep(400); openTerm.proc.write('/exit'); await hub.sleep(hub.SUBMIT_DELAY); openTerm.proc.write('\r');
+        if (inherited) await execution.guardTerm(openTerm);
+        const control = async (data) => {
+          const result = await openTerm.proc.write(data);
+          if (result?.guardError) throw result.guardError;
+        };
+        await control('\x1b'); await hub.sleep(400); await control('/exit'); await hub.sleep(hub.SUBMIT_DELAY); await control('\r');
         if (!(await hub.waitFor(() => openTerm.exited !== null, 5000))) try { openTerm.proc.kill(); } catch {}
         hub.forgetTerm(openTerm);
       }
@@ -953,7 +1021,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
     if (p === '/api/overview') {
       const overview = await overviewSnapshot();
       const terms = await folderList(overview.terms, req, (item) => `term:${item.id}`);
-      const live = await folderList(overview.live, req, nativeFolderKey);
+      const live = await folderList(overview.live, req, listedFolderKey);
       send(res, 200, { ...overview, terms, live });
       return true;
     }
@@ -1012,7 +1080,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
         const ideOnly = (s.agent || 'claude') === 'agy' && !hasAgyCliConversation(s.sessionId);
         return { ...s, title: customTitle || fallbackBranchTitle || conversationBranches.baseTitle(s.sessionId, s.title), projectId: owner?.projectId, ...(branch ? { branch } : {}), ...(ideOnly ? { ideOnly: true } : {}) };
       });
-      send(res, 200, { sessions: await folderList(sessions, req, nativeFolderKey) });
+      send(res, 200, { sessions: await folderList(sessions, req, listedFolderKey) });
       return true;
     }
     if (p === '/api/recent/hide' && req.method === 'POST') {
@@ -1173,9 +1241,29 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
     if (p === '/api/console/send' && req.method === 'POST') {
       const b = await body(req);
       const pid = Number(b.pid);
+      const execution = hub.workspaceExecution;
+      const guardFolders = async () => {
+        if (!execution) return;
+        const managed = [...hub.terms.values()].filter((t) => t.exited === null && t.pid
+          && (t.meta?.workspaceFolders || execution.hasContext(execution.forTerm(t))));
+        const native = liveSessions().filter((s) => execution.hasContext(execution.native(nativeFolderKey('claude', s.sessionId))));
+        if (!managed.length && !native.length) return;
+        const result = await hub.helperCall({ op: 'list' });
+        if (!Array.isArray(result.consoles)) throw new Error('Could not identify the console processes for folder validation');
+        const pids = new Set([pid, ...(result.consoles.find((c) => c.id === pid || c.pids.includes(pid))?.pids || [])]);
+        for (const t of managed) if (pids.has(t.pid)) await execution.guardTerm(t);
+        for (const s of native) {
+          if (pids.has(s.pid) && !managed.some((t) => pids.has(t.pid) && hub.termSessionId(t) === s.sessionId)) {
+            await execution.guardNative(nativeFolderKey('claude', s.sessionId));
+          }
+        }
+      };
       const textSubmission = b.submit && typeof b.text === 'string' && b.text.trim() && !b.keys?.length;
       if (b.submit || b.immediate || b.text) hub.consoleInputAt.set(pid, Date.now());
-      const call = (args) => hub.helperCall({ pid, ...args });
+      const call = async (args) => {
+        if (args.op === 'send') await guardFolders();
+        return hub.helperCall({ pid, ...args });
+      };
       const read = async () => {
         const snapshot = await call({ op: 'read', lines: 40 });
         if (snapshot.ok === false || !Array.isArray(snapshot.lines)) throw new Error(snapshot.error || '콘솔 화면을 읽지 못했습니다.');
@@ -1259,6 +1347,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
           }
           send(res, 200, { ok: true });
         } catch (e) {
+          if (e instanceof WorkspaceError) throw e;
           send(res, 409, { ok: false, error: e.message });
         } finally {
           consoleSubmissions.delete(pid);
@@ -1327,12 +1416,16 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
     if (p === '/api/term/send' && req.method === 'POST') {
       const b = await body(req); const t = hub.terms.get(String(b.id));
       if (!t || t.exited !== null) { send(res, 404, { ok: false, error: 'no such running terminal' }); return true; }
+      await hub.workspaceExecution?.guardTerm(t);
       if ((t._promptSubmission || t._projectDispatchPending) && (b.text || b.immediate || b.submit)) {
         send(res, 409, { ok: false, error: '터미널 입력을 전송 중입니다.' }); return true;
       }
       if (b.waitForReady === true && b.submit && typeof b.text === 'string' && b.text.trim()) {
         try { await waitForTerminalInput(hub, t); }
-        catch (error) { send(res, 409, { ok: false, error: error.message }); return true; }
+        catch (error) {
+          if (error instanceof WorkspaceError) throw error;
+          send(res, 409, { ok: false, error: error.message }); return true;
+        }
       }
       if (b.submit || b.immediate || b.text) {
         const screen = hub.readTerm(t, 12).join('\n');
@@ -1349,7 +1442,8 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       const inHistorySearch = (b.immediate || (b.submit && b.text)) && hub.isCodexTerm(t)
         && codexHistorySearchActive(hub.readTerm(t, 5));
       if (inHistorySearch) {
-        await t.proc.write(PTY_KEYS.esc);
+        const result = await t.proc.write(PTY_KEYS.esc);
+        if (result?.guardError) throw result.guardError;
         await hub.sleep(hub.SUBMIT_DELAY);
       }
       const agent = hub.agentOf?.(t) || (hub.isCodexTerm(t) ? 'codex' : hub.isAgyTerm?.(t) ? 'agy' : null);
@@ -1377,12 +1471,14 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
             write: async (data) => {
               read(40);
               const result = await t.proc.write(data);
+              if (result?.guardError) throw result.guardError;
               if (!result?.ok) throw new Error(result?.error || '터미널 입력을 확인하지 못했습니다.');
             },
             sleep: hub.sleep, text: b.text, resendIfMissing: b.resendIfMissing,
           });
           if (outcome.handled) { send(res, 200, { ...outcome.result, ...delivery }); return true; }
         } catch (e) {
+          if (e instanceof WorkspaceError) throw e;
           send(res, 409, { ok: false, error: e.message });
           return true;
         } finally {
@@ -1394,6 +1490,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
           await dispatchTerminalPrompt(hub, t, b.text, { cli: agent, immediate: b.immediate, resend: b.resendIfMissing });
           send(res, 200, { ok: true, immediate: !!b.immediate, ...delivery });
         } catch (e) {
+          if (e instanceof WorkspaceError) throw e;
           send(res, 409, { ok: false, error: e.message });
         }
         return true;
@@ -1401,6 +1498,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       const writeInput = async (input) => {
         hub.termMonitor?.onInput(t, input);
         const result = await t.proc.write(input);
+        if (result?.guardError) throw result.guardError;
         if (!result?.ok) throw new Error(result?.error || '터미널 입력을 확인하지 못했습니다.');
         if (input === '\x03') t._subagentsInterruptedAt = Date.now();
       };
@@ -1418,13 +1516,19 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
           await hub.sleep(hub.SUBMIT_DELAY + Math.min(3000, (b.text?.length || 0) * 2));
           await writeInput('\r');
         }
-      } catch (e) { send(res, 409, { ok: false, error: e.message }); return true; }
+      } catch (e) {
+        if (e instanceof WorkspaceError) throw e;
+        send(res, 409, { ok: false, error: e.message }); return true;
+      }
       send(res, 200, { ok: true, immediate: !!b.immediate });
       return true;
     }
     if (p === '/api/term/external' && req.method === 'POST') {
       const b = await body(req); const d = b.resume ? index.get(b.resume) : null;
       const cwd = b.cwd || d?.cwd || os.homedir(), kind = b.kind || d?.agent || 'claude', yolo = b.skipPermissions !== false;
+      if (b.folders !== undefined) throw unsupported();
+      const execution = hub.workspaceExecution;
+      await execution?.plan({ source: execution.native(nativeFolderKey(d?.agent || kind, b.resume)), external: true });
       let cmd, args = [];
       if (kind === 'codex') ({ cmd, args } = hub.codexLaunch([...(yolo ? ['--dangerously-bypass-approvals-and-sandbox'] : []), ...cliModelEffortArgs('codex', b.model, b.effort), ...(b.resume ? ['resume', b.resume] : [])]));
       else if (kind === 'agy') { cmd = hub.agyExe(); if (b.resume) args.push('--conversation', b.resume); if (yolo) args.push('--dangerously-skip-permissions'); args.push(...cliModelEffortArgs('agy', b.model, b.effort)); }
@@ -1509,8 +1613,16 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
   const workspaceSessions = createWorkspaceSessions(hub, liveSessions);
   const folderList = workspaceContexts ? createFolderListSummaries(workspaceContexts, workspaceSessions.resolveMany, logError)
     : async (entries) => entries;
-  const nativeFolderKey = (item) => `session:${item.agent || 'claude'}:${item.sessionId}`;
-  return { liveSessions, transcript, overviewStale, overviewSnapshot, handleSessionRoutes,
+  const listedFolderKey = (item) => nativeFolderKey(item.agent || 'claude', item.sessionId);
+  const handle = async (p, url, req, res, body, send, authed) => {
+    try { return await handleSessionRoutes(p, url, req, res, body, send, authed); }
+    catch (error) {
+      if (!(error instanceof WorkspaceError)) throw error;
+      send(res, error.status, workspaceFailure(error, req));
+      return true;
+    }
+  };
+  return { liveSessions, transcript, overviewStale, overviewSnapshot, handleSessionRoutes: handle,
     folderSession: workspaceSessions.resolve, folderSessionLinks: workspaceSessions.sessionLinks };
 }
 

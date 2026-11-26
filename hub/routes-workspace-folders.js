@@ -3,8 +3,12 @@
 const { folderInspector, WorkspaceError } = require('./workspace-paths');
 
 function local(req) {
-  return ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress)
-    && ['127.0.0.1', 'localhost', '[::1]'].some((host) => req.headers.host === `${host}:${req.socket.localPort}`);
+  return ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req?.socket?.remoteAddress)
+    && ['127.0.0.1', 'localhost', '[::1]'].some((host) => req.headers?.host === `${host}:${req.socket.localPort}`);
+}
+
+function workspaceFailure(err, req) {
+  return { error: err.message, code: err.code, ...(local(req) && err.trustSummary ? { trustSummary: err.trustSummary } : {}) };
 }
 
 async function inputJson(req, required, optional = []) {
@@ -121,4 +125,4 @@ function createWorkspaceFolderRoutes(store, resolveSession, logError) {
   };
 }
 
-module.exports = { createWorkspaceFolderRoutes, createFolderListSummaries };
+module.exports = { createWorkspaceFolderRoutes, createFolderListSummaries, local, workspaceFailure };
