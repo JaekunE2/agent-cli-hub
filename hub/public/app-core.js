@@ -405,6 +405,7 @@ async function refreshOverview() {
   updateDocTitle();
   paintActiveTermStatus();
   renderSide();
+  updateFolderBadges();
   if (booted && state.sel.kind === 'projects' && !$('.pj-dialog[open]')) {
     const project = state.projects.find((p) => p.id === state.sel.id);
     const revision = projectRevisions?.[project?.id];
@@ -444,6 +445,7 @@ async function refreshRecent(fresh = false) {
     } catch {}
   }
   renderSide();
+  updateFolderBadges();
   refreshHomeWidgets();
 }
 
@@ -690,7 +692,7 @@ function branchTagHTML(br, compact = false) {
 
 // ---------- Linear-Style Minimal Workspace Sidebar (Projects + Terminals + Recent; System Grouped) ----------
 function systemTopHTML(activeTab, actionsHTML = '') {
-  state.sysTab = ['usage', 'gpu', 'vault', 'operator'].includes(activeTab) ? activeTab : 'usage';
+  state.sysTab = activeTab;
   const gpuWait = state.gpu?.waiting?.length || 0;
   const tab = (id, icon, label, badge = '') =>
     `<button role="tab" data-systab="${id}" aria-selected="${activeTab === id}" class="${activeTab === id ? 'on' : ''}">${icon} ${label}${badge}</button>`;
@@ -700,6 +702,7 @@ function systemTopHTML(activeTab, actionsHTML = '') {
       ${tab('gpu', ICO.gpu, 'GPU 대기열', gpuWait ? ` <span class="badge lim" style="margin-left:3px">${gpuWait}</span>` : '')}
       ${tab('vault', ICO.layers, '공통 자원')}
       ${tab('operator', ICO.settings, '관제 세션')}
+      ${tab('trusted-folders', ICO.folder, '신뢰 폴더')}
     </div>
     ${actionsHTML ? `<div class="sys-acts">${actionsHTML}</div>` : ''}
   </div>`;

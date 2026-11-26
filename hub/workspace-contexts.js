@@ -62,6 +62,7 @@ function createWorkspaceContexts(file) {
     const trust = trustSummary(state, inspector, primary, refs);
     if (!row && !primary && session.cwd) trust.primary = { path: session.cwd, state: 'unknown', trustId: null };
     return { sessionKey: session.sessionKey, revision: row?.revision ?? 0, managed: !!row,
+      editable: !!session.editable && !session.ambiguous,
       primaryCwd: row ? primary?.path ?? null : session.cwd ?? null,
       referenceDirs: refs.map((ref) => ref.path), trustSummary: trust, applied: null,
       ...(session.observedDirs?.length ? { observedDirs: session.observedDirs } : {}) };
@@ -73,6 +74,10 @@ function createWorkspaceContexts(file) {
     getFolders(session, inspector) {
       const state = read();
       return describe(state, session, locate(state, session).row, inspector);
+    },
+    getFolderSummaries(sessions, inspector) {
+      const state = read();
+      return sessions.map((session) => session && describe(state, session, locate(state, session).row, inspector));
     },
     putFolders(session, input, inspector) {
       return transaction((state) => {

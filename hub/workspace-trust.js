@@ -58,7 +58,7 @@ function trustSummary(state, inspector, primary, refs) {
       const row = rules.get(fold(ancestor));
       if (row && (ancestor === actual.path || row.includeDescendants)
           && sameFolder(inspector.current(row.binding), inspector.current({ ...row.binding, source: ancestor }))) {
-        return { path: actual.path, state: 'trusted', trustId: row.id };
+        return { path: actual.path, state: 'trusted', trustId: row.id, trustPath: row.binding.path };
       }
       const parent = path.dirname(ancestor);
       if (parent === ancestor) break;

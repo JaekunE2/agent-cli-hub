@@ -13,8 +13,8 @@ function dockTopSegHTML({ openSet, isContentTab = false, hasTerm = true, hasChat
   ${hasTerm && hasChat ? `<button type="button" class="ghost btn-sm bar-face-btn" data-face-toggle title="TUI(터미널) ↔ GUI(대화 기록) 즉시 전환 (Alt+J)">${ICO.swap || ''} TUI⇄GUI</button>` : ''}`;
 }
 
-function setSessionBar(identity, views, actions, subagents) {
-  setBar(`<div class="session-head">${identity}<div class="session-actions">${actions}</div></div>
+function setSessionBar(identity, views, actions, subagents, folders) {
+  setBar(`<div class="session-head">${identity}<div class="session-actions">${folderBadge(folders)}${actions}</div></div>
     <div class="session-views">${views}</div>`);
   if (subagents) mountSubagents($('#bar .session-views'), subagents);
 }
@@ -171,7 +171,8 @@ function viewTranscript() {
       termTitle: hasLivePane ? '연결된 터미널 패널 열기/닫기' : '이 세션을 터미널로 열어 함께 보기',
     }),
     `${!live ? `<button class="primary btn-sm" id="btnResume" aria-label="대시보드에서 이어하기">${ICO.play} 이어하기</button>` : isDesktopSession(live) ? `<button class="primary btn-sm" id="btnResume" data-fork="1" title="데스크톱 앱 대화를 여기까지 복제한 새 세션으로 이어갑니다">${ICO.play} 복제 후 이어하기</button>` : ''}
-    <button id="btnRecMore" class="ghost icon-btn btn-sm" aria-label="세션 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`, { sessionId: sid, cwd: r?.cwd });
+    <button id="btnRecMore" class="ghost icon-btn btn-sm" aria-label="세션 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`,
+    { sessionId: sid, cwd: r?.cwd }, folderTarget(r || live || { sessionId: sid }));
 
   let dock = null;
   const doRenameSess = () => renameSessionItem({ sessionId: sid, currentTitle: sessionLabel(recentSession(sid) || r, sid, live?.name) });

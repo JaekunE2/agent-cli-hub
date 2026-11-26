@@ -33,6 +33,21 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height:
 .session-head { min-height: 32px; }
 .session-head h2 { min-width: 0; }
 .session-actions { flex: none; }
+.folder-badge { display: inline-flex; align-items: center; gap: 4px; max-width: 200px; min-width: 0; white-space: nowrap; }
+.folder-badge .folder-short { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.srow > .folder-badge { max-width: 42%; padding-inline: 3px; }
+.folder-fields { min-width: 0; margin: 10px 0; padding: 0; border: 0; }
+.folder-fields > label { display: block; margin: 8px 0; }
+.folder-fields label > input:not([type="checkbox"]) { display: block; width: 100%; margin-block: 4px; }
+.folder-fields ul { padding: 0; list-style: none; }
+.folder-fields li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0; }
+.folder-fields li > span { overflow-wrap: anywhere; }
+.folder-rule { font-size: 0.85em; }
+[data-folder-error]:empty { display: none; }
+@media (max-width: 760px) {
+  .folder-badge { max-width: 120px; }
+  .session-head { flex-wrap: wrap; }
+}
 .session-meta { max-width: 34%; overflow: hidden; }
 .session-meta:empty { display: none; }
 .session-back { max-width: 25%; flex: none; }

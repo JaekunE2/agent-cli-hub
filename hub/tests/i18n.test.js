@@ -24,6 +24,16 @@ const ALLOWED_REMAINING_HANGUL = new Set([
   'A date read from a "일정" line in todo.md (edit it in todo.md).',
 ]);
 
+test('session folder controls and trust settings are fully translated', () => {
+  const publicDir = path.join(HUB_DIR, 'public');
+  for (const name of fs.readdirSync(publicDir).filter((name) => /^workspace-.*\.js$/.test(name))) {
+    const source = fs.readFileSync(path.join(publicDir, name), 'utf8');
+    assert.deepEqual([...i18n.extract(source, 'js')].filter((key) => !Object.hasOwn(dict, key)), [], name);
+    assert.deepEqual([...i18n.extract(i18n.translateJs(source), 'js')], [], name);
+  }
+  assert.equal(dict['신뢰 폴더'], 'Trusted folders');
+});
+
 test('en.json covers all extractable Korean UI/server strings without leaving broken tag pieces', () => {
   const files = [...walkFiles(HUB_DIR), ...walkFiles(path.join(ROOT_DIR, 'ai-usage'))];
   const missing = [];

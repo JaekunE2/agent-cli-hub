@@ -50,6 +50,7 @@ function select(sel, tab, persistTab = false) {
   }
   const leaving = state.sel.kind === 'term' && (sel.kind !== 'term' || String(state.sel.id) !== String(sel.id))
     ? state.terms.find(t => String(t.id) === String(state.sel.id) && t.projectTask) : null;
+  if (sel.kind !== state.sel.kind || String(sel.id) !== String(state.sel.id)) closeWorkspacePanel();
   stopView();
   if (leaving) setTimeout(() => {
     if (state.sel.kind === 'term' && String(state.sel.id) === String(leaving.id)) return;
@@ -84,6 +85,7 @@ function select(sel, tab, persistTab = false) {
   }
   renderSide();
   window.ACH_PREVIEW?.setActiveController(null);
+  if (sel.kind === 'trusted-folders') return viewTrustedFolders();
   return ({ home: viewHome, terms: viewTerms, projects: window.viewProjects || (() => { setBar('<h2>Project</h2>'); $('#view').textContent = 'Project 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }), console: viewConsole, recent: viewTranscript, term: viewTerm, search: viewSearch, usage: viewUsage, research: viewResearch, gpu: viewGpu, operator: window.viewOperator || (() => { setBar('<h2>관제 세션</h2>'); }), calendar: viewCalendar, apps: window.viewApps || (() => { setBar('<h2>Apps</h2>'); }), vault: window.viewVault || (() => { setBar('<h2>공통 자원</h2>'); $('#view').textContent = '공통 자원 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }) })[sel.kind]?.();
 }
 
@@ -655,7 +657,7 @@ $('#btnSideMore').onclick = (e) => {
 
 // ---------- boot ----------
 function selectionFromHash() {
-  const hm = /^#([a-z]+)(?::([^:]+)(?::([a-z]+)(?::(\d+\.\d+\.\d+))?)?)?$/.exec(location.hash || '');
+  const hm = /^#([a-z-]+)(?::([^:]+)(?::([a-z]+)(?::(\d+\.\d+\.\d+))?)?)?$/.exec(location.hash || '');
   const version = hm?.[1] === 'projects' && hm[4];
   return hm ? { sel: { kind: hm[1], ...(hm[2] ? { id: hm[2] } : {}), ...(version ? { version } : {}) }, tab: hm[3] || undefined } : null;
 }
@@ -700,7 +702,7 @@ if (desktopInvoke) window.addEventListener('hashchange', () => {
       }
       const saved = fromHash || previous;
       const s = saved?.sel;
-      if (s && ['home', 'terms', 'projects', 'usage', 'calendar', 'apps', 'gpu', 'vault', 'operator', 'recent', 'research'].includes(s.kind)) restored = saved;
+      if (s && ['home', 'terms', 'projects', 'usage', 'calendar', 'apps', 'gpu', 'vault', 'operator', 'trusted-folders', 'recent', 'research'].includes(s.kind)) restored = saved;
       else if (s?.kind === 'term' && terminalExists(s.id)) restored = saved;
       else if (s?.kind === 'console' && state.consoles.some((c) => String(c.id) === String(s.id))) restored = saved;
     } catch {}

@@ -37,6 +37,36 @@ function decoded(value) {
   catch { throw new WorkspaceError(400, 'INVALID_ID', 'Invalid encoded ID'); }
 }
 
+function folderSummary(folders, isLocal) {
+  return { sessionKey: folders.sessionKey, revision: folders.revision, managed: folders.managed,
+    referenceCount: folders.referenceDirs.length, trustState: folders.trustSummary.state,
+    hasPendingChanges: folders.managed && folders.applied?.revision !== folders.revision,
+    ...(isLocal ? { primaryCwd: folders.primaryCwd } : {}) };
+}
+
+function createFolderListSummaries(store, resolveSessions, logError) {
+  let reading, expires = 0;
+  return async (entries, req, keyOf) => {
+    if (!entries.length) return entries;
+    try {
+      // Cache the drive inventory for display only. Path identities are checked on every lookup.
+      if (!reading || Date.now() >= expires) {
+        expires = Date.now() + 10_000;
+        reading = folderInspector().catch((err) => { expires = 0; throw err; });
+      }
+      const inspector = await reading;
+      const sessions = resolveSessions(entries.map(keyOf));
+      const summaries = store.getFolderSummaries(sessions, inspector);
+      const isLocal = local(req);
+      return entries.map((entry, i) => summaries[i]
+        ? { ...entry, folderContext: folderSummary(summaries[i], isLocal) } : entry);
+    } catch (err) {
+      logError('workspace-folder-summaries', err);
+      return entries;
+    }
+  };
+}
+
 function createWorkspaceFolderRoutes(store, resolveSession, logError) {
   return async function handle(p, url, req, res, send, authed) {
     const trust = /^\/api\/trusted-folders(?:\/([^/]+))?$/.exec(p);
@@ -78,9 +108,7 @@ function createWorkspaceFolderRoutes(store, resolveSession, logError) {
         if (!session) throw new WorkspaceError(404, 'SESSION_NOT_FOUND', 'Session not found');
         if (input && !session.editable) throw new WorkspaceError(403, 'SESSION_READ_ONLY', 'Session is read-only');
         const result = input ? store.putFolders(session, input, inspector) : store.getFolders(session, inspector);
-        send(res, 200, isLocal ? result : { sessionKey, revision: result.revision, managed: result.managed,
-          referenceCount: result.referenceDirs.length, trustState: result.trustSummary.state,
-          hasPendingChanges: result.managed && result.applied?.revision !== result.revision });
+        send(res, 200, isLocal ? result : folderSummary(result, false));
       }
     } catch (err) {
       if (err instanceof WorkspaceError) send(res, err.status, { error: err.message, code: err.code });
@@ -93,4 +121,4 @@ function createWorkspaceFolderRoutes(store, resolveSession, logError) {
   };
 }
 
-module.exports = { createWorkspaceFolderRoutes };
+module.exports = { createWorkspaceFolderRoutes, createFolderListSummaries };

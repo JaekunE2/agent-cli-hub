@@ -289,6 +289,7 @@
 
     streams.add(cleanup);
     positionSubagents?.();
+    positionFolderToolbox();
     return {
       destroy: cleanup,
       setVisible: (visible) => { hostEl.hidden = !visible; positionSubagents?.(); },
