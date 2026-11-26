@@ -111,12 +111,31 @@ function openDrawer({ title, bodyHTML = '', footerHTML = '', width = 460, focus 
     trigger?.focus();
   };
   const onKey = (e) => {
-    if (e.key !== 'Escape' || e.defaultPrevented) return;
-    if (parent !== document.body) e.preventDefault();
-    close();
+    if (e.defaultPrevented || (e.key !== 'Escape' && e.key !== 'Tab')) return;
+    if (Array.from(document.querySelectorAll('.drw-backdrop, dialog[open]')).at(-1) !== d) return;
+    if (e.key === 'Escape') {
+      if (parent !== document.body) e.preventDefault();
+      close();
+      return;
+    }
+    if (!focus) return;
+    const controls = [...d.querySelectorAll('a[href], button, input, select, textarea, [tabindex]')]
+      .filter(el => el.tabIndex >= 0 && !el.matches(':disabled') && el.getClientRects().length
+        && getComputedStyle(el).visibility === 'visible');
+    const active = document.activeElement;
+    const edge = e.shiftKey ? controls.at(-1) : controls[0];
+    if (edge && (!controls.includes(active) || active === (e.shiftKey ? controls[0] : controls.at(-1)))) {
+      e.preventDefault();
+      edge.focus();
+    }
   };
   document.addEventListener('keydown', onKey);
-  d.addEventListener('click', (e) => { if (e.target === d || e.target.closest('[data-drw-close]')) close(); });
+  let downOnBackdrop = false;
+  d.addEventListener('pointerdown', (e) => { downOnBackdrop = e.target === d; });
+  d.addEventListener('click', (e) => {
+    if (e.target.closest('[data-drw-close]') || (e.target === d && downOnBackdrop)) close();
+    downOnBackdrop = false;
+  });
   parent.appendChild(d);
   if (focus) $('[data-drw-close]', d).focus();
   d.close = close;
