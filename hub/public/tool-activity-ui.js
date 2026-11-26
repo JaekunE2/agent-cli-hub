@@ -59,6 +59,7 @@
     </div>`;
     document.body.append(d);
     d.onclose = () => d.remove();
+    d.addEventListener('click', (e) => { if (e.target === d) d.close(); });
     $('[data-tr-close]', d).onclick = () => d.close();
     d.showModal();
 
@@ -171,7 +172,7 @@
     hostEl.hidden = false;
     hostEl.innerHTML = `<div class="tool-stream-bar" data-ts-bar>
       <div class="ts-left">
-        <span class="ts-pill idle" data-ts-status>대기</span>
+        <button type="button" class="ts-pill idle" data-ts-status title="툴 목록 또는 Traces 열기">대기</button>
         <div class="ts-beats" data-ts-beats><span class="ums" style="margin:0">툴 활동 대기 중…</span></div>
       </div>
       <div class="ts-right">
@@ -257,6 +258,10 @@
       ws = null;
     };
 
+    statusEl.onclick = () => {
+      if (foldClientEvents(events).length) { expanded = !expanded; render(); }
+      else openTracesDrawer({ termId, sessionId, cwd });
+    };
     expandBtn.onclick = () => { expanded = !expanded; render(); };
     tracesBtn.onclick = () => openTracesDrawer({ termId, sessionId, cwd });
 
@@ -289,7 +294,7 @@
 
     streams.add(cleanup);
     positionSubagents?.();
-    positionFolderToolbox();
+    if (typeof positionFolderToolbox === 'function') positionFolderToolbox();
     return {
       destroy: cleanup,
       setVisible: (visible) => { hostEl.hidden = !visible; positionSubagents?.(); },

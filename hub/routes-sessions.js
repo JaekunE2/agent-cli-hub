@@ -798,7 +798,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
 
     const taskLines = queue.map((item) => `- ${item.title} (${item.id.slice(0, 8)})${item.mergeCommit ? ` [commit: ${item.mergeCommit.slice(0, 8)}]` : ''}${item.worktreePath ? ` [worktree: ${item.worktreePath}]` : ''}`).join('\n');
     const rawPrompt = tip ? [
-      `[프로젝트 병합 최종 검증 세션] ${project.name}`,
+      `프로젝트 병합 최종 검증 세션: ${project.name}`,
       `대상 브랜치(${project.cwd})에 1차 자동 병합(${tip.slice(0, 8)})이 반영되었습니다.`,
       '포함된 작업:',
       taskLines,
@@ -810,7 +810,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       '4. 확인이 끝나면 검증 결과를 간략히 요약하고 작업을 마칩니다.',
       ...(mergeRole?.template ? ['', `[Role 하네스 · ${mergeRole.label || 'merge'}]`, mergeRole.template] : []),
     ].join('\n') : [
-      `[프로젝트 통합 · 병합 에이전트 세션] ${project.name}`,
+      `프로젝트 통합 · 병합 에이전트 세션: ${project.name}`,
       `대상 브랜치(${project.cwd})에 아래 검토 완료 작업들을 직접 병합하고 검증해 주세요.`,
       '포함된 작업:',
       taskLines,

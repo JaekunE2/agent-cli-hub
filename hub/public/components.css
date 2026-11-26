@@ -547,19 +547,22 @@ body.remote .desk { display: none; }
 @media (max-width: 760px) {
   html, body { height: 100dvh; }
   body { flex-direction: column; }
-  .mtop { display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 6px 12px; background: var(--panel); border-bottom: 1px solid var(--line); flex: none; }
+  .mtop { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 4px 10px; background: var(--panel); border-bottom: 1px solid var(--line); flex: none; }
   .side { position: fixed; top: 0; bottom: 0; left: 0; width: min(84vw, 292px); z-index: 35; visibility: hidden; transform: translateX(-105%); transition: transform .2s ease; box-shadow: 4px 0 28px rgba(0,0,0,.32); }
   body.drawer .side { visibility: visible; transform: none; }
   body.drawer #backdrop { display: block; position: fixed; inset: 0; background: rgba(0,0,0,.42); z-index: 30; }
   .side-float-btn, #btnSideCollapse, .desk { display: none !important; }
   main, #view { width: 100%; overflow-x: hidden; }
-  .bar { padding: 0 12px; }
+  .bar { padding: 4px 10px; min-height: 40px; }
   .bar h2 { font-size: 14px; }
   .bar:has(.research-title) { height: auto; flex-wrap: wrap; padding-block: 6px; }
   .bar .research-title { flex-basis: 100%; min-width: 0; }
   .session-head, .session-actions { gap: 4px; }
   .session-back span, .session-meta { display: none; }
-  .session-views .seg button { min-height: 32px; }
+  .session-views { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-top: 3px; gap: 4px; }
+  .session-views::-webkit-scrollbar { display: none; }
+  .session-views .seg { flex: none; flex-wrap: nowrap; }
+  .session-views .seg button { min-height: 26px; height: 26px; padding: 0 8px; font-size: 12px; }
   .sys-top { padding: 0 12px; }
   .page-wrap { padding: 14px 12px 36px; gap: 16px; }
   .page-hd h1 { font-size: 18px; }

@@ -2,8 +2,8 @@
 
 const DRAFT = 'CLI 입력창에 제출되지 않은 다른 내용이 있습니다. 터미널에서 내용을 확인하세요.';
 const UNCONFIRMED = '작업 지시를 제출했지만 CLI가 실행을 시작했다는 신호가 없습니다.';
-const PASTE = /^\[pasted (?:content|text) (\d+) chars?\]$/i;
-const PASTE_MARKER = /^\[pasted (?:content|text) \d+ chars?\]/i;
+const PASTE = /^\[+pasted (?:content|text) (\d+) chars?\]+$/i;
+const PASTE_MARKER = /^\[+pasted (?:content|text) \d+ chars?\]+/i;
 const unwrap = (text) => text.trim().replace(/ *\n[ \t]*/g, ' ');
 
 function composerText(screen, cursorLine) {
@@ -55,7 +55,8 @@ async function submitPrompt({ text, read, write, guard, waitFor, sleep, delay = 
     }
     if (pasteMarker !== 'codex') return false;
     const count = Number(PASTE.exec(shown)?.[1]);
-    return count === text.length || count === Array.from(text).length;
+    return count === text.length || count === Array.from(text).length
+      || (/^\[\[/.test(shown) && (Math.abs(count - text.length) <= 2 || Math.abs(count - Array.from(text).length) <= 2));
   };
   const current = async () => {
     const view = await read();
