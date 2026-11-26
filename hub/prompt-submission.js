@@ -34,6 +34,7 @@ async function submitPrompt({ text, read, write, guard, waitFor, sleep, delay = 
     && new RegExp('^' + draft.split(/\n/).map((line) => line.trim()).filter(Boolean)
       .map((line) => line.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join(' *') + '$').test(expected);
   const tail = expectedCompact.slice(-64);
+  let pasted = false;
   const visibleTail = (draft) => {
     const visible = compact(draft || '');
     if (!visible || PASTE_MARKER.test(draft?.trimStart() || '')) return false;
@@ -54,12 +55,16 @@ async function submitPrompt({ text, read, write, guard, waitFor, sleep, delay = 
       return true;
     }
     if (pasteMarker !== 'codex') return false;
-    const m = PASTE.exec(shown);
-    if (!m) return false;
-    const count = Number(m[1]);
-    if (count === text.length || count === Array.from(text).length) return true;
-    const lineDiff = Math.max(32, (text.match(/\n/g) || []).length * 2 + 8);
-    return pasted && (Math.abs(count - text.length) <= lineDiff || Math.abs(count - Array.from(text).length) <= lineDiff);
+    const matchBadge = (line) => {
+      const m = PASTE.exec(line.trim());
+      if (!m) return false;
+      const count = Number(m[1]);
+      if (count === text.length || count === Array.from(text).length) return true;
+      const lineDiff = Math.max(32, (text.match(/\n/g) || []).length * 2 + 8);
+      return pasted && (Math.abs(count - text.length) <= lineDiff || Math.abs(count - Array.from(text).length) <= lineDiff);
+    };
+    if (matchBadge(shown)) return true;
+    return pasted && clearDraft && shown.split('\n').some(matchBadge);
   };
   const current = async () => {
     const view = await read();
@@ -74,7 +79,6 @@ async function submitPrompt({ text, read, write, guard, waitFor, sleep, delay = 
   let draft = view.draft;
   const alreadyPresent = matched(draft) || wrappedRetry(draft) || (!!draft && draft === previousDraft)
     || (explicitDraft && draft && (freshPaste(draft) || (!PASTE_MARKER.test(draft.trimStart()) && expected.endsWith(unwrap(draft)))));
-  let pasted = false;
   if (!alreadyPresent) {
     if (draft && !isPlaceholder(draft)) {
       if (clearDraft && !explicitDraft) {

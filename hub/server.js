@@ -539,9 +539,19 @@ const server = http.createServer(async (req, res) => {
     const file = p === '/' ? 'public/index.html' : STATIC[p] || 'public' + p;
     const local = p === '/' && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress) && new RegExp(`^(127\\.0\\.0\\.1|localhost|\\[::1\\]):${PORT}$`).test(req.headers.host || '');
     res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream', 'cache-control': 'no-store, no-cache, must-revalidate, max-age=0', pragma: 'no-cache' });
+    const bustIndex = (html) => (p === '/'
+      ? html.replace(/((?:src|href)="\/[^"?]+\.(?:css|js))"/g, `$1?v=${SERVER_BUILD_ID}"`)
+      : html);
     const text = file.startsWith('public/') ? I18N.forFile(path.join(__dirname, file)) : null;
-    if (text !== null) return res.end(local ? text.replace('<head>', `<head><script>window.LOCAL_TOKEN=${JSON.stringify(TOKEN)}</script>`) : text);
-    if (local) return res.end(fs.readFileSync(path.join(__dirname, file), 'utf8').replace('<head>', `<head><script>window.LOCAL_TOKEN=${JSON.stringify(TOKEN)}</script>`));
+    if (text !== null) {
+      const out = bustIndex(local ? text.replace('<head>', `<head><script>window.LOCAL_TOKEN=${JSON.stringify(TOKEN)}</script>`) : text);
+      return res.end(out);
+    }
+    if (p === '/') {
+      const raw = fs.readFileSync(path.join(__dirname, file), 'utf8');
+      const out = bustIndex(local ? raw.replace('<head>', `<head><script>window.LOCAL_TOKEN=${JSON.stringify(TOKEN)}</script>`) : raw);
+      return res.end(out);
+    }
     return fs.createReadStream(path.join(__dirname, file)).pipe(res);
   }
   if (!p.startsWith('/api/')) return send(res, 404, { error: 'not found' });

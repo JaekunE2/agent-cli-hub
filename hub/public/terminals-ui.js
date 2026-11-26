@@ -616,13 +616,30 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
     sendCtrlV: () => send('\x16'),
   });
   let histIdx = -1;
+  let termSubmitting = false;
+  let lastTermSentText = '';
+  let lastTermSentAt = 0;
   const submit = async () => {
     if (!dockCollapsed && tAttCtl.isLoading()) return toast('첨부 파일을 준비하는 중입니다…');
     const submitBtn = $('#tsend', fullEl);
-    if (submitBtn.disabled) return;
+    if (termSubmitting || submitBtn.disabled) return;
     const attPaths = !dockCollapsed ? tAttCtl.takePaths() : [];
     const typed = tin.value;
     const v = [...attPaths, typed].filter(Boolean).join(' ');
+    const now = Date.now();
+    if (!v) {
+      if (now - lastTermSentAt < 600) return;
+      send('\r');
+      return;
+    }
+    if (v === lastTermSentText && now - lastTermSentAt < 1500) {
+      tin.value = '';
+      fitTin();
+      return;
+    }
+    termSubmitting = true;
+    lastTermSentText = v;
+    lastTermSentAt = now;
     tin.value = '';
     fitTin();
     histIdx = -1;
@@ -630,17 +647,18 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
       if (termPromptHist[0] !== v) termPromptHist.unshift(v);
       if (termPromptHist.length > 50) termPromptHist.pop();
     }
-    if (!v) { send('\r'); return; }
     submitBtn.disabled = true;
     try {
-      const r = await api('/api/term/send', { method: 'POST', body: { id: termId, text: v, submit: true, fromTerminalInput: true } });
+      const r = await api('/api/term/send', { method: 'POST', body: { id: termId, text: v, submit: true, fromTerminalInput: true, clearDraft: true } });
       if (!r.ok) throw new Error(r.error);
     } catch (err) {
+      lastTermSentAt = 0;
       tin.value = [v, tin.value].filter(Boolean).join('\n');
       fitTin();
       toast(err.message, 5000, 'danger');
       return;
     } finally {
+      termSubmitting = false;
       submitBtn.disabled = false;
     }
     if (chatHost && v.trim()) {

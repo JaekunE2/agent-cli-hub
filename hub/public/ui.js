@@ -295,18 +295,20 @@
     let pendingEnter = false;
     let compTimer = null;
     let lastFireAt = 0;
+    let lastCompEndAt = 0;
     const fire = () => {
       const now = Date.now();
-      if (now - lastFireAt < 80) return;
+      if (now - lastFireAt < 350) return;
       lastFireAt = now;
       onSubmit();
     };
     const flush = () => {
+      lastCompEndAt = Date.now();
       if (!pendingEnter) return;
       pendingEnter = false;
       clearTimeout(compTimer);
       compTimer = null;
-      setTimeout(fire, 0);
+      setTimeout(fire, 15);
     };
     el.addEventListener('compositionend', flush);
     el.addEventListener('keydown', (e) => {
@@ -319,12 +321,15 @@
         return;
       }
       e.preventDefault();
+      if (e.repeat) return;
       if (e.isComposing || e.keyCode === 229 || e.key === 'Process') {
         pendingEnter = true;
         clearTimeout(compTimer);
-        compTimer = setTimeout(flush, 60);
+        compTimer = setTimeout(flush, 80);
         return;
       }
+      // Ignore trailing Enter emitted immediately after Korean IME compositionend
+      if (Date.now() - lastCompEndAt < 180 && Date.now() - lastFireAt < 450) return;
       pendingEnter = false;
       fire();
     });

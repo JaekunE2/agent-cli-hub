@@ -43,27 +43,31 @@ function homeStatsHTML() {
   const g0 = (g?.gpus || []).find((x) => x.index >= 0 && x.enabled !== false);
   const g0Mem = g0 && g0.totalMB ? Math.round((g0.usedMB / g0.totalMB) * 100) : 0;
 
-  const remColor = minRemaining == null ? '' : minRemaining <= 10 ? ' style="color:var(--danger)"' : minRemaining <= 30 ? ' style="color:var(--warn)"' : '';
+  const remColor = minRemaining == null ? '' : minRemaining <= 10 ? ' style="color:var(--danger)"' : minRemaining <= 30 ? ' style="color:var(--warn)"' : ' style="color:var(--ok)"';
+  const remTone = minRemaining == null ? 'lo' : minRemaining <= 10 ? 'hi' : minRemaining <= 30 ? 'mid' : 'lo';
   const gpuColor = g0 && (g0.util || 0) >= 90 ? ' style="color:var(--danger)"' : '';
+  const gpuTone = g0Mem >= 85 ? 'hi' : g0Mem >= 60 ? 'mid' : 'lo';
   return `
-    <button type="button" class="h-stat" data-hnav="terms">
-      <div class="h-stat-lbl"><span>열린 터미널</span>${busyN ? `<span class="badge warn">실행 중 ${busyN}</span>` : ''}</div>
+    <button type="button" class="h-stat h-stat-term" data-hnav="terms">
+      <div class="h-stat-lbl"><span class="h-stat-title"><span class="h-stat-ico acc">${ICO.terminal}</span>열린 터미널</span>${busyN ? `<span class="badge warn">실행 중 ${busyN}</span>` : ''}</div>
       <div class="h-stat-val">${runTerms.length + cons.length}개</div>
       <div class="h-stat-sub">${runTerms.length + cons.length ? `실행 중 ${busyN} · 대기 ${idleN}${dormantN ? ` · 유휴 ${dormantN}` : ''}${subRunN ? ` · 프로젝트 서브 ${subRunN}` : ''}` : (subRunN ? `프로젝트 서브 ${subRunN}개 실행 중` : '열린 세션 없음')}</div>
     </button>
-    <button type="button" class="h-stat" data-hnav="usage">
-      <div class="h-stat-lbl"><span>AI 남은 한도</span>${tightAccounts ? `<span class="badge lim">임박 ${tightAccounts}개</span>` : ''}</div>
+    <button type="button" class="h-stat h-stat-usage" data-hnav="usage">
+      <div class="h-stat-lbl"><span class="h-stat-title"><span class="h-stat-ico ${remTone === 'hi' ? 'err' : remTone === 'mid' ? 'warn' : 'ok'}">${ICO.chart}</span>AI 남은 한도</span>${tightAccounts ? `<span class="badge lim">임박 ${tightAccounts}개</span>` : ''}</div>
       <div class="h-stat-val"${remColor}>${minRemaining != null ? `${minRemaining}%` : '—'}</div>
+      <div class="h-stat-bar"><i class="${remTone}" style="width:${minRemaining != null ? Math.max(4, Math.min(100, minRemaining)) : 0}%"></i></div>
       <div class="h-stat-sub">${minRemaining != null ? `조회된 ${rems.length}개 계정 중 최저` : !u ? '불러오는 중…' : '한도 정보 없음'}</div>
     </button>
-    <button type="button" class="h-stat" data-hnav="calendar">
-      <div class="h-stat-lbl"><span>오늘 일정</span>${overN ? `<span class="badge lim">지연 ${overN}</span>` : ''}</div>
+    <button type="button" class="h-stat h-stat-cal" data-hnav="calendar">
+      <div class="h-stat-lbl"><span class="h-stat-title"><span class="h-stat-ico cal">${ICO.calendar}</span>오늘 일정</span>${overN ? `<span class="badge lim">지연 ${overN}</span>` : ''}</div>
       <div class="h-stat-val">${todayList.length}건</div>
       <div class="h-stat-sub">${nextEv ? `${nextEv.time ? nextEv.time + ' ' : ''}${esc(nextEv.title)}` : '예정된 일정 없음'}</div>
     </button>
-    <button type="button" class="h-stat" data-hnav="gpu">
-      <div class="h-stat-lbl"><span>GPU</span>${g?.waiting?.length ? `<span class="badge lim">대기 ${g.waiting.length}</span>` : ''}</div>
+    <button type="button" class="h-stat h-stat-gpu" data-hnav="gpu">
+      <div class="h-stat-lbl"><span class="h-stat-title"><span class="h-stat-ico gpu">${ICO.gpu}</span>GPU</span>${g?.waiting?.length ? `<span class="badge lim">대기 ${g.waiting.length}</span>` : ''}</div>
       <div class="h-stat-val"${gpuColor}>${g0 ? `${g0.util || 0}%` : '—'}</div>
+      <div class="h-stat-bar"><i class="${gpuTone}" style="width:${g0 ? Math.max(4, Math.min(100, g0Mem)) : 0}%"></i></div>
       <div class="h-stat-sub">${g0 ? `VRAM ${fmtMB(g0.usedMB)} / ${fmtMB(g0.totalMB)} (${g0Mem}%)` : !g ? '확인 중…' : '활성 GPU 없음'}</div>
     </button>`;
 }
@@ -137,19 +141,19 @@ function homeListsHTML() {
 
   return `
     <section class="sheet">
-      <div class="sheet-hd"><h2>열린 터미널</h2><button class="ghost btn-sm" data-hnav="terms">전체 보기 →</button></div>
+      <div class="sheet-hd"><h2><span class="sheet-ico acc">${ICO.terminal}</span>열린 터미널</h2><button class="ghost btn-sm" data-hnav="terms">전체 보기 →</button></div>
       <div>${termRows}</div>
     </section>
     <section class="sheet">
-      <div class="sheet-hd"><h2>최근 대화</h2><button class="ghost btn-sm" data-hnav="terms-recent">전체 보기 →</button></div>
+      <div class="sheet-hd"><h2><span class="sheet-ico cal">${ICO.chat}</span>최근 대화</h2><button class="ghost btn-sm" data-hnav="terms-recent">전체 보기 →</button></div>
       <div>${recentRows}</div>
     </section>
     <section class="sheet">
-      <div class="sheet-hd"><h2>스케줄</h2><button class="ghost btn-sm" data-hnav="schedules">전체 보기 →</button></div>
+      <div class="sheet-hd"><h2><span class="sheet-ico ok">${ICO.clock}</span>스케줄</h2><button class="ghost btn-sm" data-hnav="schedules">전체 보기 →</button></div>
       <div>${schedRows}</div>
     </section>
     <section class="sheet">
-      <div class="sheet-hd"><h2>앱스</h2><button class="ghost btn-sm" data-hnav="apps">전체 보기 →</button></div>
+      <div class="sheet-hd"><h2><span class="sheet-ico gpu">${ICO.grid}</span>앱스</h2><button class="ghost btn-sm" data-hnav="apps">전체 보기 →</button></div>
       <div>${appRows}</div>
     </section>`;
 }

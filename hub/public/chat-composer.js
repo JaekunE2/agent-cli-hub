@@ -680,13 +680,20 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
     window.openAppOutputPicker?.((paths) => chatAttCtl.addPaths(paths));
   });
 
+  let sendingReply = false;
+  let lastReplyText = '';
+  let lastReplyAt = 0;
   const sendReply = async (retry = false) => {
-    if (repBtn.disabled) return;
+    if (sendingReply || repBtn.disabled) return;
     if (chatAttCtl.isLoading()) return toast('첨부 파일을 준비하는 중입니다…');
     const attPaths = chatAttCtl.takePaths();
     const typed = repIn.value.trim();
     const bodyText = [...attPaths, typed].filter(Boolean).join(' ');
     if (!bodyText) return;
+    if (!retry && bodyText === lastReplyText && Date.now() - lastReplyAt < 1500) {
+      repIn.value = ''; fitRep();
+      return;
+    }
     let quotePrefix = '';
     if (quotedMsg) {
       const snippet = String(quotedMsg.text).trim().slice(0, 800);
@@ -696,6 +703,9 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       setQuotedMsg(null);
     }
     const text = `${quotePrefix}${bodyText}`;
+    sendingReply = true;
+    lastReplyText = bodyText;
+    lastReplyAt = Date.now();
     repIn.value = ''; fitRep();
     repBtn.disabled = true;
     const prevBtnTxt = repBtn.textContent;
@@ -730,10 +740,12 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       const t = await launchWithConfig({ pendingText: text });
       if (t) toast(`터미널 t:${t.id}을(를) 연결해 메시지를 전송했습니다`);
     } catch (er) {
+      lastReplyAt = 0;
       repIn.value = [text, repIn.value].filter(Boolean).join('\n');
       fitRep();
       toast(er.message, 6000, 'danger', { label: '다시 전송', onClick: () => { if (barHost.isConnected) sendReply(true); } });
     } finally {
+      sendingReply = false;
       if (repBtn.isConnected) {
         repBtn.disabled = false;
         repBtn.textContent = prevBtnTxt || '대화 전송';

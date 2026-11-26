@@ -299,7 +299,7 @@ textarea { font: inherit; color: inherit; background: var(--panel); border: 1px 
 .dock-pane.dragging { opacity: .62; }
 .dock-pane.drop-left { box-shadow: inset 3px 0 0 var(--accent); }
 .dock-pane.drop-right { box-shadow: inset -3px 0 0 var(--accent); }
-.dock-hd { display: flex; align-items: center; gap: 6px; min-height: 34px; padding: 4px 10px; background: var(--panel); border-bottom: 1px solid var(--line); font-size: 12px; font-weight: 600; flex: none; user-select: none; cursor: grab; min-width: 0; }
+.dock-hd { display: flex; align-items: center; gap: 6px; min-height: 36px; padding: 5px 12px; background: color-mix(in srgb, var(--panel2) 45%, var(--panel)); border-bottom: 1px solid var(--line); font-size: 12px; font-weight: 650; flex: none; user-select: none; cursor: grab; min-width: 0; }
 .dock-hd:active { cursor: grabbing; }
 .dock-grip { display: inline-flex; align-items: center; color: var(--muted); opacity: .65; flex: none; }
 .dock-hd:hover .dock-grip { opacity: 1; color: var(--accent); }
@@ -347,7 +347,7 @@ textarea { font: inherit; color: inherit; background: var(--panel); border: 1px 
 
 /* User message */
 .msg.user { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
-.msg.user .msg-bubble { background: var(--sel); border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent); border-radius: 16px 16px 4px 16px; padding: 10px 15px; max-width: 82%; min-width: 0; color: var(--text); box-shadow: var(--shadow-xs); overflow-wrap: anywhere; }
+.msg.user .msg-bubble { background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 13%, var(--panel)), color-mix(in srgb, var(--accent) 6%, var(--panel))); border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line)); border-radius: 18px 18px 4px 18px; padding: 11px 16px; max-width: 82%; min-width: 0; color: var(--text); box-shadow: var(--shadow-low); overflow-wrap: anywhere; }
 .msg.user .msg-bubble:has(.msg-edit-box) { width: 100%; max-width: 88%; }
 .msg.user .msg-body { white-space: pre-wrap; word-break: keep-all; overflow-wrap: anywhere; line-height: 1.6; font-size: 13.5px; }
 .msg.user .msg-meta { display: inline-flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; font-size: 11px; color: var(--muted); padding: 0 4px; max-width: 100%; }
@@ -574,7 +574,7 @@ body.remote .desk { display: none; }
   .sys-top { padding: 0 12px; }
   .page-wrap { padding: 14px 12px 36px; gap: 16px; }
   .page-hd h1 { font-size: 18px; }
-  .h-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; }
+  .h-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .h-stat { padding: 13px 14px; }
   .h-stat-val { font-size: 20px; }
   .grid, .ugrid, .ugrid-sys, .v-cli-grid, .v-cli-mini-grid { grid-template-columns: minmax(0, 1fr); }
