@@ -47,6 +47,10 @@ const { createHookTransport } = require('./session-hook-transport');
 const { createSystemRoutes } = require('./routes-system');
 const { createWorkspaceContexts } = require('./workspace-contexts');
 const { createWorkspaceFolderRoutes } = require('./routes-workspace-folders');
+const { createScheduleEngine } = require('./schedules');
+const { createScheduleRoutes } = require('./routes-schedules');
+const { createScheduleTransport } = require('./schedule-transport');
+const { error: scheduleError } = require('./schedule-fields');
 
 const cleanModelEffort = (model, effort) => {
   const m = String(model || '').trim();
@@ -54,7 +58,8 @@ const cleanModelEffort = (model, effort) => {
   return { model: m && MODEL_RE.test(m) ? m : '', effort: ef && efforts.includes(ef) ? ef : '' };
 };
 
-const PORT = Number(process.env.CCD_PORT || 7777);
+const DEFAULT_PORT = 7777;
+const PORT = Number(process.env.CCD_PORT || DEFAULT_PORT);
 const HOST = '127.0.0.1';
 const SERVER_BUILD_ID = String(Date.now());
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
@@ -236,6 +241,20 @@ hub.artifacts = artifactsMod;
 const sessionRoutes = createSessionRoutes(hub);
 const workspaceContexts = createWorkspaceContexts(path.join(__dirname, 'data', 'workspace-contexts.json'));
 const workspaceFolderRoutes = createWorkspaceFolderRoutes(workspaceContexts, sessionRoutes.folderSession, logServerError);
+let scheduleEngine;
+const scheduleRunnerAvailable = false; // The workspace CLI adapter supplies the verified read-only runner.
+const scheduleCapabilities = { cli: [{ id: 'codex', accountIds: ['default'], referenceMode: 'context',
+  available: scheduleRunnerAvailable, reason: 'RUNNER_UNAVAILABLE' }] };
+const scheduleRoutes = createScheduleRoutes(() => scheduleEngine, scheduleCapabilities, logServerError);
+const scheduleTransport = createScheduleTransport(() => scheduleEngine, logServerError);
+
+function resolveScheduleTarget({ projectId, version, taskId }) {
+  const project = projects.list().find(item => item.id === projectId);
+  if (!project?.versions?.some(item => item.number === version)
+      || (taskId && !project.tasks.some(task => task.id === taskId && task.version === version))) {
+    throw scheduleError('TARGET_MISSING', 'Schedule project, version or task not found');
+  }
+}
 Object.assign(hub, {
   ...projectRoutes,
   ...sessionRoutes,
@@ -436,6 +455,7 @@ const server = http.createServer(async (req, res) => {
   }
   if (p === '/api/calendar/google/callback') return calendarMod.oauthCallback(url, res).catch((e) => send(res, 500, { error: e.message }));
   if (await workspaceFolderRoutes(p, url, req, res, send, authed)) return;
+  if (await scheduleRoutes(p, url, req, res, send, authed)) return;
   if (!authed(req, url)) return send(res, 401, { error: 'bad token' });
   if (req.method === 'POST') hub.overviewStale();
 
@@ -455,6 +475,7 @@ server.on('upgrade', (req, sock, head) => {
   sock.on('error', () => {});
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (hookTransport.handleUpgrade(wss, req, sock, head, url, authed)) return;
+  if (scheduleTransport.handleUpgrade(req, sock, head, url, authed)) return;
   const t = hub.terms.get(url.searchParams.get('id') || '');
   if (url.pathname !== '/ws/term' || !authed(req, url) || !t) return sock.destroy();
   wss.handleUpgrade(req, sock, head, (ws) => {
@@ -544,6 +565,17 @@ hub.connectPtyHost().then(() => setTimeout(() => ensureOperator().catch(() => {}
 server.keepAliveTimeout = 65_000;
 server.headersTimeout = 70_000;
 server.listen(PORT, HOST, () => {
+  if (PORT === DEFAULT_PORT) {
+    try {
+      scheduleEngine = createScheduleEngine({
+        resolveTarget: resolveScheduleTarget, onChange: scheduleTransport.broadcast,
+        onError: cause => logServerError('schedules-engine', cause),
+      });
+      if (scheduleRunnerAvailable) scheduleEngine.start();
+    } catch (cause) {
+      logServerError('schedules-engine', cause);
+    }
+  }
   const u = `http://${HOST}:${PORT}/?t=${TOKEN}`;
   fs.writeFileSync(path.join(__dirname, 'url.txt'), u + '\n');
   console.log('Agent CLI Hub:', u);
