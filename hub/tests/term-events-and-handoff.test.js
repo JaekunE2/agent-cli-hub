@@ -246,6 +246,7 @@ test('cross-platform switchAlways writes handoff.md and records branch lineage e
       baseDir: dir,
       config: {},
       claudeDir: path.join(dir, 'claude'),
+      nativeCrossHandoff: false,
       USAGE_DIR: path.join(dir, 'usage'),
       terms: new Map(),
       index: { get: (id) => (id === mockDoc.id ? mockDoc : null), updateFile: async () => {} },
@@ -309,6 +310,106 @@ test('cross-platform switchAlways writes handoff.md and records branch lineage e
     assert.ok(meta?.isBranch);
     assert.equal(meta.parentSessionId, mockDoc.id);
     assert.equal(meta.mode, 'handoff');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('cross-platform switchAlways converts Claude <-> Codex natively and keeps AGY on handoff', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ach-native-xfer-'));
+  try {
+    const branchStore = createBranchStore(path.join(dir, '.branches.json'));
+    const createdTerms = [];
+    const claudeDoc = {
+      id: '11111111-1111-1111-1111-111111111111',
+      agent: 'claude',
+      cwd: dir,
+      title: 'Native transfer test',
+      firstPrompt: '첫 질문입니다',
+      msgs: [
+        { role: 'user', text: '첫 질문입니다', ts: '2026-11-26T01:00:00Z' },
+        { role: 'assistant', text: '첫 답변입니다', ts: '2026-11-26T01:00:05Z' },
+      ],
+    };
+    const codexDoc = {
+      id: '22222222-2222-2222-2222-222222222222',
+      agent: 'codex',
+      cwd: dir,
+      title: 'Codex source',
+      firstPrompt: '코드 수정해줘',
+      msgs: [
+        { role: 'user', text: '코드 수정해줘', ts: '2026-11-26T02:00:00Z' },
+        { role: 'assistant', text: '수정 완료했습니다', ts: '2026-11-26T02:00:05Z' },
+      ],
+    };
+    let seq = 100;
+    const fakeHub = {
+      baseDir: dir,
+      config: {},
+      claudeDir: path.join(dir, 'claude'),
+      codexHome: path.join(dir, 'codex'),
+      USAGE_DIR: path.join(dir, 'usage'),
+      terms: new Map(),
+      index: { get: (id) => (id === claudeDoc.id ? claudeDoc : id === codexDoc.id ? codexDoc : null), updateFile: async () => {} },
+      accountPrefs: { getForAccount: () => ({ model: '', effort: '' }), save: () => {} },
+      conversationBranches: branchStore,
+      helperCall: async () => ({ consoles: [] }),
+      liveSessions: () => [],
+      codexAccounts: { accounts: () => [], envFor: () => ({}) },
+      CA: { accounts: () => [], envFor: () => ({}), usage: async () => ({}), rank: () => [], codexExe: () => 'codex' },
+      agyQuota: { getFast: () => ({}), noteAccount: () => {}, refresh: async () => {} },
+      agySwap: { available: () => false, getFast: () => ({ accounts: [] }) },
+      claudeUsage: async () => ({ available: false }),
+      tokenAccounts: () => [],
+      geminiAccounts: () => [],
+      codexLaunch: (args) => ({ cmd: 'codex', args }),
+      agyExe: () => 'agy.exe',
+      cliModelEffortArgs: () => [],
+      cleanModelEffort: (m, e) => ({ model: m || '', effort: e || '' }),
+      termSessionId: () => null,
+      termDocOf: () => null,
+      isCodexTerm: () => false,
+      isAgyTerm: () => false,
+      readTerm: () => [],
+      loadFavs: () => [],
+      FAV_FILE: path.join(dir, 'favs.json'),
+      sleep: async () => {},
+      waitFor: async () => true,
+      inputReady: () => true,
+      SUBMIT_DELAY: 10,
+      createTerm: (opts) => {
+        const t = { id: String(seq++), meta: { ...opts }, exited: null, proc: { write: () => ({ ok: true }) } };
+        createdTerms.push(t);
+        return t;
+      },
+      termInfo: (t) => ({ id: t.id, title: t.meta.title, agent: t.meta.workspaceCli || 'codex' }),
+      overviewStale: () => {},
+    };
+
+    const svc = createAccountSwitchService(fakeHub);
+
+    // 1) Claude -> Codex uses native rollout JSONL + `codex resume <id>`
+    const toCodex = await svc.switchAccount({ sessionId: claudeDoc.id, account: '__cli__:codex', cont: true, openMode: 'dashboard' });
+    assert.equal(toCodex.ok, true);
+    assert.equal(toCodex.nativeConverted, true);
+    assert.ok(toCodex.convertedSessionId);
+    assert.deepEqual(createdTerms[0].meta.args.slice(-3), ['resume', toCodex.convertedSessionId, '계속 진행해']);
+    const codexSessDir = path.join(dir, 'codex', 'sessions');
+    assert.ok(fs.existsSync(codexSessDir));
+
+    // 2) Codex -> Claude uses native Claude JSONL + `claude --resume <id>`
+    const toClaude = await svc.switchAccount({ sessionId: codexDoc.id, account: '__cli__:claude', cont: false, openMode: 'dashboard' });
+    assert.equal(toClaude.ok, true);
+    assert.equal(toClaude.nativeConverted, true);
+    assert.ok(toClaude.convertedSessionId);
+    assert.deepEqual(createdTerms[1].meta.args.slice(0, 2), ['--resume', toClaude.convertedSessionId]);
+
+    // 3) Claude -> AGY stays on markdown handoff (`handoff-*.md` + `--prompt-interactive`)
+    const toAgy = await svc.switchAccount({ sessionId: claudeDoc.id, account: '__cli__:agy', cont: false, openMode: 'dashboard' });
+    assert.equal(toAgy.ok, true);
+    assert.equal(toAgy.nativeConverted, false);
+    assert.ok(toAgy.handoffFile && fs.existsSync(toAgy.handoffFile));
+    assert.ok(createdTerms[2].meta.args.includes('--prompt-interactive'));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

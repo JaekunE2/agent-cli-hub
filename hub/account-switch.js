@@ -10,6 +10,7 @@ const { spawn } = require('child_process');
 const { dispatchTerminalPrompt, waitForTerminalInput } = require('./term-manager');
 const { createAgyQuotaService } = require('./agy-quota');
 const { findAgySwapExe, createAgySwapService } = require('./agy-swap');
+const { writeNativeClaudeSession, writeNativeCodexSession, readAgyConversationTurns } = require('./conversation-branches');
 
 const EFFORT_LABELS = {
   '': 'CLI 기본값',
@@ -391,7 +392,35 @@ function createAccountSwitchService(hub) {
       }
     }
 
-    const verifyHandoff = verifyFollowUp === true && !!followUp && !!handoffPrompt && openMode === 'dashboard';
+    // Native cross-platform session conversion for Claude <-> Codex (and AGY -> Claude/Codex).
+    // Target AGY always stays on the markdown handoff path (`handoff-*.md` + `--prompt-interactive`).
+    let nativeConverted = null;
+    if (!samePlatform && targetAgent !== 'agy' && hub.nativeCrossHandoff !== false) {
+      const sourceMsgs = d?.msgs?.length ? d.msgs : (sourceAgent === 'agy' && sid ? readAgyConversationTurns(sid) : []);
+      if (sourceMsgs.length) {
+        const originTitle = (d?.title || d?.firstPrompt?.split('\n')[0] || '').trim();
+        if (targetAgent === 'codex') {
+          const acc = CA.accounts(USAGE_DIR).find((a) => a.id === pick.id);
+          const codexEnv = CA.envFor(acc);
+          const codexHome = hub.codexHome || codexEnv.CODEX_HOME || path.join(os.homedir(), '.codex');
+          nativeConverted = writeNativeCodexSession({ codexHome, cwd, msgs: sourceMsgs });
+        } else if (targetAgent === 'claude') {
+          let claudeConfigDir = path.join(os.homedir(), '.claude');
+          if (pick.id !== 'default') {
+            const acc = tokenAccounts().find((a) => a.id === pick.id);
+            if (acc?.type === 'claude' && acc.credentialsPath) claudeConfigDir = path.dirname(acc.credentialsPath);
+          } else if (hub.claudeDir) {
+            claudeConfigDir = hub.claudeDir;
+          }
+          nativeConverted = writeNativeClaudeSession({ claudeProjectsDir: path.join(claudeConfigDir, 'projects'), cwd, msgs: sourceMsgs, title: originTitle });
+        }
+        if (nativeConverted?.file) index.updateFile?.(nativeConverted.file).catch(() => {});
+      }
+    }
+    const effectiveFollowUp = followUp && String(followUp).trim() ? String(followUp).trim() : (cont ? '계속 진행해' : '');
+    const nativeInitialPrompt = nativeConverted ? effectiveFollowUp : '';
+
+    const verifyHandoff = verifyFollowUp === true && !!(nativeConverted ? nativeInitialPrompt : handoffPrompt) && openMode === 'dashboard';
     const inheritedProjectTask = t0?.meta?.projectTask || null;
     if (t0 && inheritedProjectTask) {
       if (d?.file) await index.updateFile(d.file).catch(() => {});
@@ -443,7 +472,10 @@ function createAccountSwitchService(hub) {
       ({ cmd, args } = codexLaunch([
         ...(allowBypass ? ['--dangerously-bypass-approvals-and-sandbox'] : []),
         ...cliModelEffortArgs('codex', useME.model, useME.effort),
-        ...(samePlatform && sid ? ['resume', sid, ...(cont ? ['계속 진행해'] : [])] : samePlatform && t0 ? ['resume', '--last', ...(cont ? ['계속 진행해'] : [])] : handoffPrompt && !verifyHandoff ? [handoffPrompt] : []),
+        ...(samePlatform && sid ? ['resume', sid, ...(cont ? ['계속 진행해'] : [])]
+          : samePlatform && t0 ? ['resume', '--last', ...(cont ? ['계속 진행해'] : [])]
+            : nativeConverted ? ['resume', nativeConverted.sessionId, ...(nativeInitialPrompt && !verifyHandoff ? [nativeInitialPrompt] : [])]
+              : handoffPrompt && !verifyHandoff ? [handoffPrompt] : []),
       ]));
     } else if (targetAgent === 'agy') {
       cmd = agyExe();
@@ -470,6 +502,7 @@ function createAccountSwitchService(hub) {
         else if (acc) try { env.CLAUDE_CODE_OAUTH_TOKEN = acc.token(); } catch (e) { return { ok: false, error: `토큰을 읽지 못함: ${e.message}` }; }
       }
       if (samePlatform && sid) args.push('--resume', sid);
+      else if (nativeConverted) args.push('--resume', nativeConverted.sessionId);
       if (allowBypass) args.push('--dangerously-skip-permissions');
       args.push(...cliModelEffortArgs('claude', useME.model, useME.effort));
     }
@@ -517,31 +550,32 @@ function createAccountSwitchService(hub) {
       const originTitle = (d?.title || d?.firstPrompt?.split('\n')[0] || '').trim();
       hub.conversationBranches.addBranch({
         parentSessionId: sid,
-        childSessionId: null,
+        childSessionId: nativeConverted?.sessionId || null,
         termId: t.id,
         sourceAgent,
         targetAgent,
-        mode: 'handoff',
+        mode: nativeConverted ? 'native-handoff' : 'handoff',
         atIndex: Math.max(0, (d?.msgs?.length || 1) - 1),
         branchTitle: originTitle ? `(이관) ${originTitle.slice(0, 40)}` : `${sourceAgent} → ${targetAgent}`,
         anchorText: handoffFile ? path.basename(handoffFile) : '',
         editedText: followUp ? String(followUp).slice(0, 500) : '',
-        native: false,
+        native: !!nativeConverted,
       });
     }
 
     let deliveryError;
+    const dispatchPrompt = nativeConverted ? nativeInitialPrompt : handoffPrompt;
     if (verifyHandoff) {
       try {
         const spawned = await t.spawnResult;
         if (!spawned?.ok) throw new Error(spawned?.error || '터미널을 열 수 없습니다.');
         await waitForTerminalInput(hub, t);
-        await dispatchTerminalPrompt(hub, t, handoffPrompt, { cli: targetAgent });
+        await dispatchTerminalPrompt(hub, t, dispatchPrompt, { cli: targetAgent });
       } catch (error) {
         deliveryError = error.message;
       }
     }
-    const promptToSend = !verifyHandoff && targetAgent === 'claude' ? (!samePlatform && handoffPrompt ? handoffPrompt : (cont && samePlatform && sid ? '계속 진행해' : null)) : null;
+    const promptToSend = !verifyHandoff && targetAgent === 'claude' ? (!samePlatform ? (nativeConverted ? (nativeInitialPrompt || null) : handoffPrompt) : (cont && samePlatform && sid ? '계속 진행해' : null)) : null;
     if (promptToSend) (async () => {
       if (await hub.waitFor(() => t.exited === null && hub.inputReady(t), 45000, 700)) {
         await hub.sleep(600);
@@ -557,6 +591,8 @@ function createAccountSwitchService(hub) {
       ok: true, term: hub.termInfo(t),
       account: { id: pick.id, label: pick.label, agent: targetAgent, fiveH: pick.fiveH, weekly: pick.weekly },
       crossPlatform: !samePlatform,
+      nativeConverted: !!nativeConverted,
+      ...(nativeConverted ? { convertedSessionId: nativeConverted.sessionId } : {}),
       ...(verifyHandoff ? { followUpSubmitted: !deliveryError, deliveryError } : {}),
       ...(handoffFile ? { handoffFile } : {}),
       stopped: t0 ? `t:${t0.id}` : loc.live ? (loc.term ? `t:${loc.term.id}` : `c:${loc.console?.id}`) : null,

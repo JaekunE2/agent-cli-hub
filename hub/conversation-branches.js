@@ -344,6 +344,162 @@ function createBranchStore(filePath) {
   };
 }
 
+function normalizeHandoffMessages(msgs = [], maxTurns = 30) {
+  const cleaned = [];
+  for (const m of msgs || []) {
+    if (!m) continue;
+    const raw = String(m.text || '')
+      .replace(/<external_codex_apps_[^>]*>[\s\S]*?<\/external_codex_apps_[^>]*>/gi, '')
+      .trim();
+    if (!raw || (raw.startsWith('⚙') && !/^⚙ \[(?:설정|터미널)/.test(raw))) continue;
+    cleaned.push({
+      role: m.role === 'user' ? 'user' : 'assistant',
+      text: raw.slice(0, 6000),
+      ts: m.ts || new Date().toISOString(),
+    });
+  }
+  return cleaned.slice(-maxTurns);
+}
+
+function encodeClaudeProjectDir(cwd) {
+  return String(cwd || 'default').replace(/[^a-zA-Z0-9]/g, '-');
+}
+
+/**
+ * Extract plain user/assistant turns from an Antigravity SQLite conversation DB (step_type 14/15).
+ */
+function readAgyConversationTurns(sessionId, roots = null) {
+  if (!sessionId) return [];
+  const os = require('os');
+  const searchRoots = roots || ['antigravity-cli', 'antigravity'].map((n) => path.join(os.homedir(), '.gemini', n, 'conversations'));
+  let dbPath = null;
+  for (const dir of searchRoots) {
+    const p = path.join(dir, `${sessionId}.db`);
+    if (fs.existsSync(p)) { dbPath = p; break; }
+  }
+  if (!dbPath) return [];
+  try {
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      const rows = db.prepare('SELECT idx, step_type, step_payload FROM steps WHERE step_type IN (14, 15) ORDER BY idx ASC').all();
+      const readStrings = (buf, depth = 0) => {
+        const out = [];
+        let i = 0;
+        while (i < buf.length) {
+          let tag = 0, s = 0;
+          while (i < buf.length) { const b = buf[i++]; tag |= (b & 0x7f) << s; if (!(b & 0x80)) break; s += 7; }
+          const wt = tag & 7;
+          if (wt === 0) { while (i < buf.length && (buf[i++] & 0x80)); }
+          else if (wt === 2) {
+            let len = 0, sh = 0;
+            while (i < buf.length) { const b = buf[i++]; len |= (b & 0x7f) << sh; if (!(b & 0x80)) break; sh += 7; }
+            const sub = buf.subarray(i, i + len);
+            i += len;
+            if (depth < 2 && sub.length > 4) {
+              const nested = readStrings(sub, depth + 1);
+              if (nested.length) { out.push(...nested); continue; }
+            }
+            const str = sub.toString('utf8').trim();
+            if (str.length >= 2 && !/^[0-9a-f-]{32,36}$/i.test(str) && !/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(str)) out.push(str);
+          } else if (wt === 1) i += 8;
+          else if (wt === 5) i += 4;
+          else break;
+        }
+        return out;
+      };
+      const msgs = [];
+      for (const r of rows) {
+        if (!r.step_payload) continue;
+        const strs = readStrings(Buffer.from(r.step_payload));
+        const longest = strs.sort((a, b) => b.length - a.length)[0];
+        if (longest) msgs.push({ role: r.step_type === 14 ? 'user' : 'assistant', text: longest });
+      }
+      return msgs;
+    } finally { db.close(); }
+  } catch { return []; }
+}
+
+/**
+ * Write a native Claude Code JSONL session file from normalized messages so `claude --resume <id>` works directly.
+ */
+function writeNativeClaudeSession({ sessionId = crypto.randomUUID(), claudeProjectsDir, cwd = process.cwd(), msgs = [], title = '' }) {
+  const clean = normalizeHandoffMessages(msgs);
+  if (!clean.length || !claudeProjectsDir) return null;
+  const projDir = path.join(claudeProjectsDir, encodeClaudeProjectDir(cwd));
+  fs.mkdirSync(projDir, { recursive: true });
+  const outFile = path.join(projDir, `${sessionId}.jsonl`);
+  const lines = [];
+  let parentUuid = null;
+  for (const m of clean) {
+    const uuid = crypto.randomUUID();
+    const ts = m.ts || new Date().toISOString();
+    lines.push(JSON.stringify({
+      parentUuid,
+      isSidechain: false,
+      userType: 'external',
+      cwd,
+      sessionId,
+      type: m.role === 'user' ? 'user' : 'assistant',
+      uuid,
+      timestamp: ts,
+      message: m.role === 'user'
+        ? { role: 'user', content: m.text }
+        : { role: 'assistant', content: [{ type: 'text', text: m.text }] },
+    }));
+    parentUuid = uuid;
+  }
+  if (title) {
+    lines.push(JSON.stringify({ type: 'custom-title', customTitle: String(title).slice(0, 120), sessionId }));
+  }
+  fs.writeFileSync(outFile, lines.join('\n') + '\n', 'utf8');
+  return { sessionId, file: outFile, messageCount: clean.length };
+}
+
+/**
+ * Write a native Codex CLI rollout JSONL session file so `codex resume <id>` works directly.
+ */
+function writeNativeCodexSession({ sessionId = crypto.randomUUID(), codexHome, cwd = process.cwd(), msgs = [] }) {
+  const clean = normalizeHandoffMessages(msgs);
+  if (!clean.length || !codexHome) return null;
+  const now = new Date();
+  const yyyy = String(now.getUTCFullYear());
+  const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(now.getUTCDate()).padStart(2, '0');
+  const stamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const sessDir = path.join(codexHome, 'sessions', yyyy, mm, dd);
+  fs.mkdirSync(sessDir, { recursive: true });
+  const outFile = path.join(sessDir, `rollout-${stamp}-${sessionId}.jsonl`);
+  const lines = [
+    JSON.stringify({
+      timestamp: now.toISOString(),
+      type: 'session_meta',
+      payload: {
+        id: sessionId,
+        session_id: sessionId,
+        timestamp: now.toISOString(),
+        cwd,
+        originator: 'codex_cli_rs',
+        source: 'cli',
+      },
+    }),
+  ];
+  for (const m of clean) {
+    const isUser = m.role === 'user';
+    lines.push(JSON.stringify({
+      timestamp: m.ts || now.toISOString(),
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: isUser ? 'user' : 'assistant',
+        content: [{ type: isUser ? 'input_text' : 'output_text', text: m.text }],
+      },
+    }));
+  }
+  fs.writeFileSync(outFile, lines.join('\n') + '\n', 'utf8');
+  return { sessionId, file: outFile, messageCount: clean.length };
+}
+
 module.exports = {
   claudeMessageLineIndices,
   codexMessageLineIndices,
@@ -352,4 +508,7 @@ module.exports = {
   editCodexJsonlAt,
   writeBranchContextFile,
   createBranchStore,
+  readAgyConversationTurns,
+  writeNativeClaudeSession,
+  writeNativeCodexSession,
 };
