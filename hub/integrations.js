@@ -3,7 +3,7 @@
 //                             fetched for sessions land in drive-cache/
 //   drives: {id: {label, url, local?, letter?, unc?, start?}}   more drive servers (e.g. a team NAS share whose
 //                             files are also on this PC under `local`, so sessions get that path directly)
-//   apps: [{id, label, icon, url, page?, bridge?, start?, hint?}]   local web apps embedded at /app-<id>/<token>/
+//   webApps (or legacy apps): [{id, label, icon, url, page?, bridge?, start?, hint?}]   local web apps embedded at /app-<id>/<token>/
 //   delta: {portal, hub, uiPort?, defaultProject?, sessionFile?}    a Deltascale "AI Control Hub": login once here,
 //                             then the hub page, `ccd delta` and the `ccd gpt` fallback use the saved session cookie;
 //                             a loopback relay on uiPort opens the hub logged in (main instance only)
@@ -24,6 +24,8 @@ function createIntegrations(hub) {
   const startScript = (file) => (hub.instance && !hub.instance.startServices) ? console.log(`[instance] side instance: not starting ${file}`) : spawn(/\.vbs$/i.test(file) ? 'wscript.exe' : file, /\.vbs$/i.test(file) ? [file] : [], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
 
   // ---------- drives ----------
+  // local web apps: config "webApps" (older configs: "apps" when it is a list of {id, url})
+  const WEBAPPS = Array.isArray(CONFIG.webApps) ? CONFIG.webApps : Array.isArray(CONFIG.apps) ? CONFIG.apps.filter((a) => a && a.id && (a.url || a.page)) : [];
   const DRIVE_CACHE = path.join(baseDir, 'drive-cache');
   const DRIVES = {
     ...(CONFIG.driveUrl ? { gx10: { id: 'gx10', label: CONFIG.driveLabel || 'GX10 드라이브', url: trim(CONFIG.driveUrl), local: null } } : {}),
@@ -206,7 +208,7 @@ function createIntegrations(hub) {
 
   // ---------- routes ----------
   const sameOrigin = (req) => !req.headers.origin || req.headers.origin === `http://${req.headers.host}` || req.headers.origin === `https://${req.headers.host}`;
-  /** non-/api paths: /drive[-id]/<token>/… (drive web UI) and /app-<id>/<token>/… (local apps). true = handled */
+  /** non-/api paths: /drive[-id]/<token>/… (drive web UI) and /app-<id>/<token>/… (/api/webapps lists them) (local apps). true = handled */
   function handlePage(p, url, req, res, send) {
     const dm = /^\/drive(?:-([a-z0-9]+))?\/([A-Za-z0-9]+)(\/.*)?$/.exec(p);
     if (dm) {
@@ -217,7 +219,7 @@ function createIntegrations(hub) {
     }
     const am = /^\/app-([a-z0-9]+)\/([A-Za-z0-9]+)(\/.*)?$/.exec(p);
     if (am) {
-      const ap = (CONFIG.apps || []).find((x) => x.id === am[1]);
+      const ap = WEBAPPS.find((x) => x.id === am[1]);
       if (!ap) { send(res, 404, { error: 'unknown app' }); return true; }
       if (am[2] !== TOKEN || !sameOrigin(req)) { send(res, 401, { error: 'bad token' }); return true; }
       if (!am[3]) { res.writeHead(302, { location: `${p}/${url.search}` }); res.end(); return true; }
@@ -237,8 +239,8 @@ function createIntegrations(hub) {
   }
   /** authenticated /api routes of these integrations. true = handled */
   async function handleApi(p, url, req, res, body, send) {
-    if (p === '/api/apps') { send(res, 200, { apps: (CONFIG.apps || []).map(({ id, label, icon, sub }) => ({ id, label, icon, sub })) }); return true; }
-    if (p.startsWith('/api/drive/')) { proxyDrive(req, res, send, '/api/' + p.slice('/api/drive/'.length) + stripToken(url.search), url.searchParams.get('d') || 'gx10'); return true; }
+    if (p === '/api/webapps') { send(res, 200, { apps: WEBAPPS.map(({ id, label, icon, sub }) => ({ id, label, icon, sub })) }); return true; }
+    if (p.startsWith('/api/netdrive/')) { proxyDrive(req, res, send, '/api/' + p.slice('/api/netdrive/'.length) + stripToken(url.search), url.searchParams.get('d') || 'gx10'); return true; }
     if (p.startsWith('/api/delta/')) { await deltaApi(p, url, req, res, body, send); return true; }
     if (p === '/api/drives') {
       const out = await Promise.all(Object.values(DRIVES).map(async (d) => {
@@ -294,7 +296,7 @@ function createIntegrations(hub) {
   return {
     handlePage, handleApi, startDeltaUi, deltaStatus,
     // overview fields for the UI: is the GX10 drive configured, and the other drives
-    overviewFields: () => ({ drive: !!DRIVES.gx10, drives: Object.values(DRIVES).filter((d) => d.id !== 'gx10').map((d) => ({ id: d.id, label: d.label, sub: d.sub || '', local: d.local || null })), delta: !!DELTA, apps: (CONFIG.apps || []).length > 0 }),
+    overviewFields: () => ({ drive: !!DRIVES.gx10, drives: Object.values(DRIVES).filter((d) => d.id !== 'gx10').map((d) => ({ id: d.id, label: d.label, sub: d.sub || '', local: d.local || null })), delta: !!DELTA, webApps: WEBAPPS.length > 0 }),
     // remote URLs: a configured HTTPS relay first
     remoteUrls: () => (CONFIG.homelink?.url ? [CONFIG.homelink.url] : []),
     homelink: CONFIG.homelink || null,

@@ -124,8 +124,8 @@ function viewApp() {
 
 // app list (labels/icons) once at start, only when the server has apps configured
 setTimeout(function loadApps() {
-  if (!state.apps) return void setTimeout(loadApps, 3000);
-  api('/api/apps').then((r) => { state.appList = r.apps || []; renderSide(); }).catch((e) => uiErr('앱 목록', e));
+  if (!state.webApps) return void setTimeout(loadApps, 3000);
+  api('/api/webapps').then((r) => { state.appList = r.apps || []; renderSide(); }).catch((e) => uiErr('앱 목록', e));
 }, 1500);
 
 // ?open=drive | drive:<id> | delta | app:<id> (links from the phone app / notifications)

@@ -160,7 +160,7 @@ function tgDownload(filePath) {
   }).on('timeout', function () { this.destroy(new Error('download timeout')); }).on('error', no));
 }
 const driveReq = (method, p, body) => new Promise((ok, no) => {
-  const rq = http.request(`${HUB}/api/drive/${p}`, { method, headers: { 'x-token': TOKEN_DASH, 'content-length': body ? body.length : 0, ...(Buffer.isBuffer(body) ? {} : { 'content-type': 'application/json' }) }, timeout: 120000 }, (r) => {
+  const rq = http.request(`${HUB}/api/netdrive/${p}`, { method, headers: { 'x-token': TOKEN_DASH, 'content-length': body ? body.length : 0, ...(Buffer.isBuffer(body) ? {} : { 'content-type': 'application/json' }) }, timeout: 120000 }, (r) => {
     let d = ''; r.on('data', (c) => (d += c)); r.on('end', () => { try { ok(JSON.parse(d)); } catch { ok({ error: `${r.statusCode} ${d.slice(0, 200)}` }); } });
   });
   rq.on('timeout', () => rq.destroy(new Error('drive timeout'))); rq.on('error', no); rq.end(body);

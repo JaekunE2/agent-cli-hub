@@ -1,14 +1,14 @@
 // GX10 drive in the dashboard: browse / upload / download / folders / move / delete, "세션에 보내기"
 // (file → this PC's drive-cache → its path typed into a session), and a picker the terminal input
-// bar uses to mention a drive file. Talks to /api/drive/* (proxied to the GX10 drive server).
+// bar uses to mention a drive file. Talks to /api/netdrive/* (proxied to the GX10 drive server).
 'use strict';
 const DRIVE = { cwd: '', q: '' };
-const dApi = (op, qs = {}, body, id = 'gx10') => api(`/api/drive/${op}?${new URLSearchParams({ ...qs, ...(id !== 'gx10' ? { d: id } : {}) })}`, body ? { method: 'POST', body } : {});
+const dApi = (op, qs = {}, body, id = 'gx10') => api(`/api/netdrive/${op}?${new URLSearchParams({ ...qs, ...(id !== 'gx10' ? { d: id } : {}) })}`, body ? { method: 'POST', body } : {});
 // drives: the GX10 drive (config driveUrl, through a tunnel) + config "drives" from the overview (e.g. nas = team share Z:, files local to this PC)
 const driveList = () => [...(state.drive !== false ? [{ id: 'gx10', label: 'GX10 드라이브', local: null }] : []), ...(state.drives || [])];
 const driveById = (id) => driveList().find((d) => d.id === (id || 'gx10')) || { id: 'gx10', label: 'GX10 드라이브', local: null };
 const driveLocal = (d, rel) => d.local.replace(/[\\/]+$/, '') + '\\' + rel.replace(/\//g, '\\');
-const dUrl = (rel, dl) => `/api/drive/file?path=${encodeURIComponent(rel)}${dl ? '&dl=1' : ''}&t=${encodeURIComponent(TOKEN)}`;
+const dUrl = (rel, dl) => `/api/netdrive/file?path=${encodeURIComponent(rel)}${dl ? '&dl=1' : ''}&t=${encodeURIComponent(TOKEN)}`;
 const dJoin = (a, b) => (a ? a + '/' : '') + b;
 const dIcon = (e) => e.dir ? '📁' : /\.(png|jpe?g|gif|webp|svg)$/i.test(e.name) ? '🖼' : /\.(mp4|webm|mov)$/i.test(e.name) ? '🎬' : /\.pdf$/i.test(e.name) ? '📕' : /\.(zip|7z|tar|gz)$/i.test(e.name) ? '🗜' : '📄';
 const dSize = (n) => n == null ? '' : fmtSize(n);
@@ -93,7 +93,7 @@ function driveUpload(files) {
     const target = dJoin(DRIVE.cwd, f.name);
     const put = (overwrite) => {
       const x = new XMLHttpRequest();
-      x.open('PUT', `/api/drive/file?path=${encodeURIComponent(target)}${overwrite ? '&overwrite=1' : ''}`);
+      x.open('PUT', `/api/netdrive/file?path=${encodeURIComponent(target)}${overwrite ? '&overwrite=1' : ''}`);
       x.setRequestHeader('x-token', TOKEN);
       x.upload.onprogress = (ev) => { n.textContent = `올리는 중 ${i}/${files.length} ${f.name} — ${fmtSize(ev.loaded)} / ${fmtSize(f.size)}`; };
       x.onload = () => {

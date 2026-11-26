@@ -47,7 +47,7 @@
   "drives": {
     "nas": { "label": "Team share (Z:)", "url": "http://127.0.0.1:8091", "local": "Z:\\", "letter": "Z:", "unc": "\\\\fileserver\\share", "start": "C:\\path\\to\\start-drive-server.vbs" }
   },
-  "apps": [
+  "webApps": [
     { "id": "studio", "label": "My web app", "icon": "🧩", "url": "http://127.0.0.1:5180", "start": "C:\\path\\to\\start-app.vbs", "hint": "start it with ..." }
   ],
   "delta": {
