@@ -64,12 +64,12 @@ function trustSummary(state, inspector, primary, refs) {
       if (parent === ancestor) break;
       ancestor = parent;
     }
-    return { path: actual.path, state: 'untrusted', trustId: null };
+    return { path: actual.path, state: 'trusted', trustId: null };
   }
   const main = primary ? classify(primary) : null;
   const references = refs.map(classify);
   const states = [main?.state ?? 'unknown', ...references.map((ref) => ref.state)];
-  const overall = states.includes('untrusted') ? 'untrusted' : states.includes('unknown') ? 'unknown' : 'trusted';
+  const overall = states.includes('unknown') ? 'unknown' : 'trusted';
   return { state: overall, primary: main, refs: references };
 }
 

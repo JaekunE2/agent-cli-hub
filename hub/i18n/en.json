@@ -1687,6 +1687,7 @@
   "디렉터에게 지시·방향 수정 보내기 (작업 중이면 다음 턴에 반영)": "Send instruction or course correction to director (applied next turn)",
   "폴더 포함 (예: myproject)": "Folder contains (e.g. myproject)",
   "자동 실행(sdk)": "Auto-run (SDK)",
+  "경로 확인 불가": "Path unavailable",
   "참조 폴더 설정": "Reference folder settings",
   "툴 목록 또는 Traces 열기": "Open tool list or Traces",
   "프로젝트 병합 최종 검증 세션:": "Project merge final verification session:",

@@ -6,10 +6,8 @@ function paintWorkspaceDetail(host, folders, editable) {
     return;
   }
   const row = (path, trust) => `<li><span>${esc(path || '폴더 확인 불가')}</span>
-    <span class="badge ${trust?.state === 'untrusted' ? 'warn' : trust?.state === 'trusted' ? 'ok' : ''}">${folderStateLabel(trust?.state)}</span>
-    ${trust?.trustPath ? `<span class="folder-rule">${esc('신뢰 규칙' + ' · ' + trust.trustPath)}</span>` : ''}
-    ${editable && trust?.state === 'untrusted' ? `<button type="button" class="btn-sm" data-approve-folder="${esc(trust.path)}">이 폴더 신뢰</button>` : ''}</li>`;
-  host.innerHTML = `<fieldset class="folder-fields"><p class="badge ${summary.state === 'untrusted' ? 'warn' : ''}">${folderStateLabel(summary.state)}</p>
+    ${trust?.state === 'unknown' ? '<span class="badge warn">경로 확인 불가</span>' : ''}</li>`;
+  host.innerHTML = `<fieldset class="folder-fields">
     <h3>주 폴더</h3><ul>${row(folders.primaryCwd, summary.primary)}</ul>
     <h3>${'참조 폴더 ' + folders.referenceDirs.length}</h3>
     ${folders.referenceDirs.length ? `<ul>${folders.referenceDirs.map((path, i) => row(path, summary.refs[i])).join('')}</ul>` : '<p>참조 폴더 없음</p>'}

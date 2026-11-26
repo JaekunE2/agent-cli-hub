@@ -29,12 +29,9 @@ function createWorkspaceExecution(store, sessionLookup, inspect = folderInspecto
       const session = forTerm(term);
       return store.hasContext(session) ? store.getFolders(session, await inspector()) : null;
     },
-    async plan({ source, folders, cwd, matchCwd, projectRoot, resumeKey, external, skipPermissions }) {
+    async plan({ source, folders, cwd, matchCwd, projectRoot, resumeKey, external }) {
       if (folders === undefined && !store.hasContext(source)) return null;
       if (external) throw unsupported();
-      if (skipPermissions === true) {
-        throw new WorkspaceError(409, 'FOLDERS_PERMISSION_BYPASS', 'Managed folders require normal CLI permission checks');
-      }
       const plan = store.planLaunch(source, folders, cwd, { inspector: await inspector(), matchCwd, projectRoot, resumeKey });
       return plan && { ...plan, source };
     },

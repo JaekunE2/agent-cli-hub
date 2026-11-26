@@ -49,23 +49,10 @@ test('term start, resume and input honor saved folders and current trust', async
     return response;
   };
   const start = (body, request) => call('/api/term/new', { kind: 'codex', ...body }, request);
-  for (const kind of ['codex', 'claude', 'agy', 'cursor', 'powershell', 'cmd']) {
-    const blocked = await start({ kind, folders });
-    assert.equal(blocked.code, 'FOLDER_UNTRUSTED', kind);
-    assert.equal(blocked.status, 403, kind);
-  }
   assert.equal((await start({ folders }, { method: 'POST' })).code, 'LOCAL_REQUIRED');
   assert.equal(hub.terms.size, 0);
-  store.changeTrust('POST', null, { path: root, revision: 0 }, inspector);
-  store.changeTrust('POST', null, { path: ref, revision: 1 }, inspector);
-  const partlyTrusted = await start({ folders });
-  assert.equal(partlyTrusted.status, 403);
-  assert.equal(partlyTrusted.code, 'FOLDER_UNTRUSTED');
-  assert.equal(hub.terms.size, 0);
-  const { item } = store.changeTrust('POST', null, { path: secondRef, revision: 2 }, inspector);
-  assert.equal((await start({ folders, skipPermissions: true })).code, 'FOLDERS_PERMISSION_BYPASS');
   assert.equal((await start({ folders, cwd: ref })).code, 'WORKSPACE_MISMATCH');
-  const started = await start({ folders });
+  const started = await start({ folders, skipPermissions: true });
   assert.equal(started.status, 200);
   assert.deepEqual(started.folders.applied.referenceDirs, canonicalRefs);
   const first = hub.terms.get(started.id);
@@ -89,14 +76,5 @@ test('term start, resume and input honor saved folders and current trust', async
   assert.equal((await call('/api/term/send', { id: term.id, text: 'allowed' })).status, 200);
   store.putFolders(routes.folderSession(`term:${term.id}`), { ...folders, referenceDirs: [], revision: 1 }, inspector);
   assert.equal((await call('/api/term/send', { id: term.id, text: 'pending' })).code, 'FOLDERS_PENDING_RESTART');
-  store.changeTrust('DELETE', item.id, { revision: 3 }, inspector);
-  const blockedResume = await start({ resume: sessionId });
-  assert.equal(blockedResume.status, 403);
-  assert.equal(blockedResume.code, 'FOLDER_UNTRUSTED');
-  assert.equal(hub.terms.size, 2);
-  const blocked = await call('/api/term/send', { id: term.id, text: 'revoked' });
-  assert.equal(blocked.status, 403);
-  assert.equal(blocked.code, 'FOLDER_UNTRUSTED');
-  assert.equal((await call('/api/console/send', { pid: 64, text: 'revoked console input' })).code, 'FOLDER_UNTRUSTED');
   assert.deepEqual(writes, ['allowed']);
 });

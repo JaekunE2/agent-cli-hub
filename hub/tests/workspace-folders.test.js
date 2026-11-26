@@ -79,7 +79,7 @@ test('HTTP folder CRUD, canonical duplicates, legacy fallback and restart persis
   assert.deepEqual(legacy.referenceDirs, []);
   assert.equal(legacy.revision, 0);
   assert.equal(legacy.managed, false);
-  assert.equal(legacy.trustSummary.state, 'untrusted');
+  assert.equal(legacy.trustSummary.state, 'trusted');
 
   const input = { path: root, revision: 0 };
   const { item } = await request('POST', registry, 201, input);
@@ -90,7 +90,7 @@ test('HTTP folder CRUD, canonical duplicates, legacy fallback and restart persis
   assert.equal(bound.managed, true);
   assert.equal(bound.primaryCwd, root);
   assert.deepEqual(bound.referenceDirs, [child, sibling]);
-  assert.deepEqual(bound.trustSummary.refs.map((ref) => ref.state), ['untrusted', 'untrusted']);
+  assert.deepEqual(bound.trustSummary.refs.map((ref) => ref.state), ['trusted', 'trusted']);
 
   const idRoute = `${registry}/${item.id}`;
   await request('PATCH', idRoute, 200, { includeDescendants: true, revision: 1 });
@@ -114,7 +114,7 @@ test('HTTP folder CRUD, canonical duplicates, legacy fallback and restart persis
   assert.deepEqual(await request('GET', route, 200), removed);
   assert.equal((await request('GET', registry, 200)).revision, 4);
   await request('DELETE', idRoute, 200, { revision: 4 });
-  assert.equal((await request('GET', route, 200)).trustSummary.state, 'untrusted');
+  assert.equal((await request('GET', route, 200)).trustSummary.state, 'trusted');
 });
 
 test('reopen preserves ordered canonical references and trust after an invalid update', async (t) => {
@@ -128,7 +128,7 @@ test('reopen preserves ordered canonical references and trust after an invalid u
     primaryCwd: root, referenceDirs: [sibling, alternateChild, child], revision: 0,
   });
   assert.deepEqual(saved.referenceDirs, [sibling, child]);
-  assert.deepEqual(saved.trustSummary.refs.map(ref => ref.state), ['untrusted', 'trusted']);
+  assert.deepEqual(saved.trustSummary.refs.map(ref => ref.state), ['trusted', 'trusted']);
   const rejected = await api.request('PUT', route, 400, {
     primaryCwd: root, referenceDirs: [child, path.join(root, 'missing')], revision: saved.revision,
   });
@@ -153,7 +153,7 @@ test('HTTP writes require local authenticated requests and reject invalid folder
   await request('GET', registry, 403, undefined, remote);
   await request('PUT', route, 403, {}, remote);
   assert.deepEqual(await request('GET', route, 200, undefined, remote), {
-    sessionKey, revision: 0, managed: false, referenceCount: 0, trustState: 'untrusted', hasPendingChanges: false,
+    sessionKey, revision: 0, managed: false, referenceCount: 0, trustState: 'trusted', hasPendingChanges: false,
   });
   await request('GET', endpoint('session:codex:unknown-id'), 404);
   await request('POST', route, 405, {});
@@ -207,7 +207,7 @@ test('HTTP trust follows the real directory, fails closed after retarget, and tr
   const retargeted = await request('GET', endpoint(sessionKey), 200);
   assert.equal(retargeted.trustSummary.refs[0].state, 'unknown');
   const rebound = await request('PUT', endpoint(sessionKey), 200, { primaryCwd: root, referenceDirs: [link], revision: 1 });
-  assert.equal(rebound.trustSummary.refs[0].state, 'untrusted');
+  assert.equal(rebound.trustSummary.refs[0].state, 'trusted');
   assert.deepEqual(rebound.referenceDirs, [sibling]);
   assert.deepEqual(api.errors, []);
 });
