@@ -54,9 +54,12 @@ async function submitPrompt({ text, read, write, guard, waitFor, sleep, delay = 
       return true;
     }
     if (pasteMarker !== 'codex') return false;
-    const count = Number(PASTE.exec(shown)?.[1]);
-    return count === text.length || count === Array.from(text).length
-      || (/^\[\[/.test(shown) && (Math.abs(count - text.length) <= 2 || Math.abs(count - Array.from(text).length) <= 2));
+    const m = PASTE.exec(shown);
+    if (!m) return false;
+    const count = Number(m[1]);
+    if (count === text.length || count === Array.from(text).length) return true;
+    const lineDiff = (text.match(/\n/g) || []).length + 4;
+    return pasted && (Math.abs(count - text.length) <= lineDiff || Math.abs(count - Array.from(text).length) <= lineDiff);
   };
   const current = async () => {
     const view = await read();
