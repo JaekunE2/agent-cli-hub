@@ -397,6 +397,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
   let lastSig = '';
   let lastLiveMode = '';
   let lastMessages = [];
+  let msgLimit = 120;
   let wasWorking = false;
   let idleStreak = 0;
   let lastPreviewText = '';
@@ -513,6 +514,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
       return true;
     }
     if (modeKey === lastLiveMode) return true;
+    if (liveHost.contains(document.activeElement) && document.activeElement?.matches?.('input, textarea')) return true;
     lastLiveMode = modeKey;
 
     const userHtml = showPendingUser
@@ -625,7 +627,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
         immBtn.textContent = '전송 중…';
         try {
           const r = target.lt
-            ? await api('/api/term/send', { method: 'POST', body: { id: target.lt.id, text: curHint.pendingText, submit: true, immediate: true, resendIfMissing: true } })
+            ? await api('/api/term/send', { method: 'POST', body: { id: target.lt.id, text: curHint.pendingText, submit: true, immediate: true, resendIfMissing: true, clearDraft: true } })
             : await api('/api/console/send', { method: 'POST', body: { pid: target.conPid, text: curHint.pendingText, submit: true, immediate: true, resendIfMissing: true } });
           if (r?.error) throw new Error(r.error);
           curHint.until = Date.now() + 30000;
@@ -646,11 +648,18 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
     }
     return true;
   };
+  const linkUrls = (html) => String(html || '').replace(/(^|[\s(>])(https?:\/\/[^\s<>"']+)/g, (m, pre, rawUrl) => {
+    let url = rawUrl;
+    let trail = '';
+    while (/[.,;:!?)\]]$/.test(url)) { trail = url.slice(-1) + trail; url = url.slice(0, -1); }
+    if (!url) return m;
+    return `${pre}<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>${trail}`;
+  });
   const tick = async (force = false) => {
     if (gen !== viewGen) return;
-    if ((!curSid || tCur?.agy) && state.sel.kind === 'term') {
-      const t = state.terms.find((x) => x.id === state.sel.id);
-      const updated = resolveTermSessionId(t);
+    if (state.sel.kind === 'term') {
+      const t = state.terms.find((x) => String(x.id) === String(state.sel.id));
+      const updated = t?.sessionId || resolveTermSessionId(t);
       if (updated && curSid !== updated) { lastSig = ''; curSid = updated; }
     }
     const box = $('.chat', container);
@@ -672,12 +681,12 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
       chatPollTimer = setTimeout(tick, working ? 1100 : 3000);
       return;
     }
-    const d = await api(`/api/transcript?id=${encodeURIComponent(curSid)}${jump ? '&at=' + at : ''}`).catch((e) => ({ error: e.message }));
+    const d = await api(`/api/transcript?id=${encodeURIComponent(curSid)}${jump ? '&at=' + at : `&limit=${msgLimit}`}`).catch((e) => ({ error: e.message }));
     if (gen !== viewGen) return;
     if (d.hidden) { msgsHost.textContent = d.error; return; }
     const parentSig = d.lineage?.parent ? `${d.lineage.parent.parentSessionId}:${d.lineage.parent.atIndex}` : '';
     const childSig = (d.lineage?.children || []).map((c) => `${c.id || ''}:${c.childSessionId || ''}:${c.atIndex}`).join(',');
-    const sig = `${d.size || 0}:${d.total || 0}:${d.rev || 0}:${d.title || ''}:${parentSig}:${childSig}`;
+    const sig = `${d.size || 0}:${d.total || 0}:${d.base || 0}:${d.rev || 0}:${d.title || ''}:${parentSig}:${childSig}`;
     if (d.error && !d.messages?.length) {
       if (lastMessages.length) {
         const working = await updateLiveBubble(lastMessages);
@@ -722,6 +731,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
         </div>` : '';
       const more = jump && b + d.messages.length < (d.total || 0)
         ? `<div class="row" style="justify-content:center;margin:10px"><button class="btn-latest">최신 대화로 이동</button></div>` : '';
+      const openToolIds = new Set([...msgsHost.querySelectorAll('details.toolgrp[open]')].map((el) => el.dataset.tgKey).filter(Boolean));
       const parts = [];
       let toolBuf = [];
       const branchChipsHTML = (gi) => {
@@ -731,8 +741,10 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
       };
       const flushTools = () => {
         if (!toolBuf.length) return;
+        const tgKey = `${toolBuf[0].gi}:${toolBuf.length}`;
+        const isOpen = openToolIds.has(tgKey) || openToolIds.has(String(toolBuf[0].gi));
         const toolBranches = toolBuf.map((x) => branchChipsHTML(x.gi)).filter(Boolean).join('');
-        parts.push(`<details class="toolgrp"><summary>도구 실행 ${toolBuf.length}건</summary><div class="toolgrp-body">${toolBuf.map((x) => `<div>${linkPaths(hl(x.m.text, terms))}</div>`).join('')}</div></details>${toolBranches}`);
+        parts.push(`<details class="toolgrp" data-tg-key="${esc(tgKey)}"${isOpen ? ' open' : ''}><summary>도구 실행 ${toolBuf.length}건</summary><div class="toolgrp-body">${toolBuf.map((x) => `<div>${linkPaths(hl(x.m.text, terms))}</div>`).join('')}</div></details>${toolBranches}`);
         toolBuf = [];
       };
       let lastDay = '';
@@ -766,15 +778,32 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
         if (tool || isMetaNote) {
           parts.push(`<div class="msg tool${tgt ? ' target' : ''}" data-mi="${k}">${linkPaths(hl(rawTxt, terms))}</div>${branchChipsHTML(gi)}`);
         } else if (m.role === 'user') {
-          const bodyHtml = linkPaths(hl(rawTxt, terms));
+          const bodyHtml = linkUrls(linkPaths(hl(rawTxt, terms)));
           parts.push(`<div class="msg user${tgt ? ' target' : ''}" data-mi="${k}">${branchOriginNote}<div class="msg-bubble"><div class="msg-body">${bodyHtml}</div></div><div class="msg-meta">${editedBadge}<span class="msg-acts">${quoteBtn}${editBtn}${forkBtn}${copyBtn}</span>${when ? `<span>${esc(when)}</span>` : ''}</div>${branchChipsHTML(gi)}</div>`);
         } else {
-          const bodyHtml = !terms.length ? md(rawTxt) : `<div class="msg-body" style="white-space:pre-wrap">${linkPaths(hl(rawTxt, terms))}</div>`;
+          const bodyHtml = !terms.length ? md(rawTxt) : `<div class="msg-body" style="white-space:pre-wrap">${linkUrls(linkPaths(hl(rawTxt, terms)))}</div>`;
           parts.push(`<div class="msg assistant${tgt ? ' target' : ''}" data-mi="${k}"><div class="msg-av">${agentIcon(ag || 'claude')}</div><div class="msg-col"><div class="msg-hd"><span class="w-role">${esc(who)}</span>${when ? `<span class="w-ts">${esc(when)}</span>` : ''}${editedBadge}<span style="flex:1"></span><span class="msg-acts">${quoteBtn}${forkBtn}${copyBtn}</span></div><div class="msg-bubble">${bodyHtml}</div>${branchChipsHTML(gi)}</div></div>`);
         }
       });
       flushTools();
-      msgsHost.innerHTML = lineageBanner + (b > 0 ? `<div class="empty" style="margin-bottom:6px">… 이전 메시지 ${b}개 생략</div>` : '') + (parts.join('') || '<div class="empty">메시지 없음</div>') + more;
+      const prevHeight = v.scrollHeight;
+      const prevTop = v.scrollTop;
+      const olderBanner = b > 0
+        ? `<div class="row" style="justify-content:center;gap:8px;margin-bottom:8px"><span class="ums" style="margin:0">… 이전 메시지 ${b}개 생략</span>${!jump ? `<button type="button" class="btn-sm" data-load-older="1">이전 메시지 더 보기</button>` : ''}</div>`
+        : '';
+      msgsHost.innerHTML = lineageBanner + olderBanner + (parts.join('') || '<div class="empty">메시지 없음</div>') + more;
+      const loadOlderBtn = $('[data-load-older]', msgsHost);
+      if (loadOlderBtn) {
+        loadOlderBtn.onclick = async () => {
+          loadOlderBtn.disabled = true;
+          msgLimit = Math.min(2000, msgLimit + 160);
+          lastSig = '';
+          const beforeH = v.scrollHeight;
+          const beforeT = v.scrollTop;
+          await tick(true);
+          if (v.isConnected && v.scrollHeight > beforeH) v.scrollTop = beforeT + (v.scrollHeight - beforeH);
+        };
+      }
       window.ACH_PREVIEW?.hydrateMermaid(msgsHost);
       window.ACH_PREVIEW?.scanChatBlocks(msgsHost);
       msgsHost.onclick = (e) => {
@@ -949,7 +978,7 @@ function md(src) {
   };
   const out = [];
   let i = 0, list = null, para = [];
-  const flushPara = () => { if (para.length) { out.push(`<p>${inline(para.join(' '))}</p>`); para = []; } };
+  const flushPara = () => { if (para.length) { out.push(`<p>${para.map(inline).join('<br>')}</p>`); para = []; } };
   const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
   while (i < lines.length) {
     const l = lines[i];

@@ -74,7 +74,7 @@
     let winList = [];
     let selectedHwnd = 'all';
     let winAuto = true;
-    let winShowAll = false;
+    let winShowAll = true;
     let snapNonce = Date.now();
     let winPollTimer = null;
     let snapTimer = null;
@@ -83,7 +83,7 @@
         <div class="win-tabs" data-w-tabs></div>
         <div class="row" style="gap:6px;flex:none">
           <button type="button" class="btn-sm primary" data-w-new title="새 창 · 터미널 · PowerShell · cmd · Ubuntu 열기">${UI_ICO.plus}<span>새 창 열기</span></button>
-          <label class="win-auto-lbl"><input type="checkbox" data-w-all> 전체 창</label>
+          <label class="win-auto-lbl"><input type="checkbox" data-w-all checked> 전체 창</label>
           <label class="win-auto-lbl"><input type="checkbox" data-w-auto checked> 자동 갱신</label>
           <button type="button" class="btn-sm" data-w-refresh title="창 목록 · 스냅샷 새로고침">${UI_ICO.refresh}<span>새로고침</span></button>
         </div>
@@ -95,7 +95,8 @@
       dlg.className = 'pj-dialog';
       dlg.style.width = 'min(1040px, 95vw)';
       dlg.setAttribute('aria-label', w.title || '창 미리보기');
-      const shotUrl = () => `/api/window/shot?hwnd=${encodeURIComponent(w.hwnd)}&w=1280&t=${encodeURIComponent(window.TOKEN || '')}&ts=${Date.now()}`;
+      const authTok = () => (typeof TOKEN !== 'undefined' ? TOKEN : (window.TOKEN || ''));
+      const shotUrl = () => `/api/window/shot?hwnd=${encodeURIComponent(w.hwnd)}&w=1280&t=${encodeURIComponent(authTok())}&ts=${Date.now()}`;
       dlg.innerHTML = `<div style="display:flex;flex-direction:column;gap:10px">
         <div class="dlg-head">
           <div style="min-width:0"><h3 style="margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(w.title)}</h3><small class="ums" style="margin:0">${esc(w.exe)} · ${w.rect.width}×${w.rect.height}</small></div>
@@ -146,11 +147,16 @@
       const singleMode = targets.length === 1;
       const widthParam = singleMode ? 1080 : 620;
       const cardsHTML = targets.map((w) => {
-        const originBadge = w.linked ? '<span class="badge c">연결됨</span>' : w.browser ? '<span class="badge">브라우저</span>' : '<span class="badge">앱 · CLI</span>';
+        const originBadge = w.linked ? '<span class="badge c">연결됨</span>'
+          : w.hubChild ? '<span class="badge c">Hub 실행</span>'
+            : w.browser ? '<span class="badge">브라우저</span>'
+              : w.cliApp ? '<span class="badge">앱 · CLI</span>'
+                : '<span class="badge">실행 창</span>';
         const sz = w.minimized ? '최소화됨' : `${w.rect.width}×${w.rect.height}`;
+        const authTok = typeof TOKEN !== 'undefined' ? TOKEN : (window.TOKEN || '');
         const shotHtml = w.minimized
           ? `<div class="win-shot-empty"><span>창이 최소화되어 있어 화면을 캡처할 수 없습니다.</span><button type="button" class="btn-sm" data-win-focus="${esc(w.hwnd)}">${UI_ICO.external} 창 복원 · 앞으로</button></div>`
-          : `<img src="/api/window/shot?hwnd=${encodeURIComponent(w.hwnd)}&w=${widthParam}&t=${encodeURIComponent(window.TOKEN || '')}&ts=${snapNonce}" alt="${esc(w.title)}" loading="lazy">`;
+          : `<img src="/api/window/shot?hwnd=${encodeURIComponent(w.hwnd)}&w=${widthParam}&t=${encodeURIComponent(authTok)}&ts=${snapNonce}" alt="${esc(w.title)}" loading="lazy">`;
         return `<article class="win-card${singleMode ? ' win-single' : ''}">
           <div class="win-card-hd">${originBadge}<span class="win-card-title" title="${esc(w.title)}">${esc(w.title)}</span><span class="badge">${esc(w.exe)}</span></div>
           <div class="win-shot" data-win-zoom="${esc(w.hwnd)}">${shotHtml}</div>
@@ -167,11 +173,12 @@
       bodyEl.innerHTML = singleMode ? cardsHTML : `<div class="win-grid">${cardsHTML}</div>`;
     };
 
+    const currentViewGen = () => (typeof viewGen === 'number' ? viewGen : window.viewGen);
     const refreshWindows = async (refreshSnaps = true) => {
-      if (gen !== window.viewGen || !rootEl.isConnected) return;
-      const qs = `${termId ? `id=${encodeURIComponent(termId)}` : `pid=${encodeURIComponent(consolePid || 0)}`}${winShowAll ? '&all=1' : ''}`;
+      if (gen !== currentViewGen() || !rootEl.isConnected) return;
+      const qs = `${termId ? `id=${encodeURIComponent(termId)}` : `pid=${encodeURIComponent(consolePid || 0)}`}&all=${winShowAll ? '1' : '0'}`;
       const r = await api(`/api/term/windows?${qs}`).catch(() => ({ windows: [] }));
-      if (gen !== window.viewGen || !rootEl.isConnected) return;
+      if (gen !== currentViewGen() || !rootEl.isConnected) return;
       winList = r.windows || [];
       if (refreshSnaps) snapNonce = Date.now();
       renderWindows();
@@ -205,11 +212,11 @@
 
     refreshWindows(false);
     winPollTimer = setInterval(() => {
-      if (gen !== window.viewGen || !rootEl.isConnected) { clearInterval(winPollTimer); clearInterval(snapTimer); return; }
+      if (gen !== currentViewGen() || !rootEl.isConnected) { clearInterval(winPollTimer); clearInterval(snapTimer); return; }
       refreshWindows(false);
     }, 4500);
     snapTimer = setInterval(() => {
-      if (gen !== window.viewGen || !rootEl.isConnected) { clearInterval(winPollTimer); clearInterval(snapTimer); return; }
+      if (gen !== currentViewGen() || !rootEl.isConnected) { clearInterval(winPollTimer); clearInterval(snapTimer); return; }
       if (isOpen() && winAuto && winList.some((w) => !w.minimized)) {
         snapNonce = Date.now();
         rootEl.querySelectorAll('[data-w-body] img[src*="/api/window/shot"]').forEach((img) => {

@@ -93,10 +93,51 @@ function transcriptFile(hub, id, term) {
       if (name) return existing(path.resolve(dir, name), root);
     }
   }
+  if (root && fs.existsSync(root)) {
+    let scanned = 0;
+    const years = fs.readdirSync(root).filter(n => /^\d{4}$/.test(n)).sort().reverse();
+    for (const y of years) {
+      const yDir = path.join(root, y);
+      let months; try { months = fs.readdirSync(yDir).filter(n => /^\d{2}$/.test(n)).sort().reverse(); } catch { continue; }
+      for (const m of months) {
+        const mDir = path.join(yDir, m);
+        let days; try { days = fs.readdirSync(mDir).filter(n => /^\d{2}$/.test(n)).sort().reverse(); } catch { continue; }
+        for (const d of days) {
+          const dir = path.join(mDir, d);
+          if (checkedDirs.has(dir)) continue;
+          checkedDirs.add(dir);
+          if (++scanned > 90) break;
+          let names; try { names = fs.readdirSync(dir); } catch { continue; }
+          const name = names.find(n => n.startsWith('rollout-') && n.endsWith(`-${id}.jsonl`));
+          if (name) return existing(path.resolve(dir, name), root);
+        }
+        if (scanned > 90) break;
+      }
+      if (scanned > 90) break;
+    }
+  }
   return null;
 }
 
-function readEvents(file, cursor, consume, limit = 2_000_000, fromStart = false) {
+const FAST_SUBAGENT_RE = /(?:"(?:Agent|Task|spawn_agent|invoke_subagent|swarm|wait_agent|send_input|close_agent|SubAgentActivity|agent_message|turn_aborted|task_complete|turn_complete|tool_result|function_call_output|custom_tool_call_output|TOOL_RESULT|FUNCTION_RESULT|GENERIC|INVOKE_SUBAGENT|SYSTEM_MESSAGE)"|conversationId|task-notification|<task-id>|Subagent\s+[\w-]{8,}|FINAL_ANSWER)/;
+
+function parseLinesChunk(text, consume, prefilter) {
+  for (let from = 0; from < text.length; ) {
+    const end = text.indexOf('\n', from);
+    const line = (end >= 0 ? text.slice(from, end) : text.slice(from)).trim();
+    from = end >= 0 ? end + 1 : text.length;
+    if (!line || (prefilter && !FAST_SUBAGENT_RE.test(line))) continue;
+    let row;
+    try { row = JSON.parse(line); }
+    catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      continue;
+    }
+    if (row && typeof row === 'object') for (const event of transcriptEvents(row)) consume(event);
+  }
+}
+
+function readEvents(file, cursor, consume, limit = 2_000_000, fromStart = false, opts = {}) {
   if (!file) return;
   let fd;
   try { fd = fs.openSync(file, 'r'); }
@@ -106,6 +147,32 @@ function readEvents(file, cursor, consume, limit = 2_000_000, fromStart = false)
     if (cursor.size > st.size || cursor.ino !== st.ino) cursor.offset = 0;
     if (cursor.size === st.size && cursor.mtime === st.mtimeMs && cursor.ino === st.ino) return;
     Object.assign(cursor, { ino: st.ino, size: st.size, mtime: st.mtimeMs });
+    if (opts.fastScan && !fromStart && !cursor.offset && st.size > limit) {
+      const CHUNK = 1024 * 1024;
+      const tailStart = Math.max(0, st.size - limit);
+      const buf = Buffer.alloc(CHUNK);
+      let pos = 0;
+      let carry = Buffer.alloc(0);
+      while (pos < st.size) {
+        const toRead = Math.min(CHUNK, st.size - pos);
+        const n = fs.readSync(fd, buf, 0, toRead, pos);
+        if (n <= 0) break;
+        const view = buf.subarray(0, n);
+        const lastNl = view.lastIndexOf(10);
+        const usePrefilter = pos + n < tailStart;
+        if (lastNl >= 0) {
+          const head = view.subarray(0, lastNl + 1);
+          const full = carry.length ? Buffer.concat([carry, head]) : head;
+          parseLinesChunk(full.toString('utf8'), consume, usePrefilter);
+          carry = Buffer.from(view.subarray(lastNl + 1));
+          cursor.offset = pos + lastNl + 1;
+        } else {
+          carry = carry.length + n <= 4_000_000 ? Buffer.concat([carry, view]) : Buffer.alloc(0);
+        }
+        pos += n;
+      }
+      return;
+    }
     const start = fromStart ? 0 : Math.max(cursor.offset || 0, st.size - limit);
     const bytes = Buffer.alloc(fromStart ? Math.min(limit, st.size) : st.size - start);
     const count = fs.readSync(fd, bytes, 0, bytes.length, start);

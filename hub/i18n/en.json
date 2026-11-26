@@ -3540,5 +3540,11 @@
   "분마다": " min",
   "앱스": "Apps",
   "로컬 PC에서만 외부 브라우저를 열 수 있습니다.": "External browser links can only be opened on the local PC.",
-  "http:// 또는 https:// 주소만 열 수 있습니다.": "Only http:// or https:// URLs can be opened."
+  "http:// 또는 https:// 주소만 열 수 있습니다.": "Only http:// or https:// URLs can be opened.",
+  "이전 메시지 더 보기": "Load earlier messages",
+  "Hub 실행": "Hub process",
+  "실행 창": "Running window",
+  "실행 중인 서브에이전트:": "Running subagents:",
+  "서브에이전트 기록 보기": "View subagent history",
+  "건 보기": " items"
 }

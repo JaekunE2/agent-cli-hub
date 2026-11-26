@@ -284,3 +284,50 @@ test('configured log root may be a junction, while a nested junction cannot supp
   hub.index.set('outside', { file: outside });
   assert.equal(transcriptFile(hub, 'outside'), null);
 });
+
+test('AGY parallel invoke_subagent decodes quoted Role, survives parent idle, and finishes on SYSTEM_MESSAGE', t => {
+  const { term, file, list, append } = setup(t, 'agy');
+  append(file, {
+    type: 'PLANNER_RESPONSE',
+    step_index: 1,
+    created_at: '2026-01-01T00:00:01Z',
+    tool_calls: [
+      { name: 'invoke_subagent', args: { Prompt: '"Task A"', Role: '"Worker A"', TypeName: '"research"' } },
+      { name: 'invoke_subagent', args: { Prompt: '"Task B"', Role: '"Worker B"', TypeName: '"self"' } },
+    ],
+  });
+  append(file,
+    { type: 'GENERIC', created_at: '2026-01-01T00:00:02Z', content: 'Created the following subagent:\n{"conversationId":"child-a-12345678"}' },
+    { type: 'GENERIC', created_at: '2026-01-01T00:00:03Z', content: 'Created the following subagent:\n{"conversationId":"child-b-12345678"}' },
+  );
+  // Parent waits idle for async reactive wakeup
+  term.status = 'idle';
+  const running = list();
+  assert.equal(running.length, 2);
+  assert.deepEqual(running.map(x => [x.description, x.status]).sort(), [['Worker A', 'running'], ['Worker B', 'running']]);
+  append(file, {
+    type: 'SYSTEM_MESSAGE',
+    created_at: '2026-01-01T00:00:10Z',
+    content: '<SYSTEM_MESSAGE>\n[Message] content=Subagent child-a-12345678 has gone idle. This was the subagent\'s most recent response: DONE_A\n</SYSTEM_MESSAGE>',
+  });
+  const afterOne = list();
+  const a = afterOne.find(x => x.description === 'Worker A');
+  const b = afterOne.find(x => x.description === 'Worker B');
+  assert.equal(a.status, 'done');
+  assert.equal(b.status, 'running');
+});
+
+test('large transcripts (>2MB) still discover earlier subagents via streaming fastScan', t => {
+  const { file, list, append } = setup(t, 'codex');
+  append(file,
+    { type: 'response_item', timestamp: '2026-01-01T00:00:01Z', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'early1', arguments: '{"task_name":"audit"}' } },
+    { type: 'event_msg', timestamp: '2026-01-01T00:00:02Z', payload: { type: 'item_completed', item: { type: 'SubAgentActivity', id: 'early1', kind: 'started', agent_thread_id: 'child-early-12345', agent_path: '/root/audit' } } },
+  );
+  // Append > 2.2 MB of filler lines so the early spawn falls before the 2MB tail window
+  const filler = JSON.stringify({ type: 'response_item', timestamp: '2026-01-01T00:00:03Z', payload: { type: 'message', role: 'assistant', content: [{ text: 'x'.repeat(20_000) }] } }) + '\n';
+  fs.appendFileSync(file, filler.repeat(120));
+  const items = list();
+  assert.equal(items.length, 1);
+  assert.equal(items[0].name, 'audit');
+  assert.equal(items[0].status, 'running');
+});

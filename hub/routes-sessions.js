@@ -202,7 +202,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
     });
   }
 
-  function transcriptFromIndex(sessionId, at) {
+  function transcriptFromIndex(sessionId, at, limit = 120) {
     const d = index.get(sessionId);
     if (!d) return null;
     conversationBranches.resolveLinks(hub.terms, hub.termSessionId);
@@ -214,7 +214,8 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
     }
     const allMsgs = termEvents ? termEvents.mergeIntoMessages(d.msgs, sessionId) : d.msgs;
     const n = allMsgs.length;
-    const start = at >= 0 ? Math.max(0, at - 40) : Math.max(0, n - 80);
+    const safeLimit = Math.max(40, Math.min(2000, Number(limit) || 120));
+    const start = at >= 0 ? Math.max(0, at - 40) : Math.max(0, n - safeLimit);
     const end = at >= 0 ? Math.min(n, at + 40) : n;
     const edits = conversationBranches.getMsgEdits(sessionId);
     const ag = d.agent || 'claude';
@@ -1094,6 +1095,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
     }
     if (p === '/api/transcript') {
       const id = url.searchParams.get('id'), at = Number(url.searchParams.get('at') ?? -1);
+      const limit = Number(url.searchParams.get('limit') || 120);
       if (projects.hidden().has(id)) { send(res, 404, { error: '허브에서 제거한 대화 기록입니다.', hidden: true }); return true; }
       conversationBranches.resolveLinks(hub.terms, hub.termSessionId);
       let d = index.get(id);
@@ -1104,7 +1106,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
         d = index.get(id);
       }
       if (d) await index.updateFile(d.file);
-      const out = transcriptFromIndex(id, at) || transcript(id);
+      const out = transcriptFromIndex(id, at, limit) || transcript(id);
       if (out && !out.lineage && id) out.lineage = conversationBranches.lineageFor(id, (sid) => sessionDisplayTitle(sid, index.get(sid)));
       if (out && !out.error && (d?.agent === 'agy' || out.agent === 'agy') && id && !hasAgyCliConversation(id)) out.ideOnly = true;
       send(res, 200, out);
@@ -1392,18 +1394,22 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
     }
     if (p === '/api/term/windows') {
       const id = url.searchParams.get('id') || '', pidParam = Number(url.searchParams.get('pid') || 0);
-      const showAll = url.searchParams.get('all') === '1';
+      const showAll = url.searchParams.get('all') !== '0';
       const t = id ? hub.terms.get(id) : null;
-      const pidSet = new Set();
-      if (t?.pid) pidSet.add(t.pid);
-      if (pidParam > 0) pidSet.add(pidParam);
+      const termPidSet = new Set();
+      if (t?.pid) termPidSet.add(t.pid);
+      if (pidParam > 0) termPidSet.add(pidParam);
+      const pidSet = new Set(termPidSet);
+      const ptyHostPid = hub.getPtyHostPid?.();
+      if (ptyHostPid) pidSet.add(ptyHostPid);
+      pidSet.add(process.pid);
       for (const tm of hub.terms.values()) {
         if (tm.exited === null && tm.pid) pidSet.add(tm.pid);
       }
       for (const ls of hub.liveSessions?.() || []) {
         if (ls?.pid) pidSet.add(ls.pid);
       }
-      const r = await hub.helperCall({ op: 'list_windows', pids: [...pidSet], all: showAll });
+      const r = await hub.helperCall({ op: 'list_windows', term_pids: [...termPidSet], pids: [...pidSet], all: showAll });
       send(res, 200, { ok: r.ok !== false, windows: r.windows || [], error: r.error || null });
       return true;
     }

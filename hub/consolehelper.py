@@ -17,6 +17,12 @@ k32 = ctypes.WinDLL("kernel32", use_last_error=True)
 k32.SetPriorityClass(wt.HANDLE(-1), 0x8000)  # -1 = this process
 u32 = ctypes.WinDLL("user32", use_last_error=True)
 g32 = ctypes.WinDLL("gdi32", use_last_error=True)
+try:
+    dwm = ctypes.WinDLL("dwmapi", use_last_error=True)
+    dwm.DwmGetWindowAttribute.argtypes = [wt.HWND, wt.DWORD, ctypes.c_void_p, wt.DWORD]
+    dwm.DwmGetWindowAttribute.restype = ctypes.c_long
+except Exception:
+    dwm = None
 
 GENERIC_READ, GENERIC_WRITE = 0x80000000, 0x40000000
 FILE_SHARE_RW = 0x3
@@ -264,7 +270,11 @@ CLI_APP_EXES = {
     "code.exe", "cursor.exe", "antigravity.exe", "java.exe", "javaw.exe", "dotnet.exe",
     "pwsh.exe", "powershell.exe", "cmd.exe", "msedgewebview2.exe",
 }
-SKIP_WINDOW_CLASSES = {"Progman", "WorkerW", "Shell_TrayWnd", "Windows.UI.Core.CoreWindow"}
+SKIP_WINDOW_CLASSES = {"Progman", "WorkerW", "Shell_TrayWnd", "Windows.UI.Core.CoreWindow", "Shell_SecondaryTrayWnd"}
+GWL_EXSTYLE = -20
+WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_APPWINDOW = 0x00040000
+DWMWA_CLOAKED = 14
 PW_RENDERFULLCONTENT = 2
 SRCCOPY = 0x00CC0020
 HALFTONE = 4
@@ -298,6 +308,8 @@ u32.IsIconic.argtypes = [wt.HWND]
 u32.IsIconic.restype = wt.BOOL
 u32.IsWindow.argtypes = [wt.HWND]
 u32.IsWindow.restype = wt.BOOL
+u32.GetWindowLongW.argtypes = [wt.HWND, ctypes.c_int]
+u32.GetWindowLongW.restype = ctypes.c_long
 u32.GetWindowRect.argtypes = [wt.HWND, ctypes.POINTER(wt.RECT)]
 u32.GetWindowRect.restype = wt.BOOL
 u32.PrintWindow.argtypes = [wt.HWND, wt.HDC, wt.UINT]
@@ -357,22 +369,43 @@ def _bgra_to_png(bgra_bytes, w, h):
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw, 5)) + chunk(b"IEND", b"")
 
 
+def _is_cloaked(hwnd):
+    if dwm is None:
+        return False
+    cloaked = wt.DWORD(0)
+    try:
+        hr = dwm.DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, ctypes.byref(cloaked), ctypes.sizeof(cloaked))
+        return hr == 0 and cloaked.value != 0
+    except Exception:
+        return False
+
+
 def cmd_list_windows(req):
-    """List GUI windows owned by terminal descendants plus desktop browser windows."""
+    """List visible top-level windows, prioritizing terminal/Hub descendants, browsers, and CLI apps."""
     procs = processes()
-    roots = list(req.get("pids") or [])
+    if "term_pids" in req:
+        term_roots = list(req.get("term_pids") or [])
+    else:
+        term_roots = list(req.get("pids") or [])
     if req.get("pid"):
-        roots.append(req["pid"])
-    desc = _descendant_pids(procs, roots)
-    include_all = bool(req.get("all"))
+        term_roots.append(req["pid"])
+    hub_roots = list(req.get("pids") or []) + term_roots
+    term_desc = _descendant_pids(procs, term_roots)
+    hub_desc = _descendant_pids(procs, hub_roots)
+    include_all = req.get("all") is not False
     found = []
 
     def enum_cb(hwnd, _lp):
         if not u32.IsWindowVisible(hwnd):
             return True
+        if _is_cloaked(hwnd):
+            return True
         cls_buf = ctypes.create_unicode_buffer(128)
         u32.GetClassNameW(hwnd, cls_buf, 128)
         if cls_buf.value in SKIP_WINDOW_CLASSES:
+            return True
+        ex_style = u32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        if (ex_style & WS_EX_TOOLWINDOW) and not (ex_style & WS_EX_APPWINDOW):
             return True
         tlen = u32.GetWindowTextLengthW(hwnd)
         if tlen <= 0:
@@ -387,12 +420,11 @@ def cmd_list_windows(req):
         pid_val = int(pid.value)
         exe = procs.get(pid_val, ("", 0))[0]
         exe_low = exe.lower()
-        linked = pid_val in desc
+        linked = pid_val in term_desc
+        hub_child = (not linked) and (pid_val in hub_desc)
         is_browser = exe_low in BROWSER_EXES
-        is_cli_app = exe_low in CLI_APP_EXES
-        if cls_buf.value == "ConsoleWindowClass" and not (include_all or linked):
-            return True
-        if not (include_all or linked or is_browser or is_cli_app):
+        is_cli_app = exe_low in CLI_APP_EXES or cls_buf.value == "ConsoleWindowClass"
+        if not (include_all or linked or hub_child or is_browser or is_cli_app):
             return True
         rect = wt.RECT()
         u32.GetWindowRect(hwnd, ctypes.byref(rect))
@@ -407,6 +439,7 @@ def cmd_list_windows(req):
             "exe": exe or "app",
             "title": title[:160],
             "linked": linked,
+            "hubChild": hub_child,
             "browser": is_browser,
             "cliApp": is_cli_app,
             "minimized": minimized,
@@ -416,8 +449,8 @@ def cmd_list_windows(req):
 
     cb = _WNDENUMPROC(enum_cb)
     u32.EnumWindows(cb, 0)
-    found.sort(key=lambda x: (not x["linked"], x["minimized"], not x["browser"], not x["cliApp"], x["title"].lower()))
-    return {"windows": found[:36]}
+    found.sort(key=lambda x: (not x["linked"], not x["hubChild"], x["minimized"], not x["browser"], not x["cliApp"], x["title"].lower()))
+    return {"windows": found[:60]}
 
 
 def cmd_capture_window(req):

@@ -697,6 +697,8 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
     const text = `${quotePrefix}${bodyText}`;
     repIn.value = ''; fitRep();
     repBtn.disabled = true;
+    const prevBtnTxt = repBtn.textContent;
+    repBtn.textContent = '전송 중…';
     try {
       const existing = findLiveTerm();
       if (existing) {
@@ -731,7 +733,10 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       fitRep();
       toast(er.message, 6000, 'danger', { label: '다시 전송', onClick: () => { if (barHost.isConnected) sendReply(true); } });
     } finally {
-      if (repBtn.isConnected) repBtn.disabled = false;
+      if (repBtn.isConnected) {
+        repBtn.disabled = false;
+        repBtn.textContent = prevBtnTxt || '대화 전송';
+      }
     }
   };
   repBtn.onclick = () => sendReply();
@@ -750,11 +755,6 @@ function resolveTermSessionId(t) {
   if (t.sessionId) return t.sessionId;
   if (t.projectTask) return null;
   if (state.sel.kind === 'term' && String(state.sel.id) === String(t.id) && state.sel.historySession) return state.sel.historySession;
-  if (t.agy || t.agent === 'agy') return state.sel.kind === 'term' && state.sel.id === t.id ? state.sel.agyResume || null : null;
-  const norm = (p) => String(p || '').replace(/[\\/]+$/, '').toLowerCase();
-  const tCwd = norm(t.cwd);
-  if (!tCwd) return null;
-  const ag = t.agent || (t.codex ? 'codex' : t.agy ? 'agy' : t.claude ? 'claude' : null);
-  const hit = state.recent.find((r) => (!ag || (r.agent || 'claude') === ag) && norm(r.cwd) === tCwd);
-  return hit?.sessionId || null;
+  if (t.agy || t.agent === 'agy') return state.sel.kind === 'term' && String(state.sel.id) === String(t.id) ? state.sel.agyResume || null : null;
+  return null;
 }

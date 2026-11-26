@@ -267,7 +267,7 @@ function viewConsole() {
     panelsMeta: {
       term: { title: '터미널', icon: ICO.terminal },
       ...(sid ? { chat: { title: '대화 기록', icon: ICO.chat, onShow: ensureChatMounted } } : {}),
-      windows: { title: '창', icon: ICO.monitor, onShow: () => winCtl?.renderWindows() },
+      windows: { title: '창', icon: ICO.monitor, onShow: () => { winCtl?.renderWindows(); winCtl?.refreshWindows(true); } },
     },
     onOpenChange: (openList) => {
       syncBarDockButtons(openList);
@@ -690,7 +690,7 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
   setTimeout(() => {
     if (gen !== viewGen) return;
     resize();
-    if (IS_MOBILE) return;
+    if (IS_MOBILE || document.querySelector('.drw-backdrop, dialog[open]')) return;
     if (chatHost) $('textarea', chatHost.parentElement)?.focus();
     else xterm?.focus();
   }, 60);
@@ -869,7 +869,7 @@ function viewTerm() {
     panelsMeta: {
       term: { title: '터미널', icon: ICO.terminal, onShow: () => setTimeout(() => termCtl?.resize(), 30) },
       chat: { title: '대화 기록', icon: ICO.chat, onShow: ensureChatMounted },
-      windows: { title: '창', icon: ICO.monitor, onShow: () => winCtl?.renderWindows() },
+      windows: { title: '창', icon: ICO.monitor, onShow: () => { winCtl?.renderWindows(); winCtl?.refreshWindows(true); } },
     },
     onOpenChange: (openList) => {
       syncBarDockButtons(openList);

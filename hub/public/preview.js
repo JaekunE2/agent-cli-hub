@@ -166,9 +166,10 @@
     const it = item.artifact;
     const artSid = item.sid || sid;
     if (!it || !artSid) return;
+    const authTok = typeof TOKEN !== 'undefined' ? TOKEN : (window.TOKEN || '');
     const url = typeof window.artUrl === 'function'
       ? window.artUrl(artSid, it.path)
-      : `/api/artifact-file?session=${encodeURIComponent(artSid)}&path=${encodeURIComponent(it.path)}&t=${encodeURIComponent(window.TOKEN || '')}`;
+      : `/api/artifact-file?session=${encodeURIComponent(artSid)}&path=${encodeURIComponent(it.path)}&t=${encodeURIComponent(authTok)}`;
 
     if (it.kind === 'video') {
       bodyEl.innerHTML = `<div class="pv-center"><video controls playsinline src="${url}" style="max-width:100%;max-height:100%;background:#000"></video></div>`;
@@ -365,7 +366,8 @@
     let lastSideKey = '';
     const resolveSideContext = () => {
       const ctx = getContext?.() || {};
-      const projects = window.state?.projects || [];
+      const st = typeof state !== 'undefined' ? state : window.state;
+      const projects = st?.projects || [];
       const linkedProject = ctx.project || null;
       const curKey = `${ctx.sid || getSessionId?.() || ''}|${ctx.termId || ''}`;
       if (curKey !== lastSideKey) {

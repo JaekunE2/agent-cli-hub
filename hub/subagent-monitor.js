@@ -89,7 +89,7 @@ function sync(hub, state) {
         finish(call, status === 'completed' ? 'done' : 'stopped', e.ts, /<summary>([\s\S]*?)<\/summary>/.exec(e.text)?.[1]);
       }
     }
-  });
+  }, 2_000_000, false, { fastScan: true });
   claudeLogs(state);
   const now = Date.now();
   const status = term && (term.exited != null ? 'exited' : term.status || hub[`${agent}Status`]?.(term));
@@ -125,7 +125,8 @@ function sync(hub, state) {
         if (mtime > state.idleAt) childLogActive = true;
       } catch {}
     }
-    if (stoppedAt && !childTermAlive && !childLogActive) stopOrphan(call, stoppedAt);
+    const asyncAlive = !interruptedOrExited && !!call.async && call.status === 'running';
+    if (stoppedAt && !childTermAlive && !childLogActive && !asyncAlive) stopOrphan(call, stoppedAt);
   }
   if (calls.size > 200) for (const [id, call] of calls) {
     if (call.status !== 'running') calls.delete(id);

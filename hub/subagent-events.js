@@ -1,6 +1,6 @@
 'use strict';
 
-const spawnTools = /^(?:Agent|Task|spawn_agent|invoke_subagent)$/i;
+const spawnTools = /^(?:Agent|Task|spawn_agent|invoke_subagent|swarm)$/i;
 const followTools = /^(?:wait_agent|wait|send_input|close_agent)$/;
 const toolName = name => String(name || '').split(/__|\./).pop();
 function decode(value) {
@@ -54,6 +54,16 @@ function* transcriptEvents(row) {
   if (['TOOL_RESULT', 'FUNCTION_RESULT', 'GENERIC', 'INVOKE_SUBAGENT'].includes(row.type)) {
     const output = decode(row.result ?? row.output ?? row.content);
     yield { type: 'result', id: row.call_id || row.tool_call_id, tool: row.tool_name || row.name, output, ts };
+  }
+  if (row.type === 'SYSTEM_MESSAGE') {
+    const text = outputText(row.content);
+    const doneM = /Subagent\s+([\w-]{8,100})\s+has gone idle(?:\.\s*This was the subagent's most recent response:\s*([\s\S]*?))?(?:\r?\n<\/SYSTEM_MESSAGE>|$)/i.exec(text);
+    if (doneM) {
+      yield { type: 'child-status', childId: doneM[1], status: 'done', text: (doneM[2] || '').trim(), ts };
+    } else {
+      const stopM = /Subagent\s+([\w-]{8,100})\s+(?:failed|exited|stopped|terminated|killed)(?:[:.\s]+([\s\S]*?))?(?:\r?\n<\/SYSTEM_MESSAGE>|$)/i.exec(text);
+      if (stopM) yield { type: 'child-status', childId: stopM[1], status: 'stopped', text: (stopM[2] || '').trim(), ts };
+    }
   }
   if (row.type === 'PLANNER_RESPONSE' || row.type === 'USER_INPUT') {
     yield { type: row.type === 'USER_INPUT' ? 'user' : 'assistant', text: outputText(row.content), ts };

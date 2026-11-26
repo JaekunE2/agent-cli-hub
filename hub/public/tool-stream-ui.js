@@ -23,14 +23,33 @@ function mountSubagents(bar, params) {
   let items = [], pending = false, failure = '';
   let refreshQueued = false;
   const label = '서브에이전트';
+  function placePopover() {
+    if (list.hidden) return;
+    const r = button.getBoundingClientRect();
+    const vw = window.innerWidth || 1200;
+    const w = Math.min(360, vw - 24);
+    const left = Math.max(12, Math.min(r.right - w, vw - w - 12));
+    list.style.position = 'fixed';
+    list.style.top = `${Math.min(r.bottom + 6, (window.innerHeight || 800) - 180)}px`;
+    list.style.left = `${left}px`;
+    list.style.right = 'auto';
+    list.style.width = `${w}px`;
+  }
   function paint() {
     const running = items.filter(item => item.status === 'running');
     const history = items.filter(item => item.status !== 'running');
     button.classList.toggle('busy', !!running.length);
+    button.classList.toggle('active', !running.length && items.length > 0);
     button.querySelector('.dot').hidden = !running.length;
-    const count = items.length ? `${label} ${running.length || items.length}` : label;
+    const count = running.length
+      ? `${label} 실행 ${running.length}`
+      : items.length ? `${label} ${items.length}` : label;
     if (counter.textContent !== count) counter.textContent = count;
+    button.title = running.length
+      ? `실행 중인 서브에이전트: ${running.map(x => x.name || x.tool).join(', ')}`
+      : items.length ? `서브에이전트 ${items.length}건 보기` : '서브에이전트 기록 보기';
     if (list.hidden) return;
+    placePopover();
     const group = (title, entries) => entries.length ? `<h3>${title}</h3>${entries.map(item => {
       const opensSession = item.targetTermId || item.targetSessionId;
       const action = opensSession ? '세션 열기' : '뷰어 열기';

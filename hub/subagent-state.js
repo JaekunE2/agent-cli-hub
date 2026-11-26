@@ -18,13 +18,27 @@ function applyEvent(state, event, agent) {
     return;
   }
   if (event.type === 'call' && id && spawnTools.test(tool)) {
+    if (tool.toLowerCase() === 'swarm') {
+      const action = String(decode(input?.action) || '').toLowerCase();
+      if (action === 'kill') {
+        const targetName = String(decode(input?.name) || '').trim();
+        for (const c of calls.values()) {
+          if (c.tool?.toLowerCase() === 'swarm' && (!targetName || c.name === targetName)) finish(c, 'stopped', ts);
+        }
+        return;
+      }
+      if (action !== 'add') return;
+    }
     const call = calls.get(id) || { id, agent, tool, status: 'running', startedAt: ts, finishedAt: null };
-    const prompt = input?.prompt || input?.message || input?.task || input?.Prompt;
+    const prompt = input?.prompt || input?.message || input?.task || input?.Prompt || input?.brief;
     if (typeof prompt === 'string' && !/^gAAAAA[\w=-]{50,}$/.test(prompt)) {
       call.prompt = agent === 'agy' && prompt.startsWith('"') ? decode(prompt) : prompt;
     }
-    call.description = input?.description || input?.toolSummary || input?.Role || call.description || '';
-    call.name = input?.subagent_type || input?.agent_type || input?.task_name || decode(input?.TypeName) || call.name || tool;
+    const rawDesc = input?.description || input?.toolSummary || decode(input?.Role) || '';
+    call.description = typeof rawDesc === 'string' ? rawDesc : call.description || '';
+    const rawName = input?.subagent_type || input?.agent_type || input?.task_name || decode(input?.name) || decode(input?.TypeName) || '';
+    call.name = (typeof rawName === 'string' && rawName) || call.name || tool;
+    if (agent === 'agy' || agent === 'codex' || input?.run_in_background === true) call.async = true;
     calls.set(id, call);
     return;
   }
@@ -43,7 +57,7 @@ function applyEvent(state, event, agent) {
   }
   if (!call && !id && agent === 'agy' && (conversation || tool === 'invoke_subagent')) {
     const matches = [...calls.values()].filter(c => c.status === 'running' && !c.childSessionId && c.startedAt <= ts);
-    if (matches.length === 1) call = matches[0];
+    if (matches.length) call = matches[0];
   }
   if (call && (!call.resultAt || call.resultAt <= ts)) {
     call.resultAt = ts;
@@ -56,6 +70,7 @@ function applyEvent(state, event, agent) {
     if (agent !== 'claude' && safeId(target)) call.childSessionId = target;
     if (output?.nickname) call.name = output.nickname;
     const background = /^async_launched$/i.test(output?.status || '') || /async agent launched|running in the background/i.test(text);
+    if (background) call.async = true;
     const failed = event.failed || /^(?:failed|error|cancelled|stopped)$/.test(output?.status || '');
     const done = /^(?:completed|done|success)$/.test(output?.status || '');
     if (failed || done || (!background && agent === 'claude')) finish(call, failed ? 'stopped' : 'done', ts);

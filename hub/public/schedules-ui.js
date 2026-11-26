@@ -115,6 +115,7 @@ function viewSchedules() {
     }
   };
   const stop = watchSchedules(refresh);
+  void refresh();
   const clock = setInterval(tick, 1000);
   stopSchedulesView = () => {
     stopped = true;
