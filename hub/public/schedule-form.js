@@ -1,21 +1,29 @@
 function openScheduleForm({ item, projects, capabilities, onSaved, onClose }) {
   const drawer = openDrawer({
     title: item ? '스케줄 편집' : '스케줄 만들기',
-    width: 520,
+    width: 640,
     focus: true,
     onClose,
     bodyHTML: `<form class="schedule-form">
-      <label>이름 <input name="name" required maxlength="120" value="${esc(item?.name || '')}"></label>
+      <label>이름 <input name="name" required maxlength="120" placeholder="예: 일일 서버 점검" value="${esc(item?.name || '')}"></label>
       ${scheduleTriggerFields()}
       ${scheduleTargetFields()}
-      <label>프롬프트 <textarea name="prompt" required maxlength="16000" rows="4">${esc(item?.prompt || '')}</textarea></label>
-      <label>동시 실행 <select name="overlap">
-        <option value="skip">건너뛰기</option><option value="queue">한 건 대기</option><option value="replace">기존 실행 교체</option>
-      </select></label>
-      <label>놓친 실행 (Misfire) <select name="misfire">
-        <option value="skip">건너뛰기</option><option value="run_once">최근 누락 한 번 실행</option>
-      </select></label>
-      <label>제한 시간 (초) <input name="timeoutSec" type="number" required min="30" max="3600" value="${item?.timeoutSec ?? 900}"></label>
+      <label>프롬프트 <textarea name="prompt" required maxlength="16000" rows="4" placeholder="주기적으로 실행할 작업 지시를 입력하세요">${esc(item?.prompt || '')}</textarea></label>
+      <details class="sch-advanced">
+        <summary>고급 옵션 (참조 폴더 · 동시 실행 · 제한 시간)</summary>
+        <div class="sch-adv-body">
+          <label>참조 폴더 (한 줄에 하나) <textarea name="referenceDirs" rows="2"></textarea></label>
+          <div class="sch-grid-3">
+            <label>동시 실행 <select name="overlap">
+              <option value="skip">건너뛰기</option><option value="queue">한 건 대기</option><option value="replace">기존 실행 교체</option>
+            </select></label>
+            <label>놓친 실행 (Misfire) <select name="misfire">
+              <option value="skip">건너뛰기</option><option value="run_once">최근 누락 한 번 실행</option>
+            </select></label>
+            <label>제한 시간 (초) <input name="timeoutSec" type="number" required min="30" max="3600" value="${item?.timeoutSec ?? 900}"></label>
+          </div>
+        </div>
+      </details>
       <p role="status" data-form-error></p>
     </form>`,
     footerHTML: '<button type="button" data-drw-close>취소</button><button type="button" class="primary" data-schedule-save>저장</button>',

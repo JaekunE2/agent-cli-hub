@@ -80,7 +80,10 @@ function viewSchedules() {
     if (action === 'edit') return edit(item);
     if (action === 'history') {
       history?.close();
-      history = openScheduleHistory(item, () => { history = null; });
+      history = openScheduleHistory(item, () => {
+        history = null;
+        if (!stopped) focusAction(item.id, 'history');
+      });
       return history.load();
     }
     if (busy) return;
@@ -130,14 +133,16 @@ function scheduleRows(items, capabilities, local, busy, projects) {
     const runner = capabilities.some(cli => cli.id === item.target.cli && cli.available);
     const button = (action, label, disabled = false) => `<button type="button" data-schedule-action="${action}"
       data-id="${esc(item.id)}" ${disabled ? 'disabled' : ''}>${label}</button>`;
-    const target = projects.find(project => project.id === item.target.projectId)?.name || item.target.projectId;
+    const target = item.target.projectId
+      ? `${projects.find(project => project.id === item.target.projectId)?.name || item.target.projectId} · ${item.target.version}`
+      : (item.target.cwd || '일반 세션');
     const cadence = item.trigger.kind === 'interval'
       ? '{minutes}분마다'.replace('{minutes}', item.trigger.everyMinutes)
       : `${item.trigger.expression} · ${item.trigger.timeZone}`;
     return `<li class="schedule-card">
       <div class="schedule-row"><h3>${esc(item.name)}</h3>
         <span class="schedule-badge ${active ? 'ok' : 'warn'}">${active ? '활성' : '일시정지됨'}</span></div>
-      <p class="schedule-target">${esc(target)} · ${esc(item.target.version)} · ${esc(item.target.cli)} · ${esc(cadence)}</p>
+      <p class="schedule-target">${esc(target)} · ${esc(item.target.cli)} · ${esc(cadence)}</p>
       <dl><div><dt>다음 실행</dt><dd>${item.nextRunAt
         ? `<time datetime="${esc(item.nextRunAt)}">${esc(scheduleDate(item.nextRunAt))}</time> <span class="schedule-countdown"></span>` : '—'}</dd></div>
         <div><dt>최근 실행 결과</dt><dd>${scheduleRunBadge(item.lastRun)}</dd></div></dl>

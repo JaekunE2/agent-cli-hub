@@ -261,7 +261,15 @@ const scheduleCapabilities = {
 const scheduleRoutes = createScheduleRoutes(() => scheduleEngine, scheduleCapabilities, logServerError);
 const scheduleTransport = createScheduleTransport(() => scheduleEngine, logServerError);
 
-function resolveScheduleTarget({ projectId, version, taskId }) {
+function resolveScheduleTarget({ projectId, version, taskId, cwd }) {
+  if (!projectId && cwd) {
+    try {
+      if (!fs.statSync(cwd).isDirectory()) throw new Error('not dir');
+      return;
+    } catch {
+      throw scheduleError('TARGET_MISSING', 'Schedule working folder not found');
+    }
+  }
   const project = projects.list().find(item => item.id === projectId);
   if (!project?.versions?.some(item => item.number === version)
       || (taskId && !project.tasks.some(task => task.id === taskId && task.version === version))) {

@@ -419,4 +419,14 @@ test('schedules support codex, claude, and agy CLIs while rejecting unknown CLIs
     () => engine.create({ ...spec, target: { ...spec.target, cli: 'unknown-cli' } }),
     { code: 'CAPABILITY_UNSUPPORTED' },
   );
+
+  // General standalone session schedule using cwd instead of projectId/version
+  const { item: cwdItem } = await engine.create({
+    ...spec,
+    name: 'Standalone session schedule',
+    target: { cwd: os.tmpdir(), cli: 'claude' },
+  });
+  assert.equal(cwdItem.target.cwd, os.tmpdir());
+  assert.equal(cwdItem.target.projectId, null);
+  assert.equal(cwdItem.target.cli, 'claude');
 });

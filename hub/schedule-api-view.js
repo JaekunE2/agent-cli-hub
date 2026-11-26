@@ -19,9 +19,9 @@ function runView(run, local) {
 function scheduleView(item, local) {
   const { id, name, revision, state, trigger, target, prompt, overlap, misfire, timeoutSec,
     nextRunAt, createdAt, updatedAt } = item;
-  const { projectId, version, taskId, cli, accountId, model, effort, referenceDirs } = target;
+  const { projectId, version, taskId, cwd, cli, accountId, model, effort, referenceDirs } = target;
   return { id, name, revision, state, trigger, overlap, misfire, timeoutSec, nextRunAt, createdAt, updatedAt,
-    target: { projectId, version, taskId, cli, accountId, model, effort, ...(local && { referenceDirs }) },
+    target: { projectId, version, taskId, ...(cwd ? { cwd } : {}), cli, accountId, model, effort, ...(local && { referenceDirs }) },
     ...(local && { prompt }) };
 }
 

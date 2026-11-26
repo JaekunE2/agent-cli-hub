@@ -3517,5 +3517,13 @@
   "복사한 콜백 URL을 붙여넣어 주세요.": "Paste the copied callback URL.",
   "프로젝트 작업 세션 숨기기": "Hide project task sessions",
   "프로젝트 작업 세션": "Project task sessions",
-  "개 숨김 · 보기": " hidden · Show"
+  "개 숨김 · 보기": " hidden · Show",
+  "예: 일일 서버 점검": "e.g., Daily server check",
+  "주기적으로 실행할 작업 지시를 입력하세요": "Enter the instructions to run on schedule",
+  "고급 옵션 (참조 폴더 · 동시 실행 · 제한 시간)": "Advanced options (reference folders · overlap · timeout)",
+  "대상 구분": "Target type",
+  "예: D:\\\\Gitsource\\\\project": "e.g., D:\\\\Gitsource\\\\project",
+  "일반 세션 (폴더)": "General session (folder)",
+  "스케줄 작업 폴더 선택": "Select schedule working folder",
+  "일반 세션": "General session"
 }

@@ -828,7 +828,7 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
       if (!d.items?.length) return console.log('no schedules');
       for (const s of d.items) {
         const trig = s.trigger?.kind === 'interval' ? `every ${s.trigger.everyMinutes}m` : `${s.trigger?.expression || ''} (${s.trigger?.timeZone || ''})`;
-        console.log(`${s.id}  [${s.state}]  rev:${s.revision}  ${s.name}  (${trig})  next=${s.nextRunAt || '-'}  target=${s.target?.cli || 'codex'}/${s.target?.projectId}/${s.target?.version}`);
+        console.log(`${s.id}  [${s.state}]  rev:${s.revision}  ${s.name}  (${trig})  next=${s.nextRunAt || '-'}  target=${s.target?.cli || 'codex'}/${s.target?.projectId ? `${s.target.projectId}/${s.target.version}` : (s.target?.cwd || '-')}`);
       }
       return;
     }
@@ -836,28 +836,32 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
       const name = flags.name || pos[2];
       const prompt = flags.prompt;
       const projRef = flags.project;
-      if (!name || !prompt || !projRef) die('usage: ccd schedule add --name "..." --project <id|name> (--every <min> | --cron "<expr>" [--tz IANA]) --prompt "..." [--cli codex|claude|agy] [--account ID] [--version V] [--task ID] [--model M] [--effort E] [--overlap skip|queue|replace] [--misfire skip|run_once] [--timeout 900]');
+      if (!name || !prompt) die('usage: ccd schedule add --name "..." [--project <id|name> | --cwd DIR] (--every <min> | --cron "<expr>" [--tz IANA]) --prompt "..." [--cli codex|claude|agy] [--account ID] [--version V] [--task ID] [--model M] [--effort E] [--overlap skip|queue|replace] [--misfire skip|run_once] [--timeout 900]');
       if (!flags.every && !flags.cron) die('schedule add requires --every <minutes> or --cron "<expr>"');
-      const pRes = await api('/api/projects');
-      const projList = Array.isArray(pRes) ? pRes : (pRes.projects || pRes.items || []);
-      const proj = projList.find((p) => p.id === projRef || p.name === projRef) || projList.find((p) => p.id.startsWith(projRef));
-      const projectId = proj ? proj.id : projRef;
-      const vers = Array.isArray(proj?.versions) ? proj.versions : [];
-      const lastVer = vers.at(-1);
-      const version = flags.version || proj?.currentVersion || (typeof lastVer === 'string' ? lastVer : lastVer?.number || lastVer?.id) || 'v1';
+      let target;
+      if (projRef) {
+        const pRes = await api('/api/projects');
+        const projList = Array.isArray(pRes) ? pRes : (pRes.projects || pRes.items || []);
+        const proj = projList.find((p) => p.id === projRef || p.name === projRef) || projList.find((p) => p.id.startsWith(projRef));
+        const projectId = proj ? proj.id : projRef;
+        const vers = Array.isArray(proj?.versions) ? proj.versions : [];
+        const lastVer = vers.at(-1);
+        const version = flags.version || proj?.currentVersion || (typeof lastVer === 'string' ? lastVer : lastVer?.number || lastVer?.id) || 'v1';
+        target = { projectId, version };
+      } else {
+        target = { cwd: flags.cwd || process.cwd() };
+      }
       const trigger = flags.every
         ? { kind: 'interval', everyMinutes: Number(flags.every) }
         : { kind: 'cron', expression: flags.cron, timeZone: flags.tz || Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Seoul' };
-      const target = {
-        projectId,
-        version,
+      Object.assign(target, {
         ...(flags.cli ? { cli: flags.cli } : {}),
         ...(flags.account ? { accountId: flags.account } : {}),
         ...(flags.task ? { taskId: flags.task } : {}),
         ...(flags.model ? { model: flags.model } : {}),
         ...(flags.effort ? { effort: flags.effort } : {}),
         ...(flags.ref ? { referenceDirs: String(flags.ref).split(',').map((s) => s.trim()).filter(Boolean) } : {}),
-      };
+      });
       const body = {
         name,
         prompt,

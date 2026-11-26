@@ -16,7 +16,12 @@ function fields(input, previous, now) {
       !Number.isInteger(timeoutSec) || timeoutSec < 30 || timeoutSec > 3600) {
     throw error('INVALID_SCHEDULE', 'Invalid schedule fields');
   }
-  if (!isText(target?.projectId, 128) || !isText(target.version, 128) ||
+  const hasProject = isText(target?.projectId, 128) && isText(target?.version, 128);
+  const hasCwd = isText(target?.cwd, 4096);
+  if ((!hasProject && !hasCwd) ||
+      (target?.projectId != null && !isText(target.projectId, 128)) ||
+      (target?.version != null && !isText(target.version, 128)) ||
+      (target?.cwd != null && !isText(target.cwd, 4096)) ||
       (target.taskId != null && (typeof target.taskId !== 'string' || !UUID.test(target.taskId))) ||
       !Array.isArray(target.referenceDirs ?? []) || !(target.referenceDirs ?? []).every(dir => isText(dir, 4096)) ||
       (target.model !== undefined && !isText(target.model, 128)) ||
@@ -33,7 +38,8 @@ function fields(input, previous, now) {
   return {
     name, prompt, overlap, misfire, timeoutSec, trigger,
     target: {
-      projectId: target.projectId, version: target.version, taskId: target.taskId ?? null,
+      projectId: target.projectId || null, version: target.version || null, taskId: target.taskId ?? null,
+      ...(target.cwd ? { cwd: target.cwd.trim() } : {}),
       cli, accountId, referenceDirs: [...(target.referenceDirs ?? [])],
       ...(target.model === undefined ? {} : { model: target.model }),
       ...(target.effort === undefined ? {} : { effort: target.effort }),
