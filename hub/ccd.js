@@ -43,6 +43,8 @@ const HELP = `ccd — Agent CLI Hub CLI  (server ${BASE})
                                    autonomous research projects (director sessions driven by research-harness)
   app ls | run <id> [--action A] [--wait] | data <id> [--file latest] [--q K] | files <id> | import <dir> | rm <id> [--purge-outputs] | data-rm <id> [--file F | --older-than N]
                                    lightweight hub apps (UI + session-callable tools & data integration)
+  schedule ls | add --name N --project P (--every M | --cron E [--tz TZ]) --prompt "..." [--version V] [--task ID] [--model M] | rm <id|name> | pause <id|name> | resume <id|name> | run <id|name> | runs <id|name>
+                                   manage scheduled Codex runs (add/remove/run/pause/resume by id or name)
   gpu [ls]                         GPUs (memory/util/procs) + lease queue
   gpu plan --mem 12G --est 90m     when a job of that size would start / finish on each GPU
   gpu run [--mem 20G | --exclusive] [--gpu 0] [--label L] [--est 90m] [--ram 40G] -- <command>
@@ -72,7 +74,7 @@ for (let i = 0; i < argv.length; i++) {
   if (a === '-n') flags.n = Number(argv[++i]);
   else if (a.startsWith('--')) {
     const k = a.slice(2);
-    if (['to', 'cwd', 'resume', 'title', 'role', 'at', 'timeout', 'account', 'direction', 'venue', 'gpu', 'mem', 'ram', 'label', 'est', 'modules', 'model', 'session', 'sync', 'fetch', 'sync-exclude', 'file', 'system', 'url', 'image', 'env', 'cd', 'to', 'in', 'msg', 'rename', 'max', 'runtime', 'drive', 'stage', 'node', 'server', 'exclude', 'via', 'root', 'steps'].includes(k)) flags[k] = argv[++i];
+    if (['to', 'cwd', 'resume', 'title', 'role', 'at', 'timeout', 'account', 'direction', 'venue', 'gpu', 'mem', 'ram', 'label', 'est', 'modules', 'model', 'session', 'sync', 'fetch', 'sync-exclude', 'file', 'system', 'url', 'image', 'env', 'cd', 'to', 'in', 'msg', 'rename', 'max', 'runtime', 'drive', 'stage', 'node', 'server', 'exclude', 'via', 'root', 'steps', 'name', 'project', 'version', 'task', 'every', 'cron', 'tz', 'prompt', 'overlap', 'misfire', 'effort', 'ref', 'limit', 'action', 'dir', 'q', 'older-than'].includes(k)) flags[k] = argv[++i];
     else flags[k] = true;
   } else pos.push(a);
 }
@@ -90,13 +92,13 @@ const usageDir = () => {
 // GETs always; POSTs only when the request certainly never reached the server.
 const RETRY_MS = () => (['run', 'wait'].includes(pos[1]) && pos[0] === 'gpu') || (pos[0] === 'gpu' && flags.wait) ? 300_000 : 20_000;
 const NOT_SENT = /ECONNREFUSED|ECONNRESET|UND_ERR_SOCKET|other side closed|EPIPE|ENOTFOUND/;
-async function api(p, body) {
+async function api(p, body, method) {
   const until = Date.now() + RETRY_MS();
   let r, delay = 500;
   for (;;) {
     try {
       r = await fetch(BASE + p, {
-        method: body ? 'POST' : 'GET',
+        method: method || (body ? 'POST' : 'GET'),
         headers: { 'x-token': token(), 'content-type': 'application/json' },
         body: body ? JSON.stringify(body) : undefined,
       });
@@ -792,18 +794,121 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
       die('app run timed out waiting');
     }
     if (sub === 'rm') {
-      const d = await api(`/api/apps/${encodeURIComponent(id)}?purgeOutputs=${flags['purge-outputs'] ? 'true' : 'false'}`, { method: 'DELETE' });
+      const d = await api(`/api/apps/${encodeURIComponent(id)}?purgeOutputs=${flags['purge-outputs'] ? 'true' : 'false'}`, null, 'DELETE');
       return console.log(JSON.stringify(d));
     }
     if (sub === 'data-rm') {
       const qs = flags.file
         ? `file=${encodeURIComponent(flags.file)}`
         : `olderThanDays=${encodeURIComponent(flags['older-than'] || 30)}`;
-      const d = await api(`/api/apps/${encodeURIComponent(id)}/data?${qs}`, { method: 'DELETE' });
+      const d = await api(`/api/apps/${encodeURIComponent(id)}/data?${qs}`, null, 'DELETE');
       return console.log(JSON.stringify(d));
     }
     die(`unknown app subcommand: ${sub}`);
   },
+
+  async schedule() {
+    const sub = pos[1] || 'ls';
+    const resolveSchedule = async (ref) => {
+      if (!ref) die('schedule requires <id|name>');
+      const d = await api('/api/schedules');
+      if (d.error) die(d.error);
+      const items = d.items || [];
+      const exact = items.find((x) => x.id === ref || x.name === ref);
+      if (exact) return exact;
+      const pref = items.filter((x) => x.id.startsWith(ref) || x.name.toLowerCase().includes(ref.toLowerCase()));
+      if (pref.length === 1) return pref[0];
+      if (pref.length > 1) die(`ambiguous schedule "${ref}": ${pref.map((x) => `${x.id} (${x.name})`).join(', ')}`);
+      die(`schedule not found: ${ref}`);
+    };
+    if (sub === 'ls') {
+      const d = await api('/api/schedules');
+      if (d.error) die(d.error);
+      if (flags.json) return console.log(JSON.stringify(d));
+      if (!d.items?.length) return console.log('no schedules');
+      for (const s of d.items) {
+        const trig = s.trigger?.kind === 'interval' ? `every ${s.trigger.everyMinutes}m` : `${s.trigger?.expression || ''} (${s.trigger?.timeZone || ''})`;
+        console.log(`${s.id}  [${s.state}]  rev:${s.revision}  ${s.name}  (${trig})  next=${s.nextRunAt || '-'}  target=${s.target?.projectId}/${s.target?.version}`);
+      }
+      return;
+    }
+    if (sub === 'add' || sub === 'create') {
+      const name = flags.name || pos[2];
+      const prompt = flags.prompt;
+      const projRef = flags.project;
+      if (!name || !prompt || !projRef) die('usage: ccd schedule add --name "..." --project <id|name> (--every <min> | --cron "<expr>" [--tz IANA]) --prompt "..." [--version V] [--task ID] [--model M] [--effort E] [--overlap skip|queue|replace] [--misfire skip|run_once] [--timeout 900]');
+      if (!flags.every && !flags.cron) die('schedule add requires --every <minutes> or --cron "<expr>"');
+      const pRes = await api('/api/projects');
+      const projList = Array.isArray(pRes) ? pRes : (pRes.projects || pRes.items || []);
+      const proj = projList.find((p) => p.id === projRef || p.name === projRef) || projList.find((p) => p.id.startsWith(projRef));
+      const projectId = proj ? proj.id : projRef;
+      const vers = Array.isArray(proj?.versions) ? proj.versions : [];
+      const lastVer = vers.at(-1);
+      const version = flags.version || proj?.currentVersion || (typeof lastVer === 'string' ? lastVer : lastVer?.number || lastVer?.id) || 'v1';
+      const trigger = flags.every
+        ? { kind: 'interval', everyMinutes: Number(flags.every) }
+        : { kind: 'cron', expression: flags.cron, timeZone: flags.tz || Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Seoul' };
+      const target = {
+        projectId,
+        version,
+        ...(flags.task ? { taskId: flags.task } : {}),
+        ...(flags.model ? { model: flags.model } : {}),
+        ...(flags.effort ? { effort: flags.effort } : {}),
+        ...(flags.ref ? { referenceDirs: String(flags.ref).split(',').map((s) => s.trim()).filter(Boolean) } : {}),
+      };
+      const body = {
+        name,
+        prompt,
+        trigger,
+        target,
+        ...(flags.overlap ? { overlap: flags.overlap } : {}),
+        ...(flags.misfire ? { misfire: flags.misfire } : {}),
+        ...(flags.timeout ? { timeoutSec: Number(flags.timeout) } : {}),
+      };
+      const r = await api('/api/schedules', body, 'POST');
+      if (r.error) die(`${r.error}${r.code ? ` (${r.code})` : ''}`);
+      if (flags.json) return console.log(JSON.stringify(r));
+      const it = r.item || r;
+      return console.log(`added ${it.id} (${it.name}) next=${it.nextRunAt || '-'}`);
+    }
+    if (sub === 'rm' || sub === 'del' || sub === 'delete' || sub === 'archive') {
+      const it = await resolveSchedule(pos[2]);
+      const r = await api(`/api/schedules/${encodeURIComponent(it.id)}`, { revision: it.revision }, 'DELETE');
+      if (r.error) die(`${r.error}${r.code ? ` (${r.code})` : ''}`);
+      if (flags.json) return console.log(JSON.stringify(r));
+      return console.log(`removed ${it.id} (${it.name})`);
+    }
+    if (sub === 'pause' || sub === 'resume') {
+      const it = await resolveSchedule(pos[2]);
+      const r = await api(`/api/schedules/${encodeURIComponent(it.id)}/${sub}`, { revision: it.revision }, 'POST');
+      if (r.error) die(`${r.error}${r.code ? ` (${r.code})` : ''}`);
+      if (flags.json) return console.log(JSON.stringify(r));
+      const out = r.item || r;
+      return console.log(`${sub}d ${out.id} (${out.name}) state=${out.state}`);
+    }
+    if (sub === 'run') {
+      const it = await resolveSchedule(pos[2]);
+      const requestId = require('crypto').randomUUID();
+      const r = await api(`/api/schedules/${encodeURIComponent(it.id)}/run`, { revision: it.revision, requestId }, 'POST');
+      if (r.error) die(`${r.error}${r.code ? ` (${r.code})` : ''}`);
+      if (flags.json) return console.log(JSON.stringify(r));
+      return console.log(`started run ${r.run?.id || ''} status=${r.run?.status || ''}`);
+    }
+    if (sub === 'runs') {
+      const it = await resolveSchedule(pos[2]);
+      const limit = Number(flags.n || flags.limit || 20);
+      const r = await api(`/api/schedules/${encodeURIComponent(it.id)}/runs?limit=${limit}`);
+      if (r.error) die(r.error);
+      if (flags.json) return console.log(JSON.stringify(r));
+      if (!r.items?.length) return console.log('no runs');
+      for (const run of r.items) {
+        console.log(`${run.id}  [${run.status}]  ${run.createdAt}  dur=${run.durationMs ?? '-'}ms  ${run.reason || ''}`);
+      }
+      return;
+    }
+    die(`unknown schedule subcommand: ${sub}`);
+  },
+  schedules() { return cmds.schedule(); },
 };
 
 (async () => {

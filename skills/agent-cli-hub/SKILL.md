@@ -30,6 +30,8 @@ Every command starts the server if it is down. Run it with no arguments for the 
 | Continue a session on another of your accounts | `ccd switch <session\|target> [--account auto\|ID]` (works for codex terminals too) |
 | Second opinion from GPT (Codex CLI, read-only) | `ccd gpt "prompt" [--file a,b] [--image x.png] [--cd DIR]` |
 | Autonomous research projects | `ccd research ls \| show <slug> \| msg <slug> <text> \| pause <slug> \| resume <slug>` |
+| Lightweight hub apps (run & read outputs) | `ccd app ls \| run <id> [--action A] [--wait] \| data <id> [--file latest] [--q K] \| files <id> \| import <dir> \| rm <id>` |
+| Scheduled Codex runs (add/remove/run/pause/resume) | `ccd schedule ls \| add --name N --project P (--every M \| --cron E) --prompt "..." \| rm <id\|name> \| pause <id\|name> \| resume <id\|name> \| run <id\|name> \| runs <id\|name>` |
 | GPU status and queue | `ccd gpu` · plan: `ccd gpu plan --mem 12G --est 90m` |
 | **Run a GPU job through the queue** | `ccd gpu run --mem 12G [--ram 40G] --est 90m --label <name> -- <command>` → waits its turn, runs with CUDA_VISIBLE_DEVICES set, releases when it ends (`--exclusive` = whole GPU) |
 | Register an output (video, PDF, figure) on your session's "Outputs" tab | `ccd artifact add <path> [--title T]` |
