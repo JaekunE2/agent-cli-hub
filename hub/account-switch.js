@@ -1,5 +1,8 @@
 'use strict';
 
+const { nativeFolderKey } = require('./workspace-execution');
+const { resolveLaunchFolders } = require('./workspace-launch');
+
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -338,7 +341,7 @@ function createAccountSwitchService(hub) {
     return { ok: true, external: true, openMode: 'external' };
   }
 
-  async function switchAccount({ sessionId, termId, account = 'auto', model = '', effort = '', cont = false, followUp = '', verifyFollowUp = false, skip = true, interrupt = false, force = false, openMode = 'dashboard' }) {
+  async function switchAccount({ sessionId, termId, account = 'auto', model = '', effort = '', cont = false, followUp = '', verifyFollowUp = false, skip, interrupt = false, force = false, openMode = 'dashboard' }) {
     let t0 = termId != null && termId !== '' ? [...hub.terms.values()].find((x) => String(x.id) === String(termId)) : null;
     let sid = sessionId || (t0 && hub.termSessionId(t0)) || '';
     if (!t0 && sid) t0 = [...hub.terms.values()].find((x) => x.exited === null && hub.termSessionId(x) === sid) || null;
@@ -361,10 +364,19 @@ function createAccountSwitchService(hub) {
     const { hasAgyCliConversation } = require('./agy-session');
     const canNativeAgy = !(targetAgent === 'agy' && sid && !hasAgyCliConversation(sid));
     const samePlatform = sourceAgent === targetAgent && canNativeAgy;
+    const execution = hub.workspaceExecution;
+    const workspaceSource = t0 ? execution?.forTerm(t0) : execution?.native(nativeFolderKey(sourceAgent, sid));
+    const workspacePlan = () => execution?.plan({ source: workspaceSource,
+      resumeKey: samePlatform ? nativeFolderKey(targetAgent, sid) : '',
+      external: openMode === 'external' || openMode === 'ide', skipPermissions: skip });
+    let workspaceLaunch = await workspacePlan();
+    const allowBypass = !workspaceLaunch && (skip === undefined || skip);
+    if (workspaceLaunch && targetAgent === 'codex') resolveLaunchFolders({ cli: targetAgent, ...codexLaunch(), plan: workspaceLaunch });
+    if (t0 && workspaceLaunch) await execution.guardTerm(t0);
     const savedME = accountPrefs.getForAccount(pick.id, targetAgent);
     const useME = cleanModelEffort(model === undefined ? savedME.model : reqME.model, effort === undefined ? savedME.effort : reqME.effort);
     if (model !== undefined || effort !== undefined) accountPrefs.save({ account: pick.id, agent: targetAgent, model: useME.model, effort: useME.effort });
-    const cwd = d?.cwd || t0?.cwd || loc.s?.cwd || os.homedir();
+    const cwd = workspaceLaunch?.row.primary.path || d?.cwd || t0?.cwd || loc.s?.cwd || os.homedir();
 
     let handoffFile = null;
     let handoffPrompt = null;
@@ -388,12 +400,16 @@ function createAccountSwitchService(hub) {
     }
 
     const matchingTerms = [...hub.terms.values()].filter((x) => (t0 && x.id === t0.id) || (sid && hub.termSessionId(x) === sid));
+    const writeControl = async (term, data) => {
+      const result = await term.proc.write(data);
+      if (result?.guardError) throw result.guardError;
+    };
     if (matchingTerms.length && openMode === 'dashboard') {
       for (const tm of matchingTerms) {
         if (tm.exited === null) {
-          if (hub.isCodexTerm(tm)) { tm.proc.write('\x03'); await hub.sleep(350); tm.proc.write('\x03'); }
-          else if (hub.isAgyTerm(tm)) { tm.proc.write('\x03'); await hub.sleep(250); tm.proc.write('/exit'); await hub.sleep(hub.SUBMIT_DELAY); tm.proc.write('\r'); }
-          else { tm.proc.write('\x1b'); await hub.sleep(350); tm.proc.write('/exit'); await hub.sleep(hub.SUBMIT_DELAY); tm.proc.write('\r'); }
+          if (hub.isCodexTerm(tm)) { await writeControl(tm, '\x03'); await hub.sleep(350); await writeControl(tm, '\x03'); }
+          else if (hub.isAgyTerm(tm)) { await writeControl(tm, '\x03'); await hub.sleep(250); await writeControl(tm, '/exit'); await hub.sleep(hub.SUBMIT_DELAY); await writeControl(tm, '\r'); }
+          else { await writeControl(tm, '\x1b'); await hub.sleep(350); await writeControl(tm, '/exit'); await hub.sleep(hub.SUBMIT_DELAY); await writeControl(tm, '\r'); }
           if (!(await hub.waitFor(() => tm.exited !== null, 4500))) try { tm.proc.kill(); } catch {}
         }
         hub.forgetTerm(tm);
@@ -402,7 +418,7 @@ function createAccountSwitchService(hub) {
       if (loc.s.status === 'busy' && !interrupt) return { ok: false, busy: true, error: '세션이 작업 중입니다. 중단하고 전환할까요?' };
       const gone = () => !hub.pidAlive(loc.s.pid) || (loc.term && loc.term.exited !== null);
       if (loc.term) {
-        loc.term.proc.write('\x1b'); await hub.sleep(1000); loc.term.proc.write('/exit'); await hub.sleep(hub.SUBMIT_DELAY); loc.term.proc.write('\r');
+        await writeControl(loc.term, '\x1b'); await hub.sleep(1000); await writeControl(loc.term, '/exit'); await hub.sleep(hub.SUBMIT_DELAY); await writeControl(loc.term, '\r');
         if (!(await hub.waitFor(gone, 8000))) try { loc.term.proc.kill(); } catch {}
         await hub.waitFor(gone, 5000);
         hub.forgetTerm(loc.term);
@@ -425,7 +441,7 @@ function createAccountSwitchService(hub) {
       const acc = CA.accounts(USAGE_DIR).find((a) => a.id === pick.id);
       env = CA.envFor(acc);
       ({ cmd, args } = codexLaunch([
-        ...(skip ? ['--dangerously-bypass-approvals-and-sandbox'] : []),
+        ...(allowBypass ? ['--dangerously-bypass-approvals-and-sandbox'] : []),
         ...cliModelEffortArgs('codex', useME.model, useME.effort),
         ...(samePlatform && sid ? ['resume', sid, ...(cont ? ['계속 진행해'] : [])] : samePlatform && t0 ? ['resume', '--last', ...(cont ? ['계속 진행해'] : [])] : handoffPrompt && !verifyHandoff ? [handoffPrompt] : []),
       ]));
@@ -442,7 +458,7 @@ function createAccountSwitchService(hub) {
         if (gKey) env = { GEMINI_API_KEY: gKey, GOOGLE_API_KEY: gKey };
       }
       if (samePlatform && sid) args.push('--conversation', sid);
-      if (skip) args.push('--dangerously-skip-permissions');
+      if (allowBypass) args.push('--dangerously-skip-permissions');
       args.push(...cliModelEffortArgs('agy', useME.model, useME.effort));
       const agyPrompt = !samePlatform ? handoffPrompt : (cont && sid ? '계속 진행해' : null);
       if (agyPrompt && !verifyHandoff) args.push('--prompt-interactive', agyPrompt);
@@ -454,7 +470,7 @@ function createAccountSwitchService(hub) {
         else if (acc) try { env.CLAUDE_CODE_OAUTH_TOKEN = acc.token(); } catch (e) { return { ok: false, error: `토큰을 읽지 못함: ${e.message}` }; }
       }
       if (samePlatform && sid) args.push('--resume', sid);
-      if (skip) args.push('--dangerously-skip-permissions');
+      if (allowBypass) args.push('--dangerously-skip-permissions');
       args.push(...cliModelEffortArgs('claude', useME.model, useME.effort));
     }
 
@@ -475,12 +491,14 @@ function createAccountSwitchService(hub) {
       try { project = require('../research-harness/lib/project').listProjects().find((p) => p.state.director_session_id === sid) || null; } catch {}
       if (project) Object.assign(env, { RESEARCH_ROLE: 'director', CLAUDE_CODE_STOP_HOOK_BLOCK_CAP: '200' });
     }
+    workspaceLaunch = await workspacePlan();
     const t = hub.createTerm({
       cwd, cmd, args, env, title,
       account: { id: pick.id, label: pick.label, kind: targetAgent, ...(pick.email ? { email: pick.email } : {}) },
       model: useME.model, effort: useME.effort, research: project ? project.dir : null,
       projectTask: inheritedProjectTask || undefined,
       projectPrompt: inheritedProjectTask ? (handoffPrompt ? fingerprint(handoffPrompt) : t0?.meta?.projectPrompt) : undefined,
+      workspaceLaunch, workspaceCli: targetAgent,
     });
     hub.overviewStale?.();
     if (t0) {
@@ -527,9 +545,13 @@ function createAccountSwitchService(hub) {
     if (promptToSend) (async () => {
       if (await hub.waitFor(() => t.exited === null && hub.inputReady(t), 45000, 700)) {
         await hub.sleep(600);
-        t.proc.write(promptToSend); await hub.sleep(hub.SUBMIT_DELAY); t.proc.write('\r');
+        const result = await t.proc.write(promptToSend);
+        if (!result?.ok) throw result?.guardError || new Error(result?.error || 'Terminal input failed');
+        await hub.sleep(hub.SUBMIT_DELAY);
+        const submitted = await t.proc.write('\r');
+        if (!submitted?.ok) throw submitted?.guardError || new Error(submitted?.error || 'Terminal input failed');
       }
-    })();
+    })().catch((error) => console.error('[account] follow-up:', error.message));
 
     return {
       ok: true, term: hub.termInfo(t),

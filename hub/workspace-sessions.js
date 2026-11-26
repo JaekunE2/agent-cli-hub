@@ -8,11 +8,15 @@ function createWorkspaceSessions(hub, liveSessions) {
     for (const [id, term] of hub.terms) {
       const agent = hub.agentOf(term);
       if (!agent || !term.meta?.spawnedAt) continue;
-      const native = hub.termSessionId(term);
+      const native = hub.termSessionId(term) || term.meta.workspaceFolders?.nativeKey?.split(':')[2];
       if (!hub.validSessionId(native) || hub.projects.hidden().has(native)) continue;
       const nativeKey = `session:${agent}:${native}`;
       if (!links.has(nativeKey)) links.set(nativeKey, []);
       links.get(nativeKey).push({ termKey: `term:${id}`, generation: term.meta.spawnedAt, nativeKey, term });
+    }
+    for (const [key, matches] of links) {
+      const running = matches.filter(({ term }) => term.exited === null);
+      if (running.length) links.set(key, running);
     }
     return links;
   }
@@ -24,11 +28,12 @@ function createWorkspaceSessions(hub, liveSessions) {
       if (!term) return null;
       const links = linkedTerms();
       const agent = hub.agentOf(term);
-      const nativeKey = agent && `session:${agent}:${hub.termSessionId(term)}`;
-      const matches = links.get(nativeKey) || [];
+      const nativeKey = (agent && `session:${agent}:${hub.termSessionId(term) || ''}`);
+      const applied = term.meta?.workspaceFolders?.applied;
+      const matches = links.get(nativeKey) || links.get(term.meta?.workspaceFolders?.nativeKey) || [];
       const linked = matches.find((link) => link.term === term);
       return { sessionKey, termKey: sessionKey, generation: term.meta?.spawnedAt, cwd: term.cwd,
-        nativeKey: linked?.nativeKey, ambiguous: !!linked && matches.length > 1, editable: true };
+        nativeKey: linked?.nativeKey, ambiguous: !!linked && matches.length > 1, editable: true, applied };
     }
 
     const native = /^session:(claude|codex|agy|cursor):([\w-]{8,100})$/.exec(sessionKey);
@@ -42,7 +47,9 @@ function createWorkspaceSessions(hub, liveSessions) {
     const match = linked.length === 1 ? linked[0] : null;
     return { sessionKey, nativeKey: sessionKey, termKey: match?.termKey, generation: match?.generation,
       cwd: doc?.cwd || live?.cwd || match?.term.cwd, observedDirs: doc?.observedDirs,
-      ambiguous: linked.length > 1, editable: !!match || (!!doc && (agent !== 'agy' || hasAgyCliConversation(id))) };
+      ambiguous: linked.length > 1, candidates: linked.length > 1 ? linked : undefined,
+      applied: match?.term.meta?.workspaceFolders?.applied,
+      editable: !!match || (!!doc && (agent !== 'agy' || hasAgyCliConversation(id))) };
   }
 
   function sessionLinks() {
