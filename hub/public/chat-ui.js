@@ -918,16 +918,33 @@ function md(src) {
       spans.push(`<code>${code}</code>`);
       return `\u0000C${spans.length - 1}\u0000`;
     });
-    return masked
+    const linkTokens = [];
+    const withMdLinks = masked
       .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
       .replace(/~~([^~]+)~~/g, '<s>$1</s>')
       .replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, '$1<i>$2</i>')
-      .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_, lbl, href) => {
+        linkTokens.push(`<a href="${href}" target="_blank" rel="noopener noreferrer">${lbl}</a>`);
+        return `\u0000L${linkTokens.length - 1}\u0000`;
+      })
       .replace(/\[([^\]]+)\]\(file:\/\/\/?([^)#\s]+)(?:#[^)\s]*)?\)/gi, (_, lbl, rawPath) => {
         const cleanPath = rawPath.replace(/\//g, '\\');
-        return `<a class="filechip artlink" data-apath="${cleanPath}" title="${cleanPath}">${lbl}</a>`;
+        linkTokens.push(`<a class="filechip artlink" data-apath="${cleanPath}" title="${cleanPath}">${lbl}</a>`);
+        return `\u0000L${linkTokens.length - 1}\u0000`;
       })
-      .replace(/\[([^\]]+)\]\(conversation:\/\/[^)\s]+\)/gi, '<span class="filechip">$1</span>')
+      .replace(/\[([^\]]+)\]\(conversation:\/\/[^)\s]+\)/gi, (_, lbl) => {
+        linkTokens.push(`<span class="filechip">${lbl}</span>`);
+        return `\u0000L${linkTokens.length - 1}\u0000`;
+      })
+      .replace(/(^|[\s(>])(https?:\/\/[^\s<>"'\u0000]+)/g, (m, pre, rawUrl) => {
+        let url = rawUrl;
+        let trail = '';
+        while (/[.,;:!?)\]]$/.test(url)) { trail = url.slice(-1) + trail; url = url.slice(0, -1); }
+        if (!url) return m;
+        return `${pre}<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>${trail}`;
+      });
+    return withMdLinks
+      .replace(/\u0000L(\d+)\u0000/g, (_, idx) => linkTokens[Number(idx)] || '')
       .replace(/\u0000C(\d+)\u0000/g, (_, idx) => spans[Number(idx)] || '');
   };
   const out = [];

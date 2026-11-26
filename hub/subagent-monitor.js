@@ -115,7 +115,17 @@ function sync(hub, state) {
         finish(call, child.end.status, child.end.ts, child.lastMessage);
       }
     }
-    if (stoppedAt) stopOrphan(call, stoppedAt);
+    const interruptedOrExited = (term?._subagentsInterruptedAt && term._subagentsInterruptedAt >= (call.resumedAt || call.startedAt))
+      || status === 'exited' || (state.parentEnd && state.parentEnd >= (call.resumedAt || call.startedAt));
+    const childTermAlive = !interruptedOrExited && call.targetTermId && hub.terms.get(String(call.targetTermId))?.exited === null;
+    let childLogActive = false;
+    if (!interruptedOrExited && call.logPath && call.status === 'running' && state.idleAt) {
+      try {
+        const mtime = fs.statSync(call.logPath).mtimeMs;
+        if (mtime > state.idleAt) childLogActive = true;
+      } catch {}
+    }
+    if (stoppedAt && !childTermAlive && !childLogActive) stopOrphan(call, stoppedAt);
   }
   if (calls.size > 200) for (const [id, call] of calls) {
     if (call.status !== 'running') calls.delete(id);

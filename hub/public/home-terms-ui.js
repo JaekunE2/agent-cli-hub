@@ -107,6 +107,30 @@ function homeListsHTML() {
     </div>`;
   }).join('') || '<div class="empty" style="padding:24px 16px;text-align:center">최근 대화 기록이 없습니다.</div>';
 
+  const appsList = (state.homeApps || []).slice(0, 4);
+  const appRows = appsList.map((a) => {
+    const st = a.status === 'running' ? 'running' : (a.latestRun?.status || a.status || 'idle');
+    const bCls = st === 'running' ? 'warn' : st === 'error' ? 'lim' : st === 'ok' ? 'ok' : '';
+    const bTxt = st === 'running' ? '실행 중' : st === 'error' ? '오류' : st === 'ok' ? '완료' : '대기';
+    return `<div class="m-row" data-open-app="${esc(a.id)}">
+      <div class="m-row-main"><div class="m-row-t">${esc(a.name)}</div><div class="m-row-s">${esc(a.description || a.type || '')}</div></div>
+      <div class="m-row-end"><span class="badge">${esc(a.type || 'app')}</span><span class="badge ${bCls}">${bTxt}</span></div>
+    </div>`;
+  }).join('') || `<div class="empty" style="padding:20px 16px;text-align:center">${state.homeApps ? '등록된 앱이 없습니다.' : '불러오는 중…'}</div>`;
+
+  const schedList = (state.homeSchedules || []).slice(0, 4);
+  const schedRows = schedList.map((s) => {
+    const active = s.state === 'active';
+    const trig = s.trigger?.kind === 'interval' ? `${s.trigger.everyMinutes}분마다` : (s.trigger?.expression || '');
+    const tgt = s.target?.projectId
+      ? ((state.projects || []).find((p) => p.id === s.target.projectId)?.name || s.target.projectId)
+      : base(s.target?.cwd || '');
+    return `<div class="m-row" data-hnav="schedules">
+      <div class="m-row-main"><div class="m-row-t">${esc(s.name)}</div><div class="m-row-s">${esc([tgt, s.target?.cli, trig].filter(Boolean).join(' · '))}</div></div>
+      <div class="m-row-end"><span class="badge ${active ? 'ok' : ''}">${active ? '활성' : '일시정지됨'}</span></div>
+    </div>`;
+  }).join('') || `<div class="empty" style="padding:20px 16px;text-align:center">${state.homeSchedules ? '등록된 스케줄이 없습니다.' : '불러오는 중…'}</div>`;
+
   return `
     <section class="sheet">
       <div class="sheet-hd"><h2>열린 터미널</h2><button class="ghost btn-sm" data-hnav="terms">전체 보기 →</button></div>
@@ -115,13 +139,38 @@ function homeListsHTML() {
     <section class="sheet">
       <div class="sheet-hd"><h2>최근 대화</h2><button class="ghost btn-sm" data-hnav="terms-recent">전체 보기 →</button></div>
       <div>${recentRows}</div>
+    </section>
+    <section class="sheet">
+      <div class="sheet-hd"><h2>스케줄</h2><button class="ghost btn-sm" data-hnav="schedules">전체 보기 →</button></div>
+      <div>${schedRows}</div>
+    </section>
+    <section class="sheet">
+      <div class="sheet-hd"><h2>앱스</h2><button class="ghost btn-sm" data-hnav="apps">전체 보기 →</button></div>
+      <div>${appRows}</div>
     </section>`;
+}
+
+let homeExtrasAt = 0;
+function loadHomeExtras(force = false) {
+  const now = Date.now();
+  if (!force && now - homeExtrasAt < 10_000) return;
+  homeExtrasAt = now;
+  Promise.all([
+    api('/api/apps').then((r) => { state.homeApps = r?.apps || []; }).catch(() => { state.homeApps ||= []; }),
+    api('/api/schedules').then((r) => { state.homeSchedules = r?.items || []; }).catch(() => { state.homeSchedules ||= []; }),
+  ]).then(() => {
+    if (state.sel.kind === 'home') {
+      const l = $('#homeLists');
+      if (l) l.innerHTML = homeListsHTML();
+    }
+  });
 }
 
 function refreshHomeWidgets() {
   if (state.sel.kind !== 'home') return;
   const s = $('#homeStats'); if (s) s.innerHTML = homeStatsHTML();
   const l = $('#homeLists'); if (l) l.innerHTML = homeListsHTML();
+  loadHomeExtras(false);
 }
 
 function termCardHTML(t, extraBadge = '') {
@@ -207,10 +256,18 @@ function viewHome() {
     <div class="h-stats" id="homeStats">${homeStatsHTML()}</div>
     <div class="h-two" id="homeLists">${homeListsHTML()}</div>
   </div>`;
+  loadHomeExtras(true);
   $('#view').onclick = async (e) => {
     if (e.target.closest('[data-hopen-new]')) return openNewTermDrawer();
     const resBtn = e.target.closest('[data-hresume]');
     if (resBtn) { e.stopPropagation(); return resumeRecentSession(resBtn.dataset.hresume, resBtn); }
+    const openApp = e.target.closest('[data-open-app]');
+    if (openApp) {
+      const appId = openApp.dataset.openApp;
+      state.sel = { kind: 'apps', id: appId };
+      if (typeof viewApps === 'function') return viewApps(appId);
+      return select({ kind: 'apps', id: appId });
+    }
     const openProj = e.target.closest('[data-open-proj]');
     if (openProj) return typeof openProject === 'function' ? openProject(openProj.dataset.openProj) : select({ kind: 'projects', id: openProj.dataset.openProj });
     const openT = e.target.closest('[data-open-term]');

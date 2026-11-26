@@ -3525,5 +3525,20 @@
   "예: D:\\\\Gitsource\\\\project": "e.g., D:\\\\Gitsource\\\\project",
   "일반 세션 (폴더)": "General session (folder)",
   "스케줄 작업 폴더 선택": "Select schedule working folder",
-  "일반 세션": "General session"
+  "일반 세션": "General session",
+  "## 사용법": "## Usage",
+  "## 개발 의도": "## Purpose",
+  "## Agent CLI Hub에서 가져오기": "## Import in Agent CLI Hub",
+  "1. 이 압축 파일을 원하는 폴더에 풉니다.": "1. Extract this archive into a folder of your choice.",
+  "2. Agent CLI Hub → **앱스** → **새 앱 추가** → **폴더에서 app.json 가져오기 (Import)**에 압축 푼 폴더 경로를 입력합니다.": "2. Open Agent CLI Hub -> **Apps** -> **Add App** -> **Import app.json from folder** and enter the extracted folder path.",
+  "3. Python/Node 의존성이 필요한 앱은 해당 폴더에서 `setup.ps1` 또는 `requirements.txt` / `package.json`을 설치한 뒤 실행하세요.": "3. If the app needs Python/Node dependencies, run `setup.ps1` or install `requirements.txt` / `package.json` in that folder first.",
+  "전달용 패키지 생성 실패:": "Failed to build shareable package:",
+  "다른 사람에게 전달할 수 있는 ZIP 패키지로 내보내기": "Export as a shareable ZIP package",
+  "전달용 내보내기": "Export package",
+  "전체 창": "All windows",
+  "앱 · CLI": "App · CLI",
+  "분마다": " min",
+  "앱스": "Apps",
+  "로컬 PC에서만 외부 브라우저를 열 수 있습니다.": "External browser links can only be opened on the local PC.",
+  "http:// 또는 https:// 주소만 열 수 있습니다.": "Only http:// or https:// URLs can be opened."
 }

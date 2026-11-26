@@ -480,12 +480,13 @@ function createProjectRoutes(hub) {
           if (!targetDir && commit) {
             const tempRoot = await fs.promises.realpath(os.tmpdir());
             temporary = await fs.promises.mkdtemp(path.join(tempRoot, 'hub-git-floorplan-'));
-            const archive = path.join(temporary, 'version.tar');
             targetDir = path.join(temporary, 'source');
             await fs.promises.mkdir(targetDir);
-            const options = { cwd: proj.cwd, timeout: 15000, windowsHide: true };
-            await gitVersion('git', ['archive', '--format=tar', '-o', archive, commit], options);
-            await gitVersion('tar', ['-xf', archive, '-C', targetDir], options);
+            const idxFile = path.join(temporary, 'git.index');
+            const prefix = targetDir.replace(/\\/g, '/').replace(/\/?$/, '/');
+            const options = { cwd: proj.cwd, timeout: 25000, windowsHide: true, env: { ...process.env, GIT_INDEX_FILE: idxFile } };
+            await gitVersion('git', ['-c', 'core.quotepath=false', 'read-tree', commit], options);
+            await gitVersion('git', ['-c', 'core.quotepath=false', 'checkout-index', '-a', '-f', `--prefix=${prefix}`], options);
           }
         }
         if (!targetDir && !version) throw new Error('분석할 작업 폴더를 찾을 수 없습니다.');

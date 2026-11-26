@@ -258,8 +258,13 @@ def cmd_procs(_req):
     return {"procs": [[pid, name, ppid] for pid, (name, ppid) in processes().items()]}
 
 
-BROWSER_EXES = {"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "chromium.exe", "opera.exe"}
-SKIP_WINDOW_CLASSES = {"ConsoleWindowClass", "Progman", "WorkerW", "Shell_TrayWnd", "Windows.UI.Core.CoreWindow"}
+BROWSER_EXES = {"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "chromium.exe", "opera.exe", "chrome-headless-shell.exe"}
+CLI_APP_EXES = {
+    "electron.exe", "python.exe", "pythonw.exe", "node.exe", "wt.exe", "windowsterminal.exe",
+    "code.exe", "cursor.exe", "antigravity.exe", "java.exe", "javaw.exe", "dotnet.exe",
+    "pwsh.exe", "powershell.exe", "cmd.exe", "msedgewebview2.exe",
+}
+SKIP_WINDOW_CLASSES = {"Progman", "WorkerW", "Shell_TrayWnd", "Windows.UI.Core.CoreWindow"}
 PW_RENDERFULLCONTENT = 2
 SRCCOPY = 0x00CC0020
 HALFTONE = 4
@@ -384,7 +389,10 @@ def cmd_list_windows(req):
         exe_low = exe.lower()
         linked = pid_val in desc
         is_browser = exe_low in BROWSER_EXES
-        if not (include_all or linked or is_browser):
+        is_cli_app = exe_low in CLI_APP_EXES
+        if cls_buf.value == "ConsoleWindowClass" and not (include_all or linked):
+            return True
+        if not (include_all or linked or is_browser or is_cli_app):
             return True
         rect = wt.RECT()
         u32.GetWindowRect(hwnd, ctypes.byref(rect))
@@ -400,6 +408,7 @@ def cmd_list_windows(req):
             "title": title[:160],
             "linked": linked,
             "browser": is_browser,
+            "cliApp": is_cli_app,
             "minimized": minimized,
             "rect": {"left": int(rect.left), "top": int(rect.top), "width": max(0, w), "height": max(0, h)},
         })
@@ -407,8 +416,8 @@ def cmd_list_windows(req):
 
     cb = _WNDENUMPROC(enum_cb)
     u32.EnumWindows(cb, 0)
-    found.sort(key=lambda x: (not x["linked"], x["minimized"], not x["browser"], x["title"].lower()))
-    return {"windows": found[:24]}
+    found.sort(key=lambda x: (not x["linked"], x["minimized"], not x["browser"], not x["cliApp"], x["title"].lower()))
+    return {"windows": found[:36]}
 
 
 def cmd_capture_window(req):

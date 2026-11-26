@@ -362,18 +362,23 @@
       return `art|${item.id}|${mode}|${item.artifact?.mtime || 0}|${item.artifact?.size || 0}`;
     };
 
+    let lastSideKey = '';
     const resolveSideContext = () => {
       const ctx = getContext?.() || {};
       const projects = window.state?.projects || [];
       const linkedProject = ctx.project || null;
+      const curKey = `${ctx.sid || getSessionId?.() || ''}|${ctx.termId || ''}`;
+      if (curKey !== lastSideKey) {
+        lastSideKey = curKey;
+        sideProjectId = '';
+      }
       const pickedProject = sideProjectId ? projects.find((x) => x.id === sideProjectId) || null : null;
-      const project = linkedProject || pickedProject;
       return {
         sid: ctx.sid || getSessionId?.() || '',
         termId: ctx.termId || '',
         cwd: ctx.cwd || linkedProject?.cwd || '',
         linkedProject,
-        project,
+        project: pickedProject,
         projects,
       };
     };
@@ -425,6 +430,8 @@
           await window.projectRefsView(ctx.project, curGen, host);
         } else if ((ctx.sid || ctx.termId) && typeof window.renderArtifacts === 'function') {
           await window.renderArtifacts(ctx.sid, curGen, ctx.termId, host);
+        } else if (ctx.linkedProject && typeof window.projectRefsView === 'function') {
+          await window.projectRefsView(ctx.linkedProject, curGen, host);
         } else {
           host.innerHTML = '<div class="empty" style="padding:24px">표시할 산출물이 없습니다.</div>';
         }

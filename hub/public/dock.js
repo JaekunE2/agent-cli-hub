@@ -74,6 +74,7 @@
     let winList = [];
     let selectedHwnd = 'all';
     let winAuto = true;
+    let winShowAll = false;
     let snapNonce = Date.now();
     let winPollTimer = null;
     let snapTimer = null;
@@ -82,6 +83,7 @@
         <div class="win-tabs" data-w-tabs></div>
         <div class="row" style="gap:6px;flex:none">
           <button type="button" class="btn-sm primary" data-w-new title="새 창 · 터미널 · PowerShell · cmd · Ubuntu 열기">${UI_ICO.plus}<span>새 창 열기</span></button>
+          <label class="win-auto-lbl"><input type="checkbox" data-w-all> 전체 창</label>
           <label class="win-auto-lbl"><input type="checkbox" data-w-auto checked> 자동 갱신</label>
           <button type="button" class="btn-sm" data-w-refresh title="창 목록 · 스냅샷 새로고침">${UI_ICO.refresh}<span>새로고침</span></button>
         </div>
@@ -144,7 +146,7 @@
       const singleMode = targets.length === 1;
       const widthParam = singleMode ? 1080 : 620;
       const cardsHTML = targets.map((w) => {
-        const originBadge = w.linked ? '<span class="badge c">연결됨</span>' : '<span class="badge">브라우저</span>';
+        const originBadge = w.linked ? '<span class="badge c">연결됨</span>' : w.browser ? '<span class="badge">브라우저</span>' : '<span class="badge">앱 · CLI</span>';
         const sz = w.minimized ? '최소화됨' : `${w.rect.width}×${w.rect.height}`;
         const shotHtml = w.minimized
           ? `<div class="win-shot-empty"><span>창이 최소화되어 있어 화면을 캡처할 수 없습니다.</span><button type="button" class="btn-sm" data-win-focus="${esc(w.hwnd)}">${UI_ICO.external} 창 복원 · 앞으로</button></div>`
@@ -167,7 +169,7 @@
 
     const refreshWindows = async (refreshSnaps = true) => {
       if (gen !== window.viewGen || !rootEl.isConnected) return;
-      const qs = termId ? `id=${encodeURIComponent(termId)}` : `pid=${encodeURIComponent(consolePid || 0)}`;
+      const qs = `${termId ? `id=${encodeURIComponent(termId)}` : `pid=${encodeURIComponent(consolePid || 0)}`}${winShowAll ? '&all=1' : ''}`;
       const r = await api(`/api/term/windows?${qs}`).catch(() => ({ windows: [] }));
       if (gen !== window.viewGen || !rootEl.isConnected) return;
       winList = r.windows || [];
@@ -199,6 +201,7 @@
     $('[data-w-new]', rootEl).onclick = () => { if (typeof openNewTermDrawer === 'function') openNewTermDrawer(cwd || ''); };
     $('[data-w-refresh]', rootEl).onclick = () => refreshWindows(true);
     $('[data-w-auto]', rootEl).onchange = (e) => { winAuto = !!e.target.checked; };
+    $('[data-w-all]', rootEl).onchange = (e) => { winShowAll = !!e.target.checked; refreshWindows(true); };
 
     refreshWindows(false);
     winPollTimer = setInterval(() => {

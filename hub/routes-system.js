@@ -15,6 +15,33 @@ function createSystemRoutes(hub) {
   async function handleSystemRoutes(p, url, req, res, body, send, authed) {
     if (!authed(req, url)) { send(res, 401, { error: 'bad token' }); return true; }
 
+    if (p === '/api/open-url' && req.method === 'POST') {
+      const addr = req.socket?.remoteAddress || '';
+      const isLocal = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(addr);
+      if (!isLocal) { send(res, 403, { error: '로컬 PC에서만 외부 브라우저를 열 수 있습니다.' }); return true; }
+      const b = await body(req);
+      let parsed;
+      try { parsed = new URL(String(b.url || '').trim()); } catch { parsed = null; }
+      if (!parsed || !['http:', 'https:'].includes(parsed.protocol)) {
+        send(res, 400, { error: 'http:// 또는 https:// 주소만 열 수 있습니다.' });
+        return true;
+      }
+      const href = parsed.href;
+      try {
+        if (process.platform === 'win32') {
+          spawn('cmd.exe', ['/c', 'start', '', href], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+        } else if (process.platform === 'darwin') {
+          spawn('open', [href], { detached: true, stdio: 'ignore' }).unref();
+        } else {
+          spawn('xdg-open', [href], { detached: true, stdio: 'ignore' }).unref();
+        }
+        send(res, 200, { ok: true, url: href });
+      } catch (e) {
+        send(res, 500, { error: e.message });
+      }
+      return true;
+    }
+
     if (p === '/api/services/usage/start' && req.method === 'POST') {
       const r = await hub.startUsageServer();
       send(res, r.ok ? 200 : 502, r);

@@ -514,7 +514,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
     let cmd, args = [], title;
     if (b.kind === 'claude') {
       cmd = 'claude.exe';
-      if (projectTask && !b.resume) args.push('--session-id', crypto.randomUUID());
+      if (!b.resume) args.push('--session-id', crypto.randomUUID());
       if (b.resume) args.push('--resume', b.resume);
       if (b.resume && b.fork) {
         args.push('--fork-session');
@@ -1392,9 +1392,18 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
     }
     if (p === '/api/term/windows') {
       const id = url.searchParams.get('id') || '', pidParam = Number(url.searchParams.get('pid') || 0);
+      const showAll = url.searchParams.get('all') === '1';
       const t = id ? hub.terms.get(id) : null;
-      const pids = [...(t?.pid ? [t.pid] : []), ...(pidParam > 0 ? [pidParam] : [])];
-      const r = await hub.helperCall({ op: 'list_windows', pids });
+      const pidSet = new Set();
+      if (t?.pid) pidSet.add(t.pid);
+      if (pidParam > 0) pidSet.add(pidParam);
+      for (const tm of hub.terms.values()) {
+        if (tm.exited === null && tm.pid) pidSet.add(tm.pid);
+      }
+      for (const ls of hub.liveSessions?.() || []) {
+        if (ls?.pid) pidSet.add(ls.pid);
+      }
+      const r = await hub.helperCall({ op: 'list_windows', pids: [...pidSet], all: showAll });
       send(res, 200, { ok: r.ok !== false, windows: r.windows || [], error: r.error || null });
       return true;
     }
@@ -1487,7 +1496,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       }
       if (b.submit && typeof b.text === 'string' && b.text.trim() && !b.keys?.length && agent) {
         try {
-          await dispatchTerminalPrompt(hub, t, b.text, { cli: agent, immediate: b.immediate, resend: b.resendIfMissing });
+          await dispatchTerminalPrompt(hub, t, b.text, { cli: agent, immediate: b.immediate, resend: b.resendIfMissing, clearDraft: !!b.clearDraft });
           send(res, 200, { ok: true, immediate: !!b.immediate, ...delivery });
         } catch (e) {
           if (e instanceof WorkspaceError) throw e;

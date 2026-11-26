@@ -94,7 +94,7 @@ async function waitForTerminalInput(hub, term) {
   if (!ready) throw new Error('CLI가 작업 입력을 받을 준비가 되지 않았습니다.');
 }
 
-async function dispatchTerminalPrompt(hub, term, text, { submitDraft = false, cli, immediate = false, resend = false } = {}) {
+async function dispatchTerminalPrompt(hub, term, text, { submitDraft = false, clearDraft = false, cli, immediate = false, resend = false } = {}) {
   if (term._promptSubmission) throw new Error('터미널 입력을 전송 중입니다.');
   term._promptSubmission = true;
   try {
@@ -134,9 +134,9 @@ async function dispatchTerminalPrompt(hub, term, text, { submitDraft = false, cl
     const previousDraft = pending?.text === text && pending.inputSeq === inputSeq ? pending.draft : undefined;
     term._pendingPromptDraft = undefined;
     await submitPrompt({
-      text, read, guard, explicitDraft: submitDraft, resend, waitFor: hub.waitFor || waitFor, sleep: hub.sleep || sleep,
+      text, read, guard, explicitDraft: submitDraft, clearDraft, resend, waitFor: hub.waitFor || waitFor, sleep: hub.sleep || sleep,
       previousDraft, onDraft: (draft) => { term._pendingPromptDraft = { text, inputSeq, draft }; },
-      paste: cli === 'codex' || (cli === 'agy' && text.length > 80) || /[\n\t]/.test(text) ? `\x1b[200~${text}\x1b[201~` : text,
+      paste: cli === 'codex' || ((cli === 'agy' || cli === 'claude') && text.length > 80) || /[\n\t]/.test(text) ? `\x1b[200~${text}\x1b[201~` : text,
       pasteMarker: cli,
       write: async (data) => {
         guard(read());
@@ -155,8 +155,10 @@ async function dispatchTerminalPrompt(hub, term, text, { submitDraft = false, cl
           && /(?:alt\s*\+\s*m\s*(?:to\s*)?send|^\s*queued:|press up to edit)/im.test(view.screen)
           && !/(?:alt\s*\+\s*m\s*(?:to\s*)?send|^\s*queued:|press up to edit)/im.test(baseline.screen)) return true;
         const turn = sessionTurn();
-        return turn && turn !== priorTurn && Number(new Date(turn.ts)) >= since
-          && turn.text?.trim() === text.trim();
+        if (turn && turn !== priorTurn && Number(new Date(turn.ts)) >= since
+          && turn.text?.trim() === text.trim()) return true;
+        return !!clearDraft && !baseline.busy && (!view.draft || /^$|^(?:Ask Codex to do anything|Ask anything|Type (?:your|a) message|Message Claude|Try\s+"[^"\n]+")(?:[.…]+)?$/i.test(view.draft))
+          && !!baseline.draft && view.screen !== baseline.screen && !submissionBlockMessage(view.screen);
       },
     });
     term._pendingPromptDraft = undefined;
@@ -174,6 +176,17 @@ function pidAlive(pid) {
 function cleanEnv() {
   const env = { FORCE_COLOR: '1' };
   for (const [k, v] of Object.entries(process.env)) if (!SESSION_ENV.test(k)) env[k] = v;
+  if (process.platform === 'win32') {
+    const home = os.homedir();
+    const extra = [
+      path.join(home, '.local', 'bin'),
+      process.env.APPDATA ? path.join(process.env.APPDATA, 'npm') : '',
+    ].filter(Boolean);
+    const pathKey = Object.keys(env).find((k) => k.toLowerCase() === 'path') || 'PATH';
+    const cur = String(env[pathKey] || '');
+    const missing = extra.filter((d) => fs.existsSync(d) && !cur.toLowerCase().includes(d.toLowerCase()));
+    if (missing.length) env[pathKey] = [...missing, cur].filter(Boolean).join(';');
+  }
   return env;
 }
 
@@ -287,9 +300,13 @@ function createTermManager(hub) {
     if (isAgyTerm(t)) {
       const sid = agySessionOf(t);
       if (sid) return index.get(sid);
+      const args = t.meta?.args || [];
+      if (!args.includes('--continue')) return null;
     }
     if (t.meta?.sessionId && index.get(t.meta.sessionId)) return index.get(t.meta.sessionId);
     const argStr = (t.meta?.args || []).join(' ');
+    const explicitSid = argStr.match(/(?:--session-id)\s+([0-9a-f-]{8,64})/i);
+    if (explicitSid) return index.get(explicitSid[1]) || null;
     const fromArgs = argStr.match(/(?:--resume|resume|--conversation)\s+([0-9a-f-]{8,64})/i);
     if (fromArgs && index.get(fromArgs[1])) return index.get(fromArgs[1]);
     return recentDocOf(t);
@@ -297,11 +314,27 @@ function createTermManager(hub) {
 
   function recentDocOf(t) {
     const ag = agentOf(t);
-    if (!ag) return null;
-    const cwd = path.resolve(t.cwd || '').toLowerCase(), since = (t.meta?.spawnedAt || 0) - 60_000;
+    const start = t.meta?.spawnedAt || 0;
+    if (!ag || !start) return null;
+    const cwd = path.resolve(t.cwd || '').toLowerCase();
+    const isContinue = (t.meta?.args || []).some((a) => a === '--continue' || a === '--last');
+    const since = isContinue ? start - 60_000 : start;
+    const claimed = new Set();
+    for (const other of terms.values()) {
+      if (other === t) continue;
+      if (other.meta?.sessionId) claimed.add(other.meta.sessionId);
+      const oArgs = (other.meta?.args || []).join(' ');
+      const om = oArgs.match(/(?:--resume|resume|--conversation|--session-id)\s+([0-9a-f-]{8,64})/i);
+      if (om) claimed.add(om[1]);
+      if (isAgyTerm(other)) {
+        const asid = agySessionOf(other);
+        if (asid) claimed.add(asid);
+      }
+    }
     let best = null;
     for (const d of index.docs.values()) {
       if ((d.agent || 'claude') !== ag || !d.cwd || d.mtime < since || path.resolve(d.cwd).toLowerCase() !== cwd) continue;
+      if (!isContinue && claimed.has(d.id)) continue;
       if (!best || d.mtime > best.mtime) best = d;
     }
     return best;

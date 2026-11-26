@@ -11,7 +11,7 @@ function composerText(screen, cursorLine) {
   const start = lines.findLastIndex((line) => /^\s*[›❯>](?:\s|$)/.test(line));
   if (start < 0 || cursorLine < start) return null;
   const draft = lines.slice(start).join('\n').replace(/^[ \t]*[›❯>][ \t]*/, '').split(
-    /\n\s*(?:[─━]{3,}|[^\n]+ · (?:[A-Z]:[\\/]|~|\/)|← for agents\s*·\s*\? for shortcuts|\? for shortcuts|esc to (?:interrupt|cancel)|alt\s*\+\s*m\s*(?:to\s*)?send|tab to (?:queue|steer))/i, 1
+    /\n\s*(?:[─━╰└]{3,}|[^\n]+ · (?:[A-Z]:[\\/]|~|\/)|← for agents\s*·\s*\? for shortcuts|\? for shortcuts|esc to (?:interrupt|cancel)|alt\s*\+\s*m\s*(?:to\s*)?send|tab to (?:queue|steer))/i, 1
   )[0].replace(/[ \t]{2,}(?:⚠\s+\d+\s+warnings?\s*·\s*f2 to view|\? for shortcuts)[ \t]*$/gim, '');
   if (cursorLine >= start + draft.split('\n').length) return null;
   return draft.trimEnd();
@@ -19,10 +19,10 @@ function composerText(screen, cursorLine) {
 
 const hasCodexPasteDraft = (screen, cursorLine) => PASTE_MARKER.test(composerText(screen, cursorLine)?.trimStart() || '');
 
-const isPlaceholder = (text) => /^(?:Ask Codex to do anything|Ask anything|Type (?:your|a) message)(?:[.…]+)?$/i.test(text || '');
+const isPlaceholder = (text) => /^(?:Ask Codex to do anything|Ask anything|Type (?:your|a) message|Message Claude|Try\s+"[^"\n]+")(?:[.…]+)?$/i.test((text || '').trim());
 
 async function submitPrompt({ text, read, write, guard, waitFor, sleep, delay = 350,
-  started, paste = text, explicitDraft = false, queueKey, pasteMarker, flushQueue, previousDraft, onDraft, resend = false }) {
+  started, paste = text, explicitDraft = false, clearDraft = false, queueKey, pasteMarker, flushQueue, previousDraft, onDraft, resend = false }) {
   if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text)) throw new Error('CLI 메시지에 제어 문자를 보낼 수 없습니다.');
   const expected = unwrap(text);
   const matched = (draft) => draft != null && unwrap(draft) === expected;
@@ -76,7 +76,31 @@ async function submitPrompt({ text, read, write, guard, waitFor, sleep, delay = 
     || (explicitDraft && draft && (freshPaste(draft) || (!PASTE_MARKER.test(draft.trimStart()) && expected.endsWith(unwrap(draft)))));
   let pasted = false;
   if (!alreadyPresent) {
-    if (draft && !isPlaceholder(draft)) throw new Error(DRAFT);
+    if (draft && !isPlaceholder(draft)) {
+      if (clearDraft && !explicitDraft) {
+        await write('\x05\x15');
+        let cleared = await waitFor(async () => {
+          view = await current();
+          return !view.draft || isPlaceholder(view.draft);
+        }, 1200, 120);
+        if (!cleared) {
+          await write('\x01\x0b');
+          cleared = await waitFor(async () => {
+            view = await current();
+            return !view.draft || isPlaceholder(view.draft);
+          }, 900, 120);
+        }
+        if (!cleared && !view.busy) {
+          await write('\x03');
+          cleared = await waitFor(async () => {
+            view = await current();
+            return !view.draft || isPlaceholder(view.draft);
+          }, 900, 120);
+        }
+        draft = view.draft;
+      }
+      if (draft && !isPlaceholder(draft)) throw new Error(DRAFT);
+    }
     if (explicitDraft) throw new Error('CLI 입력창에서 전송한 내용을 확인하지 못했습니다.');
     if (draft == null) throw new Error('CLI 입력창을 확인하지 못했습니다.');
     await write(paste);
@@ -94,7 +118,7 @@ async function submitPrompt({ text, read, write, guard, waitFor, sleep, delay = 
     }
     draft = view.draft;
     onDraft?.(draft);
-    await sleep(delay);
+    await sleep(paste !== text ? Math.max(delay, 450) : delay);
   }
   const sameDraft = (next) => next === draft || (pasted && (renderedMatch(next) || freshPaste(next) || visibleTail(next)));
   view = await current();
@@ -121,11 +145,18 @@ async function submitPrompt({ text, read, write, guard, waitFor, sleep, delay = 
     return !sameDraft(view.draft) && (key !== '\r' || await flushQueue?.(view, baseline, write) || await started(view, baseline, since));
   };
   await write(key);
-  if (await waitFor(accepted, pasteMarker === 'agy' ? 1100 : 2500, 150)) return;
+  if (await waitFor(accepted, pasteMarker === 'agy' ? 1800 : 2500, 150)) return;
   if (await accepted()) return;
-  if (key === '\r' && !view.busy && sameDraft(view.draft)) {
+  if (key === '\r' && sameDraft(view.draft)) {
     baseline = view;
     await write('\r');
+    if (clearDraft) {
+      if (await waitFor(accepted, 3500, 150)) return;
+      if (sameDraft(view.draft)) {
+        baseline = view;
+        await write('\r');
+      }
+    }
   }
   if (!await waitFor(accepted, 8000, 150)) {
     if (sameDraft(view.draft)) onDraft?.(view.draft);

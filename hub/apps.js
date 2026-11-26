@@ -485,6 +485,72 @@ module.exports = function appsModule(deps = {}) {
       return send(200, { ok: true, id: app.id, purgedOutputs: purge, removedFiles });
     }
 
+    if (sub === 'export' && req.method === 'GET') {
+      const os = require('os');
+      const { execFileSync } = require('child_process');
+      const SKIP_DIRS = new Set(['.venv', 'venv', 'node_modules', '__pycache__', '.git', '.pytest_cache', '.mypy_cache', 'secrets']);
+      const SKIP_FILE_RE = /^(?:\.env(?:\..+)?|\.token|.*\.(?:key|pem|pfx|p12))$/i;
+      const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ach-app-export-'));
+      const stageDir = path.join(tmpRoot, app.id);
+      const zipPath = path.join(tmpRoot, `${app.id}-share.zip`);
+      const copySafe = (src, dst, depth = 0) => {
+        if (depth > 8 || !fs.existsSync(src)) return;
+        fs.mkdirSync(dst, { recursive: true });
+        for (const ent of fs.readdirSync(src, { withFileTypes: true })) {
+          if (ent.isSymbolicLink()) continue;
+          if (ent.isDirectory()) {
+            if (SKIP_DIRS.has(ent.name)) continue;
+            copySafe(path.join(src, ent.name), path.join(dst, ent.name), depth + 1);
+          } else if (ent.isFile()) {
+            if (SKIP_FILE_RE.test(ent.name)) continue;
+            try {
+              const st = fs.statSync(path.join(src, ent.name));
+              if (st.size > 50 * 1024 * 1024) continue;
+              fs.copyFileSync(path.join(src, ent.name), path.join(dst, ent.name));
+            } catch {}
+          }
+        }
+      };
+      try {
+        fs.mkdirSync(stageDir, { recursive: true });
+        if (app.cwd && fs.existsSync(app.cwd)) copySafe(app.cwd, stageDir);
+        const portableManifest = { ...app, cwd: '' };
+        fs.writeFileSync(path.join(stageDir, 'app.json'), JSON.stringify(portableManifest, null, 2) + '\n', 'utf8');
+        const readme = [
+          `# ${app.name} (${app.id})`,
+          '',
+          app.description ? app.description : '',
+          app.usage ? `\n## 사용법\n${app.usage}` : '',
+          app.purpose ? `\n## 개발 의도\n${app.purpose}` : '',
+          '\n## Agent CLI Hub에서 가져오기',
+          '1. 이 압축 파일을 원하는 폴더에 풉니다.',
+          '2. Agent CLI Hub → **앱스** → **새 앱 추가** → **폴더에서 app.json 가져오기 (Import)**에 압축 푼 폴더 경로를 입력합니다.',
+          '3. Python/Node 의존성이 필요한 앱은 해당 폴더에서 `setup.ps1` 또는 `requirements.txt` / `package.json`을 설치한 뒤 실행하세요.',
+          '',
+        ].filter((x) => x !== '').join('\n');
+        fs.writeFileSync(path.join(stageDir, 'SHARE_README.md'), readme, 'utf8');
+        if (process.platform === 'win32') {
+          const ps = `Compress-Archive -LiteralPath '${stageDir.replace(/'/g, "''")}' -DestinationPath '${zipPath.replace(/'/g, "''")}' -Force`;
+          execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { windowsHide: true, timeout: 60000 });
+        } else {
+          execFileSync('zip', ['-rq', zipPath, app.id], { cwd: tmpRoot, timeout: 60000 });
+        }
+        const buf = fs.readFileSync(zipPath);
+        res.writeHead(200, {
+          'content-type': 'application/zip',
+          'content-disposition': `attachment; filename="${app.id.replace(/[^a-zA-Z0-9._-]/g, '_')}-share.zip"`,
+          'content-length': buf.length,
+          'cache-control': 'no-store',
+        });
+        res.end(buf);
+        return true;
+      } catch (e) {
+        return send(500, { error: `전달용 패키지 생성 실패: ${e.message}` });
+      } finally {
+        try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
+      }
+    }
+
     if (sub === 'run' && req.method === 'POST') {
       const b = await readBody();
       const actionId = b.actionId || app.actions?.[0]?.id;

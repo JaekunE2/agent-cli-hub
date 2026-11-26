@@ -113,8 +113,8 @@ function mountSubagents(bar, params) {
       let event;
       try { event = JSON.parse(data); } catch { return; }
       if (event?.type !== 'hook-event') return;
-      if ((event.termId && String(event.termId) === params.termId)
-        || (event.sessionId && event.sessionId === params.sessionId)) refreshFromHook();
+      if ((event.termId && params.termId && String(event.termId) === String(params.termId))
+        || (event.sessionId && params.sessionId && event.sessionId === params.sessionId)) refreshFromHook();
     };
     ws.onclose = () => {
       if (!request.signal.aborted) reconnectTimer = setTimeout(() => connect(true), 1000);

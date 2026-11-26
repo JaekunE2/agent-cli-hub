@@ -544,7 +544,7 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
     chatHost._triggerPoll?.();
   };
   const sendToTerm = async (id, text, waitForReady = false, resendIfMissing = false) => {
-    const result = await api('/api/term/send', { method: 'POST', body: { id, text, submit: true, waitForReady, resendIfMissing } });
+    const result = await api('/api/term/send', { method: 'POST', body: { id, text, submit: true, waitForReady, resendIfMissing, clearDraft: true } });
     if (!result.ok) throw new Error(result.error || '터미널 입력을 확인하지 못했습니다.');
     notifySent(id, text, result.submittedText);
   };

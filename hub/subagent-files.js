@@ -62,18 +62,36 @@ function transcriptFile(hub, id, term) {
     const file = existing(path.join(claude, dir, id + '.jsonl'), claude);
     if (file) return file;
   }
+  const agyBrains = new Set();
   for (const agyRoot of agy) {
+    agyBrains.add(agyRoot);
+    agyBrains.add(path.resolve(agyRoot, '..', 'brain'));
+  }
+  const os = require('node:os');
+  for (const appName of ['antigravity-cli', 'antigravity']) {
+    agyBrains.add(path.join(os.homedir(), '.gemini', appName, 'brain'));
+  }
+  for (const agyRoot of agyBrains) {
+    if (!fs.existsSync(agyRoot)) continue;
     const dir = path.resolve(agyRoot, id, '.system_generated', 'logs');
     const file = existing(path.join(dir, 'transcript_full.jsonl'), agyRoot) || existing(path.join(dir, 'transcript.jsonl'), agyRoot);
     if (file) return file;
   }
   const now = Date.now();
-  for (const ms of [now, now - 86_400_000, term?.startedAt, term?.startedAt && term.startedAt - 86_400_000].filter(Boolean)) {
+  const checkedDirs = new Set();
+  for (const ms of [now, now - 86_400_000, now + 86_400_000, term?.startedAt, term?.startedAt && term.startedAt - 86_400_000].filter(Boolean)) {
     if (!root) break;
     const date = new Date(ms);
-    const dir = path.join(root, String(date.getFullYear()), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0'));
-    const name = (fs.existsSync(dir) ? fs.readdirSync(dir) : []).find(name => name.startsWith('rollout-') && name.endsWith(`-${id}.jsonl`));
-    if (name) return existing(path.resolve(dir, name), root);
+    for (const parts of [
+      [String(date.getUTCFullYear()), String(date.getUTCMonth() + 1).padStart(2, '0'), String(date.getUTCDate()).padStart(2, '0')],
+      [String(date.getFullYear()), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')],
+    ]) {
+      const dir = path.join(root, ...parts);
+      if (checkedDirs.has(dir)) continue;
+      checkedDirs.add(dir);
+      const name = (fs.existsSync(dir) ? fs.readdirSync(dir) : []).find(name => name.startsWith('rollout-') && name.endsWith(`-${id}.jsonl`));
+      if (name) return existing(path.resolve(dir, name), root);
+    }
   }
   return null;
 }

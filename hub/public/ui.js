@@ -302,6 +302,38 @@
   }
   window.bindEnterSubmit = bindEnterSubmit;
 
+  async function openExternalUrl(href) {
+    const raw = String(href || '').trim();
+    if (!/^https?:\/\//i.test(raw)) return false;
+    const isTauri = document.documentElement.classList.contains('is-tauri') || !!window.__TAURI_INTERNALS__?.invoke;
+    const isLocal = ['127.0.0.1', 'localhost', '[::1]'].includes(location.hostname);
+    if (isTauri && isLocal) {
+      try {
+        const tok = (typeof TOKEN !== 'undefined' && TOKEN) || window.TOKEN || localStorage.getItem('ccd-token') || '';
+        const r = await fetch('/api/open-url', {
+          method: 'POST',
+          headers: { 'x-token': tok, 'content-type': 'application/json' },
+          body: JSON.stringify({ url: raw }),
+        });
+        if (r.ok) return true;
+      } catch {}
+    }
+    const w = window.open(raw, '_blank', 'noopener,noreferrer');
+    return !!w;
+  }
+  window.openExternalUrl = openExternalUrl;
+
+  document.addEventListener('click', (e) => {
+    const a = e.target?.closest?.('a[href]');
+    if (!a || a.hasAttribute('download')) return;
+    const href = a.getAttribute('href') || '';
+    if (!/^https?:\/\//i.test(href)) return;
+    const isTauri = document.documentElement.classList.contains('is-tauri') || !!window.__TAURI_INTERNALS__?.invoke;
+    if (!isTauri) return;
+    e.preventDefault();
+    void openExternalUrl(a.href);
+  }, true);
+
   if (window.__TAURI_INTERNALS__?.invoke) {
     const tb = document.getElementById('tauriTitlebar');
     if (tb) {

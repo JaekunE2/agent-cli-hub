@@ -186,22 +186,61 @@ function summarizeCliError(stderr, stdout, code) {
   return `작업 흐름을 생성하지 못했습니다 (종료 코드 ${code}). 선택한 CLI의 로그인 상태를 확인하고 다시 시도하세요.`;
 }
 
+function resolveCliExecutable(exe) {
+  const raw = String(exe || '').trim();
+  if (!raw || path.isAbsolute(raw) && fs.existsSync(raw)) return raw;
+  if (process.platform !== 'win32') return raw;
+  const os = require('os');
+  const home = os.homedir();
+  const baseName = raw.replace(/\.(exe|cmd|bat)$/i, '').toLowerCase();
+  const extraDirs = [
+    path.join(home, '.local', 'bin'),
+    process.env.APPDATA ? path.join(process.env.APPDATA, 'npm') : '',
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Programs', 'antigravity-cli') : '',
+    path.join(home, '.antigravity', 'bin'),
+  ].filter(Boolean);
+  for (const dir of extraDirs) {
+    for (const ext of ['.exe', '.cmd', '.bat', '']) {
+      const candidate = path.join(dir, baseName + ext);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
+  return raw;
+}
+
+function enrichedCliEnv(env) {
+  const baseEnv = { ...process.env, ...(env || {}) };
+  if (process.platform !== 'win32') return baseEnv;
+  const os = require('os');
+  const home = os.homedir();
+  const extra = [
+    path.join(home, '.local', 'bin'),
+    process.env.APPDATA ? path.join(process.env.APPDATA, 'npm') : '',
+  ].filter(Boolean);
+  const pathKey = Object.keys(baseEnv).find((k) => k.toLowerCase() === 'path') || 'PATH';
+  const cur = String(baseEnv[pathKey] || '');
+  const missing = extra.filter((d) => fs.existsSync(d) && !cur.toLowerCase().includes(d.toLowerCase()));
+  if (missing.length) baseEnv[pathKey] = [...missing, cur].filter(Boolean).join(';');
+  return baseEnv;
+}
+
 function spawnCli(exe, args, { cwd, env, timeoutMs = 120_000, maxBuffer = 1024 * 1024, onProgress, stdinText = null, signal = null } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error('작업 흐름 생성이 취소되었습니다.'));
     let stdout = '';
     let stderr = '';
     let settled = false;
-    let spawnCmd = exe;
+    const resolvedExe = resolveCliExecutable(exe);
+    let spawnCmd = resolvedExe;
     let spawnArgs = args;
-    if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(String(exe || '')) && !/cmd\.exe$/i.test(String(exe || ''))) {
+    if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(String(resolvedExe || '')) && !/cmd\.exe$/i.test(String(resolvedExe || ''))) {
       spawnCmd = 'cmd.exe';
-      spawnArgs = ['/c', exe, ...args];
+      spawnArgs = ['/c', resolvedExe, ...args];
     }
     // IMPORTANT: stdio[0] MUST be 'ignore' (or immediately closed after writing stdinText)
     // so CLIs like `codex exec` get immediate EOF on stdin instead of hanging.
     const hasStdin = stdinText !== null && stdinText !== undefined;
-    const child = spawn(spawnCmd, spawnArgs, { cwd, env, windowsHide: true, stdio: [hasStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
+    const child = spawn(spawnCmd, spawnArgs, { cwd, env: enrichedCliEnv(env), windowsHide: true, stdio: [hasStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
     const onAbort = () => {
       if (settled) return;
       settled = true;

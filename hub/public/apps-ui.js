@@ -224,6 +224,7 @@
           <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
             ${actionsHtml}
             ${app.status === 'running' ? `<button type="button" class="btn-sm danger" id="btnCancelRun">중단</button>` : ''}
+            <a class="btnlike btn-sm" id="btnExportApp" href="/api/apps/${encodeURIComponent(app.id)}/export?t=${encodeURIComponent(TOKEN)}" download="${esc(app.id)}-share.zip" title="다른 사람에게 전달할 수 있는 ZIP 패키지로 내보내기">${ICO.upload} 전달용 내보내기</a>
             <button type="button" class="btn-sm" id="btnEditApp" title="앱 설정">${ICO.edit}</button>
             <button type="button" class="btn-sm danger" id="btnDelApp" title="앱 제거">${ICO.trash}</button>
           </div>
