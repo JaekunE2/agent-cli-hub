@@ -45,6 +45,8 @@ const { createProjectRoutes } = require('./routes-projects');
 const { createSessionRoutes } = require('./routes-sessions');
 const { createHookTransport } = require('./session-hook-transport');
 const { createSystemRoutes } = require('./routes-system');
+const { createWorkspaceContexts } = require('./workspace-contexts');
+const { createWorkspaceFolderRoutes } = require('./routes-workspace-folders');
 
 const cleanModelEffort = (model, effort) => {
   const m = String(model || '').trim();
@@ -232,6 +234,8 @@ const hookTransport = createHookTransport(hub);
 hub.toolHooks = hookTransport.toolHooks;
 hub.artifacts = artifactsMod;
 const sessionRoutes = createSessionRoutes(hub);
+const workspaceContexts = createWorkspaceContexts(path.join(__dirname, 'data', 'workspace-contexts.json'));
+const workspaceFolderRoutes = createWorkspaceFolderRoutes(workspaceContexts, sessionRoutes.folderSession, logServerError);
 Object.assign(hub, {
   ...projectRoutes,
   ...sessionRoutes,
@@ -431,6 +435,7 @@ const server = http.createServer(async (req, res) => {
     return hookTransport.handleNativeHook(req, res, body, send);
   }
   if (p === '/api/calendar/google/callback') return calendarMod.oauthCallback(url, res).catch((e) => send(res, 500, { error: e.message }));
+  if (await workspaceFolderRoutes(p, url, req, res, send, authed)) return;
   if (!authed(req, url)) return send(res, 401, { error: 'bad token' });
   if (req.method === 'POST') hub.overviewStale();
 
@@ -519,7 +524,11 @@ function remoteInfo() {
 }
 hub.remoteInfo = remoteInfo;
 
-setInterval(() => hub.saveTermsState(), 15000).unref?.();
+setInterval(() => {
+  hub.saveTermsState();
+  try { workspaceContexts.linkTerms(sessionRoutes.folderSessionLinks()); }
+  catch (err) { logServerError('workspace-folder-link', err); }
+}, 15000).unref?.();
 setInterval(() => {
   const every = Number((CONFIG.operator || {}).checkEveryMin ?? 180);
   const t = operatorTerm();
