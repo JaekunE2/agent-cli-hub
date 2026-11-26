@@ -373,7 +373,7 @@ function createAccountSwitchService(hub) {
     let workspaceLaunch = await workspacePlan();
     const allowBypass = !workspaceLaunch && (skip === undefined || skip);
     if (workspaceLaunch && targetAgent === 'codex') resolveLaunchFolders({ cli: targetAgent, ...codexLaunch(), plan: workspaceLaunch });
-    if (t0 && workspaceLaunch) await execution.guardTerm(t0);
+    if (samePlatform && t0 && workspaceLaunch) await execution.guardTerm(t0);
     const savedME = accountPrefs.getForAccount(pick.id, targetAgent);
     const useME = cleanModelEffort(model === undefined ? savedME.model : reqME.model, effort === undefined ? savedME.effort : reqME.effort);
     if (model !== undefined || effort !== undefined) accountPrefs.save({ account: pick.id, agent: targetAgent, model: useME.model, effort: useME.effort });
@@ -433,7 +433,7 @@ function createAccountSwitchService(hub) {
       const result = await term.proc.write(data);
       if (result?.guardError) throw result.guardError;
     };
-    if (matchingTerms.length && openMode === 'dashboard') {
+    if (samePlatform && matchingTerms.length && openMode === 'dashboard') {
       for (const tm of matchingTerms) {
         if (tm.exited === null) {
           if (hub.isCodexTerm(tm)) { await writeControl(tm, '\x03'); await hub.sleep(350); await writeControl(tm, '\x03'); }
@@ -443,7 +443,7 @@ function createAccountSwitchService(hub) {
         }
         hub.forgetTerm(tm);
       }
-    } else if (loc.live && openMode === 'dashboard') {
+    } else if (samePlatform && loc.live && openMode === 'dashboard') {
       if (loc.s.status === 'busy' && !interrupt) return { ok: false, busy: true, error: '세션이 작업 중입니다. 중단하고 전환할까요?' };
       const gone = () => !hub.pidAlive(loc.s.pid) || (loc.term && loc.term.exited !== null);
       if (loc.term) {
@@ -534,7 +534,7 @@ function createAccountSwitchService(hub) {
       workspaceLaunch, workspaceCli: targetAgent,
     });
     hub.overviewStale?.();
-    if (t0) {
+    if (samePlatform && t0) {
       const favs = hub.loadFavs();
       if (favs.includes(`term:${t0.id}`)) fs.writeFileSync(hub.FAV_FILE, JSON.stringify(favs.map((k) => (k === `term:${t0.id}` ? `term:${t.id}` : k))));
     }

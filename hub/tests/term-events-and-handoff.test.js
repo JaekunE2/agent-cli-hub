@@ -429,10 +429,15 @@ test('cross-platform switchAlways converts Claude <-> Codex natively and keeps A
     assert.ok(toClaude.convertedSessionId);
     assert.deepEqual(createdTerms[1].meta.args.slice(0, 2), ['--resume', toClaude.convertedSessionId]);
 
-    // 3) Claude -> AGY stays on markdown handoff (`handoff-*.md` + `--prompt-interactive`)
-    const toAgy = await svc.switchAccount({ sessionId: claudeDoc.id, account: '__cli__:agy', cont: false, openMode: 'dashboard' });
+    // 3) Claude -> AGY stays on markdown handoff (`handoff-*.md` + `--prompt-interactive`) and keeps existing term alive
+    let forgot = false;
+    fakeHub.terms.set('88', { id: '88', exited: null, cwd: dir, proc: { write: async () => ({ ok: true }), kill: () => { throw new Error('must not kill'); } } });
+    fakeHub.termSessionId = (t) => (t.id === '88' ? claudeDoc.id : null);
+    fakeHub.forgetTerm = () => { forgot = true; };
+    const toAgy = await svc.switchAccount({ termId: '88', sessionId: claudeDoc.id, account: '__cli__:agy', cont: false, openMode: 'dashboard' });
     assert.equal(toAgy.ok, true);
     assert.equal(toAgy.nativeConverted, false);
+    assert.equal(forgot, false);
     assert.ok(toAgy.handoffFile && fs.existsSync(toAgy.handoffFile));
     assert.ok(createdTerms[2].meta.args.includes('--prompt-interactive'));
   } finally {
