@@ -33,7 +33,8 @@ function bindScheduleTarget(fields, projects, capabilities, previous = {}) {
   fill(projectId, [['', '프로젝트 선택'], ...projects.map(item => [item.id, item.name])],
     previous.projectId ?? (projects.length === 1 ? projects[0].id : ''));
   versions(previous.version, previous.taskId || '');
-  fill(cli, capabilities.map(item => [item.id, item.id === 'codex' ? 'Codex' : item.id]), previous.cli);
+  const cliLabel = item => item.label || ({ codex: 'Codex', claude: 'Claude', agy: 'Antigravity' }[item.id] || item.id);
+  fill(cli, capabilities.map(item => [item.id, cliLabel(item)]), previous.cli);
   accounts(previous.accountId);
   referenceDirs.value = (previous.referenceDirs || []).join('\n');
   projectId.onchange = () => versions();

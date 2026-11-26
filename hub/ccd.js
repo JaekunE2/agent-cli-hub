@@ -43,8 +43,8 @@ const HELP = `ccd — Agent CLI Hub CLI  (server ${BASE})
                                    autonomous research projects (director sessions driven by research-harness)
   app ls | run <id> [--action A] [--wait] | data <id> [--file latest] [--q K] | files <id> | import <dir> | rm <id> [--purge-outputs] | data-rm <id> [--file F | --older-than N]
                                    lightweight hub apps (UI + session-callable tools & data integration)
-  schedule ls | add --name N --project P (--every M | --cron E [--tz TZ]) --prompt "..." [--version V] [--task ID] [--model M] | rm <id|name> | pause <id|name> | resume <id|name> | run <id|name> | runs <id|name>
-                                   manage scheduled Codex runs (add/remove/run/pause/resume by id or name)
+  schedule ls | add --name N --project P (--every M | --cron E [--tz TZ]) --prompt "..." [--cli codex|claude|agy] [--account ID] [--version V] [--task ID] [--model M] | rm <id|name> | pause <id|name> | resume <id|name> | run <id|name> | runs <id|name>
+                                   manage scheduled CLI runs (add/remove/run/pause/resume by id or name)
   gpu [ls]                         GPUs (memory/util/procs) + lease queue
   gpu plan --mem 12G --est 90m     when a job of that size would start / finish on each GPU
   gpu run [--mem 20G | --exclusive] [--gpu 0] [--label L] [--est 90m] [--ram 40G] -- <command>
@@ -74,7 +74,7 @@ for (let i = 0; i < argv.length; i++) {
   if (a === '-n') flags.n = Number(argv[++i]);
   else if (a.startsWith('--')) {
     const k = a.slice(2);
-    if (['to', 'cwd', 'resume', 'title', 'role', 'at', 'timeout', 'account', 'direction', 'venue', 'gpu', 'mem', 'ram', 'label', 'est', 'modules', 'model', 'session', 'sync', 'fetch', 'sync-exclude', 'file', 'system', 'url', 'image', 'env', 'cd', 'to', 'in', 'msg', 'rename', 'max', 'runtime', 'drive', 'stage', 'node', 'server', 'exclude', 'via', 'root', 'steps', 'name', 'project', 'version', 'task', 'every', 'cron', 'tz', 'prompt', 'overlap', 'misfire', 'effort', 'ref', 'limit', 'action', 'dir', 'q', 'older-than'].includes(k)) flags[k] = argv[++i];
+    if (['to', 'cwd', 'resume', 'title', 'role', 'at', 'timeout', 'account', 'direction', 'venue', 'gpu', 'mem', 'ram', 'label', 'est', 'modules', 'model', 'session', 'sync', 'fetch', 'sync-exclude', 'file', 'system', 'url', 'image', 'env', 'cd', 'to', 'in', 'msg', 'rename', 'max', 'runtime', 'drive', 'stage', 'node', 'server', 'exclude', 'via', 'root', 'steps', 'name', 'project', 'version', 'task', 'every', 'cron', 'tz', 'prompt', 'overlap', 'misfire', 'effort', 'ref', 'limit', 'action', 'dir', 'q', 'older-than', 'cli'].includes(k)) flags[k] = argv[++i];
     else flags[k] = true;
   } else pos.push(a);
 }
@@ -828,7 +828,7 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
       if (!d.items?.length) return console.log('no schedules');
       for (const s of d.items) {
         const trig = s.trigger?.kind === 'interval' ? `every ${s.trigger.everyMinutes}m` : `${s.trigger?.expression || ''} (${s.trigger?.timeZone || ''})`;
-        console.log(`${s.id}  [${s.state}]  rev:${s.revision}  ${s.name}  (${trig})  next=${s.nextRunAt || '-'}  target=${s.target?.projectId}/${s.target?.version}`);
+        console.log(`${s.id}  [${s.state}]  rev:${s.revision}  ${s.name}  (${trig})  next=${s.nextRunAt || '-'}  target=${s.target?.cli || 'codex'}/${s.target?.projectId}/${s.target?.version}`);
       }
       return;
     }
@@ -836,7 +836,7 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
       const name = flags.name || pos[2];
       const prompt = flags.prompt;
       const projRef = flags.project;
-      if (!name || !prompt || !projRef) die('usage: ccd schedule add --name "..." --project <id|name> (--every <min> | --cron "<expr>" [--tz IANA]) --prompt "..." [--version V] [--task ID] [--model M] [--effort E] [--overlap skip|queue|replace] [--misfire skip|run_once] [--timeout 900]');
+      if (!name || !prompt || !projRef) die('usage: ccd schedule add --name "..." --project <id|name> (--every <min> | --cron "<expr>" [--tz IANA]) --prompt "..." [--cli codex|claude|agy] [--account ID] [--version V] [--task ID] [--model M] [--effort E] [--overlap skip|queue|replace] [--misfire skip|run_once] [--timeout 900]');
       if (!flags.every && !flags.cron) die('schedule add requires --every <minutes> or --cron "<expr>"');
       const pRes = await api('/api/projects');
       const projList = Array.isArray(pRes) ? pRes : (pRes.projects || pRes.items || []);
@@ -851,6 +851,8 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
       const target = {
         projectId,
         version,
+        ...(flags.cli ? { cli: flags.cli } : {}),
+        ...(flags.account ? { accountId: flags.account } : {}),
         ...(flags.task ? { taskId: flags.task } : {}),
         ...(flags.model ? { model: flags.model } : {}),
         ...(flags.effort ? { effort: flags.effort } : {}),

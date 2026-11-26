@@ -403,3 +403,20 @@ test('dedicated worker publishes one authenticated result across runner recreati
   runner.cleanup(new Set([runId]), Date.now() + 1000);
   assert.deepEqual(fs.readdirSync(root), [runId]);
 });
+
+test('schedules support codex, claude, and agy CLIs while rejecting unknown CLIs', async t => {
+  const fx = fixture(t);
+  const engine = fx.open();
+  for (const cli of ['codex', 'claude', 'agy']) {
+    const { item } = await engine.create({
+      ...spec,
+      name: `Schedule for ${cli}`,
+      target: { ...spec.target, cli },
+    });
+    assert.equal(item.target.cli, cli);
+  }
+  await assert.rejects(
+    () => engine.create({ ...spec, target: { ...spec.target, cli: 'unknown-cli' } }),
+    { code: 'CAPABILITY_UNSUPPORTED' },
+  );
+});

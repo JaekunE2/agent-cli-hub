@@ -7,6 +7,8 @@ const iso = ms => new Date(ms).toISOString();
 const error = (code, message) => Object.assign(new Error(message), { code });
 const isText = (value, max) => typeof value === 'string' && value.trim() && value.length <= max;
 
+const SUPPORTED_CLIS = ['codex', 'claude', 'agy'];
+
 function fields(input, previous, now) {
   const { name, prompt, target, overlap = 'skip', misfire = 'skip', timeoutSec = 900 } = { ...previous, ...input };
   if (!isText(name, 120) || !isText(prompt, 16000) ||
@@ -21,8 +23,10 @@ function fields(input, previous, now) {
       (target.effort !== undefined && !isText(target.effort, 128))) {
     throw error('INVALID_TARGET', 'Invalid schedule target');
   }
-  if ((target.cli ?? 'codex') !== 'codex' || (target.accountId ?? 'default') !== 'default') {
-    throw error('CAPABILITY_UNSUPPORTED', 'Schedules require Codex with the default account');
+  const cli = target.cli ?? 'codex';
+  const accountId = target.accountId ?? 'default';
+  if (!SUPPORTED_CLIS.includes(cli) || !isText(accountId, 128)) {
+    throw error('CAPABILITY_UNSUPPORTED', `Unsupported schedule CLI or account: ${cli}`);
   }
   const trigger = Object.hasOwn(input, 'trigger') ? normalizeTrigger(input.trigger, now) : previous?.trigger;
   if (!trigger) throw error('INVALID_TRIGGER', 'A trigger is required');
@@ -30,7 +34,7 @@ function fields(input, previous, now) {
     name, prompt, overlap, misfire, timeoutSec, trigger,
     target: {
       projectId: target.projectId, version: target.version, taskId: target.taskId ?? null,
-      cli: 'codex', accountId: 'default', referenceDirs: [...(target.referenceDirs ?? [])],
+      cli, accountId, referenceDirs: [...(target.referenceDirs ?? [])],
       ...(target.model === undefined ? {} : { model: target.model }),
       ...(target.effort === undefined ? {} : { effort: target.effort }),
     },

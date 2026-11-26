@@ -251,8 +251,13 @@ hub.workspaceExecution = createWorkspaceExecution(workspaceContexts, sessionRout
 const workspaceFolderRoutes = createWorkspaceFolderRoutes(workspaceContexts, sessionRoutes.folderSession, logServerError);
 let scheduleEngine;
 const scheduleRunnerAvailable = false; // The workspace CLI adapter supplies the verified read-only runner.
-const scheduleCapabilities = { cli: [{ id: 'codex', accountIds: ['default'], referenceMode: 'context',
-  available: scheduleRunnerAvailable, reason: 'RUNNER_UNAVAILABLE' }] };
+const scheduleCapabilities = {
+  cli: [
+    { id: 'codex', label: 'Codex', accountIds: ['default'], referenceMode: 'context', available: scheduleRunnerAvailable, reason: scheduleRunnerAvailable ? null : 'RUNNER_UNAVAILABLE' },
+    { id: 'claude', label: 'Claude', accountIds: ['default'], referenceMode: 'add-dir', available: scheduleRunnerAvailable, reason: scheduleRunnerAvailable ? null : 'RUNNER_UNAVAILABLE' },
+    { id: 'agy', label: 'Antigravity', accountIds: ['default'], referenceMode: 'context', available: scheduleRunnerAvailable, reason: scheduleRunnerAvailable ? null : 'RUNNER_UNAVAILABLE' },
+  ],
+};
 const scheduleRoutes = createScheduleRoutes(() => scheduleEngine, scheduleCapabilities, logServerError);
 const scheduleTransport = createScheduleTransport(() => scheduleEngine, logServerError);
 
