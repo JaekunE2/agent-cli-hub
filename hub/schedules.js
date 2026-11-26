@@ -100,6 +100,8 @@ function createScheduleEngine({
       const now = clock.now();
       const key = `${id}:${requestId.toLowerCase()}`;
       const previous = data.manualRequests[key];
+      const current = itemFor(data, id);
+      if (current.state === 'archived') throw error('SCHEDULE_CONFLICT', 'Schedule revision or state changed');
       if (previous && Date.parse(previous.expiresAt) > now) {
         return { run: data.runs.find(row => row.id === previous.runId), seq: data.seq, replayed: true };
       }
