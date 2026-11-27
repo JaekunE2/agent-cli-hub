@@ -420,7 +420,7 @@ async function viewOperator() {
     const sysTop = systemTopHTML('operator');
     const t = data.term;
     const optsMap = cliOpts?.options || {};
-    const agents = [['claude', 'Claude Code'], ['codex', 'Codex CLI'], ['agy', 'Antigravity (AGY)']];
+    const agents = [['claude', 'Claude Code'], ['codex', 'Codex CLI'], ['agy', 'Antigravity (AGY)']].filter(([k]) => k !== 'agy' || state.features?.agy !== false);
     const fillModels = (agent, selectedModel, selectedEffort) => {
       const o = optsMap[agent] || {};
       const models = o.models || [];

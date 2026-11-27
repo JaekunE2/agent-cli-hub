@@ -268,6 +268,17 @@ module.exports = function research(d) {
   }
   const bySlug = (slug) => P.listProjects().find((p) => p.state.slug === slug || path.basename(p.dir) === slug);
 
+  // the review-gate evaluation reads every review / benchmark file of a project (~30-70 ms each, synchronous):
+  // reuse it until the project's state changes, at most a minute
+  const gateCache = new Map();
+  function gateOf(dir, st) {
+    const k = `${st.updated_at || ''}|${st.phase || ''}`;
+    const hit = gateCache.get(dir);
+    if (hit && hit.k === k && Date.now() - hit.at < 60_000) return hit.g;
+    const g = RG.evaluate(dir, st);
+    gateCache.set(dir, { k, at: Date.now(), g });
+    return g;
+  }
   async function summary(p, cons) {
     const st = p.state;
     const loc = locate(p.dir, st, cons);
@@ -278,7 +289,7 @@ module.exports = function research(d) {
       updated_at: st.updated_at, gates: st.gates, workers: st.workers || [], questions: unreadQ, goal: st.config?.goal || 'P9_review',
       result: st.result || null, result_summary: st.result_summary || null, lineage: st.lineage || null, children: st.children || [],
       // P9 review loop progress (rounds, latest verdict, blind benchmark rank, what is still missing)
-      review: (st.phase === 'P9_review' || fs.existsSync(path.join(p.dir, 'research', 'reviews'))) && RG.applies(st) ? (() => { try { const g = RG.evaluate(p.dir, st); return { rounds: g.rounds, max: g.cfg.max_review_rounds, recommendation: g.recommendation, min: g.cfg.min_recommendation, bench: g.bench, maxRank: g.cfg.benchmark_max_rank, passed: g.passed, reasons: g.reasons, stalled: g.stalled }; } catch { return null; } })() : null,
+      review: (st.phase === 'P9_review' || fs.existsSync(path.join(p.dir, 'research', 'reviews'))) && RG.applies(st) ? (() => { try { const g = gateOf(p.dir, st); return { rounds: g.rounds, max: g.cfg.max_review_rounds, recommendation: g.recommendation, min: g.cfg.min_recommendation, bench: g.bench, maxRank: g.cfg.benchmark_max_rank, passed: g.passed, reasons: g.reasons, stalled: g.stalled }; } catch { return null; } })() : null,
       director: loc.live ? { term: loc.term?.id || null, console: loc.console?.id || null, busy: loc.s?.status === 'busy', sessionId: loc.s?.sessionId || st.director_session_id } : null,
     };
   }

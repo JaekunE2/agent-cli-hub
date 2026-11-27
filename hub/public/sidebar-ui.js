@@ -795,7 +795,7 @@ function renderSide() {
       <button class="ghost icon-btn ssec-act" data-rrefresh="1" title="세션 기록 새로고침" aria-label="세션 기록 새로고침">${ICO.refresh}</button>
       <button class="ghost icon-btn ssec-act" data-hopen-new="1" title="새 대화 · 터미널 열기" aria-label="새 대화 · 터미널 열기">${ICO.plus}</button>
     </div>
-    ${recFolded ? '' : `<div class="seg sm" role="tablist" aria-label="대화 · 상태 필터">${fbtn('', '전체')}${fbtn('live', '활성', liveCount)}${fbtn('claude', 'Claude')}${fbtn('codex', 'Codex')}${fbtn('agy', 'AGY')}</div><div class="side-history">${recentRows}</div>`}
+    ${recFolded ? '' : `<div class="seg sm" role="tablist" aria-label="대화 · 상태 필터">${fbtn('', '전체')}${fbtn('live', '활성', liveCount)}${fbtn('claude', 'Claude')}${fbtn('codex', 'Codex')}${state.features?.agy === false ? '' : fbtn('agy', 'AGY')}</div><div class="side-history">${recentRows}</div>`}
   </div>`;
 
   // Section 4: Autonomous Research (collapsible; only when active)

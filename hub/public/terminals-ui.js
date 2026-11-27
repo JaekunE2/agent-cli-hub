@@ -515,7 +515,8 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
     } finally {
       pollInFlight = false;
       if (current() && !exited && polling) {
-        const delay = !httpReady ? 2000 : refreshAfterPoll ? 0 : Date.now() - lastHttpInputAt < 1200 ? 80 : 750;
+        // HTTP fallback (no WebSocket, e.g. behind a relay that drops upgrades): poll fast enough that output does not lag visibly
+        const delay = !httpReady ? 2000 : refreshAfterPoll ? 0 : Date.now() - lastHttpInputAt < 1200 ? 80 : document.hidden ? 1500 : 300;
         refreshAfterPoll = false;
         pollTimer = setTimeout(poll, delay);
       }

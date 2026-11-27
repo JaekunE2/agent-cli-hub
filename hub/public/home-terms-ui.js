@@ -424,7 +424,7 @@ function paintTermsBody() {
     const groupsHTML = grouped.map(([b, xs]) => `<div><div class="dayhdr">${b}</div><div class="sheet">${xs.map(recentRowHTML).join('')}</div></div>`).join('')
       || '<div class="h-empty-card"><b>일치하는 최근 대화 기록이 없습니다</b></div>';
     host.innerHTML = `<div class="row" style="justify-content:space-between;gap:10px">
-        <div class="seg" role="tablist" aria-label="에이전트 필터">${fbtn('', '전체')}${fbtn('claude', 'Claude')}${fbtn('codex', 'Codex')}${fbtn('agy', 'AGY')}</div>
+        <div class="seg" role="tablist" aria-label="에이전트 필터">${fbtn('', '전체')}${fbtn('claude', 'Claude')}${fbtn('codex', 'Codex')}${state.features?.agy === false ? '' : fbtn('agy', 'AGY')}</div>
         <div class="row" style="gap:6px">
           <input id="recFilter" class="btn-sm" type="search" value="${esc(state.recentQuery || '')}" placeholder="목록 필터…" style="width:190px">
           <button class="ghost icon-btn btn-sm" data-rrefresh="1" aria-label="새로고침" title="세션 기록 새로고침">${ICO.refresh}</button>

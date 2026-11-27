@@ -83,7 +83,11 @@ const projectHarness = createProjectHarnessStore();
 const projectRefs = createProjectRefsStore(path.join(__dirname, 'data', 'project-refs'));
 const conversationBranches = createBranchStore(BRANCH_STORE_FILE);
 const termEvents = createTermEventStore(path.join(__dirname, 'data', 'term-events.json'));
-const index = new SearchIndex(path.join(CLAUDE_DIR, 'projects'));
+// Antigravity (agy) support stays in the code but is off unless config "antigravity": true
+const AGY_ON = CONFIG.antigravity === true;
+// transcript folders of headless worker pools are skipped by the session lists and the search index
+require('./searchindex').setTranscriptSkipDirs(CONFIG.transcriptSkipDirs);
+const index = new SearchIndex(path.join(CLAUDE_DIR, 'projects'), undefined, AGY_ON ? undefined : []);
 const sessionDisplayTitle = (id, doc) => conversationBranches.getTitle(id) || conversationBranches.baseTitle(id, doc?.title) || null;
 const unifiedVault = createUnifiedVault({
   repoRoot: path.resolve(__dirname, '..'),
@@ -150,7 +154,7 @@ const watchAutopilot = () => checkAutopilotCompletions(hub).catch((e) => console
 
 let consoleTitleCache = new Map();
 const hub = {
-  baseDir: __dirname, port: PORT, token: TOKEN, hookToken: HOOK_TOKEN, config: CONFIG, instance: INSTANCE, buildId: SERVER_BUILD_ID, claudeDir: CLAUDE_DIR, I18N,
+  baseDir: __dirname, port: PORT, token: TOKEN, hookToken: HOOK_TOKEN, config: CONFIG, instance: INSTANCE, agyEnabled: AGY_ON, buildId: SERVER_BUILD_ID, claudeDir: CLAUDE_DIR, I18N,
   index, projects, accountPrefs, projectHarness, projectRefs, unifiedVault, conversationBranches, termEvents, sessionDisplayTitle, branchBackupDir: BRANCH_BACKUP_DIR,
   CA, codexRecoveryArgs, cliModelEffortArgs, buildRecoveryLaunchArgs, cleanModelEffort,
   fingerprint, projectSession, validSessionId, generatePlan, generateSubtasks, inspectWorkspace, scanFloorplan,
@@ -223,7 +227,7 @@ function makeResearch() {
 }
 function makeCalendar() {
   const config = (() => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { return CONFIG; } })();
-  return require('./calendar')({ config, port: PORT, sources: () => hub.plugins.collect('calendarSources').flat() });
+  return require('./calendar')({ config, port: PORT, readOnly: !INSTANCE.calendarWrite, sources: () => hub.plugins.collect('calendarSources').flat() });
 }
 function makeDrive() {
   const config = (() => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { return CONFIG; } })();
@@ -382,8 +386,8 @@ if (watchdogOn) {
   codexTokenLedger.watchCodexTokens({
     usageDir: hub.USAGE_DIR, getUsage: () => hub.aiUsage(true), onError: tokenLedgerError,
   }).catch(tokenLedgerError);
-  setTimeout(() => { if (hub.agyQuota.ageMs() >= 180_000) hub.agyQuota.refresh({ force: true }).catch(() => {}); }, 3000).unref();
-  setInterval(() => { if (hub.agyQuota.ageMs() >= 4 * 60_000) hub.agyQuota.refresh({ force: true }).catch(() => {}); }, 5 * 60_000).unref();
+  if (AGY_ON) setTimeout(() => { if (hub.agyQuota.ageMs() >= 180_000) hub.agyQuota.refresh({ force: true }).catch(() => {}); }, 3000).unref();
+  if (AGY_ON) setInterval(() => { if (hub.agyQuota.ageMs() >= 4 * 60_000) hub.agyQuota.refresh({ force: true }).catch(() => {}); }, 5 * 60_000).unref();
 }
 
 function reloadModules(which) {
@@ -413,7 +417,7 @@ async function postNotice({ text, to = 'all', boardOnly = false, fromPid = 0 }) 
   fs.mkdirSync(path.dirname(NOTICE_FILE), { recursive: true });
   if (!fs.existsSync(NOTICE_FILE)) fs.writeFileSync(NOTICE_FILE, '# 허브 공지\n\n');
   fs.appendFileSync(NOTICE_FILE, `- [${stamp}] ${text.replace(/\n+/g, ' ')}\n`);
-  if (boardOnly || CONFIG.operator?.noticeDeliver !== true) return { ok: true, sent: [] };
+  if (boardOnly || CONFIG.operator?.noticeDeliver !== true || !INSTANCE.notices) return { ok: true, sent: [] };
   const want = String(to).split(',').map((x) => x.trim()).filter(Boolean);
   const now = Date.now();
   const DORMANT_MS = 60 * 60 * 1000;
@@ -469,7 +473,7 @@ function saveOperatorConfig(patch = {}) {
 function ensureOperator(force = false) {
   const oc = CONFIG.operator || {};
   if (operatorTerm()) return Promise.resolve(operatorTerm());
-  if ((oc.enabled === false && !force) || operatorStarting) return Promise.resolve(null);
+  if ((oc.enabled === false && !force) || (!INSTANCE.operator && !force) || operatorStarting) return Promise.resolve(null);
   operatorStarting = (async () => {
     const agent = ['claude', 'codex', 'agy'].includes(oc.agent) ? oc.agent : 'claude';
     const me = cleanModelEffort(oc.model, oc.effort);
@@ -697,7 +701,7 @@ setInterval(() => {
   catch (err) { logServerError('workspace-folder-link', err); }
 }, 15000).unref?.();
 setInterval(() => {
-  const every = Number((CONFIG.operator || {}).checkEveryMin ?? 180);
+  const every = INSTANCE.operator ? Number((CONFIG.operator || {}).checkEveryMin ?? 180) : 0;
   const t = operatorTerm();
   if (!every || !t || Date.now() - (t.lastCheckAt || t.meta?.spawnedAt || 0) < every * 60e3) return;
   let scr = ''; try { scr = hub.readTerm(t, 15).join('\n'); } catch { return; }
@@ -711,7 +715,7 @@ hub.connectPtyHost().then(() => setTimeout(() => ensureOperator().catch(() => {}
 server.keepAliveTimeout = 65_000;
 server.headersTimeout = 70_000;
 server.listen(PORT, HOST, () => {
-  if (PORT === DEFAULT_PORT) {
+  if (INSTANCE.schedules) {
     try {
       scheduleEngine = createScheduleEngine({
         resolveTarget: resolveScheduleTarget, onChange: scheduleTransport.broadcast,
@@ -726,8 +730,11 @@ server.listen(PORT, HOST, () => {
   fs.writeFileSync(path.join(__dirname, 'url.txt'), u + '\n');
   console.log('Agent CLI Hub:', u);
   hub.plugins.start();
-  watchAutopilot();
-  setInterval(watchAutopilot, 3500).unref?.();
+  if (INSTANCE.autopilot) {
+    watchAutopilot();
+    setInterval(watchAutopilot, 3500).unref?.();
+  }
+  if (!INSTANCE.main) console.log('[instance] side instance on port', PORT, '- watchdog/operator/autopilot/schedules/recovery/calendar writes follow instance.js');
 });
 syncRemoteListeners();
 setInterval(syncRemoteListeners, 15000).unref?.();

@@ -103,6 +103,16 @@ const codexIdOf = (f) => { const m = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
 // injected context, not something the user typed
 const codexNoise = (t) => /^\s*<(environment_context|user_instructions|skills_instructions|permissions|collaboration_mode|turn_aborted|subagent|external_codex_apps_|in-app-browser|system_instruction|tools)/.test(t)
   || /^\s*(# AGENTS\.md|# Files mentioned by the user:|## Referenced ChatGPT conversation:|\[\{"questionItemId":)/i.test(t);
+// Transcript folders of headless worker pools (thousands of `claude -p` transcripts, slow to stat) are skipped by
+// the index and the recent-session list. config.json "transcriptSkipDirs": regex sources matched against the
+// ~/.claude/projects folder name; [] turns it off.
+const DEFAULT_TRANSCRIPT_SKIP_DIRS = ['-work-slot\\d+$', '-worker-\\d+$'];
+let transcriptSkipDirs = DEFAULT_TRANSCRIPT_SKIP_DIRS.map((s) => new RegExp(s, 'i'));
+function setTranscriptSkipDirs(list) {
+  if (!Array.isArray(list)) list = DEFAULT_TRANSCRIPT_SKIP_DIRS;
+  transcriptSkipDirs = list.flatMap((s) => { try { return [new RegExp(String(s), 'i')]; } catch { return []; } });
+}
+const isSkippedTranscriptDir = (name) => transcriptSkipDirs.some((re) => re.test(String(name)));
 function cleanPromptTitle(raw) {
   let s = String(raw || '').replace(/<external_codex_apps_[^>]*>[\s\S]*?<\/external_codex_apps_[^>]*>/gi, '').trim();
   const lines = s.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
@@ -284,6 +294,7 @@ class SearchIndex {
     const out = [];
     let dirs; try { dirs = await fs.promises.readdir(this.root); } catch { dirs = []; }
     for (const d of dirs) {
+      if (isSkippedTranscriptDir(d)) continue;
       const dir = path.join(this.root, d);
       let ents; try { ents = await fs.promises.readdir(dir); } catch { continue; }
       for (const f of ents) if (f.endsWith('.jsonl')) out.push(path.join(dir, f));
@@ -314,6 +325,7 @@ class SearchIndex {
     const out = [];
     // a fresh Claude Code install has no projects folder yet
     for (const d of fs.existsSync(this.root) ? fs.readdirSync(this.root) : []) {
+      if (isSkippedTranscriptDir(d)) continue;
       const dir = path.join(this.root, d);
       let ents; try { ents = fs.readdirSync(dir); } catch { continue; }
       for (const f of ents) if (f.endsWith('.jsonl')) out.push(path.join(dir, f));
@@ -581,4 +593,4 @@ function snippet(text, low, terms) {
   return (a > 0 ? '…' : '') + text.slice(a, b).replace(/\s+/g, ' ') + (b < text.length ? '…' : '');
 }
 
-module.exports = { SearchIndex, textOf, isNoise, claudeCommandNote, claudeToolResultNote, isCodexFile, codexIdOf, codexLine, CODEX_ROOT, isAgyFile, agyIdOf, agyLine, AGY_ROOT };
+module.exports = { SearchIndex, textOf, isNoise, claudeCommandNote, claudeToolResultNote, isCodexFile, codexIdOf, codexLine, CODEX_ROOT, isAgyFile, agyIdOf, agyLine, AGY_ROOT, setTranscriptSkipDirs, isSkippedTranscriptDir, DEFAULT_TRANSCRIPT_SKIP_DIRS };

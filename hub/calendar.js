@@ -13,7 +13,9 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-module.exports = function calendar({ config = {}, port = 7777, sources = () => [] } = {}) {
+// readOnly: a side hub instance (instance.js calendarWrite off) shows the calendar but never writes todo.md /
+// calendar.json or pushes to Google.
+module.exports = function calendar({ config = {}, port = 7777, readOnly = false, sources = () => [] } = {}) {
   const srcList = () => { try { return sources() || []; } catch { return []; } };
   const srcEvents = () => srcList().flatMap((s) => { try { return s.events() || []; } catch { return []; } });
   const C = config.calendar || {};
@@ -301,6 +303,7 @@ module.exports = function calendar({ config = {}, port = 7777, sources = () => [
   }
 
   async function handle(p, url, req, getBody, send) {
+    if (readOnly && req.method === 'POST' && p.startsWith('/api/calendar')) return send(503, { error: '이 허브 인스턴스(테스트/보조)는 캘린더를 바꾸지 않습니다 — 7777 허브에서 하세요' });
     if (p === '/api/calendar') {
       const t = parseTodo();
       for (const s of srcList()) s.maybeRefresh?.(); // background; this answer uses each source's cache

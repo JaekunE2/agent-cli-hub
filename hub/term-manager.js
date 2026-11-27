@@ -881,9 +881,22 @@ function createTermManager(hub) {
     }
   }
 
+  const portInUse = (p) => new Promise((ok) => {
+    const s = require('net').connect({ host: '127.0.0.1', port: p }, () => { s.destroy(); ok(true); });
+    s.setTimeout(3000, () => { s.destroy(); ok(true); }); // accepted by the OS but slow = still in use
+    s.on('error', () => ok(false));
+  });
   async function connectPtyHost() {
     let inf = await ptyCall('/info').catch(() => null);
     let fresh = false;
+    // A pty host that is alive but slow (paged out under memory pressure: /info can take 15-30 s) must not count as
+    // "gone": spawning a second host fails with EADDRINUSE, the old one then answers, and the fresh-start restore
+    // re-spawned every saved terminal into it (duplicates). Port in use = the host is there, so keep waiting for it.
+    for (let i = 0; !inf && i < 12 && (await portInUse(PTY_PORT)); i++) {
+      console.error('[pty] host is slow to answer /info; waiting instead of starting a new one');
+      inf = await ptyCall('/info').catch(() => null);
+    }
+    if (!inf && (await portInUse(PTY_PORT))) { console.error('[pty] host holds the port but does not answer; retrying in 10 s'); return setTimeout(connectPtyHost, 10000); }
     if (!inf) {
       const log = fs.openSync(path.join(baseDir, 'ptyhost.log'), 'a');
       spawn(process.execPath, [path.join(baseDir, 'ptyhost.js')], {
@@ -955,7 +968,8 @@ function createTermManager(hub) {
     ev.on('error', () => {});
     if (!await ready) return;
     console.log(`pty host pid ${ptyHostPid} (${fresh ? 'started' : 'reattached'}), ${inf.terms.length} terminal(s)`);
-    if (fresh) (async () => {
+    if (fresh && hub.instance && !hub.instance.recover) console.log('[pty] side instance: fresh pty host, not resuming saved/crashed/favourite sessions');
+    else if (fresh) (async () => {
       const saved = savedTermSessions();
       let crash = null;
       try { crash = await crashRec.detect(); } catch (e) { console.error('[crash]', e.message); }

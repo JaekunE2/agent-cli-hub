@@ -37,7 +37,25 @@ async function folderInspector() {
     for (const root of stdout.split(/\s+/)) if (root) fixed.add(key(root));
   }
 
+  // The overview resolves every session's folder (and each ancestor for trust rules) several times per poll:
+  // realpath + two bigint stats each time kept the event loop busy for ~0.4 s per overview and made
+  // terminal output arrive in bursts. Answers are reused for a moment (INSPECT_TTL_MS); errors too.
+  const INSPECT_TTL_MS = 2000;
+  const memo = new Map();
   function inspect(value) {
+    const k = typeof value === 'string' ? key(value) : null;
+    const hit = k && memo.get(k);
+    if (hit && Date.now() - hit.at < INSPECT_TTL_MS) { if (hit.err) throw hit.err; return { ...hit.value }; }
+    try {
+      const v = inspectNow(value);
+      if (k) { if (memo.size > 5000) memo.clear(); memo.set(k, { at: Date.now(), value: v }); }
+      return { ...v };
+    } catch (err) {
+      if (k && err instanceof WorkspaceError) memo.set(k, { at: Date.now(), err });
+      throw err;
+    }
+  }
+  function inspectNow(value) {
     const source = localPath(value);
     if (windows && !fixed.has(key(path.parse(source).root))) throw invalidPath();
     try {
