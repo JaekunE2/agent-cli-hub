@@ -216,8 +216,8 @@ function createAccountSwitchService(hub) {
     const curAgyEmail = isLive && sourceAgent === 'agy' ? (tt?.account?.email || null) : null;
 
     const [clRes, cxRes, u] = await Promise.all([switchCandidates(curClaudeId), codexCandidates(curCodexId), aiUsage(false)]);
-    let swapAccounts = agySwap.getFast().accounts || [];
-    if (agySwap.available() && !swapAccounts.length) {
+    let swapAccounts = hub.agyEnabled !== false ? (agySwap.getFast().accounts || []) : [];
+    if (hub.agyEnabled !== false && agySwap.available() && !swapAccounts.length) {
       try { swapAccounts = (await agySwap.refresh({ force: false })).accounts || []; } catch {}
     }
     const agyQ = agyQuota.get();
@@ -261,7 +261,7 @@ function createAccountSwitchService(hub) {
     const groups = {
       claude: clRes.candidates.map((c) => ({ ...c, best: false })),
       codex: cxRes.candidates.map((c) => ({ ...c, best: false })),
-      agy: agyCands.map((c) => ({ ...c, best: false })),
+      agy: hub.agyEnabled !== false ? agyCands.map((c) => ({ ...c, best: false })) : [],
     };
     const order = sourceAgent === 'codex' ? ['codex', 'claude', 'agy'] : sourceAgent === 'agy' ? ['agy', 'codex', 'claude'] : ['claude', 'codex', 'agy'];
     const all = order.flatMap((k) => groups[k]);
@@ -522,7 +522,7 @@ function createAccountSwitchService(hub) {
 
     let project = null;
     if (samePlatform && targetAgent === 'claude' && sid) {
-      try { project = require('../research-harness/lib/project').listProjects().find((p) => p.state.director_session_id === sid) || null; } catch {}
+      try { project = require('./harness').lib('project').listProjects().find((p) => p.state.director_session_id === sid) || null; } catch {}
       if (project) Object.assign(env, { RESEARCH_ROLE: 'director', CLAUDE_CODE_STOP_HOOK_BLOCK_CAP: '200' });
     }
     workspaceLaunch = await workspacePlan();
@@ -541,7 +541,7 @@ function createAccountSwitchService(hub) {
     }
     if (project) {
       t.research = project.dir;
-      require('../research-harness/lib/project').updateState(project.dir, (s) => {
+      require('./harness').lib('project').updateState(project.dir, (s) => {
         s.director_account = pick.id === 'default' ? null : pick.id;
         s.status = 'running'; s.wake_at = null; s.wait_reason = ''; s.limited = false; s.limit_notice_at = null;
       });
@@ -747,7 +747,7 @@ function createAccountSwitchService(hub) {
       { id: 'claude-sonnet-5-5-low', label: 'Claude Sonnet 5.5 (Low)' },
       { id: 'gpt-oss-120b-medium', label: 'GPT-OSS 120B (Medium)' },
     ];
-    if (!agyModelsCache.models || Date.now() - agyModelsCache.at > 15 * 60_000) {
+    if (hub.agyEnabled !== false && (!agyModelsCache.models || Date.now() - agyModelsCache.at > 15 * 60_000)) {
       refreshAgyModelsCache().catch(() => {});
     }
     const agyCfg = readAgyConfigDefaults();

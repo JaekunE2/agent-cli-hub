@@ -381,7 +381,7 @@ function openNewTermDrawer(projectCwd = '', onCreated = null, initialKind = null
       <div class="nt-grid">
         ${agTile('claude', 'claude', 'Claude Code', 'Anthropic CLI 에이전트')}
         ${agTile('codex', 'codex', 'GPT (Codex)', 'OpenAI 코딩 에이전트', 'ChatGPT 계정(Codex 앱 로그인)으로 GPT 대화형 세션')}
-        ${agTile('agy', 'agy', 'Antigravity', 'Google 에이전트 CLI (agy)')}
+        ${state.features?.agy === false ? '' : agTile('agy', 'agy', 'Antigravity', 'Google 에이전트 CLI (agy)')}
         ${agTile('cursor', 'cursor', 'Cursor', 'cursor-agent 터미널', 'Cursor 터미널 에이전트 (처음 한 번 cursor-agent login 필요)')}
       </div>
     </div>
@@ -752,6 +752,8 @@ if (desktopInvoke) window.addEventListener('hashchange', () => {
   else if (open === 'calendar') select({ kind: 'calendar' });
   else if (open === 'schedules') select({ kind: 'schedules' });
   else if (open === 'apps') select({ kind: 'apps' });
+  else if (open.startsWith('apps:')) select({ kind: 'apps', id: open.slice(5) });
+  else if (open === 'store' || open.startsWith('store:')) { select({ kind: 'apps' }); setTimeout(() => window.viewAppStore?.(open.length > 6 ? { page: 'app', key: decodeURIComponent(open.slice(6)) } : null), 300); }
   else if (open.startsWith('switch:')) { const sid = open.slice(7); select({ kind: 'recent', id: sid }); setTimeout(() => openSwitch(sid), 900); } // from the phone alert
   else if (open === 'gpu') select({ kind: 'gpu' });
   else if (open === 'vault') select({ kind: 'vault' });

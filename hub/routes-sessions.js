@@ -11,7 +11,7 @@ const { AGY_ALTM_RE, codexHistorySearchActive, dispatchImmediatePrompt, flushNew
 const { composerText, isPlaceholder, submitPrompt } = require('./prompt-submission');
 const { prepareProjectPrompt } = require('./project-prompt');
 const { projectDeliveryResult, deliveryError } = require('./project-history');
-const { claudeCommandNote, claudeToolResultNote } = require('./searchindex');
+const { claudeCommandNote, claudeToolResultNote, isSkippedTranscriptDir } = require('./searchindex');
 const { spawnCli } = require('./project-plan');
 const { listSubagents, readSubagentDetail } = require('./subagent-monitor');
 const { parentSession, transcriptFile } = require('./subagent-files');
@@ -74,14 +74,39 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
   }
   checkDisk(); setInterval(checkDisk, 60_000).unref?.();
 
+  // ~/.claude/sessions/<pid>.json outlives its process when claude is killed. Windows reuses pids, so "the pid
+  // exists" is not enough: a stale record whose pid now belongs to another program (a browser, say) made a session
+  // look live and blocked resuming it. The process name must also be one that runs Claude Code (cached process
+  // table, refreshed in the background every few seconds; while it is not known yet the pid check alone decides).
+  const CLAUDE_PROC = /^(claude|node|bun)(\.exe)?$/i;
+  let procNames = null, procNamesAt = 0, procNamesBusy = false;
+  function refreshProcNames() {
+    if (procNamesBusy || Date.now() - procNamesAt < 5000 || typeof hub.procTable !== 'function') return;
+    procNamesBusy = true;
+    Promise.resolve().then(() => hub.procTable()).then((tbl) => { if (tbl) { procNames = tbl; procNamesAt = Date.now(); } })
+      .catch(() => {}).finally(() => { procNamesBusy = false; });
+  }
+  function isClaudePid(pid) {
+    refreshProcNames();
+    const p = procNames && procNames.get(Number(pid));
+    if (!p) return true; // unknown (table not loaded yet, or pid newer than the table): trust pidAlive
+    return CLAUDE_PROC.test(String(p.name || ''));
+  }
+  // reused for a second: one overview / research listing used to read every session file several times
+  let liveCache = null, liveCacheAt = 0;
   function liveSessions() {
+    if (liveCache && Date.now() - liveCacheAt < 1000) return liveCache.slice();
+    liveCache = liveSessionsNow(); liveCacheAt = Date.now();
+    return liveCache.slice();
+  }
+  function liveSessionsNow() {
     const dir = path.join(claudeDir, 'sessions');
     const out = [];
     for (const f of fs.existsSync(dir) ? fs.readdirSync(dir) : []) {
       if (!/^\d+\.json$/.test(f)) continue;
       try {
         const s = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
-        if (!hub.pidAlive(s.pid)) continue;
+        if (!hub.pidAlive(s.pid) || !isClaudePid(s.pid)) continue;
         out.push({ pid: s.pid, sessionId: s.sessionId, cwd: s.cwd, name: s.name, status: s.status, kind: s.kind, entrypoint: s.entrypoint || null, startedAt: s.startedAt, updatedAt: s.statusUpdatedAt || s.updatedAt, version: s.version });
       } catch {}
     }
@@ -170,10 +195,13 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
     };
   }
 
+  // Transcript folders of headless worker pools (config transcriptSkipDirs; thousands of `claude -p` transcripts)
+  // are skipped: stat-ing every file there blocked the event loop for minutes. Their sessions are not interactive.
   function recentSessions(limit = 40) {
     const root = path.join(claudeDir, 'projects');
     const files = [];
     for (const d of fs.existsSync(root) ? fs.readdirSync(root) : []) {
+      if (isSkippedTranscriptDir(d)) continue;
       const dir = path.join(root, d);
       let ents; try { ents = fs.readdirSync(dir); } catch { continue; }
       for (const f of ents) {
@@ -314,11 +342,12 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       hub: { ok: true, port, pid: process.pid },
       ptyHost: { ok: !!ptyHostPid && hub.pidAlive(ptyHostPid), pid: ptyHostPid || null },
       usage: { ok: usageOk, url: hub.USAGE_URL, hasLocalServer: fs.existsSync(path.join(hub.USAGE_DIR, 'server.js')) },
-      agyQuota: { ok: !!hub.agyQuota.get(), refreshing: hub.agyQuota.getFast().refreshing, account: hub.agyQuota.get()?.account || null },
+      agyQuota: hub.agyEnabled === false ? { ok: false, disabled: true } : { ok: !!hub.agyQuota.get(), refreshing: hub.agyQuota.getFast().refreshing, account: hub.agyQuota.get()?.account || null },
       helper: { ok: !hub.getHelperMissing(), error: hub.getHelperMissing() || null },
     };
     const projectRevisions = Object.fromEntries(projects.list().map((p) => [p.id, p.revision]));
-    return { live, consoles, terms: termsOut, consoleError: cons.error, favs: hub.liveFavs(), sessionGroups: hub.loadSessionGroups ? hub.loadSessionGroups() : { version: 1, groups: [], assignments: {} }, disk: diskLow, consolesOff: config.consoles === false, services, buildId, accountPrefs: accountPrefs.get(), projectRevisions };
+    const pluginState = hub.plugins?.overview() || {};
+    return { pluginState, features: { agy: !!hub.agyEnabled }, live, consoles, terms: termsOut, consoleError: cons.error, favs: hub.liveFavs(), sessionGroups: hub.loadSessionGroups ? hub.loadSessionGroups() : { version: 1, groups: [], assignments: {} }, disk: diskLow, consolesOff: config.consoles === false, services, buildId, accountPrefs: accountPrefs.get(), projectRevisions };
   }
 
   function overviewSnapshot() {
@@ -542,6 +571,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       if (b.resume && /^[\w-]+$/.test(b.resume)) args.push('--resume', b.resume);
       title = 'Cursor agent';
     } else if (b.kind === 'agy') {
+      if (hub.agyEnabled === false) return send(res, 400, { error: 'Antigravity 지원이 꺼져 있습니다 (config.json "antigravity": true)' });
       cmd = hub.agyExe();
       if (b.resume && /^[\w-]+$/.test(b.resume) && hasAgyCliConversation(b.resume)) args.push('--conversation', b.resume);
       else if (b.continue) args.push('--continue');
@@ -1898,6 +1928,9 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       return true;
     }
     if (p === '/api/hooks/install-claude' && req.method === 'POST') {
+      // writes the user's global ~/.claude/settings.json: only the main hub may do that (a side instance would point every
+      // Claude session at its own hook script)
+      if (hub.instance && !hub.instance.main) { send(res, 403, { error: 'side hub instance: install the hook from the main hub' }); return true; }
       send(res, 200, hub.toolHooks ? hub.toolHooks.installClaudeHook() : { ok: false });
       return true;
     }

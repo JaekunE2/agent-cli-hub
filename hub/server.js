@@ -53,6 +53,8 @@ const { createWorkspaceFolderRoutes, workspaceFailure } = require('./routes-work
 const { createScheduleEngine } = require('./schedules');
 const { createScheduleRoutes } = require('./routes-schedules');
 const { createScheduleTransport } = require('./schedule-transport');
+const INSTANCE = require('./instance');
+const { createServerHost: createPluginHost } = require('./plugins');
 const { error: scheduleError } = require('./schedule-fields');
 
 const cleanModelEffort = (model, effort) => {
@@ -81,7 +83,11 @@ const projectHarness = createProjectHarnessStore();
 const projectRefs = createProjectRefsStore(path.join(__dirname, 'data', 'project-refs'));
 const conversationBranches = createBranchStore(BRANCH_STORE_FILE);
 const termEvents = createTermEventStore(path.join(__dirname, 'data', 'term-events.json'));
-const index = new SearchIndex(path.join(CLAUDE_DIR, 'projects'));
+// Antigravity (agy) support stays in the code but is off unless config "antigravity": true
+const AGY_ON = CONFIG.antigravity === true;
+// transcript folders of headless worker pools are skipped by the session lists and the search index
+require('./searchindex').setTranscriptSkipDirs(CONFIG.transcriptSkipDirs);
+const index = new SearchIndex(path.join(CLAUDE_DIR, 'projects'), undefined, AGY_ON ? undefined : []);
 const sessionDisplayTitle = (id, doc) => conversationBranches.getTitle(id) || conversationBranches.baseTitle(id, doc?.title) || null;
 const unifiedVault = createUnifiedVault({
   repoRoot: path.resolve(__dirname, '..'),
@@ -148,7 +154,7 @@ const watchAutopilot = () => checkAutopilotCompletions(hub).catch((e) => console
 
 let consoleTitleCache = new Map();
 const hub = {
-  baseDir: __dirname, port: PORT, token: TOKEN, hookToken: HOOK_TOKEN, config: CONFIG, buildId: SERVER_BUILD_ID, claudeDir: CLAUDE_DIR, I18N,
+  baseDir: __dirname, port: PORT, token: TOKEN, hookToken: HOOK_TOKEN, config: CONFIG, instance: INSTANCE, agyEnabled: AGY_ON, buildId: SERVER_BUILD_ID, claudeDir: CLAUDE_DIR, I18N,
   index, projects, accountPrefs, projectHarness, projectRefs, unifiedVault, conversationBranches, termEvents, sessionDisplayTitle, branchBackupDir: BRANCH_BACKUP_DIR,
   CA, codexRecoveryArgs, cliModelEffortArgs, buildRecoveryLaunchArgs, cleanModelEffort,
   fingerprint, projectSession, validSessionId, generatePlan, generateSubtasks, inspectWorkspace, scanFloorplan,
@@ -173,6 +179,7 @@ hub.rememberProjectTerm = (t) => {
 };
 
 Object.assign(hub, createTermManager(hub));
+hub.plugins = createPluginHost(hub);
 Object.assign(hub, createAccountSwitchService(hub));
 
 function describePid(pid) {
@@ -192,7 +199,7 @@ async function procTable() {
 
 const artifactsMod = require('./artifacts')({ dir: __dirname, index, terms: hub.terms });
 const notifier = require('./notify')(CONFIG);
-const watchdogOn = PORT === 7777 || process.env.CCD_WATCHDOG === '1';
+const watchdogOn = INSTANCE.watchdog;
 
 function makeGpuQ() {
   const config = (() => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { return CONFIG; } })();
@@ -220,7 +227,7 @@ function makeResearch() {
 }
 function makeCalendar() {
   const config = (() => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { return CONFIG; } })();
-  return require('./calendar')({ config, port: PORT });
+  return require('./calendar')({ config, port: PORT, readOnly: !INSTANCE.calendarWrite, sources: () => hub.plugins.collect('calendarSources').flat() });
 }
 function makeDrive() {
   const config = (() => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { return CONFIG; } })();
@@ -379,8 +386,8 @@ if (watchdogOn) {
   codexTokenLedger.watchCodexTokens({
     usageDir: hub.USAGE_DIR, getUsage: () => hub.aiUsage(true), onError: tokenLedgerError,
   }).catch(tokenLedgerError);
-  setTimeout(() => { if (hub.agyQuota.ageMs() >= 180_000) hub.agyQuota.refresh({ force: true }).catch(() => {}); }, 3000).unref();
-  setInterval(() => { if (hub.agyQuota.ageMs() >= 4 * 60_000) hub.agyQuota.refresh({ force: true }).catch(() => {}); }, 5 * 60_000).unref();
+  if (AGY_ON) setTimeout(() => { if (hub.agyQuota.ageMs() >= 180_000) hub.agyQuota.refresh({ force: true }).catch(() => {}); }, 3000).unref();
+  if (AGY_ON) setInterval(() => { if (hub.agyQuota.ageMs() >= 4 * 60_000) hub.agyQuota.refresh({ force: true }).catch(() => {}); }, 5 * 60_000).unref();
 }
 
 function reloadModules(which) {
@@ -390,7 +397,7 @@ function reloadModules(which) {
   if (which.includes('calendar')) { fresh('./calendar'); const next = makeCalendar(); calendarMod.stop(); calendarMod = next; if (watchdogOn) calendarMod.start(); done.push('calendar'); }
   if (which.includes('apps')) { fresh('./apps'); const next = makeApps(); appsMod.stop(); appsMod = next; done.push('apps'); }
   if (which.includes('research')) {
-    fresh('./research'); try { fresh('../research-harness/lib/project'); } catch {}
+    fresh('./research'); try { fresh(require('./harness').libPath('project')); } catch {}
     const next = makeResearch();
     if (next) { research?.stop?.(); research = next; if (watchdogOn) research.start(); done.push('research'); }
   }
@@ -410,7 +417,7 @@ async function postNotice({ text, to = 'all', boardOnly = false, fromPid = 0 }) 
   fs.mkdirSync(path.dirname(NOTICE_FILE), { recursive: true });
   if (!fs.existsSync(NOTICE_FILE)) fs.writeFileSync(NOTICE_FILE, '# 허브 공지\n\n');
   fs.appendFileSync(NOTICE_FILE, `- [${stamp}] ${text.replace(/\n+/g, ' ')}\n`);
-  if (boardOnly || CONFIG.operator?.noticeDeliver !== true) return { ok: true, sent: [] };
+  if (boardOnly || CONFIG.operator?.noticeDeliver !== true || !INSTANCE.notices) return { ok: true, sent: [] };
   const want = String(to).split(',').map((x) => x.trim()).filter(Boolean);
   const now = Date.now();
   const DORMANT_MS = 60 * 60 * 1000;
@@ -466,7 +473,7 @@ function saveOperatorConfig(patch = {}) {
 function ensureOperator(force = false) {
   const oc = CONFIG.operator || {};
   if (operatorTerm()) return Promise.resolve(operatorTerm());
-  if ((oc.enabled === false && !force) || operatorStarting) return Promise.resolve(null);
+  if ((oc.enabled === false && !force) || (!INSTANCE.operator && !force) || operatorStarting) return Promise.resolve(null);
   operatorStarting = (async () => {
     const agent = ['claude', 'codex', 'agy'].includes(oc.agent) ? oc.agent : 'claude';
     const me = cleanModelEffort(oc.model, oc.effort);
@@ -517,12 +524,13 @@ const STATIC = {
   '/slash-picker.js': 'public/slash-picker.js', '/slash-picker.css': 'public/slash-picker.css',
   '/chat-ui.js': 'public/chat-ui.js', '/usage-ui.js': 'public/usage-ui.js',
   '/switch-gpu-ui.js': 'public/switch-gpu-ui.js', '/research-ui.js': 'public/research-ui.js',
-  '/dock.js': 'public/dock.js', '/preview.js': 'public/preview.js', '/vault.js': 'public/vault.js', '/apps-ui.js': 'public/apps-ui.js',
+  '/dock.js': 'public/dock.js', '/preview.js': 'public/preview.js', '/vault.js': 'public/vault.js', '/apps-ui.js': 'public/apps-ui.js', '/app-store-ui.js': 'public/app-store-ui.js',
   '/projects.js': 'public/projects.js', '/project-forms.js': 'public/project-forms.js', '/project-plan-form.js': 'public/project-plan-form.js',
   '/project-board.js': 'public/project-board.js', '/project-task-form.js': 'public/project-task-form.js', '/project-flow.js': 'public/project-flow.js',
   '/project-harness-ui.js': 'public/project-harness-ui.js', '/project-refs-ui.js': 'public/project-refs-ui.js', '/project-floorplan.js': 'public/project-floorplan.js', '/project-git.js': 'public/project-git.js', '/project-terminals.js': 'public/project-terminals.js', '/projects.css': 'public/projects.css',
   '/xterm.js': 'node_modules/@xterm/xterm/lib/xterm.js', '/xterm.css': 'node_modules/@xterm/xterm/css/xterm.css',
   '/addon-fit.js': 'node_modules/@xterm/addon-fit/lib/addon-fit.js', '/mermaid.js': 'node_modules/mermaid/dist/mermaid.min.js',
+  '/plugin-host.js': 'public/plugin-host.js',
   '/icon-claude.png': 'public/icon-claude.png', '/icon-openai.png': 'public/icon-openai.png',
 };
 
@@ -568,21 +576,24 @@ const server = http.createServer(async (req, res) => {
     const file = p === '/' ? 'public/index.html' : STATIC[p] || 'public' + p;
     const local = p === '/' && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress) && new RegExp(`^(127\\.0\\.0\\.1|localhost|\\[::1\\]):${PORT}$`).test(req.headers.host || '');
     res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream', 'cache-control': 'no-store, no-cache, must-revalidate, max-age=0', pragma: 'no-cache' });
+    // the page lists the enabled plugins' scripts at its <!--plugins--> marker
+    const withPlugins = (html) => (p === '/' ? html.replace('<!--plugins-->', hub.plugins.pageTags()) : html);
     const bustIndex = (html) => (p === '/'
       ? html.replace(/((?:src|href)="\/[^"?]+\.(?:css|js))"/g, `$1?v=${SERVER_BUILD_ID}"`)
       : html);
     const text = file.startsWith('public/') && !file.endsWith('.woff2') ? I18N.forFile(path.join(__dirname, file)) : null;
     if (text !== null) {
-      const out = bustIndex(local ? text.replace('<head>', `<head><script>window.LOCAL_TOKEN=${JSON.stringify(TOKEN)}</script>`) : text);
+      const out = bustIndex(withPlugins(local ? text.replace('<head>', `<head><script>window.LOCAL_TOKEN=${JSON.stringify(TOKEN)}</script>`) : text));
       return res.end(out);
     }
     if (p === '/') {
       const raw = fs.readFileSync(path.join(__dirname, file), 'utf8');
-      const out = bustIndex(local ? raw.replace('<head>', `<head><script>window.LOCAL_TOKEN=${JSON.stringify(TOKEN)}</script>`) : raw);
+      const out = bustIndex(withPlugins(local ? raw.replace('<head>', `<head><script>window.LOCAL_TOKEN=${JSON.stringify(TOKEN)}</script>`) : raw));
       return res.end(out);
     }
     return fs.createReadStream(path.join(__dirname, file)).pipe(res);
   }
+  if (await hub.plugins.handlePage(p, url, req, res, send)) return;
   if (!p.startsWith('/api/')) return send(res, 404, { error: 'not found' });
   if (p === '/api/session/subagent-hook' && req.method === 'POST') {
     return hookTransport.handleNativeHook(req, res, body, send);
@@ -595,6 +606,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST') hub.overviewStale();
 
   try {
+    if (await hub.plugins.handleApi(p, url, req, res, body, send)) return;
     if (await projectRoutes.handleProjectRoutes(p, url, req, res, body, send, authed)) return;
     if (await sessionRoutes.handleSessionRoutes(p, url, req, res, body, send, authed)) return;
     if (await systemRoutes.handleSystemRoutes(p, url, req, res, body, send, authed)) return;
@@ -678,7 +690,7 @@ function remoteInfo() {
   const ips = [...remote.keys()];
   const ipv4 = ips.filter((ip) => !ip.includes(':')).map(remoteUrl);
   const ipv6 = ips.filter((ip) => ip.includes(':')).map(remoteUrl);
-  const urls = [...ipv4, ...(dns ? [remoteUrl(dns)] : []), ...ipv6];
+  const urls = [...hub.plugins.collect('remoteUrls').flat(), ...ipv4, ...(dns ? [remoteUrl(dns)] : []), ...ipv6];
   return { enabled: CONFIG.remote !== 'off', listening: ips, urls, tailscaleInstalled: fs.existsSync('C:\\Program Files\\Tailscale\\tailscale.exe') };
 }
 hub.remoteInfo = remoteInfo;
@@ -689,7 +701,7 @@ setInterval(() => {
   catch (err) { logServerError('workspace-folder-link', err); }
 }, 15000).unref?.();
 setInterval(() => {
-  const every = Number((CONFIG.operator || {}).checkEveryMin ?? 180);
+  const every = INSTANCE.operator ? Number((CONFIG.operator || {}).checkEveryMin ?? 180) : 0;
   const t = operatorTerm();
   if (!every || !t || Date.now() - (t.lastCheckAt || t.meta?.spawnedAt || 0) < every * 60e3) return;
   let scr = ''; try { scr = hub.readTerm(t, 15).join('\n'); } catch { return; }
@@ -703,7 +715,7 @@ hub.connectPtyHost().then(() => setTimeout(() => ensureOperator().catch(() => {}
 server.keepAliveTimeout = 65_000;
 server.headersTimeout = 70_000;
 server.listen(PORT, HOST, () => {
-  if (PORT === DEFAULT_PORT) {
+  if (INSTANCE.schedules) {
     try {
       scheduleEngine = createScheduleEngine({
         resolveTarget: resolveScheduleTarget, onChange: scheduleTransport.broadcast,
@@ -717,8 +729,12 @@ server.listen(PORT, HOST, () => {
   const u = `http://${HOST}:${PORT}/?t=${TOKEN}`;
   fs.writeFileSync(path.join(__dirname, 'url.txt'), u + '\n');
   console.log('Agent CLI Hub:', u);
-  watchAutopilot();
-  setInterval(watchAutopilot, 3500).unref?.();
+  hub.plugins.start();
+  if (INSTANCE.autopilot) {
+    watchAutopilot();
+    setInterval(watchAutopilot, 3500).unref?.();
+  }
+  if (!INSTANCE.main) console.log('[instance] side instance on port', PORT, '- watchdog/operator/autopilot/schedules/recovery/calendar writes follow instance.js');
 });
 syncRemoteListeners();
 setInterval(syncRemoteListeners, 15000).unref?.();

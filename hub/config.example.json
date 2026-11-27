@@ -1,6 +1,8 @@
 {
   "_comment": "Copy to config.json and keep only what you need. Every key is optional.",
   "lang": "en",
+  "antigravity": false,
+  "transcriptSkipDirs": ["-work-slot\\d+$", "-worker-\\d+$"],
   "remote": "tailscale",
   "consoles": true,
   "python": "C:\\Python312\\python.exe",

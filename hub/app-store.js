@@ -5,6 +5,7 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { createHash } = require('node:crypto');
 const { githubRepo, githubSource, discoverRepos, latestPackage, downloadPackage, readLimited } = require('./app-store-github');
+const { registryEntries, localPackage, copyPackage } = require('./app-store-local');
 
 const exec = promisify(execFile);
 const SHARED = 'https://raw.githubusercontent.com/JaekunE2/agent-cli-hub/dev_side/hub/app-catalog.json';
@@ -45,6 +46,15 @@ module.exports = function createAppStore({ dataFile, fetcher = fetch, python = p
     const discovered = results.flatMap(result => result.status === 'fulfilled' ? result.value : []);
     const unavailable = [...owners].filter((_, i) => results[i].status === 'rejected');
     const entries = new Map();
+    // registries (a catalog URL / file / folder listing apps in their authors' repos) and local app folders
+    const submitUrls = [];
+    const registries = local.filter(item => item?.path || item?.url);
+    const read = await Promise.allSettled(registries.map(source => registryEntries(source, fetcher)));
+    read.forEach((result, i) => {
+      if (result.status !== 'fulfilled') return void unavailable.push(registries[i].path || registries[i].url);
+      if (result.value.submitUrl) submitUrls.push(result.value.submitUrl);
+      for (const entry of result.value.entries) if (!entries.has(entry.key)) entries.set(entry.key, entry);
+    });
     for (const entry of [...shared.apps, ...bundled.apps, ...local, ...discovered]) {
       if (!entry?.repo) continue;
       try {
@@ -54,22 +64,26 @@ module.exports = function createAppStore({ dataFile, fetcher = fetch, python = p
         if (!entries.has(key)) entries.set(key, { key, repo, asset, name: String(entry.name || repo), description: String(entry.description || '') });
       } catch {}
     }
-    return { entries: [...entries.values()], unavailable };
+    return { entries: [...entries.values()], unavailable, submitUrls: [...new Set(submitUrls)] };
   }
 
   async function withPackage(entry, expected, callback) {
-    const pkg = await latestPackage(fetcher, entry.repo, entry.asset);
+    const pkg = entry.local ? await localPackage(entry) : await latestPackage(fetcher, entry.repo, entry.asset);
+    if (entry.sha256 && pkg.digest !== 'sha256:' + entry.sha256) throw new Error('릴리스 ZIP의 SHA-256이 레지스트리에 등록된 값과 다릅니다.');
     if (expected && expected !== pkg.digest) throw new Error('릴리스가 변경되었습니다. 설치 내용을 다시 확인하세요.');
-    const bytes = await downloadPackage(fetcher, pkg);
+    const bytes = entry.local ? null : await downloadPackage(fetcher, pkg);
     await fs.mkdir(root, { recursive: true });
     const stage = await fs.mkdtemp(path.join(root, 'package-'));
     let keep = false;
     try {
       const dir = path.join(stage, 'files'), zip = path.join(stage, 'app.zip');
-      await fs.writeFile(zip, bytes);
-      await exec(python, [path.join(__dirname, 'app-store-unzip.py'), zip, dir], { windowsHide: true, timeout: 30000 })
-        .catch(() => { throw new Error('안전한 ZIP 압축 해제에 실패했습니다. Python과 패키지 형식을 확인하세요.'); });
-      await fs.unlink(zip);
+      if (entry.local) await copyPackage(entry, pkg, dir);
+      else {
+        await fs.writeFile(zip, bytes);
+        await exec(python, [path.join(__dirname, 'app-store-unzip.py'), zip, dir], { windowsHide: true, timeout: 30000 })
+          .catch(() => { throw new Error('안전한 ZIP 압축 해제에 실패했습니다. Python과 패키지 형식을 확인하세요.'); });
+        await fs.unlink(zip);
+      }
       const top = await fs.readdir(dir, { withFileTypes: true });
       const cwd = top.length === 1 && top[0].isDirectory() ? path.join(dir, top[0].name) : dir;
       const file = path.join(cwd, 'app.json');
@@ -77,7 +91,7 @@ module.exports = function createAppStore({ dataFile, fetcher = fetch, python = p
       if (!info?.isFile() || info.size > 128 * 1024) throw new Error('올바른 app.json이 필요합니다.');
       const manifest = JSON.parse(await fs.readFile(file, 'utf8'));
       if (!/^[a-z0-9][a-z0-9_-]{1,47}$/.test(manifest.id)) throw new Error('패키지의 앱 ID가 올바르지 않습니다.');
-      const id = `gh-${createHash('sha256').update(entry.repo + '/' + manifest.id).digest('hex').slice(0, 20)}`;
+      const id = `${entry.local ? 'loc' : 'gh'}-${createHash('sha256').update((entry.local ? entry.key : entry.repo) + '/' + manifest.id).digest('hex').slice(0, 20)}`;
       const result = callback({ ...manifest, id, cwd, env: {}, secretRefs: [],
         session: { autoMatchCwd: false, autoPinArtifacts: false }, schedule: { enabled: false } }, pkg);
       keep = Boolean(expected);
@@ -91,5 +105,11 @@ module.exports = function createAppStore({ dataFile, fetcher = fetch, python = p
       }
     }
   }
-  return { catalog, discovery, withPackage };
+  /** the folder that holds installed store packages (an installed app's cwd is inside it) */
+  const owns = (dir) => {
+    const rel = path.relative(root, path.resolve(dir || ''));
+    return Boolean(rel) && !rel.startsWith('..') && !path.isAbsolute(rel) && /^package-/.test(rel.split(path.sep)[0]);
+  };
+  const packageDir = (dir) => path.join(root, path.relative(root, path.resolve(dir)).split(path.sep)[0]);
+  return { catalog, discovery, withPackage, owns, packageDir, root };
 };

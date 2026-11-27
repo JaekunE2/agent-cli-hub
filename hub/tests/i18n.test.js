@@ -11,8 +11,9 @@ const dict = JSON.parse(fs.readFileSync(path.join(HUB_DIR, 'i18n', 'en.json'), '
 
 function walkFiles(dir, out = []) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (['node_modules', 'tests', 'i18n'].includes(e.name)) continue;
+    if (['node_modules', 'tests', 'i18n', 'local'].includes(e.name)) continue; // local/ = machine-specific, not in the repo
     const p = path.join(dir, e.name);
+    if (p === path.join(HUB_DIR, 'data')) continue; // runtime data, e.g. App Store packages installed on this PC
     if (e.isDirectory()) walkFiles(p, out);
     else if (/\.(js|html)$/.test(e.name) && e.name !== 'i18n.js') out.push(p);
   }
