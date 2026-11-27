@@ -33,3 +33,6 @@ dist/
 hub/.branches.json
 hub/__pycache__/
 vault/
+
+# machine-local plugins (App Store apps install their hub plugins here)
+hub/local/
