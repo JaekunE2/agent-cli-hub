@@ -1002,6 +1002,7 @@ function createTermManager(hub) {
             id: g.id.slice(0, 64),
             name: g.name.trim().slice(0, 60),
             color: /^#[0-9a-fA-F]{6}$/.test(g.color || '') ? g.color : '#3b82f6',
+            hidden: !!g.hidden,
             createdAt: Number(g.createdAt) || 0,
           }))
         : [];

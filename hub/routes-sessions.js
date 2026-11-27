@@ -1153,6 +1153,16 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
         send(res, 200, { ok: true, group: grp, sessionGroups: data });
         return true;
       }
+      if (action === 'toggle-hidden') {
+        const id = String(b.id || '').trim();
+        const grp = data.groups.find((g) => g.id === id);
+        if (!grp) { send(res, 404, { error: '그룹을 찾을 수 없습니다' }); return true; }
+        grp.hidden = typeof b.hidden === 'boolean' ? b.hidden : !grp.hidden;
+        hub.saveSessionGroups(data);
+        overviewStale();
+        send(res, 200, { ok: true, group: grp, sessionGroups: data });
+        return true;
+      }
       if (action === 'delete') {
         const id = String(b.id || '').trim();
         const before = data.groups.length;

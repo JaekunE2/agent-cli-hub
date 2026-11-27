@@ -48,7 +48,7 @@ async function scheduleInput(req, operation) {
     checkFields(input.trigger, input.trigger?.kind === 'interval' ? ['kind', 'everyMinutes'] : ['kind', 'expression', 'timeZone']);
   }
   if (Object.hasOwn(input, 'target')) {
-    checkFields(input.target, ['projectId', 'version', 'taskId', 'cwd', 'cli', 'accountId', 'referenceDirs', 'model', 'effort']);
+    checkFields(input.target, ['projectId', 'version', 'taskId', 'cwd', 'sessionId', 'termId', 'sessionLabel', 'cli', 'accountId', 'referenceDirs', 'model', 'effort']);
   }
   return input;
 }

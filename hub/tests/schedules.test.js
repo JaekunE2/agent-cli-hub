@@ -429,4 +429,23 @@ test('schedules support codex, claude, and agy CLIs while rejecting unknown CLIs
   assert.equal(cwdItem.target.cwd, os.tmpdir());
   assert.equal(cwdItem.target.projectId, null);
   assert.equal(cwdItem.target.cli, 'claude');
+
+  // Existing general session & project session targets
+  const { item: genSess } = await engine.create({
+    ...spec,
+    name: 'Existing general session schedule',
+    target: { cwd: os.tmpdir(), sessionId: '01a21725-0000-7000-8000-000000000001', termId: '53', sessionLabel: 'M2N 통신', cli: 'codex' },
+  });
+  assert.equal(genSess.target.sessionId, '01a21725-0000-7000-8000-000000000001');
+  assert.equal(genSess.target.termId, '53');
+  assert.equal(genSess.target.sessionLabel, 'M2N 통신');
+
+  const { item: projSess } = await engine.create({
+    ...spec,
+    name: 'Existing project session schedule',
+    target: { ...spec.target, sessionId: '01a21725-0000-7000-8000-000000000002', sessionLabel: '프로젝트 세션', cli: 'claude' },
+  });
+  assert.equal(projSess.target.projectId, spec.target.projectId);
+  assert.equal(projSess.target.sessionId, '01a21725-0000-7000-8000-000000000002');
+  assert.equal(projSess.target.sessionLabel, '프로젝트 세션');
 });

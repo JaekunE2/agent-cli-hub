@@ -18,10 +18,14 @@ function fields(input, previous, now) {
   }
   const hasProject = isText(target?.projectId, 128) && isText(target?.version, 128);
   const hasCwd = isText(target?.cwd, 4096);
-  if ((!hasProject && !hasCwd) ||
+  const hasSession = isText(target?.sessionId, 128) || isText(target?.termId, 32);
+  if ((!hasProject && !hasCwd && !hasSession) ||
       (target?.projectId != null && !isText(target.projectId, 128)) ||
       (target?.version != null && !isText(target.version, 128)) ||
       (target?.cwd != null && !isText(target.cwd, 4096)) ||
+      (target?.sessionId != null && !isText(target.sessionId, 128)) ||
+      (target?.termId != null && !isText(target.termId, 32)) ||
+      (target?.sessionLabel != null && !isText(target.sessionLabel, 140)) ||
       (target.taskId != null && (typeof target.taskId !== 'string' || !UUID.test(target.taskId))) ||
       !Array.isArray(target.referenceDirs ?? []) || !(target.referenceDirs ?? []).every(dir => isText(dir, 4096)) ||
       (target.model !== undefined && !isText(target.model, 128)) ||
@@ -40,6 +44,9 @@ function fields(input, previous, now) {
     target: {
       projectId: target.projectId || null, version: target.version || null, taskId: target.taskId ?? null,
       ...(target.cwd ? { cwd: target.cwd.trim() } : {}),
+      ...(target.sessionId ? { sessionId: target.sessionId.trim() } : {}),
+      ...(target.termId ? { termId: target.termId.trim() } : {}),
+      ...(target.sessionLabel ? { sessionLabel: target.sessionLabel.trim() } : {}),
       cli, accountId, referenceDirs: [...(target.referenceDirs ?? [])],
       ...(target.model === undefined ? {} : { model: target.model }),
       ...(target.effort === undefined ? {} : { effort: target.effort }),

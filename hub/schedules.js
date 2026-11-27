@@ -200,9 +200,15 @@ function createScheduleEngine({
         stdinText, timeoutMs: item.timeoutSec * 1000,
         sensitive: [item.prompt, resolved.taskText, ...item.target.referenceDirs].filter(Boolean),
       };
-      const { projectId, taskId, version, cli, accountId, referenceDirs } = item.target;
-      run.targetSnapshot = { projectId, taskId, version, cli, accountId,
-        primaryCwd: spec.cwd, referenceDirs: resolved.referenceDirs ?? referenceDirs };
+      const { projectId, taskId, version, sessionId, termId, sessionLabel, cli, accountId, referenceDirs } = item.target;
+      run.targetSnapshot = {
+        projectId, taskId, version,
+        ...(sessionId ? { sessionId } : {}),
+        ...(termId ? { termId } : {}),
+        ...(sessionLabel ? { sessionLabel } : {}),
+        cli, accountId,
+        primaryCwd: spec.cwd, referenceDirs: resolved.referenceDirs ?? referenceDirs,
+      };
     } catch (cause) {
       const known = ['TARGET_MISSING', 'INPUT_TOO_LARGE', 'CAPABILITY_UNSUPPORTED'].includes(cause.code);
       finish(run, 'failed', known ? cause.code : 'TARGET_RESOLUTION_FAILED', now, { errorSummary: cause.message }, [item.prompt]);

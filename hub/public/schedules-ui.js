@@ -31,7 +31,7 @@ function viewSchedules() {
       if (filterState === 'active' && it.state !== 'active') return false;
       if (filterState === 'paused' && it.state === 'active') return false;
       if (filterQuery) {
-        const hay = `${it.name} ${it.target?.cwd || ''} ${it.target?.cli || ''}`.toLowerCase();
+        const hay = `${it.name} ${it.target?.cwd || ''} ${it.target?.sessionLabel || ''} ${it.target?.cli || ''}`.toLowerCase();
         if (!hay.includes(filterQuery.toLowerCase())) return false;
       }
       return true;
@@ -208,9 +208,10 @@ function scheduleRows(items, capabilities, local, busy, projects, hasAny = false
     const noRunnerTip = !runner ? '현재 스케줄 실행기가 비활성 상태여서 실행할 수 없습니다.' : '';
     const button = (action, label, disabled = false, extraCls = '', title = '') => `<button type="button" class="${extraCls}" data-schedule-action="${action}"
       data-id="${esc(item.id)}" ${disabled ? 'disabled' : ''}${title ? ` title="${esc(title)}"` : ''}>${label}</button>`;
+    const sessName = item.target.sessionLabel || (item.target.sessionId ? `세션 ${item.target.sessionId.slice(0, 8)}` : (item.target.termId ? `터미널 t:${item.target.termId}` : ''));
     const target = item.target.projectId
-      ? `${projects.find(project => project.id === item.target.projectId)?.name || item.target.projectId} · ${item.target.version}`
-      : (item.target.cwd || '일반 세션');
+      ? `${projects.find(project => project.id === item.target.projectId)?.name || item.target.projectId} · ${item.target.version}${sessName ? ` · ${sessName}` : ''}`
+      : (sessName ? `${sessName}${item.target.cwd ? ` (${base(item.target.cwd)})` : ''}` : (item.target.cwd || '일반 세션'));
     const cadence = formatScheduleCadence(item.trigger);
     return `<li class="schedule-card">
       <div class="schedule-row"><h3>${esc(item.name)}</h3>

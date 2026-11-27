@@ -186,12 +186,14 @@ function openSessionGroupModal(focusGroupId = '') {
             }).join('')
             : '<div class="ums">배치할 일반 세션이 없습니다.</div>'}</div>`
           : '';
-        return `<div class="sgrp-mgr-card">
+        return `<div class="sgrp-mgr-card"${g.hidden ? ' style="opacity:.72"' : ''}>
           <div class="sgrp-mgr-row">
             <span class="sgrp-dot" style="background:${esc(g.color)}"></span>
             <b class="sgrp-mgr-name">${esc(g.name)}</b>
             <span class="badge">${cnt}개</span>
+            ${g.hidden ? '<span class="badge warn">숨김</span>' : ''}
             <div class="row" style="gap:4px;margin-left:auto">
+              <button type="button" class="btn-sm${g.hidden ? ' primary' : ''}" data-mgr-hide="${esc(g.id)}">${g.hidden ? '보이기' : '숨기기'}</button>
               <button type="button" class="btn-sm${isExp ? ' primary' : ''}" data-mgr-members="${esc(g.id)}">세션 배치</button>
               <button type="button" class="btn-sm" data-mgr-rename="${esc(g.id)}">이름 변경</button>
               <button type="button" class="btn-sm danger" data-mgr-del="${esc(g.id)}">삭제</button>
@@ -236,6 +238,19 @@ function openSessionGroupModal(focusGroupId = '') {
         paint();
       } catch (er) { toast(er.message, 4000, 'danger'); }
     };
+    dlg.querySelectorAll('[data-mgr-hide]').forEach((b) => {
+      b.onclick = async () => {
+        const id = b.dataset.mgrHide;
+        const g = getSessionGroupsData().groups.find((x) => x.id === id);
+        if (!g) return;
+        const nextHidden = !g.hidden;
+        try {
+          await mutateSessionGroups({ action: 'toggle-hidden', id, hidden: nextHidden });
+          toast(nextHidden ? `“${g.name}” 그룹을 숨겼습니다` : `“${g.name}” 그룹을 다시 표시합니다`);
+          paint();
+        } catch (er) { toast(er.message, 4000, 'danger'); }
+      };
+    });
     dlg.querySelectorAll('[data-mgr-members]').forEach((b) => {
       b.onclick = () => {
         const id = b.dataset.mgrMembers;
@@ -661,6 +676,7 @@ function renderSide() {
       : entry.kind === 'console' ? consoleStateOf(entry.item) === 'busy'
         : liveBySid.get(entry.item?.sessionId)?.status === 'busy'
   );
+  const SGRP_HIDE_ICO = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
   const renderCustomGroupBlock = (g, items) => {
     const orderedItems = sortEntriesForBucket(items, g.id, sgData, recentMap);
     const gFoldKey = `sgrp:${g.id}`;
@@ -674,6 +690,7 @@ function renderSide() {
         <span class="srow-meta">${orderedItems.length}</span>
         ${gFolded && gBusy ? `<span class="srow-tag busy">실행 ${gBusy}</span>` : ''}
         <span class="sgrp-acts">
+          <button type="button" class="ghost icon-btn sgrp-act" data-sgrp-hide="${esc(g.id)}" title="그룹 숨기기" aria-label="그룹 숨기기">${SGRP_HIDE_ICO}</button>
           <button type="button" class="ghost icon-btn sgrp-act" data-sgrp-rename="${esc(g.id)}" title="그룹 이름 변경" aria-label="그룹 이름 변경">${ICO.edit}</button>
           <button type="button" class="ghost icon-btn sgrp-act" data-sgrp-del="${esc(g.id)}" title="그룹 삭제" aria-label="그룹 삭제">${ICO.trash}</button>
         </span>
@@ -711,6 +728,7 @@ function renderSide() {
         chunks.push(`<div class="sgrp-lbl"><span class="pj-dot"></span>${esc(g.label)}</div>${g.items.map((it) => renderUnifiedRow(it, '_project')).join('')}`);
       }
       for (const g of sgData.groups) {
+        if (g.hidden) continue;
         const items = customBuckets.get(g.id) || [];
         if (fTerms.length && !items.length) continue;
         chunks.push(renderCustomGroupBlock(g, items));
@@ -730,6 +748,7 @@ function renderSide() {
       }
       const chunks = [];
       for (const g of sgData.groups) {
+        if (g.hidden) continue;
         const items = buckets.get(g.id) || [];
         if (fTerms.length && !items.length) continue;
         chunks.push(renderCustomGroupBlock(g, items));
@@ -752,6 +771,10 @@ function renderSide() {
     } else {
       const orderedFlat = sortEntriesForBucket(unifiedEntries, '_ungrouped', sgData, recentMap);
       recentRows = orderedFlat.map((it) => renderUnifiedRow(it, '_ungrouped')).join('');
+    }
+    const hiddenGroupCount = sgData.groups.filter((g) => g.hidden).length;
+    if (hiddenGroupCount > 0) {
+      recentRows += `<button type="button" class="srow-empty" data-open-sgrp-mgr="1" style="width:100%;text-align:center;border:0;background:transparent;cursor:pointer;padding:6px 8px">숨긴 그룹 ${hiddenGroupCount}개 · 관리에서 보이기</button>`;
     }
     if (!state.termGroupByProject && !fTerms.length && (hiddenProjCount > 0 || state.showProjectTerms)) {
       const lbl = state.showProjectTerms
@@ -835,6 +858,21 @@ $('#side')?.addEventListener('click', async (e) => {
       .then(() => toast('그룹 이름을 변경했습니다'))
       .catch((er) => toast(er.message, 4000, 'danger'));
     return;
+  }
+  const sgrpHide = e.target.closest('[data-sgrp-hide]');
+  if (sgrpHide) {
+    e.stopPropagation();
+    const id = sgrpHide.dataset.sgrpHide;
+    const g = getSessionGroupsData().groups.find((x) => x.id === id);
+    if (!g) return;
+    mutateSessionGroups({ action: 'toggle-hidden', id, hidden: true })
+      .then(() => toast(`“${g.name}” 그룹을 숨겼습니다 (일반 세션 그룹 관리에서 다시 표시)`))
+      .catch((er) => toast(er.message, 4000, 'danger'));
+    return;
+  }
+  if (e.target.closest('[data-open-sgrp-mgr]')) {
+    e.stopPropagation();
+    return openSessionGroupManager();
   }
   const sgrpDel = e.target.closest('[data-sgrp-del]');
   if (sgrpDel) {

@@ -291,13 +291,18 @@ const scheduleRunnerAvailable = scheduleCapabilities.cli.some(c => c.available);
 const scheduleRoutes = createScheduleRoutes(() => scheduleEngine, scheduleCapabilities, logServerError);
 const scheduleTransport = createScheduleTransport(() => scheduleEngine, logServerError);
 
-function resolveScheduleTarget({ projectId, version, taskId, cwd, cli = 'codex', accountId = 'default', referenceDirs = [] }) {
+function resolveScheduleTarget({ projectId, version, taskId, cwd, sessionId = '', termId = '', cli = 'codex', accountId = 'default', referenceDirs = [] }) {
   let workCwd = '';
   let taskText = '';
-  if (!projectId && cwd) {
+  const liveTerm = termId ? hub.terms?.get(String(termId)) : null;
+  const effectiveSessionId = String(sessionId || (liveTerm ? hub.termSessionId?.(liveTerm) : '') || '').trim();
+  const sessionDoc = effectiveSessionId ? index.get(effectiveSessionId) : null;
+
+  if (!projectId) {
+    const candidateCwd = cwd || liveTerm?.cwd || sessionDoc?.cwd || '';
     try {
-      if (!fs.statSync(cwd).isDirectory()) throw new Error('not dir');
-      workCwd = cwd;
+      if (!candidateCwd || !fs.statSync(candidateCwd).isDirectory()) throw new Error('not dir');
+      workCwd = candidateCwd;
     } catch {
       throw scheduleError('TARGET_MISSING', 'Schedule working folder not found');
     }
@@ -323,21 +328,35 @@ function resolveScheduleTarget({ projectId, version, taskId, cwd, cli = 'codex',
   for (const k of Object.keys(env)) {
     if (/^(CLAUDECODE|CLAUDE_PID|CLAUDE_CODE_)/i.test(k)) delete env[k];
   }
-  if (cli === 'codex' && accountId && accountId !== 'default') {
-    const acc = CA.listAccounts?.().find(a => a.id === accountId);
-    if (acc?.home) env.CODEX_HOME = acc.home;
+  if (cli === 'codex') {
+    if (accountId && accountId !== 'default') {
+      const acc = CA.listAccounts?.().find(a => a.id === accountId);
+      if (acc?.home) env.CODEX_HOME = acc.home;
+    } else if (sessionDoc?.file) {
+      const inferredHome = inferCodexHomeFromFile(sessionDoc.file);
+      if (inferredHome) env.CODEX_HOME = inferredHome;
+    }
   } else if (cli === 'claude' && accountId && accountId !== 'default') {
     const acc = (CONFIG.accounts || []).find(a => a.id === accountId);
     if (acc?.dir) env.CLAUDE_CONFIG_DIR = acc.dir;
   }
   let args;
   if (cli === 'claude') {
-    args = ['--print', '--permission-mode', 'plan', '--output-format', 'json', ...validRefs.flatMap(d => ['--add-dir', d])];
+    args = [
+      ...(effectiveSessionId ? ['--resume', effectiveSessionId] : []),
+      '--print', '--permission-mode', 'plan', '--output-format', 'json',
+      ...validRefs.flatMap(d => ['--add-dir', d]),
+    ];
   } else if (cli === 'agy') {
-    args = ['--print', '--output-format', 'json'];
+    args = [
+      ...(effectiveSessionId ? ['--conversation', effectiveSessionId] : []),
+      '--print', '--output-format', 'json',
+    ];
     if (validRefs.length) taskText = [taskText, `[참고 폴더]\n${validRefs.join('\n')}`].filter(Boolean).join('\n\n');
   } else {
-    args = ['exec', '--json', '--skip-git-repo-check', '--sandbox', 'read-only', '-'];
+    args = effectiveSessionId
+      ? ['exec', 'resume', '--json', '--skip-git-repo-check', effectiveSessionId, '-']
+      : ['exec', '--json', '--skip-git-repo-check', '--sandbox', 'read-only', '-'];
     if (validRefs.length) taskText = [taskText, `[참고 폴더]\n${validRefs.join('\n')}`].filter(Boolean).join('\n\n');
   }
   return { cli, cwd: workCwd, cmd, args, env, taskText, referenceDirs: validRefs };
