@@ -64,6 +64,7 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
     const m = readJsonSafe(l.manifestFile, {});
     return {
       skills: m?.skills && typeof m.skills === 'object' ? m.skills : {},
+      removedSkills: Array.isArray(m?.removedSkills) ? m.removedSkills.filter(name => typeof name === 'string') : [],
       rules: m?.rules && typeof m.rules === 'object' ? m.rules : {},
       autoLoad: m?.autoLoad !== false,
       lastGatherAt: Number(m?.lastGatherAt || 0),
@@ -73,6 +74,13 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
   };
 
   const writeManifest = (m) => writeJsonAtomic(layout().manifestFile, m);
+
+  const slashSkillExclusions = (cli) => {
+    const { skills, removedSkills } = readManifest();
+    const excluded = Object.entries(skills).filter(([, skill]) =>
+      skill?.enabled === false || (Array.isArray(skill?.targets) && !skill.targets.includes(cli)));
+    return new Set([...removedSkills, ...excluded.map(([name]) => name)].map(name => name.toLowerCase()));
+  };
 
   const readMcps = () => {
     const l = ensureVaultDirs();
@@ -249,6 +257,7 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
       targets: Array.isArray(targets) ? targets.filter((x) => ALL_CLIS.includes(x)) : [...ALL_CLIS],
       ...(requiredMcps === undefined ? {} : { requiredMcps: [...new Set(requiredMcps)] }),
     };
+    manifest.removedSkills = manifest.removedSkills.filter(name => name.toLowerCase() !== clean.toLowerCase());
     writeManifest(manifest);
     return getState();
   };
@@ -267,6 +276,7 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
     if (fs.existsSync(skDir)) fs.rmSync(skDir, { recursive: true, force: true });
     const manifest = readManifest();
     delete manifest.skills[clean];
+    if (!manifest.removedSkills.includes(clean.toLowerCase())) manifest.removedSkills.push(clean.toLowerCase());
     writeManifest(manifest);
     return getState();
   };
@@ -385,6 +395,7 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
     syncToClis: ops.syncToClis,
     prepareLaunch: ops.prepareLaunch,
     setAutoLoad,
+    slashSkillExclusions,
     readSkillContent,
     saveSkill,
     deleteSkill,

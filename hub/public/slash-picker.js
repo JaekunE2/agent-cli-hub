@@ -2,34 +2,47 @@
 
 let slashPickerId = 0;
 
-function bindSlashPicker(input, getContext, submit) {
+function slashDraftToken(input) {
+  const value = input.value;
+  const end = input.selectionStart ?? value.length;
+  if (input.selectionEnd != null && input.selectionEnd !== end) return null;
+  const match = /(?:^|\s)\/([\p{L}\p{N}_.:-]*)$/u.exec(value.slice(0, end));
+  if (!match) return null;
+  const start = end - match[1].length - 1;
+  const inline = !!(value.slice(0, start).trim() || value.slice(end).trim());
+  return { query: match[1].toLowerCase(), start, end, inline };
+}
+
+function bindSlashPicker(input, getContext, submit, { showButton = true } = {}) {
   if (typeof slashCatalog !== 'function' || typeof runHubSlash !== 'function') return null;
   const row = input.parentElement;
   row.classList.add('slash-anchor');
-  const button = document.createElement('button');
-  button.type = 'button';
-  button.className = 'ghost btn-sm slash-trigger';
-  button.textContent = '/';
-  button.title = '명령어 열기';
-  button.setAttribute('aria-label', '명령어 열기');
+  const button = showButton ? document.createElement('button') : null;
+  if (button) {
+    button.type = 'button';
+    button.className = 'ghost btn-sm slash-trigger';
+    button.textContent = '/';
+    button.title = '명령어 열기';
+    button.setAttribute('aria-label', '명령어 열기');
+    button.setAttribute('aria-haspopup', 'listbox');
+    input.before(button);
+  }
   const menu = document.createElement('div');
   menu.className = 'slash-menu';
   menu.id = `slash-menu-${++slashPickerId}`;
   menu.setAttribute('role', 'listbox');
   menu.setAttribute('aria-label', '명령어');
   menu.hidden = true;
-  for (const el of [input, button]) {
+  const controls = button ? [input, button] : [input];
+  for (const el of controls) {
     el.setAttribute('aria-controls', menu.id);
     el.setAttribute('aria-expanded', 'false');
   }
   input.setAttribute('aria-autocomplete', 'list');
-  button.setAttribute('aria-haspopup', 'listbox');
-  input.before(button);
   row.append(menu);
 
-  let discoveryKey = '', loadedKey = '', discovered = [], choices = [], active = 0, pending = false;
+  let discoveryKey = '', loadedKey = '', discovered = [], choices = [], active = 0, pending = false, requestId = 0;
   let openedByButton = false, composing = false;
-  const key = () => input.value.match(/^\s*\/([\p{L}\p{N}_.:-]*)$/u)?.[1]?.toLowerCase();
   const requestQuery = () => {
     const { agent, term, sid } = getContext();
     const query = new URLSearchParams({ agent });
@@ -40,7 +53,7 @@ function bindSlashPicker(input, getContext, submit) {
   const catalog = () => slashCatalog(getContext().agent, requestQuery() === loadedKey ? discovered : []);
   const show = visible => {
     menu.hidden = !visible;
-    for (const el of [input, button]) el.setAttribute('aria-expanded', String(visible));
+    for (const el of controls) el.setAttribute('aria-expanded', String(visible));
     if (!visible) input.removeAttribute('aria-activedescendant');
   };
   const close = () => { discoveryKey = ''; openedByButton = false; show(false); };
@@ -55,7 +68,7 @@ function bindSlashPicker(input, getContext, submit) {
     if (scroll) selected?.scrollIntoView({ block: 'nearest' });
   };
   const render = () => {
-    const query = openedByButton ? '' : key();
+    const query = openedByButton ? '' : slashDraftToken(input)?.query;
     if (query === undefined || document.activeElement !== input || composing) return show(false);
     const matches = item => [item.command.slice(1), ...(item.aliases || []), item.description || '']
       .some(text => text.toLowerCase().includes(query));
@@ -81,36 +94,47 @@ function bindSlashPicker(input, getContext, submit) {
     const signature = requestQuery();
     if (signature === discoveryKey) return;
     discoveryKey = signature;
+    loadedKey = '';
+    const request = ++requestId;
     api('/api/slash-commands?' + signature, { requireOk: true }).then(result => {
-      if (signature !== discoveryKey || !input.isConnected) return;
+      if (request !== requestId || signature !== discoveryKey || !input.isConnected) return;
       loadedKey = signature;
       discovered = result.commands || [];
       if (!menu.hidden) render();
-    }).catch(() => { if (signature === discoveryKey) discoveryKey = ''; });
+    }).catch(() => { if (request === requestId && signature === discoveryKey) discoveryKey = ''; });
   };
   const choose = (index, complete = false) => {
     const entry = choices[index];
     if (!entry) return;
+    const token = openedByButton ? null : slashDraftToken(input);
     close();
     input.focus();
+    if (token?.inline) {
+      const space = /\s/.test(input.value.charAt(token.end)) ? '' : ' ';
+      input.setRangeText(entry.command + space, token.start, token.end, 'end');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      close();
+      return;
+    }
     input.value = entry.command + (complete || entry.takesArgs ? ' ' : '');
     input.dispatchEvent(new Event('input', { bubbles: true }));
     if (!complete && !entry.takesArgs) submit();
   };
   input.addEventListener('input', () => {
     if (composing) return;
-    if (/^\s*\//.test(input.value)) load();
+    if (!slashDraftToken(input)) return close();
+    load();
     openedByButton = false;
     render();
   });
   input.addEventListener('compositionstart', () => { composing = true; show(false); });
   input.addEventListener('compositionend', () => {
     composing = false;
-    if (key() !== undefined) { load(); render(); }
+    if (slashDraftToken(input)) { load(); render(); }
   });
   input.addEventListener('blur', close);
-  button.addEventListener('pointerdown', event => event.preventDefault());
-  button.onclick = () => {
+  button?.addEventListener('pointerdown', event => event.preventDefault());
+  button?.addEventListener('click', () => {
     if (!menu.hidden) return close();
     input.focus();
     if (!input.value) {
@@ -121,7 +145,7 @@ function bindSlashPicker(input, getContext, submit) {
     openedByButton = true;
     load();
     render();
-  };
+  });
   menu.addEventListener('pointerdown', event => event.preventDefault());
   menu.addEventListener('click', event => {
     const item = event.target.closest('[data-index]');
@@ -129,7 +153,7 @@ function bindSlashPicker(input, getContext, submit) {
   });
   input.addEventListener('keydown', event => {
     if ((composing || event.isComposing || event.keyCode === 229)
-        && event.code === 'Enter' && /^\s*\//.test(input.value)) {
+        && event.code === 'Enter' && slashDraftToken(input)) {
       event.stopImmediatePropagation();
       return;
     }

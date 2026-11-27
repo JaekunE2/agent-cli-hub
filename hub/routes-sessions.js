@@ -1069,7 +1069,8 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       const configHome = agent === 'codex'
         ? env?.CODEX_HOME || (doc?.agent === agent && inferCodexHomeFromFile?.(doc.file)) || process.env.CODEX_HOME
         : agent === 'claude' ? env?.CLAUDE_CONFIG_DIR || process.env.CLAUDE_CONFIG_DIR : undefined;
-      const commands = await discoverSlashCommands({ agent, configHome, cwd: term?.cwd || doc?.cwd });
+      const excludedSkills = hub.unifiedVault?.slashSkillExclusions?.(agent);
+      const commands = await discoverSlashCommands({ agent, configHome, cwd: term?.cwd || doc?.cwd, excludedSkills });
       send(res, 200, { commands });
       return true;
     }

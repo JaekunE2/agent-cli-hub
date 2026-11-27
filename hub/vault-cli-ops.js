@@ -106,10 +106,11 @@ function createVaultCliOps(ctx) {
       ['shared', path.join(homeDir, '.agents', 'skills')],
       ['hub', path.join(repoRoot, 'skills')],
     ];
+    const removedSkills = new Set(manifest.removedSkills.map(name => name.toLowerCase()));
     for (const [srcLabel, dir] of skillSources) {
       if (!fs.existsSync(dir)) continue;
       for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
-        if (BUNDLED_SYSTEM_SKILLS.has(ent.name) || ent.name.startsWith('.')) continue;
+        if (BUNDLED_SYSTEM_SKILLS.has(ent.name) || ent.name.startsWith('.') || removedSkills.has(ent.name.toLowerCase())) continue;
         if (!ent.isDirectory() && !ent.isSymbolicLink()) continue;
         let realFrom;
         try { realFrom = fs.realpathSync(path.join(dir, ent.name)); } catch { continue; }
@@ -369,6 +370,7 @@ function createVaultCliOps(ctx) {
       if (!Array.isArray(prev.sources)) prev.sources = [];
       if (!prev.sources.includes(cli)) prev.sources.push(cli);
       manifest.skills[name] = prev;
+      manifest.removedSkills = manifest.removedSkills.filter(removed => removed.toLowerCase() !== name.toLowerCase());
       if (moveSkills && isEnabled && fs.existsSync(dstDir) && prev.targets.includes(cli)) {
         if (linkOrCopySkillDir(dstDir, foundDir, path.join(l.backupDir, cli)) === 'linked') movedSkills++;
       }

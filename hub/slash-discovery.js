@@ -21,7 +21,7 @@ async function metadata(file) {
   } catch { return null; }
 }
 
-async function discoverSlashCommands({ agent, cwd, configHome, home = os.homedir() }) {
+async function discoverSlashCommands({ agent, cwd, configHome, home = os.homedir(), excludedSkills = new Set() }) {
   const folders = [];
   if (cwd && path.isAbsolute(cwd)) {
     for (let dir = cwd; ; dir = path.dirname(dir)) {
@@ -47,8 +47,10 @@ async function discoverSlashCommands({ agent, cwd, configHome, home = os.homedir
   };
   for (const dir of skills) {
     await Promise.all((await entries(dir)).filter(e => !e.name.startsWith('.') && (e.isDirectory() || e.isSymbolicLink())).map(async e => {
+      if (excludedSkills.has(e.name.toLowerCase())) return;
       const meta = await metadata(path.join(dir, e.name, 'SKILL.md'));
-      if (meta) add(agent === 'claude' ? e.name : meta.name || e.name, agent === 'codex' ? '$' : '/', meta);
+      const name = agent === 'claude' ? e.name : meta?.name || e.name;
+      if (meta && !excludedSkills.has(name.toLowerCase())) add(name, agent === 'codex' ? '$' : '/', meta);
     }));
   }
   for (const dir of commands) {

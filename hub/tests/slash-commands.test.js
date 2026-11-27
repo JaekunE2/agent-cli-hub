@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const test = require('node:test');
 const { discoverSlashCommands } = require('../slash-discovery');
+const { createUnifiedVault } = require('../unified-vault');
 const { translateJs } = require('../i18n');
 const { submitPrompt } = require('../prompt-submission');
 
@@ -57,4 +58,24 @@ test('native slash submits once when the CLI opens a selection menu', async () =
     write: key => writes.push(key), guard() {}, sleep() {}, waitFor: check => check(),
   });
   assert.deepEqual(writes, ['/permissions', '\r']);
+});
+
+test('Vault removal and target changes exclude remaining local skill copies from the picker', async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'hub-slash-vault-'));
+  const vault = createUnifiedVault({ repoRoot: home, homeDir: home });
+  const name = 'test-skill';
+  const content = `---\nname: ${name}\n---\n`;
+  const local = path.join(home, '.codex', 'skills', name, 'SKILL.md');
+  await fs.mkdir(path.dirname(local), { recursive: true });
+  await fs.writeFile(local, content);
+  const discover = () => discoverSlashCommands({ agent: 'codex', home, excludedSkills: vault.slashSkillExclusions('codex') });
+  assert.equal((await discover())[0].command, '$test-skill');
+  vault.saveSkill({ name, content, targets: ['claude'] });
+  assert.deepEqual(await discover(), []);
+  vault.deleteSkill(name);
+  assert.equal(await fs.readFile(local, 'utf8'), content);
+  assert.deepEqual(await discover(), []);
+  assert.equal(vault.gatherFromClis().state.skills.some(skill => skill.name === name), false);
+  vault.importFromCli({ cli: 'codex', skills: [name], moveSkills: false });
+  assert.equal((await discover())[0].command, '$test-skill');
 });

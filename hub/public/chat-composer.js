@@ -794,7 +794,7 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       accountId: userEditedSettings ? cfg.account : term?.account?.id || cfg.account,
       openChatAction: (action, args) => openSlashChatAction(action, args, barHost, chatHost),
     };
-  }, sendReply) : null;
+  }, sendReply, { showButton: false }) : null;
   repBtn.onclick = () => sendReply();
   if (typeof window.bindEnterSubmit === 'function') window.bindEnterSubmit(repIn, () => sendReply());
   else repIn.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendReply(); } };
