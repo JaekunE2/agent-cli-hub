@@ -305,13 +305,14 @@ body.is-side-dragging, body.is-side-dragging * { user-select: none !important; c
 .ssec-act.on { color: var(--accent); background: var(--sel); }
 .srow-end { display: flex; align-items: center; gap: 3px; flex: none; }
 .srow-meta { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.srow .fav, .srow .record-delete, .srow .side-rename, .srow .side-group-btn { opacity: 0; transition: opacity .12s; }
+.srow .fav, .srow .record-delete, .srow .side-rename, .srow .side-group-btn, .srow .side-close-term { opacity: 0; transition: opacity .12s; }
 .srow:hover .fav, .srow:focus-within .fav, .srow .fav.on,
 .srow:hover .record-delete, .srow:focus-within .record-delete,
 .srow:hover .side-rename, .srow:focus-within .side-rename,
-.srow:hover .side-group-btn, .srow:focus-within .side-group-btn { opacity: 1; }
-@media (pointer: coarse) { .srow .fav, .srow .record-delete, .srow .side-rename, .srow .side-group-btn { opacity: .65; } .sgrp-acts { opacity: .75; } }
-.srow .record-delete { width: 24px; height: 24px; min-height: 24px; padding: 0; }
+.srow:hover .side-group-btn, .srow:focus-within .side-group-btn,
+.srow:hover .side-close-term, .srow:focus-within .side-close-term { opacity: 1; }
+@media (pointer: coarse) { .srow .fav, .srow .record-delete, .srow .side-rename, .srow .side-group-btn, .srow .side-close-term { opacity: .65; } .sgrp-acts { opacity: .75; } }
+.srow .record-delete, .srow .side-close-term { width: 24px; height: 24px; min-height: 24px; padding: 0; }
 .srow-empty { font-size: 12px; color: var(--muted); padding: 6px 10px; }
 
 .pj-dot { width: 7px; height: 7px; border-radius: 2px; background: var(--accent); flex: none; opacity: .82; }

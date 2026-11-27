@@ -3728,5 +3728,10 @@
   "기본적으로": "By default,",
   ", 데이터 폴더와": ", data folders, and",
   ", 키 파일은 자동 제외되며, 앱 소스·": ", and key files are automatically excluded, keeping only app source,",
-  "만 깔끔하게 포함됩니다.": "cleanly packaged."
+  "만 깔끔하게 포함됩니다.": "cleanly packaged.",
+  "목록에서 제거": "Remove from list",
+  "세션 종료": "Close session",
+  "” 세션을 종료할까요?": "\" session?",
+  "세션을 종료했습니다:": "Closed session:",
+  "목록에서 제거했습니다:": "Removed from list:"
 }

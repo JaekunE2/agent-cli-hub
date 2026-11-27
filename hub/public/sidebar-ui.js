@@ -606,10 +606,13 @@ function renderSide() {
         subKindTag,
         sideLiveStateTag(st, unread, meta.dormant),
       ].filter(Boolean).join('');
+      const closeTermBtn = t.operator
+        ? ''
+        : `<button type="button" class="side-close-term danger ghost icon-btn" data-close-term="${esc(t.id)}" title="${st === 'exited' ? '목록에서 제거' : '세션 종료'}" aria-label="${st === 'exited' ? '목록에서 제거' : '세션 종료'}">${ICO.close}</button>`;
       return `<div class="srow${isSel ? ' sel' : ''}${unread ? ' just-done' : ''}" data-key="term:${esc(t.id)}"${dragAttrs} title="${esc([termLabel(t), pj?.name, t.cwd, brTip].filter(Boolean).join(' · '))}">
         ${agentIcon(kind, dot)}
         <button type="button" class="ghost srow-main srow-open"><span class="srow-t">${esc(termLabel(t))}</span><span class="srow-s">${tags}</span></button>
-        <span class="srow-end">${t.operator ? '' : groupButton}${unread ? '<span class="srow-unread" title="방금 작업 완료"></span>' : ''}${fk ? `<span class="fav${isStar ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${isStar ? '즐겨찾기 해제' : '즐겨찾기'}">${isStar ? ICO.starFill : ICO.star}</span>` : ''}</span>
+        <span class="srow-end">${t.operator ? '' : groupButton}${unread ? '<span class="srow-unread" title="방금 작업 완료"></span>' : ''}${fk ? `<span class="fav${isStar ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${isStar ? '즐겨찾기 해제' : '즐겨찾기'}">${isStar ? ICO.starFill : ICO.star}</span>` : ''}${closeTermBtn}</span>
       </div>`;
     }
     if (entry.kind === 'console') {
@@ -867,6 +870,26 @@ $('#side')?.addEventListener('click', async (e) => {
     toast(`종료된 터미널 ${exitedIds.length}개를 정리했습니다`);
     return;
   }
+  const closeTerm = e.target.closest('[data-close-term]');
+  if (closeTerm) {
+    e.stopPropagation();
+    const tid = closeTerm.dataset.closeTerm;
+    const t = (state.terms || []).find((x) => String(x.id) === String(tid));
+    if (!t || t.operator) return;
+    const lbl = termLabel(t);
+    if (t.exited === null && !confirm(`“${lbl}” 세션을 종료할까요?`)) return;
+    closeTerm.disabled = true;
+    try {
+      await api('/api/term/close', { method: 'POST', body: { id: t.id } });
+      if (state.sel.kind === 'term' && String(state.sel.id) === String(t.id)) select({ kind: 'home' });
+      await refreshOverview();
+      toast(t.exited === null ? `세션을 종료했습니다: ${lbl}` : `목록에서 제거했습니다: ${lbl}`);
+    } catch (er) {
+      closeTerm.disabled = false;
+      toast(er.message, 4000, 'danger');
+    }
+    return;
+  }
   const remove = e.target.closest('[data-hide-record]');
   if (remove) { e.stopPropagation(); return hideRecentRecord(remove.dataset.hideRecord, remove); }
   if (e.target.closest('[data-hopen-new]')) { e.stopPropagation(); return openNewTermDrawer(); }
@@ -989,7 +1012,7 @@ $('#side')?.addEventListener('dblclick', (e) => {
 
   side.addEventListener('pointerdown', (e) => {
     if (e.button !== 0 || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
-    if (e.target.closest('.sgrp-acts, [data-sec-fold], [data-fav], [data-side-group], [data-hide-record], input, select, textarea')) return;
+    if (e.target.closest('.sgrp-acts, [data-sec-fold], [data-fav], [data-side-group], [data-hide-record], [data-close-term], input, select, textarea')) return;
 
     const grpHd = e.target.closest('.sgrp-hd[data-sgrp-drag]');
     if (grpHd) {
