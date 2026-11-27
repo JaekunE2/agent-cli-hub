@@ -805,7 +805,6 @@ function systemTopHTML(activeTab, actionsHTML = '') {
       ${tab('gpu', ICO.gpu, 'GPU 대기열', gpuWait ? ` <span class="badge lim" style="margin-left:3px">${gpuWait}</span>` : '')}
       ${tab('vault', ICO.layers, '공통 자원')}
       ${tab('operator', ICO.settings, '관제 세션')}
-      ${tab('trusted-folders', ICO.folder, '신뢰 폴더')}
     </div>
     ${actionsHTML ? `<div class="sys-acts">${actionsHTML}</div>` : ''}
   </div>`;

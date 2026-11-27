@@ -3744,5 +3744,6 @@
   "직접 선택": "Choose manually",
   "폴더 경로를 자동으로 찾지 못했습니다 (": "Could not locate folder path automatically (",
   "폴더 경로를 확인하지 못했습니다 (": "Could not verify folder path (",
-  "Codex에서 대화를 삭제하지 못했습니다 (": "Failed to delete Codex conversation ("
+  "Codex에서 대화를 삭제하지 못했습니다 (": "Failed to delete Codex conversation (",
+  "폴더 지정": "Pick folder"
 }

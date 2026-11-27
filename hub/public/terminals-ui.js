@@ -754,9 +754,10 @@ function viewTerm() {
   const back = state.sel.project || pj
     ? `<button id="btnBackProject" class="ghost btn-sm session-back" aria-label="${projectName}" data-proj-id="${esc(state.sel.project || pj.id)}">${ICO.chevLeft}<span>${projectName}</span></button>`
     : '';
+  const shortAccount = t?.account?.label ? t.account.label.replace(/\s*\([^)]*@[^)]*\)/g, '').replace(/@.*/, '').trim() : '';
   setSessionBar(`${back}<h2 title="더블클릭하여 명칭 변경" style="cursor:pointer">${ag ? agentIcon(ag) : ''}<span data-session-title title="${title}">${title}</span></h2>
     <span id="termLiveBadge" class="term-live-pill ${pillCls}">${pillText}</span>
-    <div class="session-meta">${sessionOriginButton(t?.branch)}${branchTagHTML(t?.branch)}${t?.account ? `<span class="badge c">${esc(t.account.label.replace(/@.*/, ''))}</span>` : ''}${(t?.model || t?.effort) ? `<span class="badge" title="선택된 모델 · 추론 성능">${esc([t.model, t.effort].filter(Boolean).join(' · '))}</span>` : ''}</div>`,
+    <div class="session-meta">${sessionOriginButton(t?.branch)}${branchTagHTML(t?.branch)}${shortAccount ? `<span class="badge c" title="${esc(t.account.label)}">${esc(shortAccount)}</span>` : ''}${(t?.model || t?.effort) ? `<span class="badge" title="선택된 모델 · 추론 성능">${esc([t.model, t.effort].filter(Boolean).join(' · '))}</span>` : ''}</div>`,
     dockTopSegHTML({ openSet: new Set(initialPanels), isContentTab, hasTerm: true, hasChat: true, showFiles: true, curTab: state.tab }),
     `<button id="btnTermMore" class="ghost icon-btn btn-sm" aria-label="터미널 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`,
     { termId: String(id), sessionId: sid, cwd: t?.cwd }, folderTarget(t || { id }, true));

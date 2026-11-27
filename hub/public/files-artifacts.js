@@ -28,11 +28,28 @@ function createAttachmentStrip(stripEl, cwd) {
       const meta = it.loading
         ? '<span class="att-chip-sz">준비 중…</span>'
         : it.failed
-          ? '<span class="att-chip-sz" style="color:var(--danger)">실패</span>'
+          ? (it.isDir && typeof openFolderPickerDialog === 'function'
+            ? `<button type="button" class="linkbtn" data-att-pick="${it.id}" style="font-size:11px">폴더 지정</button>`
+            : '<span class="att-chip-sz" style="color:var(--danger)">실패</span>')
           : (it.size ? `<span class="att-chip-sz">${esc(fmtSize(it.size))}</span>` : '');
       const rmLbl = it.isDir ? '첨부 폴더 제거' : '첨부 파일 제거';
       return `<span class="att-chip${it.isDir ? ' is-dir' : ''}" title="${esc(it.path || it.name)}">${visual}<span class="att-chip-name">${esc(it.name)}</span>${meta}<button type="button" class="att-chip-rm" data-att-rm="${it.id}" aria-label="${rmLbl}" title="${rmLbl}">×</button></span>`;
     }).join('');
+    stripEl.querySelectorAll('[data-att-pick]').forEach((b) => {
+      b.onclick = () => {
+        const id = Number(b.dataset.attPick);
+        const found = items.find((x) => x.id === id);
+        if (!found || typeof openFolderPickerDialog !== 'function') return;
+        openFolderPickerDialog(cwd || '', (picked) => {
+          if (!picked) return;
+          found.path = picked;
+          found.name = picked.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || found.name;
+          found.failed = false;
+          found.loading = false;
+          paint();
+        });
+      };
+    });
     stripEl.querySelectorAll('[data-att-rm]').forEach((b) => {
       b.onclick = () => {
         const id = Number(b.dataset.attRm);
@@ -78,7 +95,7 @@ function createAttachmentStrip(stripEl, cwd) {
           }
           return;
         }
-        items = items.filter((x) => x.id !== entry.id);
+        entry.failed = true;
         paint();
         const pickerAction = typeof openFolderPickerDialog === 'function'
           ? {
@@ -86,7 +103,10 @@ function createAttachmentStrip(stripEl, cwd) {
             onClick: () => openFolderPickerDialog(cwd || '', (picked) => {
               if (!picked) return;
               const clean = picked.replace(/[\\/]+$/, '');
-              items.push({ id: ++seq, name: clean.split(/[\\/]/).pop() || clean, ext: 'FOLDER', isDir: true, path: picked });
+              entry.path = picked;
+              entry.name = clean.split(/[\\/]/).pop() || clean;
+              entry.failed = false;
+              entry.loading = false;
               paint();
             }),
           }
@@ -94,7 +114,8 @@ function createAttachmentStrip(stripEl, cwd) {
         toast(`폴더 경로를 자동으로 찾지 못했습니다 (${entry.name})`, 6000, 'default', pickerAction);
       })
       .catch(() => {
-        items = items.filter((x) => x.id !== entry.id);
+        entry.loading = false;
+        entry.failed = true;
         paint();
         toast(`폴더 경로를 확인하지 못했습니다 (${entry.name})`, 4000, 'danger');
       });
@@ -102,8 +123,8 @@ function createAttachmentStrip(stripEl, cwd) {
 
   const addFiles = (fileList, dtItems = [], preEntries = null) => {
     const arr = [...(fileList || [])];
-    const itemEntries = [...(dtItems || [])];
-    const fsEntries = Array.isArray(preEntries) ? preEntries : itemEntries.map((it) => it.webkitGetAsEntry?.() || null);
+    const fileItems = [...(dtItems || [])].filter((it) => !it?.kind || it.kind === 'file');
+    const fsEntries = Array.isArray(preEntries) ? preEntries : fileItems.map((it) => it.webkitGetAsEntry?.() || null);
     const total = Math.max(arr.length, fsEntries.length);
     if (!total) return;
     for (let i = 0; i < total; i++) {
@@ -264,7 +285,7 @@ if (!window.__achDropGuard) {
 }
 function attachFileInput(el, insert, cwd, opts = {}) {
   el.dataset.fileInput = '1';
-  if (desktopBridge) el.addEventListener('hub-file-paths', ({ detail }) => {
+  el.addEventListener('hub-file-paths', ({ detail }) => {
     const paths = Array.isArray(detail) ? detail : (detail?.paths || []);
     const entries = Array.isArray(detail) ? null : (detail?.entries || null);
     if (!paths.length) return;
@@ -273,7 +294,7 @@ function attachFileInput(el, insert, cwd, opts = {}) {
   });
   const handle = async (dt) => {
     const files = clipFiles(dt);
-    const items = [...(dt.items || [])];
+    const items = [...(dt.items || [])].filter((it) => !it?.kind || it.kind === 'file');
     // webkitGetAsEntry must be read synchronously inside the drop/paste event turn
     const entries = items.map((it) => it.webkitGetAsEntry?.() || null);
     if (!files.length && !entries.some(Boolean)) return;
@@ -293,7 +314,13 @@ function attachFileInput(el, insert, cwd, opts = {}) {
     }
     if (paths.length && insert) insert(paths.join(' ') + ' ');
   };
-  el.addEventListener('dragover', (e) => { if (e.dataTransfer?.types?.includes('Files')) { e.preventDefault(); el.classList.add('dropping'); } });
+  el.addEventListener('dragover', (e) => {
+    if (e.dataTransfer?.types?.includes('Files')) {
+      e.preventDefault();
+      try { e.dataTransfer.dropEffect = 'copy'; } catch {}
+      el.classList.add('dropping');
+    }
+  });
   el.addEventListener('dragleave', (e) => { if (!el.contains(e.relatedTarget)) el.classList.remove('dropping'); });
   el.addEventListener('drop', (e) => {
     el.classList.remove('dropping');
@@ -319,20 +346,27 @@ function attachFileInput(el, insert, cwd, opts = {}) {
 // every other text box in the dashboard (new-session prompt, research message ...): a pasted
 // image or file becomes its path (uploaded into hub/uploads), inserted at the cursor
 const filePasteSelector = 'textarea, input:not([type]), input[type=text], input[type=search]';
-const desktopBridge = typeof window.__TAURI_INTERNALS__?.invoke === 'function' ? (() => {
-  let picking = false;
-  window.addEventListener('hub-native-drop', ({ detail: { paths = [], entries = null, x, y } }) => {
-    const scale = window.devicePixelRatio;
-    const target = document.elementFromPoint(x / scale, y / scale);
-    const dropZone = target?.closest('[data-file-input]');
+if (!window.__achNativeDropListener) {
+  window.__achNativeDropListener = true;
+  window.addEventListener('hub-native-drop', ({ detail: { paths = [], entries = null, x = 0, y = 0 } = {} }) => {
+    if (!paths.length) return;
+    const scale = window.devicePixelRatio || 1;
+    const hitScaled = document.elementFromPoint(x / scale, y / scale);
+    const hitRaw = hitScaled?.closest('[data-file-input], ' + filePasteSelector) ? hitScaled : document.elementFromPoint(x, y);
+    const target = hitScaled?.closest('[data-file-input]') ? hitScaled : (hitRaw || hitScaled);
+    const dropZone = target?.closest('[data-file-input]')
+      || [...document.querySelectorAll('.chat-shell[data-file-input]')].find((el) => el.offsetParent !== null)
+      || [...document.querySelectorAll('[data-file-input]')].find((el) => el.offsetParent !== null);
     if (dropZone) {
       dropZone.dispatchEvent(new CustomEvent('hub-file-paths', { detail: { paths, entries } }));
       return;
     }
-    const box = target?.closest(filePasteSelector);
+    const box = target?.closest(filePasteSelector) || (document.activeElement?.matches?.(filePasteSelector) ? document.activeElement : null);
     if (box && !box.disabled && !box.readOnly) insertFilePaths(box, paths);
   });
-
+}
+const desktopBridge = typeof window.__TAURI_INTERNALS__?.invoke === 'function' ? (() => {
+  let picking = false;
   return {
     async pickFolder(initialPath) {
       if (picking) return null;

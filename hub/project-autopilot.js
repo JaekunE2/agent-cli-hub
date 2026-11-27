@@ -169,19 +169,56 @@ function lintEvidence(gitSummary = '', taskOut = '') {
   return { ok: true };
 }
 
+function isProjectCompleted(project) {
+  const active = (project?.tasks || []).filter((t) => !t?.autoExclude);
+  return active.length > 0 && active.every((t) => t.stage === 'done');
+}
+
+function cleanupCompletedProjectTerminals(hub, project, { versionNumber = null, force = false } = {}) {
+  if (!hub?.terms || !hub?.forgetTerm || !project?.id) return 0;
+  const completed = isProjectCompleted(project);
+  if (!completed && !versionNumber && !force) return 0;
+  const versionTaskIds = versionNumber
+    ? new Set((project.tasks || []).filter((tk) => (tk.version || '') === versionNumber).map((tk) => tk.id))
+    : null;
+  let closed = 0;
+  for (const t of [...hub.terms.values()]) {
+    if (t.meta?.operator) continue;
+    const pt = t.meta?.projectTask;
+    const ptm = t.meta?.projectMerge;
+    const belongsToProject = pt?.projectId === project.id || ptm?.projectId === project.id
+      || (/^\[병합\]/.test(t.title || '') && project.cwd && t.cwd === project.cwd);
+    if (!belongsToProject) continue;
+    if (!completed && versionTaskIds && pt?.projectId === project.id && !versionTaskIds.has(pt.taskId)) continue;
+    if (!force && t.exited === null) {
+      const st = hub.isCodexTerm?.(t) ? hub.codexStatus?.(t) : hub.isAgyTerm?.(t) ? hub.agyStatus?.(t) : hub.claudeStatus?.(t);
+      if (st === 'busy') continue;
+    }
+    try { if (pt) hub.rememberProjectTerm?.(t); } catch {}
+    hub.forgetTerm(t);
+    closed++;
+  }
+  if (closed) hub.overviewStale?.();
+  return closed;
+}
+
 function cleanupDoneTerminals(hub, project, taskIds = []) {
   if (!hub?.terms || !hub?.forgetTerm) return;
   const closeTaskTerms = project?.autoCloseDoneTerms !== false;
   const idSet = new Set(taskIds);
   for (const t of [...hub.terms.values()]) {
-    if (t.exited !== null || t.meta?.operator) continue;
+    if (t.meta?.operator) continue;
     const pt = t.meta?.projectTask;
     const ptm = t.meta?.projectMerge;
     const isMatchMerge = ptm?.projectId === project?.id && ptm.taskIds?.some((id) => idSet.has(id));
     const isMatchTask = closeTaskTerms && pt?.projectId === project?.id && idSet.has(pt.taskId);
     if (isMatchMerge || isMatchTask) {
+      try { if (pt) hub.rememberProjectTerm?.(t); } catch {}
       hub.forgetTerm(t);
     }
+  }
+  if (isProjectCompleted(project)) {
+    cleanupCompletedProjectTerminals(hub, project, { force: true });
   }
 }
 
@@ -1239,6 +1276,9 @@ async function checkAutopilotCompletions(hub) {
             hub.overviewStale?.();
           }
         }
+        if (isProjectCompleted({ ...project, tasks: checkedMergeTasks })) {
+          cleanupCompletedProjectTerminals(hub, { ...project, tasks: checkedMergeTasks });
+        }
       }
       const merge = mergeQueue(project)[0];
       if (merge && merge.reviewStatus !== 'merge-blocked' && !project.tasks.some((task) => reviewInFlight.has(`${project.id}:${task.id}`))
@@ -1293,6 +1333,8 @@ module.exports = {
   findReadyTasks,
   runProjectAutopilot,
   completeAutopilotTask,
+  isProjectCompleted,
+  cleanupCompletedProjectTerminals,
   checkAutopilotCompletions,
   parseReviewVerdict,
   readReviewResult,

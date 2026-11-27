@@ -87,7 +87,7 @@ function select(sel, tab, persistTab = false) {
   renderSide();
   window.ACH_PREVIEW?.setActiveController(null);
   if (sel.kind === 'schedules') return viewSchedules();
-  return ({ home: viewHome, terms: viewTerms, projects: window.viewProjects || (() => { setBar('<h2>Project</h2>'); $('#view').textContent = 'Project 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }), console: viewConsole, recent: viewTranscript, term: viewTerm, search: viewSearch, usage: viewUsage, research: viewResearch, gpu: viewGpu, operator: window.viewOperator || (() => { setBar('<h2>관제 세션</h2>'); }), 'trusted-folders': window.viewTrustedFolders || (() => { setBar('<h2>신뢰 폴더</h2>'); }), calendar: viewCalendar, apps: () => (window.viewApps ? window.viewApps(sel.id || '') : setBar('<h2>Apps</h2>')), vault: window.viewVault || (() => { setBar('<h2>공통 자원</h2>'); $('#view').textContent = '공통 자원 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }) })[sel.kind]?.();
+  return ({ home: viewHome, terms: viewTerms, projects: window.viewProjects || (() => { setBar('<h2>Project</h2>'); $('#view').textContent = 'Project 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }), console: viewConsole, recent: viewTranscript, term: viewTerm, search: viewSearch, usage: viewUsage, research: viewResearch, gpu: viewGpu, operator: window.viewOperator || (() => { setBar('<h2>관제 세션</h2>'); }), 'trusted-folders': viewUsage, calendar: viewCalendar, apps: () => (window.viewApps ? window.viewApps(sel.id || '') : setBar('<h2>Apps</h2>')), vault: window.viewVault || (() => { setBar('<h2>공통 자원</h2>'); $('#view').textContent = '공통 자원 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }) })[sel.kind]?.();
 }
 
 function setBar(html) {
@@ -261,7 +261,6 @@ function openCommandPalette() {
       { icon: ICO.gpu, title: 'GPU 대기열', sub: '설정', keys: 'gpu vram 대기열 설정 settings', run: () => select({ kind: 'gpu' }) },
       { icon: ICO.layers, title: '공통 자원', sub: '설정 · 스킬/MCP/하네스', keys: 'vault shared resources skills mcp harness 공통 자원 통합 볼트 스킬 하네스 설정 settings', run: () => select({ kind: 'vault' }) },
       { icon: ICO.settings, title: '관제 세션', sub: '설정 · CLI/주기', keys: 'operator 관제 세션 cli claude codex agy 설정 settings', run: () => select({ kind: 'operator' }) },
-      { icon: ICO.folder, title: '신뢰 폴더', sub: '설정 · 폴더 접근 권한', keys: 'trust trusted folders 신뢰 폴더 권한 설정 settings', run: () => select({ kind: 'trusted-folders' }) },
       { icon: ICO.sun, title: '테마 전환 (시스템 · 라이트 · 다크)', sub: '화면 밝기 변경', keys: 'theme dark light 테마 다크 라이트', run: () => cycleTheme() },
     ].filter((a) => hit(a.title, a.sub, a.keys));
     pushGrp('빠른 이동 · 작업', actions);

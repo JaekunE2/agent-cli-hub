@@ -1170,6 +1170,18 @@ function createTermManager(hub) {
         if (tp && tp !== t.cwd) pushRoot(tp, 2);
       }
     }
+    try {
+      const recentCwds = new Set();
+      for (const d of (index?.docs?.values?.() || [])) {
+        if (d?.cwd && !recentCwds.has(d.cwd)) {
+          recentCwds.add(d.cwd);
+          pushRoot(d.cwd, 3);
+          const dp = path.dirname(d.cwd);
+          if (dp && dp !== d.cwd) pushRoot(dp, 2);
+          if (recentCwds.size >= 40) break;
+        }
+      }
+    } catch {}
     for (const r of [
       path.join(home, 'Desktop'),
       path.join(home, 'OneDrive', 'Desktop'),
@@ -1180,7 +1192,8 @@ function createTermManager(hub) {
       ...(config.locateRoots || []),
     ]) pushRoot(r, 3);
     if (isWin) {
-      for (const drv of ['C:\\', 'D:\\', 'E:\\', 'F:\\']) pushRoot(drv, 2);
+      pushRoot('D:\\Gitsource', 4);
+      for (const drv of ['C:\\', 'D:\\', 'E:\\', 'F:\\']) pushRoot(drv, drv === 'C:\\' ? 2 : 3);
     }
 
     const rootMaxDepth = new Map();
@@ -1204,7 +1217,6 @@ function createTermManager(hub) {
         try {
           const st = fs.statSync(path.join(dirPath, s.name));
           if (!st.isFile() || st.size !== s.size) return false;
-          if (s.mtime && Math.abs(st.mtimeMs - s.mtime) > 3000) return false;
         } catch { return false; }
       }
       let ents;
@@ -1216,7 +1228,6 @@ function createTermManager(hub) {
         if (!byName.has(c.key)) return false;
         if (byName.get(c.key) !== c.isDir) return false;
       }
-      if (cleanChildren.length < 60 && visible.length > cleanChildren.length + 8) return false;
       return true;
     };
 

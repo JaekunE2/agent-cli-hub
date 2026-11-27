@@ -14,7 +14,7 @@ function folderTarget(item, term = false, readOnly = false) {
 function folderBadgeContent({ primaryCwd, count, trust }) {
   const refBadge = count > 0 ? `<span class="badge c">+${count}</span>` : '';
   const warnBadge = trust === 'untrusted' ? '<span class="badge warn" title="미신뢰 폴더">!</span>' : '';
-  return `<span class="folder-short">${esc(primaryCwd ? base(primaryCwd) : '참조 폴더')}</span>${refBadge}${warnBadge}`;
+  return `${ICO.folder || ''}<span class="folder-short">${esc(primaryCwd ? base(primaryCwd) : '참조 폴더')}</span>${refBadge}${warnBadge}`;
 }
 
 const folderBadgeTitle = (target) => ['참조 폴더 설정', target.primaryCwd, target.count > 0 ? `참조 ${target.count}개` : '', target.trust ? folderStateLabel(target.trust) : '']

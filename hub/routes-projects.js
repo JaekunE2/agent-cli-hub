@@ -8,7 +8,7 @@ const { spawn, execFile } = require('child_process');
 const gitVersion = require('util').promisify(execFile);
 
 const { resolveTaskConfig, computeHarnessStats } = require('./project-harness');
-const { runProjectAutopilot, completeAutopilotTask } = require('./project-autopilot');
+const { runProjectAutopilot, completeAutopilotTask, cleanupCompletedProjectTerminals } = require('./project-autopilot');
 const { versionFolder, copyVersion, versionWorkspace, scanVersion } = require('./version-files');
 const { createFileRuns, fileRunPath } = require('./project-file-runs');
 const { VERSION_RE } = require('./project-validation');
@@ -836,6 +836,7 @@ function createProjectRoutes(hub) {
             }
             const project = projects.save({ ...previous, revision: draft.revision,
               versions: previous.versions.map((x) => x === version ? { ...x, completedCommit: head } : x) });
+            cleanupCompletedProjectTerminals(hub, project, { versionNumber: version.number, force: true });
             hub.overviewStale?.();
             send(res, 200, { project, autoStarted: [] });
             return true;
@@ -882,6 +883,7 @@ function createProjectRoutes(hub) {
             autoStarted = autoRes.started || [];
           }
           const latest = projects.list().find((x) => x.id === project.id) || project;
+          cleanupCompletedProjectTerminals(hub, latest);
           send(res, 200, { project: latest, autoStarted });
         } catch (e) { send(res, 400, { error: e.message }); }
         return true;
