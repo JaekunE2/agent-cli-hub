@@ -53,8 +53,13 @@ window.HubPlugins = HubPlugins;
   const inner = renderSide;
   renderSide = function renderSideGuarded() {
     try {
+      const side = $('#side');
       inner();
+      // the plugin entries go in at the top after the sidebar restored its scroll position; scroll
+      // anchoring then pushed the list down by their height on every re-render (each poll), so put it back
+      const top = side?.scrollTop;
       try { addPluginNav(); } catch (e) { uiErr('사이드바 연동 메뉴', e); }
+      if (side && top != null && side.scrollTop !== top) side.scrollTop = top;
     } catch (e) {
       uiErr('사이드바', e);
       const it = (key, title, sub) => `<div class="srow" data-key="${esc(key)}"><div class="srow-main"><div class="srow-t">${esc(title)}</div><div class="srow-s">${esc(sub || '')}</div></div></div>`;

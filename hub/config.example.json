@@ -3,6 +3,7 @@
   "lang": "en",
   "remote": "tailscale",
   "consoles": true,
+  "sidebar": { "order": "activity", "favoritesInList": true },
   "python": "C:\\Python312\\python.exe",
   "codex": "C:\\Users\\you\\AppData\\Roaming\\npm\\codex.cmd",
   "cursorAgent": "C:\\Users\\you\\AppData\\Local\\cursor-agent\\cursor-agent.cmd",

@@ -671,6 +671,50 @@ function sortConsolesByState(list) {
     return consoleActivityTs(b) - consoleActivityTs(a);
   });
 }
+// Sidebar order. 'activity' (default): the most recently used session first, so rows move as
+// sessions get input. 'stable': rows stay where they are while sessions work; terminals in the
+// order they were opened, status changes only update badges. Set per hub with config.json
+// "sidebar": { "order": "stable" }, or per browser with the sidebar's order button.
+const SIDE_ORDER_KEY = 'ach-side-order';
+function sideOrderMode() {
+  try { const v = localStorage.getItem(SIDE_ORDER_KEY); if (v === 'stable' || v === 'activity') return v; } catch {}
+  return state.features?.sidebar?.order === 'stable' ? 'stable' : 'activity';
+}
+function setSideOrderMode(mode) {
+  try { localStorage.setItem(SIDE_ORDER_KEY, mode); } catch {}
+}
+// Favorites also listed again under the session list? (config "sidebar": { "favoritesInList": false } hides them there)
+function sideFavsInList() {
+  return state.features?.sidebar?.favoritesInList !== false;
+}
+const SIDE_KIND_ORDER = { term: 0, console: 1, recent: 2 };
+function stableEntryCompare(a, b) {
+  const rd = (a.rank ?? 9) - (b.rank ?? 9);
+  if (rd !== 0) return rd;
+  const kd = (SIDE_KIND_ORDER[a.kind] ?? 9) - (SIDE_KIND_ORDER[b.kind] ?? 9);
+  if (kd !== 0) return kd;
+  if (a.kind === 'recent') {
+    // running sessions without a hub terminal: by start time; history records: newest first (they only change when resumed)
+    const la = (state.live || []).find((s) => s.sessionId === a.item?.sessionId);
+    const lb = (state.live || []).find((s) => s.sessionId === b.item?.sessionId);
+    if (la && lb) return (Number(la.startedAt) || 0) - (Number(lb.startedAt) || 0) || String(a.item.sessionId).localeCompare(String(b.item.sessionId));
+    return (Number(b.item?.mtime) || 0) - (Number(a.item?.mtime) || 0) || String(a.item?.sessionId).localeCompare(String(b.item?.sessionId));
+  }
+  return (Number(a.item?.id) || 0) - (Number(b.item?.id) || 0);
+}
+function compareSideEntries(a, b, recentMap = null) {
+  return sideOrderMode() === 'stable' ? stableEntryCompare(a, b) : compareUnifiedEntries(a, b, recentMap);
+}
+function sortTermsForSide(list) {
+  if (sideOrderMode() !== 'stable') return sortTermsByState(list);
+  return [...list].sort((a, b) => stableEntryCompare(
+    { kind: 'term', rank: SIDE_LIVE_RANK[termStateOf(a)] ?? 9, item: a },
+    { kind: 'term', rank: SIDE_LIVE_RANK[termStateOf(b)] ?? 9, item: b }));
+}
+function sortConsolesForSide(list) {
+  if (sideOrderMode() !== 'stable') return sortConsolesByState(list);
+  return [...list].sort((a, b) => (Number(a.id) || 0) - (Number(b.id) || 0));
+}
 function projectOfSession(sessionId) {
   return sessionId ? (state.projects || []).find((p) => p.sessionIds?.includes(sessionId)) || null : null;
 }

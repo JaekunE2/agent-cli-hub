@@ -29,7 +29,7 @@ function sortEntriesForBucket(entries, bucketKey, sgData, recentMap) {
     const ra = rankOf(a);
     const rb = rankOf(b);
     if (ra !== rb) return ra - rb;
-    return compareUnifiedEntries(a, b, recentMap);
+    return compareSideEntries(a, b, recentMap);
   });
 }
 
@@ -310,6 +310,7 @@ function openSessionGroupModal(focusGroupId = '') {
 }
 
 // ---------- Sidebar Navigation Tree ----------
+const SIDE_ORDER_ICO = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4v16M3 16l4 4 4-4"/><path d="M14 6h7M14 12h5M14 18h3"/></svg>';
 function resolvedFavs() {
   const favs = state.favs || new Set();
   const rawKeys = [...favs];
@@ -466,7 +467,7 @@ function renderSide() {
         const dot = live ? (live.status === 'busy' ? 'busy' : 'idle') : null;
         favRowsArr.push(`<div class="srow${isSel ? ' sel' : ''}" data-key="recent:${esc(sid)}"${isBr ? ` title="${esc(branchTooltip(r.branch))}"` : ''}>
           ${agentIcon(r?.agent || 'claude', dot)}
-          <div class="srow-main"><div class="srow-t">${esc(lbl)}</div>${dot ? `<div class="srow-s">${sideLiveStateTag(dot)}</div>` : ''}</div>
+          <div class="srow-main"><div class="srow-t">${esc(lbl)}</div><div class="srow-s">${dot ? sideLiveStateTag(dot) : `<span>${esc(r?.mtime ? ago(r.mtime) : '기록')}</span>`}</div></div>
           <span class="srow-end">${branchTagHTML(r?.branch, true)}<span class="fav on" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="즐겨찾기 해제">${ICO.starFill}</span></span>
         </div>`);
       }
@@ -488,6 +489,7 @@ function renderSide() {
   const projects = [...(state.projects || [])]
     .filter((p) => matchSide(p.name, p.cwd || ''))
     .sort((a, b) => {
+      if (sideOrderMode() === 'stable') return 0;
       const ab = (state.terms || []).some((t) => termStateOf(t) === 'busy' && projectOfTerm(t)?.id === a.id) ? 0 : 1;
       const bb = (state.terms || []).some((t) => termStateOf(t) === 'busy' && projectOfTerm(t)?.id === b.id) ? 0 : 1;
       return ab - bb;
@@ -531,8 +533,8 @@ function renderSide() {
 
   // Unified Recent Conversations & Active Terminals
   const showProjTerms = !!state.showProjectTerms || !!state.termGroupByProject || !!fTerms.length;
-  const allCons = sortConsolesByState(visibleConsoles()).filter((c) => matchSide(consoleLabel(c), '콘솔'));
-  const allTerms = sortTermsByState(state.terms || [])
+  const allCons = sortConsolesForSide(visibleConsoles()).filter((c) => matchSide(consoleLabel(c), '콘솔'));
+  const allTerms = sortTermsForSide(state.terms || [])
     .filter((t) => !isEphemeralTerm(t))
     .filter((t) => matchSide(termLabel(t), t.cwd || '', projectOfTerm(t)?.name || '', t.agent || ''));
   const hiddenProjTerms = showProjTerms ? 0 : allTerms.filter((t) => isProjectSubSession(t)).length;
@@ -565,6 +567,13 @@ function renderSide() {
     return (cs?.agent || '') === rf;
   });
   const recentMap = new Map((state.recent || []).map((r) => [r.sessionId, r]));
+  const favShownAbove = !sideFavsInList() && resolvedFavList.length > 0 && !favFolded;
+  const favEntryKeys = new Set(favShownAbove ? resolvedFavList.flatMap((e) => [
+    ...(e.allKeys || [e.key]),
+    e.kind === 'term' ? `term:${e.item.id}` : '',
+    e.kind === 'term' && e.item.sessionId ? `sid:${e.item.sessionId}` : '',
+  ]).filter(Boolean) : []);
+  const notFavAbove = (entry) => !favShownAbove || !sessionKeysForEntry(entry).some((k) => favEntryKeys.has(k));
   const combinedLive = [
     ...shownTerms.map((t) => ({ kind: 'term', rank: SIDE_LIVE_RANK[termStateOf(t)] ?? 9, item: t })),
     ...shownCons.map((c) => ({ kind: 'console', rank: SIDE_LIVE_RANK[consoleStateOf(c)] ?? 9, item: c })),
@@ -591,7 +600,7 @@ function renderSide() {
       return { kind: 'recent', rank, item: r };
     });
 
-  const unifiedEntries = [...combinedLive, ...unlinkedRecent].sort((a, b) => compareUnifiedEntries(a, b, recentMap));
+  const unifiedEntries = [...combinedLive, ...unlinkedRecent].filter(notFavAbove).sort((a, b) => compareSideEntries(a, b, recentMap));
   const liveCount = activeTermCount + (state.recent || []).filter((r) => !seenSids.has(r.sessionId) && liveBySid.has(r.sessionId) && (showProjTerms || !isProjectSubRecent(r))).length;
 
   const groupButton = `<button type="button" class="ghost icon-btn side-group-btn" data-side-group title="그룹 지정" aria-label="그룹 지정">${ICO.folder}</button>`;
@@ -785,6 +794,7 @@ function renderSide() {
   const cleanExitedTitle = `종료된 터미널 정리 (${exitedCount})`;
   const groupProjLbl = 'Project별 묶어보기';
   const manageGroupsLbl = '일반 세션 그룹 관리';
+  const sideOrderLbl = sideOrderMode() === 'stable' ? '순서 고정 (연 순서) · 눌러서 최근 활동순으로' : '최근 활동순 · 눌러서 순서 고정';
   h += `<div class="ssec">
     <div class="ssec-hd">
       ${foldBtnHTML('recent', recFolded, isEnUI() ? 'Sessions' : '목록')}
@@ -792,6 +802,7 @@ function renderSide() {
       ${exitedCount ? `<button class="ghost icon-btn ssec-act" data-side-clean-exited="1" title="${cleanExitedTitle}" aria-label="${cleanExitedAria}">${ICO.trash}</button>` : ''}
       <button class="ghost icon-btn ssec-act${hasCustomGroups ? ' on' : ''}" data-sgrp-manage="1" title="${manageGroupsLbl}" aria-label="${manageGroupsLbl}">${ICO.folder}</button>
       <button class="ghost icon-btn ssec-act${state.termGroupByProject ? ' on' : ''}" data-tgroup="1" title="${groupProjLbl}" aria-pressed="${state.termGroupByProject}" aria-label="${groupProjLbl}">${ICO.layers}</button>
+      <button class="ghost icon-btn ssec-act${sideOrderMode() === 'stable' ? ' on' : ''}" data-side-order="1" title="${sideOrderLbl}" aria-pressed="${sideOrderMode() === 'stable'}" aria-label="${sideOrderLbl}">${SIDE_ORDER_ICO}</button>
       <button class="ghost icon-btn ssec-act" data-rrefresh="1" title="세션 기록 새로고침" aria-label="세션 기록 새로고침">${ICO.refresh}</button>
       <button class="ghost icon-btn ssec-act" data-hopen-new="1" title="새 대화 · 터미널 열기" aria-label="새 대화 · 터미널 열기">${ICO.plus}</button>
     </div>
@@ -890,6 +901,11 @@ $('#side')?.addEventListener('click', async (e) => {
     e.stopPropagation();
     state.termGroupByProject = !state.termGroupByProject;
     try { localStorage.setItem('ach-term-group', state.termGroupByProject ? '1' : '0'); } catch {}
+    return renderSide();
+  }
+  if (e.target.closest('[data-side-order]')) {
+    e.stopPropagation();
+    setSideOrderMode(sideOrderMode() === 'stable' ? 'activity' : 'stable');
     return renderSide();
   }
   if (e.target.closest('[data-toggle-proj-terms]')) {

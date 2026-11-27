@@ -670,6 +670,8 @@
   "세션": "Session",
   "세션 기록": "Session history",
   "세션 기록 새로고침": "Refresh session history",
+  "순서 고정 (연 순서) · 눌러서 최근 활동순으로": "Fixed order (as opened) · click for most recent first",
+  "최근 활동순 · 눌러서 순서 고정": "Most recent first · click to fix the order",
   "세션 대화 기록": "Session conversation",
   "세션 메뉴": "Session menu",
   "세션 에이전트 필터": "Session agent filter",
