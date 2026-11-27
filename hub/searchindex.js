@@ -451,7 +451,7 @@ class SearchIndex {
         // "type" sits near the start of user lines but near the end of assistant lines.
         const head = lineBuf.subarray(0, 400).toString('utf8') + lineBuf.subarray(Math.max(0, lineBuf.length - 600)).toString('utf8');
         const isMsg = head.includes('"type":"user"') || head.includes('"type":"assistant"');
-        const isTitle = head.includes('"custom-title"') || head.includes('"type":"summary"');
+        const isTitle = head.includes('"custom-title"') || head.includes('"type":"summary"') || head.includes('"type":"ai-title"');
         if (doc.auto === null) { const m = head.match(/"entrypoint":"([^"]*)"/); if (m) doc.auto = m[1].startsWith('sdk'); }
         if (!isMsg && !isTitle && doc.cwd) return;
         const s = lineBuf.toString('utf8');
@@ -459,8 +459,10 @@ class SearchIndex {
         if (isMsg && s.includes('"tool_use_id"') && !hasToolAnswer) { if (!doc.cwd) { const m = s.match(/"cwd":"((?:[^"\\]|\\.)*)"/); if (m) doc.cwd = JSON.parse(`"${m[1]}"`); } return; }
         let e; try { e = JSON.parse(s); } catch { return; }
         doc.cwd = doc.cwd || e.cwd || null;
-        if (e.type === 'custom-title' && e.customTitle) doc.title = e.customTitle;
-        else if (e.type === 'summary' && e.summary && !doc.title) doc.title = e.summary;
+        if (e.type === 'custom-title' && e.customTitle) { doc.title = e.customTitle; doc.titleKind = 'custom'; }
+        // Claude Code's own session name: used until the user renames it, never over a custom title or summary
+        else if (e.type === 'ai-title' && e.aiTitle && (!doc.title || doc.titleKind === 'ai')) { doc.title = e.aiTitle; doc.titleKind = 'ai'; }
+        else if (e.type === 'summary' && e.summary && (!doc.title || doc.titleKind === 'ai')) { doc.title = e.summary; doc.titleKind = 'summary'; }
         if ((e.type !== 'user' && e.type !== 'assistant') || e.isMeta || e.isSidechain) return;
         if (hasToolAnswer) {
           const ansNote = claudeToolResultNote(e);

@@ -215,20 +215,24 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
     files.sort((a, b) => b.mtime - a.mtime);
     return files.slice(0, limit).map(({ p, mtime, sessionId }) => {
       transcriptIndex.set(sessionId, p);
-      let cwd = null, firstPrompt = null, title = null;
+      let cwd = null, firstPrompt = null, title = null, custom = false;
       try {
         for (const line of firstLines(p, 200_000)) {
           let e; try { e = JSON.parse(line); } catch { continue; }
           cwd = cwd || e.cwd;
-          if (e.type === 'custom-title') title = e.customTitle;
+          if (e.type === 'custom-title') { title = e.customTitle; custom = true; }
+          else if (e.type === 'ai-title' && e.aiTitle && !custom) title = e.aiTitle;
           if (!firstPrompt && e.type === 'user' && !e.isMeta) {
             const t = textOf(e.message?.content);
             if (t && !/^<(command|local-command|system-reminder)/.test(t.trim())) firstPrompt = t.slice(0, 140);
           }
         }
-        if (!title) for (const line of readTail(p, 60_000).split('\n')) {
+        if (!custom) for (const line of readTail(p, 60_000).split('\n')) {
           if (line.includes('"custom-title"') || line.includes('"summary"')) {
-            try { const e = JSON.parse(line); title = e.customTitle || e.summary || title; } catch {}
+            try { const e = JSON.parse(line); if (e.customTitle) custom = true; title = e.customTitle || e.summary || title; } catch {}
+          } else if (!custom && line.includes('"ai-title"')) {
+            // Claude Code names sessions itself ("ai-title"); a /rename (custom-title) always wins
+            try { const e = JSON.parse(line); if (e.type === 'ai-title' && e.aiTitle) title = e.aiTitle; } catch {}
           }
         }
       } catch {}

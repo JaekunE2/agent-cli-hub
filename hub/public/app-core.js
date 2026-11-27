@@ -533,24 +533,41 @@ function recentSession(id) {
     || state.search.sessions?.find(r => r.sessionId === id);
 }
 function windowTitle(raw) {
+  // test the title without the CLI's status glyph too: "✳ Claude Code" is as generic as "Claude Code"
   const title = String(raw || '').trim();
-  if (/^(?:[a-z]:[\\/]|\\\\|\/)|\.(?:exe|cmd|bat|ps1)$|^(?:claude(?: code)?|codex|agy|antigravity(?: cli)?|cursor(?: agent)?|(?:windows )?powershell|cmd|windows terminal)$/i.test(title)) return '';
-  return cleanSideTitle(stripGlyph(title));
+  const bare = stripGlyph(title).trim();
+  if ([title, bare].some((x) => /^(?:[a-z]:[\\/]|\\\\|\/)|\.(?:exe|cmd|bat|ps1)$|^(?:claude(?: code)?|codex|agy|antigravity(?: cli)?|cursor(?: agent)?|(?:windows )?powershell|cmd|windows terminal)$/i.test(x))) return '';
+  return cleanSideTitle(bare);
 }
+// Session name first (hub custom title, the name the CLI puts in its window title, the session's
+// custom title/summary), the first prompt only as a fallback: a long first prompt or a placeholder
+// such as "⭐ 7e16fb63" must not replace a name the session already has.
 function termLabel(t) {
   if (t.operator) return '관제 세션';
   const custom = cleanSideTitle(t.customTitle);
   if (custom) return custom;
   if (t.projectTask) return t.title;
+  const ownTitle = termOwnTitle(t);
+  if (/^🔬/u.test(ownTitle)) return ownTitle; // research directors: the project slug says more than "BRIEF.md 기반 자율 연구 P1"
   const session = recentSession(t.sessionId || (t.agy && state.sel.kind === 'term' && state.sel.id === t.id ? state.sel.agyResume : null));
   const con = t.pid && state.consoles.find(c => c.managed && (c.pids || []).includes(t.pid));
-  const label = cleanSideTitle(session?.title) || cleanSideTitle(session?.firstPrompt)
-    || cleanSideTitle(t.sessionName) || windowTitle(con?.title) || windowTitle(t.liveTitle);
+  // like the old hub and `ccd ls`: the name the CLI shows in its own window title first
+  const label = windowTitle(con?.title) || windowTitle(t.liveTitle)
+    || cleanSideTitle(session?.title) || windowTitle(ownTitle)
+    || cleanSideTitle(t.sessionName) || cleanSideTitle(session?.firstPrompt);
   if (label) return label;
-  const title = String(t.title || '');
-  if (/^(?:powershell|pwsh)(?:\.exe)?$/i.test(title)) return 'PowerShell';
-  if (/^cmd(?:\.exe)?$/i.test(title)) return 'Command Prompt';
-  return (/^(?:agy |codex resume |claude resume )[\da-f-]+$/i.test(title) ? '' : windowTitle(title)) || providerName(t.agent);
+  if (/^(?:powershell|pwsh)(?:\.exe)?$/i.test(ownTitle)) return 'PowerShell';
+  if (/^cmd(?:\.exe)?$/i.test(ownTitle)) return 'Command Prompt';
+  return providerName(t.agent);
+}
+// The title the terminal was opened with, minus decorations ("⭐ " from a resumed favorite, " ⇄ account")
+// and minus placeholders that are not a name ("⭐ 7e16fb63", "claude", "claude --resume <id>").
+function termOwnTitle(t) {
+  const title = String(t?.title || '').replace(/\s*⇄\s*\S+$/u, '').replace(/^⭐\s*/u, '').trim();
+  if (/^[\da-f]{8}$/i.test(title)) return '';
+  if (/^(?:claude|codex|agy|cursor)(?:\.exe)?$/i.test(title)) return '';
+  if (/^(?:agy|codex resume|claude resume|claude --resume|claude -r|codex --resume)\s+[\da-f-]+$/i.test(title)) return '';
+  return title;
 }
 function renameSessionItem({ sessionId = '', termId = '', currentTitle = '' } = {}) {
   const dialog = projectDialog('세션 명칭 수정', `
