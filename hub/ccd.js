@@ -1080,7 +1080,8 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
   },
 };
 
-const PLUGIN = require('./plugins').loadCli({ api, die, flags, pos, rest, DIR, BASE, PORT, token, usageDir, readTarget, overview, resolve, sessionIdOf, ago, termLabel, SELF_PID });
+const PLUGIN = require('./plugins').loadCli({ api, die, flags, pos, rest, DIR, BASE, PORT, token, usageDir, readTarget, overview, resolve, sessionIdOf, ago, termLabel, SELF_PID, coreCommands: Object.keys(cmds) });
+if (PLUGIN.refused.length && flags.verbose) console.error(`plugins: ${PLUGIN.refused.join('; ')}`);
 Object.assign(cmds, PLUGIN.commands);
 const FULL_HELP = PLUGIN_MANIFEST.help.length ? HELP.replace('\n<target>:', `\n${PLUGIN_MANIFEST.help.join('\n')}\n\n<target>:`) : HELP;
 

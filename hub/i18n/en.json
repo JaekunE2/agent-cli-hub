@@ -4313,5 +4313,7 @@
   "이 허브(CCD": "Apps this hub (CCD",
   ")에서 쓸 수 없는 앱": ") cannot use:",
   "개는 숨겼습니다.": "hidden.",
-  "설치할 수 없음": "Cannot install"
+  "설치할 수 없음": "Cannot install",
+  "스토어 앱의 플러그인은 plugin.json에 apiVersion을 선언해야 합니다": "A store app's plugin must declare apiVersion in plugin.json",
+  "이 허브에서 쓸 수 없는 플러그인입니다:": "This hub cannot use the plugin:"
 }

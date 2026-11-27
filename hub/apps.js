@@ -504,7 +504,7 @@ module.exports = function appsModule(deps = {}) {
     const man = src ? safeJsonRead(path.join(src, 'plugin.json'), null) : null;
     const id = String(man?.id || '');
     if (!man || !/^[a-z0-9][a-z0-9_-]{0,47}$/.test(id)) return null;
-    return { src, id, dest: path.join(pluginsDir, id) };
+    return { src, id, dest: path.join(pluginsDir, id), man };
   }
   const ownedBy = (dir) => { try { return fs.readFileSync(path.join(dir, MARK), 'utf8').trim(); } catch { return ''; } };
   function pluginState(app) {
@@ -520,6 +520,10 @@ module.exports = function appsModule(deps = {}) {
   function installPlugin(app) {
     const p = pluginManifest(app);
     if (!p) throw new Error('앱의 hubPlugin 폴더에 올바른 plugin.json이 없습니다');
+    // a store plugin is written against a declared plugin API version (plugins.js): namespaced routes and commands
+    if (p.man.apiVersion === undefined) throw new Error('스토어 앱의 플러그인은 plugin.json에 apiVersion을 선언해야 합니다');
+    const why = require('./plugins').incompatible(p.man, platform().hubVersion);
+    if (why) throw new Error(`이 허브에서 쓸 수 없는 플러그인입니다: ${why}`);
     if (fs.existsSync(p.dest)) {
       if (ownedBy(p.dest) !== app.id) throw new Error(`이미 같은 ID의 로컬 플러그인이 있습니다: ${p.dest}`);
       fs.rmSync(p.dest, { recursive: true, force: true });
@@ -1015,7 +1019,11 @@ module.exports = function appsModule(deps = {}) {
           const old = update ? current.apps.find(item => item.id === previous.id) : null;
           if (current.apps.some(item => item !== old && (item.id === app.id || item.storeSource?.key === entry.key))) throw new Error('이미 설치된 스토어 앱입니다.');
           if (old) app.createdAt = old.createdAt;
-          app.env = acceptSettings(app, settingInput || old?.env || {});
+          // upgrade: values of renamed settings follow them (app.json "renamedSettings": { "OLD": "NEW" })
+          const renamed = manifest.renamedSettings && typeof manifest.renamedSettings === 'object' ? manifest.renamedSettings : {};
+          const input = { ...(settingInput || old?.env || {}) };
+          for (const [from, to] of Object.entries(renamed)) if (input[from] !== undefined && input[to] === undefined) { input[to] = input[from]; delete input[from]; }
+          app.env = acceptSettings(app, input);
           app.storeSource = source;
           if (old && old.hubPlugin && old.id !== app.id) removePlugin(old);
           const pluginId = plugin ? installPlugin(app) : '';
@@ -1152,7 +1160,13 @@ module.exports = function appsModule(deps = {}) {
           try { fs.unlinkSync(f.path); removedFiles.push(f.name); } catch {}
         }
       }
+      const pluginId = app.hubPlugin ? pluginManifest(app)?.id : null;
       const removedPlugin = app.hubPlugin ? removePlugin(app) : null;
+      // ?purgeData=1 also deletes the plugin's own data folder (hub/data/plugins/<id>); kept by default
+      let purgedData = false;
+      if (removedPlugin && /^(1|true)$/.test(url.searchParams.get('purgeData') || '') && pluginId) {
+        try { fs.rmSync(path.join(path.dirname(dataFile), 'plugins', pluginId), { recursive: true, force: true }); purgedData = true; } catch {}
+      }
       store.apps = store.apps.filter((a) => a.id !== app.id);
       saveStore(store);
       // the installed package folder belongs to the store; remove it with the app
@@ -1162,7 +1176,7 @@ module.exports = function appsModule(deps = {}) {
       }
       const runs = loadRuns();
       if (runs[app.id]) { delete runs[app.id]; saveRuns(runs); }
-      return send(200, { ok: true, id: app.id, purgedOutputs: purge, removedFiles, removedPlugin, removedPackage,
+      return send(200, { ok: true, id: app.id, purgedOutputs: purge, removedFiles, removedPlugin, removedPackage, purgedData,
         restartRequired: Boolean(removedPlugin), uninstallRun });
     }
 

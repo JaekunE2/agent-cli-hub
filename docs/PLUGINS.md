@@ -65,6 +65,38 @@ main hub run its `start` action. Apps reach the hub's services through the envir
 `ccd gpu run`, `ccd llm`, `ccd gpt`), and `ccd apps ls|search|info|install|update|remove|open|sources|source` drives
 the store from a terminal (`--set KEY=VALUE` for settings).
 
+## Plugin API v1 (App Store plugins)
+
+A plugin that comes with an App Store app must declare `"apiVersion": 1` (and `"requires": { "ccd": ">=1.0.0" }`) in
+`plugin.json`; the store refuses to install one that does not, and the loader (`plugins.js`) refuses one whose API
+version or CCD range this hub does not support, with the reason in `/api/plugins` and the server log. A v1 plugin
+may use exactly these hook points — nothing else of the core, and it never edits or patches core files or modules:
+
+| hook point | v1 rule |
+|---|---|
+| server routes | `handleApi` sees only `/api/plugins/<id>/…` (`api.routeBase`); `handlePage` only `/plugins/<id>/…`. It cannot shadow a core, upstream or other plugin route. |
+| legacy routes | `"legacyApi": ["/api/old"]` keeps an old prefix working for one minor version: rewritten into the namespace, logged as deprecated; refused when the core reserves it (`/api/apps`, `/api/drive`, `/api/sessions`, …) or another plugin already claimed it |
+| nav / views | browser `scripts` call `HubPlugins.register({ id: '<id>', … })` (fault-isolated in `plugin-host.js`) |
+| CSS | every selector starts with `.<id>`, `#<id>` or `[data-plugin="<id>"]` (contract test) |
+| ccd | `ccd <id> …`, plus aliases listed in `"commands"`; a core command or another plugin's name is refused |
+| hooks | only `remoteUrls`, `calendarSources`, `gpuRunCheck`, `gpuRunRemote`, `gptFallback`; others are dropped with a warning |
+| overview | keys another plugin already uses are dropped with a warning |
+| settings | `api.settings` / `ctx.settings` from its app's install settings; keys belong to the app (`app.json settings`) |
+| data | `api.dataDir` = `hub/data/plugins/<id>`; uninstall keeps it unless `?purgeData=1` |
+| i18n | its own `i18n/en.json` (Korean → English) applies to its browser files only |
+| lifecycle | app `setup.ps1` (install / upgrade), `start` / `stop` actions, `stop.ps1` before an upgrade, `uninstall.ps1`; server `start()` / `stop()`; `app.json renamedSettings` migrates settings on upgrade |
+
+Faults are contained: a plugin that throws while loading is not loaded and is reported; one whose routes throw 3 times
+is switched off until the next start; the hub keeps running. Plugins without `apiVersion` (shipped in the repo or
+machine-local) keep the earlier, unrestricted behaviour. When a hook point changes, the old form keeps working for one
+minor version with a deprecation warning before it is removed.
+
+Contract test (every App Store plugin must pass): `CCD_APP_DIRS="D:\src\app-a;D:\src\app-b" node --test tests/plugin-api.test.js`
+— loads each plugin in a side-instance hub with settings from its `app.json`, checks it answers its own routes and
+none of the core's (upstream Apps / App Store included), keeps its commands in its namespace, registers its browser
+files under its id with scoped CSS and English text, and leaves no timers after `stop()`; then loads all of them
+together with the shipped plugins.
+
 ## Hooks the core calls
 
 | hook | where | contract |

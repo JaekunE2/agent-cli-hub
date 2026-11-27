@@ -422,7 +422,7 @@ test('local registry: settings, hub plugin, update and uninstall', async (t) => 
   };
   fs.writeFileSync(path.join(repo, 'app.json'), JSON.stringify(manifest));
   fs.writeFileSync(path.join(repo, 'icon.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
-  fs.writeFileSync(path.join(repo, 'plugin', 'plugin.json'), JSON.stringify({ id: 'demo-plugin', provides: { thing: '${DATA_DIR}' } }));
+  fs.writeFileSync(path.join(repo, 'plugin', 'plugin.json'), JSON.stringify({ id: 'demo-plugin', apiVersion: 1, provides: { thing: '${DATA_DIR}' } }));
   const catalog = path.join(h.tmp, 'catalog.json');
   fs.writeFileSync(catalog, JSON.stringify({ registry: { submitUrl: 'https://github.com/o/r/issues/new' }, apps: [
     { repo: repo, featured: true }, { repo: 'https://github.com/o/hidden', draft: true },
@@ -442,6 +442,16 @@ test('local registry: settings, hub plugin, update and uninstall', async (t) => 
   // a required setting must be given
   assert.equal((await h.call('POST', '/api/apps-store/package', { key: entry.key, digest: preview.digest, settings: {} })).status, 400);
   const dataDir = path.join(h.tmp, 'data-x');
+  // a store plugin must declare a plugin API version this hub supports
+  for (const bad of [{ id: 'demo-plugin' }, { id: 'demo-plugin', apiVersion: 99 }]) {
+    fs.writeFileSync(path.join(repo, 'plugin', 'plugin.json'), JSON.stringify(bad));
+    const p = (await h.call('POST', '/api/apps-store/package', { key: entry.key })).payload.package;
+    const r = await h.call('POST', '/api/apps-store/package', { key: entry.key, digest: p.digest, settings: { DATA_DIR: dataDir } });
+    assert.equal(r.status, 400);
+    assert.match(r.payload.error, /apiVersion|API v99/);
+  }
+  fs.writeFileSync(path.join(repo, 'plugin', 'plugin.json'), JSON.stringify({ id: 'demo-plugin', apiVersion: 1, provides: { thing: '${DATA_DIR}' } }));
+  assert.equal(h.mod.loadStore().apps.length, 0);
   const inst = await h.call('POST', '/api/apps-store/package', { key: entry.key, digest: preview.digest, settings: { DATA_DIR: dataDir, PORT: '9001' } });
   assert.equal(inst.status, 200);
   assert.equal(inst.payload.package.restartRequired, true);
@@ -457,6 +467,8 @@ test('local registry: settings, hub plugin, update and uninstall', async (t) => 
   fs.mkdirSync(path.join(app.cwd, 'keep'));
   fs.writeFileSync(path.join(app.cwd, 'keep', 'state.txt'), 'kept');
   fs.writeFileSync(path.join(repo, 'CHANGELOG.md'), '## 1.1\n- better\n');
+  fs.writeFileSync(path.join(repo, 'app.json'), JSON.stringify({ ...manifest, entryUrl: 'http://127.0.0.1:{{HTTP_PORT}}/', renamedSettings: { PORT: 'HTTP_PORT' },
+    settings: [{ key: 'HTTP_PORT', label: 'Port', type: 'number', default: '8123' }, manifest.settings[1]] }));
   const next = (await h.call('POST', '/api/apps-store/package', { key: entry.key })).payload.package;
   assert.notEqual(next.digest, preview.digest);
   assert.equal(next.installedDigest, preview.digest);
@@ -464,7 +476,8 @@ test('local registry: settings, hub plugin, update and uninstall', async (t) => 
   assert.equal((await h.call('POST', '/api/apps-store/package', { key: entry.key, digest: next.digest, update: true })).status, 200);
   const apps = h.mod.loadStore().apps;
   assert.equal(apps.length, 1);
-  assert.equal(apps[0].env.PORT, '9002');
+  assert.equal(apps[0].env.HTTP_PORT, '9002');   // renamedSettings carried the value over
+  assert.equal(apps[0].env.PORT, undefined);
   assert.notEqual(apps[0].cwd, app.cwd);
   assert.equal(fs.existsSync(app.cwd), false);
   assert.equal(fs.readFileSync(path.join(apps[0].cwd, 'keep', 'state.txt'), 'utf8'), 'kept');
