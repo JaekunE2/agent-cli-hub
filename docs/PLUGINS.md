@@ -61,8 +61,13 @@ test copy next to the live hub) must not start background work, write shared fil
 | `dooray` | `dooray: { base }` | read-only Dooray calendars in the calendar |
 | `telegram` | `<secretsDir>/ccd-telegram.json` | `bridge.js` (its own process, main hub only) |
 | `call-digest` | `callDigest` | phone call recordings → transcripts → daily summaries |
+| `mobile-web` | (on unless `mobileWeb: false`), `remoteUrls` | installable hub over HTTPS: service worker, share target, phone uploads |
+| `hub-cleanup` | `hubCleanup` | duplicates / old versions / caches → per-drive 2-stage trash, approvals before deleting |
 
 Machine-local plugins (e.g. workflow jobs tied to one site) go to `hub/local/plugins/` and never reach git.
+
+Plugins with periodic work (call-digest, hub-cleanup, dooray) keep their own timer on the main hub. The hub's
+schedules feature (`ccd schedule`) starts agent CLIs with a prompt; it is not used for plain background jobs.
 
 ## Core patches that are not plugins
 

@@ -1,0 +1,7 @@
+{
+  "id": "hub-cleanup",
+  "name": "Hub cleanup",
+  "description": "Duplicates / old versions / caches / old files -> per-drive 2-stage trash, approvals before anything irreversible (config hubCleanup)",
+  "server": "server.js",
+  "scripts": ["ui.js"]
+}

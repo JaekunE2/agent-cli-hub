@@ -183,31 +183,73 @@
     }
   },
   "hubCleanup": {
-    "_comment": "plugin hub-cleanup: candidates -> per-drive .hub-trash/stage1 (restorable) -> stage2 after stage1Days -> purge after stage2Days only when approved",
-    "roots": [
-      "C:\\path\\to\\projects"
-    ],
-    "rules": {
-      "duplicates": true,
-      "oldVersions": true,
-      "caches": [
-        "__pycache__",
-        ".pytest_cache",
-        "node_modules/.cache"
-      ],
-      "oldLogsDays": 30,
-      "minSizeMB": 1
-    },
+    "_comment": "plugin hub-cleanup (rule format in plugins/hub-cleanup/cleanup.py): safe items -> <drive>:\\.hub-trash\\stage1 (restorable) -> stage2 after stage1_days -> deleted after stage2_days only when approved; confirm items wait for an approval",
+    "python": "python",
+    "min_age_days": 3,
+    "stage1_days": 14,
+    "stage2_days": 7,
     "protect": [
-      "**/.git/**",
-      "**/.claude/**",
-      "**/*.tex"
+      "*\\.git\\*",
+      "*\\manuscript*"
     ],
-    "recentDays": 7,
-    "stage1Days": 14,
-    "stage2Days": 7,
+    "hard_protect": [
+      "Z:\\"
+    ],
+    "cluster_bytes": {
+      "e": 1048576
+    },
+    "rules": [
+      {
+        "name": "duplicate uploads",
+        "type": "duplicates",
+        "level": "safe",
+        "min_mb": 1,
+        "roots": [
+          "C:\\path\\to\\hub\\uploads"
+        ]
+      },
+      {
+        "name": "duplicate downloads",
+        "type": "duplicates",
+        "level": "confirm",
+        "min_mb": 5,
+        "roots": [
+          "C:\\Users\\you\\Downloads"
+        ]
+      },
+      {
+        "name": "old job logs",
+        "type": "old_files",
+        "level": "safe",
+        "days": 30,
+        "pattern": "*",
+        "roots": [
+          "C:\\path\\to\\hub\\gpu-logs"
+        ]
+      },
+      {
+        "name": "old backups",
+        "type": "old_versions",
+        "level": "confirm",
+        "days": 30,
+        "roots": [
+          "C:\\path\\to\\projects"
+        ]
+      },
+      {
+        "name": "tool caches",
+        "type": "dirs",
+        "level": "safe",
+        "days": 30,
+        "children": true,
+        "paths": [
+          "C:\\path\\to\\cache"
+        ]
+      }
+    ],
     "schedule": {
-      "every": "weekly"
+      "weekday": 0,
+      "at": "03:00"
     }
   }
 }
