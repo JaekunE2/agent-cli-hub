@@ -427,10 +427,11 @@ function renderSide() {
         const isSel = curKind === 'term' && String(state.sel.id) === String(t.id);
         const unread = state.unreadTerms.has(String(t.id));
         const isBr = !!t.branch?.isBranch;
+        const favAliasKeys = [...new Set([...(entry.allKeys || [fk]), t.sessionId ? `sid:${t.sessionId}` : '', `term:${t.id}`].filter(Boolean))];
         favRowsArr.push(`<div class="srow${isSel ? ' sel' : ''}${unread ? ' just-done' : ''}" data-key="term:${esc(t.id)}"${isBr ? ` title="${esc(branchTooltip(t.branch))}"` : ''}>
           ${agentIcon(t.operator ? 'operator' : t.agent || 'shell', dot)}
           <div class="srow-main"><div class="srow-t">${esc(termLabel(t))}</div></div>
-          <span class="srow-end">${branchTagHTML(t.branch, true)}${unread ? '<span class="srow-tag done">완료</span>' : ''}<span class="fav on" data-fav="${esc(fk)}" data-fav-keys="${esc((entry.allKeys || [fk]).join(','))}" role="button" tabindex="0" aria-label="즐겨찾기 해제">${ICO.starFill}</span></span>
+          <span class="srow-end">${branchTagHTML(t.branch, true)}${unread ? '<span class="srow-tag done">완료</span>' : ''}<span class="fav on" data-fav="${esc(fk)}" data-fav-keys="${esc(favAliasKeys.join(','))}" role="button" tabindex="0" aria-label="즐겨찾기 해제">${ICO.starFill}</span></span>
         </div>`);
       } else if (entry.kind === 'sid') {
         const sid = entry.sid;
@@ -596,7 +597,9 @@ function renderSide() {
       const idStr = String(t.id);
       const isSel = curKind === 'term' && String(state.sel.id) === idStr;
       const unread = state.unreadTerms.has(idStr);
-      const fk = favKeyOf(`term:${idStr}`), isStar = !!fk && favs.has(fk);
+      const fk = favKeyOf(`term:${idStr}`);
+      const allFavKeys = [t.sessionId ? `sid:${t.sessionId}` : '', `term:${idStr}`].filter(Boolean);
+      const isStar = allFavKeys.some((k) => favs.has(k));
       const subKindTag = t.operator
         ? '<span class="srow-tag">관제</span>'
         : (!t.agent ? '<span class="srow-tag">셸</span>' : '');
@@ -612,7 +615,7 @@ function renderSide() {
       return `<div class="srow${isSel ? ' sel' : ''}${unread ? ' just-done' : ''}" data-key="term:${esc(t.id)}"${dragAttrs} title="${esc([termLabel(t), pj?.name, t.cwd, brTip].filter(Boolean).join(' · '))}">
         ${agentIcon(kind, dot)}
         <button type="button" class="ghost srow-main srow-open"><span class="srow-t">${esc(termLabel(t))}</span><span class="srow-s">${tags}</span></button>
-        <span class="srow-end">${t.operator ? '' : groupButton}${unread ? '<span class="srow-unread" title="방금 작업 완료"></span>' : ''}${fk ? `<span class="fav${isStar ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${isStar ? '즐겨찾기 해제' : '즐겨찾기'}">${isStar ? ICO.starFill : ICO.star}</span>` : ''}${closeTermBtn}</span>
+        <span class="srow-end">${t.operator ? '' : groupButton}${unread ? '<span class="srow-unread" title="방금 작업 완료"></span>' : ''}${fk ? `<span class="fav${isStar ? ' on' : ''}" data-fav="${esc(fk)}" data-fav-keys="${esc(allFavKeys.join(','))}" role="button" tabindex="0" aria-label="${isStar ? '즐겨찾기 해제' : '즐겨찾기'}">${isStar ? ICO.starFill : ICO.star}</span>` : ''}${closeTermBtn}</span>
       </div>`;
     }
     if (entry.kind === 'console') {

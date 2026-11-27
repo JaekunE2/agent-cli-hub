@@ -1058,10 +1058,28 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       const validKey = (k) => /^(sid:[\w-]{8,64}|term:\d{1,6}|proj:[\w-]{8,64})$/.test(String(k || ''));
       const keys = Array.isArray(b.keys) && b.keys.length ? b.keys.map(String) : [String(b.key || '')];
       if (!keys.every(validKey)) { send(res, 400, { error: 'bad key' }); return true; }
+      // Expand term:<id> <-> sid:<sessionId> aliases so starring/unstarring never leaves ghost duplicates
       const drop = new Set(keys);
+      let canonicalKey = keys[0];
+      for (const k of keys) {
+        if (k.startsWith('term:')) {
+          const t = hub.terms.get(k.slice(5));
+          const sid = t && hub.termSessionId?.(t);
+          if (sid) {
+            drop.add(`sid:${sid}`);
+            if (b.on && canonicalKey === k) canonicalKey = `sid:${sid}`;
+          }
+        } else if (k.startsWith('sid:')) {
+          const sid = k.slice(4);
+          for (const t of hub.terms.values()) {
+            if (hub.termSessionId?.(t) === sid) drop.add(`term:${t.id}`);
+          }
+        }
+      }
       const favs = hub.loadFavs().filter((k) => !drop.has(k));
-      if (b.on) favs.unshift(keys[0]);
+      if (b.on) favs.unshift(canonicalKey);
       fs.writeFileSync(hub.FAV_FILE, JSON.stringify(favs.slice(0, 50)));
+      overviewStale();
       send(res, 200, { favs: hub.liveFavs() });
       return true;
     }
