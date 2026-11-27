@@ -978,17 +978,34 @@ function createTermManager(hub) {
           }))
         : [];
       const validIds = new Set(groups.map((g) => g.id));
+      const keyRe = /^(sid:[\w-]{4,120}|term:\d{1,8})$/;
       const assignments = {};
       if (raw?.assignments && typeof raw.assignments === 'object') {
         for (const [k, v] of Object.entries(raw.assignments)) {
-          if (typeof k === 'string' && /^(sid:[\w-]{4,120}|term:\d{1,8})$/.test(k) && validIds.has(v)) {
+          if (typeof k === 'string' && keyRe.test(k) && validIds.has(v)) {
             assignments[k] = v;
           }
         }
       }
-      return { version: 1, groups, assignments };
+      const groupOrders = {};
+      if (raw?.groupOrders && typeof raw.groupOrders === 'object') {
+        for (const [bucket, arr] of Object.entries(raw.groupOrders)) {
+          if ((bucket === '_ungrouped' || validIds.has(bucket)) && Array.isArray(arr)) {
+            const seen = new Set();
+            const cleanArr = [];
+            for (const item of arr) {
+              if (typeof item === 'string' && keyRe.test(item) && !seen.has(item)) {
+                seen.add(item);
+                cleanArr.push(item);
+              }
+            }
+            if (cleanArr.length) groupOrders[bucket] = cleanArr.slice(0, 300);
+          }
+        }
+      }
+      return { version: 1, groups, assignments, groupOrders };
     } catch {
-      return { version: 1, groups: [], assignments: {} };
+      return { version: 1, groups: [], assignments: {}, groupOrders: {} };
     }
   }
 
@@ -997,6 +1014,7 @@ function createTermManager(hub) {
       version: 1,
       groups: Array.isArray(data?.groups) ? data.groups : [],
       assignments: data?.assignments && typeof data.assignments === 'object' ? data.assignments : {},
+      groupOrders: data?.groupOrders && typeof data.groupOrders === 'object' ? data.groupOrders : {},
     };
     fs.writeFileSync(SESSION_GROUPS_FILE, JSON.stringify(clean, null, 2) + '\n', 'utf8');
     return clean;

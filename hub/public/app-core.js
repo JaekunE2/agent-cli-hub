@@ -49,7 +49,7 @@ let booted = false;
 let activeBuildId = null;
 let updateNoticeShown = false;
 const state = {
-  sel: { kind: 'home' }, tab: 'screen', showHidden: false, favs: new Set(), sessionGroups: { version: 1, groups: [], assignments: {} }, showDesktop: (() => { try { return !!localStorage.getItem('ccd-show-desktop'); } catch { return false; } })(),
+  sel: { kind: 'home' }, tab: 'screen', showHidden: false, favs: new Set(), sessionGroups: { version: 1, groups: [], assignments: {}, groupOrders: {} }, showDesktop: (() => { try { return !!localStorage.getItem('ccd-show-desktop'); } catch { return false; } })(),
   live: [], consoles: [], terms: [], recent: [], projects: [], err: null,
   usage: null, research: [], gpu: null, services: null, hubDown: false,
   termFilter: '', termsTab: 'active', termsView: 'list', recentQuery: '', sysTab: 'usage',

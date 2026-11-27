@@ -3713,5 +3713,13 @@
   "” 그룹을 삭제할까요? (포함된 세션은 미분류로 이동됩니다)": "\" group? (Assigned sessions will move to Ungrouped)",
   "그룹을 찾을 수 없습니다": "Group not found",
   "대상 세션 키가 올바르지 않습니다": "Invalid target session key",
-  "알 수 없는 세션 그룹 작업입니다": "Unknown session group action"
+  "알 수 없는 세션 그룹 작업입니다": "Unknown session group action",
+  "우측 툴박스": "Right toolbox",
+  "미리보기 패널 열기/닫기": "Toggle preview panel",
+  "산출물 패널 열기/닫기": "Toggle outputs panel",
+  "코드 구조 패널 열기/닫기": "Toggle floorplan panel",
+  "드래그하여 그룹 순서 변경 · 세션을 끌어다 놓으면 이 그룹으로 이동": "Drag to reorder group · Drop a session here to move it into this group",
+  "여기로 세션을 드래그하세요": "Drag sessions here",
+  "미분류 세션 없음": "No ungrouped sessions",
+  "미분류로 이동했습니다": "Moved to Ungrouped"
 }

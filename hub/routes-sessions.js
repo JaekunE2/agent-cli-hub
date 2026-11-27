@@ -1109,6 +1109,74 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
         for (const [k, v] of Object.entries(data.assignments)) {
           if (v === id) delete data.assignments[k];
         }
+        if (data.groupOrders) delete data.groupOrders[id];
+        hub.saveSessionGroups(data);
+        overviewStale();
+        send(res, 200, { ok: true, sessionGroups: data });
+        return true;
+      }
+      if (action === 'reorder-groups') {
+        const wanted = Array.isArray(b.order) ? b.order.map(String) : [];
+        const byId = new Map(data.groups.map((g) => [g.id, g]));
+        const next = [];
+        const seen = new Set();
+        for (const id of wanted) {
+          const g = byId.get(id);
+          if (g && !seen.has(id)) { next.push(g); seen.add(id); }
+        }
+        for (const g of data.groups) {
+          if (!seen.has(g.id)) next.push(g);
+        }
+        data.groups = next;
+        hub.saveSessionGroups(data);
+        overviewStale();
+        send(res, 200, { ok: true, sessionGroups: data });
+        return true;
+      }
+      if (action === 'move-session') {
+        const keys = (Array.isArray(b.keys) ? b.keys : [b.key]).map(String).filter(validSessionKey);
+        if (!keys.length) { send(res, 400, { error: '대상 세션 키가 올바르지 않습니다' }); return true; }
+        const hasGroupId = Object.prototype.hasOwnProperty.call(b, 'groupId');
+        const groupId = hasGroupId ? String(b.groupId || '').trim() : null;
+        if (groupId && !data.groups.some((g) => g.id === groupId)) {
+          send(res, 404, { error: '그룹을 찾을 수 없습니다' });
+          return true;
+        }
+        data.groupOrders = data.groupOrders && typeof data.groupOrders === 'object' ? data.groupOrders : {};
+        const keySet = new Set(keys);
+        if (hasGroupId) {
+          for (const k of keys) {
+            if (groupId) data.assignments[k] = groupId;
+            else delete data.assignments[k];
+          }
+          // Remove moved keys from any other bucket's order
+          const targetBucket = groupId || '_ungrouped';
+          for (const [bk, arr] of Object.entries(data.groupOrders)) {
+            if (bk !== targetBucket && Array.isArray(arr)) {
+              data.groupOrders[bk] = arr.filter((k) => !keySet.has(k));
+            }
+          }
+        }
+        const bucket = hasGroupId ? (groupId || '_ungrouped') : (String(b.bucket || '').trim() || '_ungrouped');
+        if (bucket === '_ungrouped' || data.groups.some((g) => g.id === bucket)) {
+          if (Array.isArray(b.order) && b.order.length) {
+            const seen = new Set();
+            const cleanOrder = [];
+            for (const item of b.order) {
+              const s = String(item || '');
+              if (validSessionKey(s) && !seen.has(s)) { seen.add(s); cleanOrder.push(s); }
+            }
+            // Keep any previously-ordered keys not currently visible (e.g. filtered out) at the end
+            for (const prev of (data.groupOrders[bucket] || [])) {
+              if (!seen.has(prev) && validSessionKey(prev)) { seen.add(prev); cleanOrder.push(prev); }
+            }
+            data.groupOrders[bucket] = cleanOrder.slice(0, 300);
+          } else {
+            const cur = (data.groupOrders[bucket] || []).filter((k) => !keySet.has(k));
+            cur.unshift(keys[0]);
+            data.groupOrders[bucket] = cur.slice(0, 300);
+          }
+        }
         hub.saveSessionGroups(data);
         overviewStale();
         send(res, 200, { ok: true, sessionGroups: data });
