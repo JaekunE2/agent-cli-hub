@@ -723,9 +723,26 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
           await launchWithConfig({ pendingText: text });
           return;
         }
-        await sendToTerm(existing.id, text, false, retry);
-        syncConn();
-        return;
+        try {
+          await sendToTerm(existing.id, text, false, retry);
+          syncConn();
+          return;
+        } catch (sendErr) {
+          if (!/no such running terminal/i.test(String(sendErr?.message || ''))) throw sendErr;
+          // Cached terminal exited between polls — refresh and transparently resume & deliver.
+          if (String(activeTermId) === String(existing.id)) activeTermId = null;
+          existing.exited = 0;
+          await refreshOverview();
+          const fresh = findLiveTerm();
+          if (fresh && String(fresh.id) !== String(existing.id)) {
+            await sendToTerm(fresh.id, text, false, retry);
+            syncConn();
+            return;
+          }
+          const reopened = await launchWithConfig({ pendingText: text });
+          if (reopened) toast(`터미널 t:${reopened.id}을(를) 다시 연결해 메시지를 전송했습니다`);
+          return;
+        }
       }
       if (activeConsolePid) {
         const r = await api('/api/console/send', { method: 'POST', body: { pid: activeConsolePid, text, submit: true, resendIfMissing: retry } });

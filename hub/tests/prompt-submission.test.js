@@ -261,3 +261,27 @@ test('Codex right-aligned warnings badge on the prompt line is not mistaken for 
     assert.deepEqual(await replay(target, [readyWithWarn, draftWithWarn, running]), { ok: true, writes: [message, PTY_KEYS.enter] }, target);
   }
 });
+
+test('composerText still reads idle/pasted Codex prompt when ConPTY parks cursor on the footer line', () => {
+  const { composerText } = require('../prompt-submission');
+  const screen = [
+    '  Worked for 26s • 11:41 AM',
+    '',
+    '› Ask Codex to do anything',
+    '',
+    '  GPT-6.2-Sol medium · D:\\Gitsource\\M2N\\wgkim_m2n_project_v2',
+    '  ← for agents · ? for shortcuts                                ⚠ 5 warnings · f2 to view',
+  ].join('\n');
+  // Cursor parked on blank/footer line below prompt (lines 3..5) still resolves composer
+  assert.equal(composerText(screen, 3), 'Ask Codex to do anything');
+  assert.equal(composerText(screen, 5), 'Ask Codex to do anything');
+  // Stale prompt above a real interactive dialog/menu still returns null
+  const withMenu = [
+    '› old prompt',
+    '────────────',
+    'Select a model:',
+    '  1. gpt-6.2-sol',
+    '  2. gpt-6.1-sol',
+  ].join('\n');
+  assert.equal(composerText(withMenu, 3), null);
+});

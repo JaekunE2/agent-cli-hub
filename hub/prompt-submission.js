@@ -6,14 +6,24 @@ const PASTE = /^\[+pasted (?:content|text) (\d+) chars?\]+$/i;
 const PASTE_MARKER = /^\[+pasted (?:content|text) \d+ chars?\]+/i;
 const unwrap = (text) => text.trim().replace(/ *\n[ \t]*/g, ' ');
 
+const FOOTER_LINE_RE = /^\s*(?:[─━╰└]{3,}|[^\n]+ · (?:[A-Z]:[\\/]|~|\/)[^\n]*|← for agents\s*·\s*\? for shortcuts|\? for shortcuts|esc to (?:interrupt|cancel)|alt\s*\+\s*m\s*(?:to\s*)?send|tab to (?:queue|steer)|⚠\s+\d+\s+warnings?\s*·\s*f2 to view)(?:[ \t]+(?:⚠\s+\d+\s+warnings?\s*·\s*f2 to view|\? for shortcuts|[^\n]+ · (?:[A-Z]:[\\/]|~|\/)[^\n]*))*\s*$/i;
+
 function composerText(screen, cursorLine) {
   const lines = screen.trimEnd().split('\n');
   const start = lines.findLastIndex((line) => /^\s*[›❯>](?:\s|$)/.test(line));
-  if (start < 0 || cursorLine < start) return null;
+  if (start < 0) return null;
   const draft = lines.slice(start).join('\n').replace(/^[ \t]*[›❯>][ \t]*/, '').split(
     /\n\s*(?:[─━╰└]{3,}|[^\n]+ · (?:[A-Z]:[\\/]|~|\/)|← for agents\s*·\s*\? for shortcuts|\? for shortcuts|esc to (?:interrupt|cancel)|alt\s*\+\s*m\s*(?:to\s*)?send|tab to (?:queue|steer))/i, 1
   )[0].replace(/[ \t]{2,}(?:⚠\s+\d+\s+warnings?\s*·\s*f2 to view|\? for shortcuts)[ \t]*$/gim, '');
-  if (cursorLine >= start + draft.split('\n').length) return null;
+  const draftLines = draft.split('\n').length;
+  if (Number.isFinite(cursorLine)) {
+    const trailing = lines.slice(start + draftLines).filter((l) => l.trim().length > 0);
+    const onlyFooterBelow = trailing.every((l) => FOOTER_LINE_RE.test(l));
+    // Reject stale › prompts in scrollback when non-footer UI (menus/dialogs) sits below or cursor is outside a non-bottom prompt.
+    if (!onlyFooterBelow && (cursorLine < start || cursorLine >= start + draftLines)) return null;
+    // Even at the bottom composer, reject if cursor moved far above the prompt into an overlay/menu.
+    if (cursorLine < start - 1 && !isPlaceholder(draft)) return null;
+  }
   return draft.trimEnd();
 }
 
