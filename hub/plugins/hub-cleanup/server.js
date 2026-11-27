@@ -49,7 +49,7 @@ module.exports = function hubCleanupPlugin(api) {
     state.pending.push({ id, kind, title, payload, at: Date.now() });
     save();
   }
-  let busy = null;
+  let busy = null, statusCache = { at: 0, v: null };
   function runAll() {
     if (busy) return busy;
     busy = (async () => {
@@ -100,7 +100,9 @@ module.exports = function hubCleanupPlugin(api) {
       if (!p.startsWith('/api/cleanup')) return false;
       if (p === '/api/cleanup') {
         const report = state.last ? readJson(state.last.report, []) : [];
-        const st = await worker('status');
+        // trash sizes walk every file in the trash: reuse them for two minutes (a fresh scan refreshes on the next view)
+        if (!statusCache.v || Date.now() - statusCache.at > 120e3 || url.searchParams.has('fresh')) statusCache = { at: Date.now(), v: await worker('status') };
+        const st = statusCache.v;
         send(res, 200, { last: state.last, top: report.sort((a, b) => b.size - a.size).slice(0, 100), pending: state.pending.map(({ id, kind, title, at }) => ({ id, kind, title, at })),
           history: state.history.slice(0, 20), trash: st.trash || [], error: st.error || null, schedule: C.schedule || null, main });
         return true;

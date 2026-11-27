@@ -214,7 +214,7 @@
         "level": "confirm",
         "min_mb": 5,
         "roots": [
-          "C:\\Users\\you\\Downloads"
+          "C:\\path\\to\\Downloads"
         ]
       },
       {
