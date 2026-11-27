@@ -234,12 +234,12 @@ input[type="checkbox"], input[type="radio"] { min-height: 0; padding: 0; accent-
 .ts-subagent-list small { display: block; color: var(--muted); }
 .ts-subagent-viewer pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: var(--sp-2); background: var(--panel2); }
 .ts-subagent-viewer ol { padding-inline-start: var(--sp-6); }
-.term-live-pill { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: var(--radius-full); display: inline-flex; align-items: center; gap: 5px; flex: none; transition: background .2s, color .2s, border-color .2s; }
-.term-live-pill.busy { color: var(--warn); background: color-mix(in srgb, var(--warn) 13%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); }
-.term-live-pill.done { color: var(--ok); background: color-mix(in srgb, var(--ok) 13%, transparent); border: 1px solid color-mix(in srgb, var(--ok) 34%, transparent); }
-.term-live-pill.idle { color: var(--muted); background: var(--panel2); border: 1px solid var(--line); }
-.term-live-pill.dormant { color: var(--muted); background: color-mix(in srgb, var(--muted) 10%, var(--panel2)); border: 1px dashed var(--line-strong); }
-.term-live-pill.exited { color: var(--muted); background: var(--panel2); border: 1px solid var(--line); opacity: .82; }
+.term-live-pill { font-size: 11.5px; font-weight: 600; height: 22px; padding: 0 8px; border-radius: var(--radius-full); display: inline-flex; align-items: center; gap: 5px; flex: none; border: 0; transition: background .2s, color .2s; }
+.term-live-pill.busy { color: var(--warn); background: color-mix(in srgb, var(--warn) 11%, transparent); }
+.term-live-pill.done { color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, transparent); }
+.term-live-pill.idle { color: var(--muted); background: color-mix(in srgb, var(--text) 5%, transparent); }
+.term-live-pill.dormant { color: var(--muted); background: color-mix(in srgb, var(--text) 4%, transparent); }
+.term-live-pill.exited { color: var(--muted); background: color-mix(in srgb, var(--text) 5%, transparent); opacity: .82; }
 #termwrap::after { content: ''; position: absolute; inset: 0; pointer-events: none; opacity: 0; border-top: 2px solid var(--ok); transition: opacity .4s ease; }
 #termwrap.term-done-flash::after { animation: term-shimmer 2.6s ease-out forwards; }
 @keyframes done-glow { 0%, 100% { border-color: color-mix(in srgb, var(--ok) 28%, transparent); } 50% { border-color: color-mix(in srgb, var(--ok) 68%, transparent); } }

@@ -284,7 +284,7 @@ function viewConsole() {
     consolePid: pid,
     gen,
     isOpen: () => !!dock?.isOpen('windows'),
-    onCount: (n) => { const c = $('#bar [data-dock-win-cnt]'); if (c) c.textContent = String(n); },
+    onCount: (n) => { const c = $('#bar [data-dock-win-cnt]'); if (c) c.textContent = n > 0 ? String(n) : ''; },
   });
 }
 
@@ -917,6 +917,6 @@ function viewTerm() {
     cwd: t?.cwd || pj?.cwd || '',
     gen,
     isOpen: () => !!dock?.isOpen('windows'),
-    onCount: (n) => { const c = $('#bar [data-dock-win-cnt]'); if (c) c.textContent = String(n); },
+    onCount: (n) => { const c = $('#bar [data-dock-win-cnt]'); if (c) c.textContent = n > 0 ? String(n) : ''; },
   });
 }

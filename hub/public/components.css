@@ -28,24 +28,25 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height:
 .bar h2 { margin: 0; font-size: 14.5px; font-weight: 650; letter-spacing: -0.015em; flex: 1 1 80px; min-width: 60px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 7px; }
 .bar h2 > span:not(.ag-ico):not(.ico) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bar .sp { flex: 1; }
-.bar:has(.session-head) { height: auto; display: block; overflow: visible; padding: 6px 20px 8px; }
-.session-head, .session-views, .session-actions, .session-meta { display: flex; align-items: center; gap: 7px; }
-.session-head { min-height: 32px; flex-wrap: wrap; row-gap: 4px; }
+.bar:has(.session-head) { height: auto; display: block; overflow: visible; padding: 8px 20px 0; }
+.session-head, .session-views, .session-actions, .session-meta { display: flex; align-items: center; gap: 8px; }
+.session-head { min-height: 30px; flex-wrap: wrap; row-gap: 4px; padding-bottom: 6px; }
 .session-head h2 { min-width: 0; }
-.session-actions { flex: none; margin-left: auto; }
+.session-actions { flex: none; margin-left: auto; gap: 4px; }
+.session-actions .icon-btn.btn-sm { width: 28px; height: 28px; min-height: 28px; }
 .folder-badge { display: inline-flex; align-items: center; gap: 5px; max-width: 220px; min-width: 0; white-space: nowrap; }
 .folder-badge .folder-short { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .session-actions .folder-badge,
 .session-views .bar-face-btn,
 .session-views [data-ts-subagents] {
-  height: 32px;
-  min-height: 32px;
-  padding: 0 10px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0 9px;
   font-size: 12px;
   font-weight: 550;
-  border-radius: var(--radius-md);
-  background: var(--panel2);
-  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 1px solid transparent;
   color: var(--muted);
   display: inline-flex;
   align-items: center;
@@ -56,15 +57,16 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height:
 .session-actions .folder-badge:hover,
 .session-views .bar-face-btn:hover,
 .session-views [data-ts-subagents]:hover {
-  background: var(--panel);
-  border-color: var(--line-strong);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  border-color: transparent;
   color: var(--text);
 }
 .session-views [data-ts-subagents].busy {
   color: var(--warn);
-  border-color: color-mix(in srgb, var(--warn) 42%, var(--line));
-  background: color-mix(in srgb, var(--warn) 12%, var(--panel));
+  border-color: transparent;
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
+.session-views .bar-face-btn { margin-left: 6px; }
 .srow > .folder-badge { max-width: 42%; padding-inline: 3px; }
 .folder-fields { min-width: 0; margin: 10px 0; padding: 0; border: 0; }
 .folder-fields > label { display: block; margin: 8px 0; }
@@ -79,15 +81,22 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height:
   .session-head { flex-wrap: wrap; }
 }
 .session-meta { flex: 0 1 auto; min-width: 0; flex-wrap: wrap; overflow: visible; gap: 6px; }
-.session-meta .badge { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-meta .badge { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: transparent; border: 0; padding: 0; border-radius: 0; color: var(--muted); font-size: 12px; font-weight: 500; }
+.session-meta > .badge + .badge::before { content: '·'; margin-right: 6px; opacity: .45; color: var(--muted); }
 .session-meta:empty { display: none; }
 .session-back { max-width: 25%; flex: none; }
 .session-back span { overflow: hidden; text-overflow: ellipsis; }
-.session-views { flex-wrap: wrap; padding-top: 5px; gap: 8px; }
-.session-views .seg { max-width: 100%; flex-wrap: wrap; }
-.session-views .seg button { height: 26px; min-height: 26px; }
+.session-views { flex-wrap: wrap; padding-top: 0; gap: 2px; min-height: 34px; }
+.session-views .seg { max-width: 100%; flex-wrap: wrap; background: transparent; border: 0; padding: 0; border-radius: 0; gap: 2px; }
+.session-views .bar-dock-seg + .bar-tab-seg { position: relative; margin-left: 8px; padding-left: 10px; }
+.session-views .bar-dock-seg + .bar-tab-seg::before { content: ''; position: absolute; left: 0; top: 50%; transform: translateY(-50%); width: 1px; height: 14px; background: var(--line-strong); }
+.session-views .seg button { position: relative; height: 34px; min-height: 34px; padding: 0 10px; border: 0; border-radius: var(--radius-sm) var(--radius-sm) 0 0; background: transparent; color: var(--muted); font-size: 12.5px; font-weight: 500; box-shadow: none; }
+.session-views .seg button:hover { background: color-mix(in srgb, var(--text) 5%, transparent); color: var(--text); }
+.session-views .seg button.on { background: transparent; color: var(--text); font-weight: 650; box-shadow: none; }
+.session-views .seg button.on::after { content: ''; position: absolute; left: 8px; right: 8px; bottom: 0; height: 2px; border-radius: 2px 2px 0 0; background: var(--accent); }
+.session-views [data-dock-win-cnt]:empty { display: none; }
 @media (min-width: 761px) { body.side-collapsed .bar:has(.session-head) { padding-left: 52px; } }
-.bar-tab-seg button.on { color: var(--accent); }
+.bar-tab-seg button.on { color: var(--text); }
 .search-query { flex: 1; min-width: 0; max-width: 540px; height: 34px; min-height: 34px; background: var(--bg); }
 .search-query:focus { background: var(--panel); }
 .search-more > summary, .new-term-options > summary { cursor: pointer; color: var(--muted); padding: 7px 12px; font-size: 12.5px; font-weight: 600; }

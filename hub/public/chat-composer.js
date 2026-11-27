@@ -4,13 +4,13 @@ function dockTopSegHTML({ openSet, isContentTab = false, hasTerm = true, hasChat
   return `<div class="seg bar-dock-seg" role="group" aria-label="분할 패널 토글">
     ${hasTerm ? `<button type="button" data-dock-toggle="term" aria-pressed="${on('term')}" class="${on('term') ? 'on' : ''}" title="${esc(termTitle)}">${ICO.terminal} 터미널</button>` : ''}
     ${hasChat ? `<button type="button" data-dock-toggle="chat" aria-pressed="${on('chat')}" class="${on('chat') ? 'on' : ''}" title="채팅 창 패널 열기/닫기">${ICO.chat} 채팅 창</button>` : ''}
-    <button type="button" data-dock-toggle="windows" aria-pressed="${on('windows')}" class="${on('windows') ? 'on' : ''}" title="연결된 창 · 브라우저 미리보기 패널 열기/닫기">${ICO.monitor} 창 <span class="seg-cnt" data-dock-win-cnt>0</span></button>
+    <button type="button" data-dock-toggle="windows" aria-pressed="${on('windows')}" class="${on('windows') ? 'on' : ''}" title="연결된 창 · 브라우저 미리보기 패널 열기/닫기">${ICO.monitor} 창 <span class="seg-cnt" data-dock-win-cnt></span></button>
   </div>
   <div class="seg bar-tab-seg" role="tablist" aria-label="전용 화면 탭">
     ${showFiles ? `<button type="button" role="tab" aria-selected="${curTab === 'files'}" data-tab="files" class="${curTab === 'files' ? 'on' : ''}" title="이 세션의 산출물 보기 및 지정">산출물</button>` : ''}
     <button type="button" role="tab" aria-selected="${curTab === 'floorplan'}" data-tab="floorplan" class="${curTab === 'floorplan' ? 'on' : ''}" title="코드 구조(Floorplan) 및 보안·품질 점검">${ICO.layers} 코드 구조</button>
   </div>
-  ${hasTerm && hasChat ? `<button type="button" class="ghost btn-sm bar-face-btn" data-face-toggle title="TUI(터미널) ↔ GUI(채팅 창) 즉시 전환 (Alt+J)">${ICO.swap || ''} TUI⇄GUI</button>` : ''}`;
+  ${hasTerm && hasChat ? `<button type="button" class="ghost btn-sm bar-face-btn" data-face-toggle title="TUI(터미널) ↔ GUI(채팅 창) 즉시 전환 (Alt+J)">${ICO.swap || ''} TUI / GUI</button>` : ''}`;
 }
 
 function setSessionBar(identity, views, actions, subagents, folders) {
@@ -292,7 +292,7 @@ function viewTranscript() {
     cwd: cwdPath,
     gen,
     isOpen: () => !!dock?.isOpen('windows'),
-    onCount: (n) => { const c = $('#bar [data-dock-win-cnt]'); if (c) c.textContent = String(n); },
+    onCount: (n) => { const c = $('#bar [data-dock-win-cnt]'); if (c) c.textContent = n > 0 ? String(n) : ''; },
   });
 }
 
