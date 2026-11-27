@@ -415,6 +415,7 @@ async function refreshOverview() {
     if (o.sessionGroups && Array.isArray(o.sessionGroups.groups)) state.sessionGroups = o.sessionGroups;
     state.disk = o.disk || null;
     state.consolesOff = !!o.consolesOff;
+    if (o.pluginState && typeof o.pluginState === 'object') Object.assign(state, o.pluginState); // fields the enabled plugins add (plugins.js)
   } catch (e) {
     state.err = e.message;
     state.hubDown = true;

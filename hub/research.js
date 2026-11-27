@@ -5,8 +5,8 @@
 // session id), and parking on usage limits until the real reset time.
 const fs = require('fs');
 const path = require('path');
-const P = require('../research-harness/lib/project');
-const RG = require('../research-harness/lib/reviewgate');
+const P = require('./harness').lib('project');
+const RG = require('./harness').lib('reviewgate');
 const { serve: serveFile, kindOf } = require('./artifacts');
 
 module.exports = function research(d) {

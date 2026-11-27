@@ -522,7 +522,7 @@ function createAccountSwitchService(hub) {
 
     let project = null;
     if (samePlatform && targetAgent === 'claude' && sid) {
-      try { project = require('../research-harness/lib/project').listProjects().find((p) => p.state.director_session_id === sid) || null; } catch {}
+      try { project = require('./harness').lib('project').listProjects().find((p) => p.state.director_session_id === sid) || null; } catch {}
       if (project) Object.assign(env, { RESEARCH_ROLE: 'director', CLAUDE_CODE_STOP_HOOK_BLOCK_CAP: '200' });
     }
     workspaceLaunch = await workspacePlan();
@@ -541,7 +541,7 @@ function createAccountSwitchService(hub) {
     }
     if (project) {
       t.research = project.dir;
-      require('../research-harness/lib/project').updateState(project.dir, (s) => {
+      require('./harness').lib('project').updateState(project.dir, (s) => {
         s.director_account = pick.id === 'default' ? null : pick.id;
         s.status = 'running'; s.wake_at = null; s.wait_reason = ''; s.limited = false; s.limit_notice_at = null;
       });

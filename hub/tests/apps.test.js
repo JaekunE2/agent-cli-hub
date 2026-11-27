@@ -406,3 +406,86 @@ test('tracked app export saves zip with progress, excludes secrets, and serves v
     fs.rmSync(h.tmp, { recursive: true, force: true });
   }
 });
+
+test('local registry: settings, hub plugin, update and uninstall', async (t) => {
+  const pluginsDir = path.join(os.tmpdir(), `ach-plugins-${process.pid}-${Date.now()}`);
+  const h = makeHarness({ pluginsDir, storeFetch: async () => { throw new Error('offline'); } });
+  t.after(() => { h.mod.stop(); fs.rmSync(h.tmp, { recursive: true, force: true }); fs.rmSync(pluginsDir, { recursive: true, force: true }); });
+  // an app repo with settings and a hub plugin, listed by a registry catalog file
+  const repo = path.join(h.tmp, 'src', 'demo-app');
+  fs.mkdirSync(path.join(repo, 'plugin'), { recursive: true });
+  const manifest = {
+    id: 'demo-app', name: 'Demo', description: 'demo', type: 'url', entryUrl: 'http://127.0.0.1:{{PORT}}/',
+    hubPlugin: 'plugin', keepOnUpdate: ['keep'], store: { tagline: 'A demo', category: '생산성·관리', icon: 'icon.svg' },
+    settings: [{ key: 'PORT', label: 'Port', type: 'number', default: '8123' }, { key: 'DATA_DIR', label: 'Data', type: 'path', required: true }],
+    actions: [{ id: 'start', label: 'Start', cmd: 'echo start' }],
+  };
+  fs.writeFileSync(path.join(repo, 'app.json'), JSON.stringify(manifest));
+  fs.writeFileSync(path.join(repo, 'icon.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
+  fs.writeFileSync(path.join(repo, 'plugin', 'plugin.json'), JSON.stringify({ id: 'demo-plugin', apiVersion: 1, provides: { thing: '${DATA_DIR}' } }));
+  const catalog = path.join(h.tmp, 'catalog.json');
+  fs.writeFileSync(catalog, JSON.stringify({ registry: { submitUrl: 'https://github.com/o/r/issues/new' }, apps: [
+    { repo: repo, featured: true }, { repo: 'https://github.com/o/hidden', draft: true },
+  ] }));
+
+  assert.equal((await h.call('POST', '/api/apps-store/source', { source: catalog })).status, 200);
+  const store = (await h.call('GET', '/api/apps-store')).payload;
+  assert.deepEqual(store.entries.map((e) => e.name), ['Demo']);
+  assert.deepEqual(store.submitUrls, ['https://github.com/o/r/issues/new']);
+  const entry = store.entries[0];
+  assert.equal(entry.category, '생산성·관리');
+  assert.match(entry.icon, /^\/api\/apps-store\/asset\?/);
+
+  const preview = (await h.call('POST', '/api/apps-store/package', { key: entry.key })).payload.package;
+  assert.equal(preview.hubPlugin, 'demo-plugin');
+  assert.deepEqual(preview.installs.ports, [{ label: 'Port', value: '8123' }]);
+  // a required setting must be given
+  assert.equal((await h.call('POST', '/api/apps-store/package', { key: entry.key, digest: preview.digest, settings: {} })).status, 400);
+  const dataDir = path.join(h.tmp, 'data-x');
+  // a store plugin must declare a plugin API version this hub supports
+  for (const bad of [{ id: 'demo-plugin' }, { id: 'demo-plugin', apiVersion: 99 }]) {
+    fs.writeFileSync(path.join(repo, 'plugin', 'plugin.json'), JSON.stringify(bad));
+    const p = (await h.call('POST', '/api/apps-store/package', { key: entry.key })).payload.package;
+    const r = await h.call('POST', '/api/apps-store/package', { key: entry.key, digest: p.digest, settings: { DATA_DIR: dataDir } });
+    assert.equal(r.status, 400);
+    assert.match(r.payload.error, /apiVersion|API v99/);
+  }
+  fs.writeFileSync(path.join(repo, 'plugin', 'plugin.json'), JSON.stringify({ id: 'demo-plugin', apiVersion: 1, provides: { thing: '${DATA_DIR}' } }));
+  assert.equal(h.mod.loadStore().apps.length, 0);
+  const inst = await h.call('POST', '/api/apps-store/package', { key: entry.key, digest: preview.digest, settings: { DATA_DIR: dataDir, PORT: '9001' } });
+  assert.equal(inst.status, 200);
+  assert.equal(inst.payload.package.restartRequired, true);
+  const [app] = h.mod.loadStore().apps;
+  assert.deepEqual(app.env, { PORT: '9001', DATA_DIR: dataDir });
+  assert.equal(h.mod.enrichApp(app).viewUrl, 'http://127.0.0.1:9001/');
+  const pdir = path.join(pluginsDir, 'demo-plugin');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(pdir, 'settings.json'), 'utf8')).DATA_DIR, dataDir);
+
+  // settings change rewrites the plugin's settings; an update keeps them
+  await h.call('PUT', `/api/apps/${app.id}`, { settingValues: { DATA_DIR: dataDir, PORT: '9002' } });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(pdir, 'settings.json'), 'utf8')).PORT, '9002');
+  fs.mkdirSync(path.join(app.cwd, 'keep'));
+  fs.writeFileSync(path.join(app.cwd, 'keep', 'state.txt'), 'kept');
+  fs.writeFileSync(path.join(repo, 'CHANGELOG.md'), '## 1.1\n- better\n');
+  fs.writeFileSync(path.join(repo, 'app.json'), JSON.stringify({ ...manifest, entryUrl: 'http://127.0.0.1:{{HTTP_PORT}}/', renamedSettings: { PORT: 'HTTP_PORT' },
+    settings: [{ key: 'HTTP_PORT', label: 'Port', type: 'number', default: '8123' }, manifest.settings[1]] }));
+  const next = (await h.call('POST', '/api/apps-store/package', { key: entry.key })).payload.package;
+  assert.notEqual(next.digest, preview.digest);
+  assert.equal(next.installedDigest, preview.digest);
+  assert.equal(next.whatsNew.title, '1.1');
+  assert.equal((await h.call('POST', '/api/apps-store/package', { key: entry.key, digest: next.digest, update: true })).status, 200);
+  const apps = h.mod.loadStore().apps;
+  assert.equal(apps.length, 1);
+  assert.equal(apps[0].env.HTTP_PORT, '9002');   // renamedSettings carried the value over
+  assert.equal(apps[0].env.PORT, undefined);
+  assert.notEqual(apps[0].cwd, app.cwd);
+  assert.equal(fs.existsSync(app.cwd), false);
+  assert.equal(fs.readFileSync(path.join(apps[0].cwd, 'keep', 'state.txt'), 'utf8'), 'kept');
+
+  // uninstall removes the plugin and the package folder
+  const del = await h.call('DELETE', `/api/apps/${apps[0].id}`);
+  assert.equal(del.payload.removedPlugin, 'demo-plugin');
+  assert.equal(del.payload.removedPackage, true);
+  assert.equal(fs.existsSync(pdir), false);
+  assert.equal(fs.existsSync(apps[0].cwd), false);
+});

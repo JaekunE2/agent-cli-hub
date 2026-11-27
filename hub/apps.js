@@ -9,10 +9,34 @@ const { spawn } = require('child_process');
 const { serve: serveFile } = require('./artifacts');
 const createAppStore = require('./app-store');
 const { githubSource } = require('./app-store-github');
+const { localSource, assetFile, unmet } = require('./app-store-local');
+const HUB_VERSION = (() => { try { return require('./package.json').version; } catch { return '0.0.0'; } })();
 
 const VALID_TYPES = new Set(['report', 'url', 'command']);
 const VALID_KINDS = new Set(['command', 'agent', 'pipeline']);
 const ID_RE = /^[a-z0-9][a-z0-9_-]{1,47}$/;
+const SETTING_KEY_RE = /^[A-Z][A-Z0-9_]{1,63}$/;
+const SETTING_TYPES = new Set(['text', 'path', 'url', 'number', 'secret', 'bool']);
+
+// app.json "settings": what the user fills in at install time (folders, ports, hosts). Values live only in this
+// hub's app registry (app.env), never in the package, and reach the app's commands as environment variables.
+function normalizeSettings(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  return list.slice(0, 40).map((item) => {
+    const key = String(item?.key || '').trim();
+    if (!SETTING_KEY_RE.test(key) || seen.has(key)) throw new Error(`잘못된 설정 키입니다: ${key}`);
+    seen.add(key);
+    const type = SETTING_TYPES.has(item.type) ? item.type : 'text';
+    return {
+      key, type,
+      label: String(item.label || key).slice(0, 120),
+      description: String(item.description || '').slice(0, 500),
+      default: item.default === undefined || item.default === null ? '' : String(item.default).slice(0, 2000),
+      required: Boolean(item.required),
+    };
+  });
+}
 
 function safeJsonRead(file, fallback) {
   try {
@@ -88,6 +112,15 @@ module.exports = function appsModule(deps = {}) {
   const appStore = createAppStore({ dataFile, fetcher: deps.storeFetch, python: deps.python });
   const runsFile = deps.runsFile || path.join(__dirname, 'data', 'app-runs.json');
   const secretsDir = deps.secretsDir || path.join(__dirname, 'secrets');
+  const hubDir = deps.hubDir || __dirname;
+  // a store app may carry a hub plugin (server routes, nav, ccd commands); it is copied here (gitignored)
+  const pluginsDir = deps.pluginsDir || path.join(__dirname, 'local', 'plugins');
+  // what this hub offers to apps' "requires" (version + plugin ids)
+  const platform = () => {
+    let plugins = [];
+    try { plugins = (deps.listPlugins || (() => require('./plugins').discover().map((m) => m.id)))(); } catch {}
+    return { hubVersion: deps.hubVersion || HUB_VERSION, plugins };
+  };
   const terms = deps.terms || new Map();
   const createTerm = deps.createTerm || null;
   const liveSessions = deps.liveSessions || (() => []);
@@ -440,6 +473,114 @@ module.exports = function appsModule(deps = {}) {
     safeJsonWrite(dataFile, store);
   }
 
+  // ---------- install-time settings and hub plugins of store apps ----------
+  const settingVars = (app) => ({ APP_DIR: app.cwd || '', HUB_DIR: hubDir });
+  /** declared settings → { KEY: value } (the user's value, else the default; {{APP_DIR}} / {{HUB_DIR}} filled in) */
+  function settingValues(app) {
+    const out = {};
+    for (const s of app.settings || []) {
+      const v = app.env && Object.prototype.hasOwnProperty.call(app.env, s.key) ? app.env[s.key] : s.default;
+      out[s.key] = applyTemplate(String(v ?? ''), settingVars(app));
+    }
+    return out;
+  }
+  /** user values for the declared settings only (strings, one line); throws on a missing required one */
+  function acceptSettings(app, values = {}) {
+    const env = {};
+    for (const s of app.settings || []) {
+      let v = values && Object.prototype.hasOwnProperty.call(values, s.key) ? values[s.key] : (app.env?.[s.key] ?? s.default);
+      v = String(v ?? '').trim();
+      if (/[\r\n\0]/.test(v) || v.length > 2000) throw new Error(`설정 값이 올바르지 않습니다: ${s.label}`);
+      if (s.type === 'number' && v && !/^-?\d+(\.\d+)?$/.test(v)) throw new Error(`숫자를 입력하세요: ${s.label}`);
+      if (s.type === 'url' && v && !/^https?:\/\//i.test(v)) throw new Error(`http(s) 주소를 입력하세요: ${s.label}`);
+      if (s.required && !applyTemplate(v, settingVars(app))) throw new Error(`필수 설정입니다: ${s.label}`);
+      env[s.key] = v;
+    }
+    return env;
+  }
+  const MARK = '.store-app';
+  function pluginManifest(app) {
+    const src = app.hubPlugin && app.cwd ? resolveInside(app.cwd, app.hubPlugin) : null;
+    const man = src ? safeJsonRead(path.join(src, 'plugin.json'), null) : null;
+    const id = String(man?.id || '');
+    if (!man || !/^[a-z0-9][a-z0-9_-]{0,47}$/.test(id)) return null;
+    return { src, id, dest: path.join(pluginsDir, id), man };
+  }
+  const ownedBy = (dir) => { try { return fs.readFileSync(path.join(dir, MARK), 'utf8').trim(); } catch { return ''; } };
+  function pluginState(app) {
+    const p = pluginManifest(app);
+    if (!p) return { error: 'plugin.json 없음' };
+    return { id: p.id, installed: ownedBy(p.dest) === app.id, dir: p.dest };
+  }
+  function writePluginSettings(app) {
+    const p = pluginManifest(app);
+    if (p && ownedBy(p.dest) === app.id) safeJsonWrite(path.join(p.dest, 'settings.json'), settingValues(app));
+  }
+  /** copy the app's plugin folder into the hub's local plugins (loaded on the next hub start) */
+  function installPlugin(app) {
+    const p = pluginManifest(app);
+    if (!p) throw new Error('앱의 hubPlugin 폴더에 올바른 plugin.json이 없습니다');
+    // a store plugin is written against a declared plugin API version (plugins.js): namespaced routes and commands
+    if (p.man.apiVersion === undefined) throw new Error('스토어 앱의 플러그인은 plugin.json에 apiVersion을 선언해야 합니다');
+    const why = require('./plugins').incompatible(p.man, platform().hubVersion);
+    if (why) throw new Error(`이 허브에서 쓸 수 없는 플러그인입니다: ${why}`);
+    if (fs.existsSync(p.dest)) {
+      if (ownedBy(p.dest) !== app.id) throw new Error(`이미 같은 ID의 로컬 플러그인이 있습니다: ${p.dest}`);
+      fs.rmSync(p.dest, { recursive: true, force: true });
+    }
+    fs.mkdirSync(pluginsDir, { recursive: true });
+    fs.cpSync(p.src, p.dest, { recursive: true, filter: (f) => !/[\\/](?:\.git|node_modules|__pycache__)$/.test(f) && path.basename(f) !== 'settings.json' });
+    fs.writeFileSync(path.join(p.dest, MARK), app.id, 'utf8');
+    writePluginSettings(app);
+    return p.id;
+  }
+  function removePlugin(app) {
+    const p = pluginManifest(app);
+    if (!p || ownedBy(p.dest) !== app.id) return null;
+    fs.rmSync(p.dest, { recursive: true, force: true });
+    return p.id;
+  }
+  /** what a package will do on this PC, derived from its files (shown on the store page before install) */
+  function describePackage(app, plugin) {
+    const read = (f, n) => { try { return fs.readFileSync(path.join(app.cwd, f), 'utf8').replace(/^﻿/, '').slice(0, n); } catch { return ''; } };
+    const changelog = read('CHANGELOG.md', 40000);
+    const firstSection = /^##\s+(.+)\n([\s\S]*?)(?=^##\s|(?![\s\S]))/m.exec(changelog);
+    const pman = plugin ? safeJsonRead(path.join(plugin.src, 'plugin.json'), {}) : null;
+    const scripts = ['setup.ps1', 'stop.ps1', 'uninstall.ps1'].filter((f) => fs.existsSync(path.join(app.cwd, f)));
+    const settings = app.settings || [];
+    return {
+      readme: read('README.md', 16000),
+      whatsNew: firstSection ? { title: firstSection[1].trim().slice(0, 120), body: firstSection[2].trim().slice(0, 4000) } : null,
+      installs: {
+        scripts,
+        commands: (app.actions || []).map((a) => ({ label: a.label, cmd: a.cmd, kind: a.kind })),
+        ports: settings.filter((s) => /PORT$/.test(s.key)).map((s) => ({ label: s.label, value: s.default })),
+        folders: settings.filter((s) => s.type === 'path').map((s) => ({ label: s.label, value: s.default })),
+        hosts: settings.filter((s) => s.type === 'url').map((s) => ({ label: s.label, value: s.default })),
+        webView: app.entryUrl || '',
+        plugin: pman ? {
+          id: plugin.id, server: Boolean(pman.server), cli: Boolean(pman.cli), browserScripts: pman.scripts || [],
+          routes: Array.isArray(pman.routes) ? pman.routes.slice(0, 30) : [], commands: Array.isArray(pman.help) ? pman.help.slice(0, 10) : [],
+          provides: Object.keys(pman.provides || {}),
+        } : null,
+      },
+    };
+  }
+
+  /** run an optional lifecycle script of the app (uninstall.ps1) and wait for it */
+  function runScript(app, file, timeoutSec = 120) {
+    return new Promise((resolve) => {
+      if (!app.cwd || !fs.existsSync(path.join(app.cwd, file))) return resolve(null);
+      const proc = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', file], { cwd: app.cwd, env: buildEnv(app, {}), windowsHide: true });
+      let out = '';
+      const timer = setTimeout(() => { try { proc.kill(); } catch {} }, timeoutSec * 1000);
+      proc.stdout.on('data', (c) => { out = (out + c).slice(-8000); });
+      proc.stderr.on('data', (c) => { out = (out + c).slice(-8000); });
+      proc.on('error', (e) => { clearTimeout(timer); resolve({ code: -1, output: e.message }); });
+      proc.on('close', (code) => { clearTimeout(timer); resolve({ code, output: out }); });
+    });
+  }
+
   function loadRuns() {
     const raw = safeJsonRead(runsFile, {});
     return raw && typeof raw === 'object' ? raw : {};
@@ -510,10 +651,13 @@ module.exports = function appsModule(deps = {}) {
       notifyOnComplete: Boolean(sessIn.notifyOnComplete),
     };
 
+    const hubPlugin = String(input.hubPlugin ?? existing?.hubPlugin ?? '').trim();
+    if (hubPlugin && (path.isAbsolute(hubPlugin) || !cwd || !resolveInside(cwd, hubPlugin))) throw new Error('hubPlugin은 앱 폴더 안의 폴더여야 합니다');
     const now = new Date().toISOString();
     return {
       id,
       name,
+      version: String(input.version ?? existing?.version ?? '').trim().slice(0, 40),
       description: String(input.description ?? existing?.description ?? '').trim(),
       usage: String(input.usage ?? existing?.usage ?? '').trim(),
       purpose: String(input.purpose ?? existing?.purpose ?? '').trim(),
@@ -526,6 +670,8 @@ module.exports = function appsModule(deps = {}) {
       outputs,
       session,
       schedule: input.schedule && typeof input.schedule === 'object' ? input.schedule : (existing?.schedule || { enabled: false, cron: '' }),
+      settings: normalizeSettings(input.settings ?? existing?.settings),
+      hubPlugin,
       createdAt: existing?.createdAt || now,
       updatedAt: now,
       ...(existing?.storeSource ? { storeSource: existing.storeSource } : {}),
@@ -577,6 +723,8 @@ module.exports = function appsModule(deps = {}) {
     const status = active ? 'running' : (latestRun?.status === 'error' ? 'error' : 'idle');
     return {
       ...app,
+      viewUrl: app.entryUrl ? applyTemplate(app.entryUrl, { ...settingValues(app), ...(app.env || {}) }) : '',
+      pluginState: app.hubPlugin ? pluginState(app) : null,
       status,
       activeRunId: active?.runId || null,
       latestRun,
@@ -588,7 +736,7 @@ module.exports = function appsModule(deps = {}) {
   }
 
   function buildEnv(app, paramVars) {
-    const env = { PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', ...process.env };
+    const env = { PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', ...process.env, HUB_DIR: hubDir, HUB_NODE: process.execPath, HUB_APP_ID: app.id, HUB_APP_DIR: app.cwd || '' };
     if (app.cwd) Object.assign(env, parseDotEnv(path.join(app.cwd, '.env')));
     for (const ref of app.secretRefs || []) {
       const safeName = String(ref || '').replace(/[^a-zA-Z0-9_.-]/g, '');
@@ -601,6 +749,7 @@ module.exports = function appsModule(deps = {}) {
     if (app.env && typeof app.env === 'object') {
       for (const [k, v] of Object.entries(app.env)) env[k] = String(v);
     }
+    Object.assign(env, settingValues(app)); // declared settings, with {{APP_DIR}} / {{HUB_DIR}} filled in
     for (const [k, v] of Object.entries(paramVars)) {
       env[`APP_PARAM_${k.toUpperCase().replace(/[^A-Z0-9_]/g, '_')}`] = String(v);
     }
@@ -702,7 +851,20 @@ module.exports = function appsModule(deps = {}) {
       runObj.stderr = (runObj.stderr + chunk.toString('utf8')).slice(-32000);
       appendRun(app.id, runObj);
     });
+    // 'close' waits for every holder of the output pipes; a server the command started in the background may keep
+    // them open for good, so a run also ends shortly after the command's own process has exited
+    let finished = false;
+    proc.on('exit', (code) => {
+      const t = setTimeout(() => {
+        if (finished) return;
+        try { proc.stdout.destroy(); proc.stderr.destroy(); } catch {}
+        proc.emit('close', code);
+      }, 1500);
+      if (t.unref) t.unref();
+    });
     proc.on('close', async (code) => {
+      if (finished) return;
+      finished = true;
       clearTimeout(timer);
       if (activeProcs.get(app.id)?.runId === runId) activeProcs.delete(app.id);
       runObj.exitCode = code;
@@ -735,23 +897,87 @@ module.exports = function appsModule(deps = {}) {
     return runObj;
   }
 
+  let recentCatalog = null, recentCatalogPending = null;
   async function handle(p, url, req, readBody, send, res) {
     if (!p.startsWith('/api/apps')) return false;
     const store = loadStore();
     const byId = (id) => store.apps.find((a) => a.id === id);
 
     if (p === '/api/apps-store' && req.method === 'GET') {
-      const { entries, unavailable } = await appStore.catalog(store.sources);
-      return send(200, { sources: store.sources, unavailable, entries: entries.map(entry => ({
-        ...entry, installed: store.apps.find(app => app.storeSource?.key === entry.key)?.storeSource.version || '',
-      })) });
+      const { entries, unavailable, submitUrls = [] } = await appStore.catalog(store.sources);
+      recentCatalog = { at: Date.now(), entries };
+      const plat = platform();
+      return send(200, { sources: store.sources, unavailable, submitUrls, hubVersion: plat.hubVersion, entries: entries.map(entry => {
+        const mine = store.apps.find(app => app.storeSource?.key === entry.key);
+        const { local: _local, ...pub } = entry;
+        const missing = unmet(entry.requires, plat);
+        return { ...pub, installed: mine?.storeSource.version || '', installedId: mine?.id || '', installedDigest: mine?.storeSource.digest || '',
+          compatible: missing.length === 0, unmet: missing };
+      }) });
+    }
+    // register page: check a repo before adding it / submitting it to a registry (reads app.json only, runs nothing)
+    if (p === '/api/apps-store/inspect' && req.method === 'POST') {
+      const value = String((await readBody()).repo || '').trim();
+      const checks = [];
+      const ok = (label, pass, detail = '', optional = false) => checks.push({ label, pass: Boolean(pass), detail, optional });
+      let manifest = null, repo = '', release = null;
+      try {
+        const local = localSource(value);
+        if (local?.path) {
+          repo = local.path;
+          manifest = safeJsonRead(path.join(local.path, 'app.json'), null);
+          ok('저장소 접근', fs.existsSync(local.path), local.path);
+        } else {
+          repo = githubSource(value).repo;
+          if (!repo) throw new Error('저장소 주소(owner/repository)를 입력하세요');
+          const fetcher = deps.storeFetch || fetch;
+          const r = await fetcher(`https://raw.githubusercontent.com/${repo}/HEAD/app.json`, { signal: AbortSignal.timeout(8000) });
+          ok('저장소 접근', r.ok, r.ok ? `https://github.com/${repo}` : `HTTP ${r.status}`);
+          if (r.ok) manifest = JSON.parse((await r.text()).replace(/^﻿/, ''));
+          const rel = await fetcher(`https://api.github.com/repos/${repo}/releases/latest`, { headers: { 'User-Agent': 'Agent-CLI-Hub' }, signal: AbortSignal.timeout(8000) }).catch(() => null);
+          if (rel?.ok) {
+            const j = await rel.json();
+            const zips = (j.assets || []).filter((a) => /\.zip$/i.test(a.name));
+            release = { tag: j.tag_name, assets: zips.map((a) => ({ name: a.name, digest: a.digest || '' })) };
+          }
+          ok('릴리스 ZIP', release && release.assets.length, release ? `${release.tag}: ${release.assets.map((a) => a.name).join(', ') || 'ZIP 없음'}` : '최신 릴리스 없음 — 스토어는 릴리스 ZIP을 설치합니다', true);
+        }
+      } catch (e) { ok('저장소 주소', false, e.message); }
+      ok('app.json', manifest, manifest ? '' : '저장소 최상위에 app.json이 필요합니다');
+      if (manifest) {
+        ok('앱 ID', ID_RE.test(String(manifest.id || '')), String(manifest.id || ''));
+        ok('이름·설명', manifest.name && manifest.description, manifest.name || '');
+        ok('유형', VALID_TYPES.has(manifest.type || 'report'), manifest.type || 'report');
+        ok('CCD 요구 사항', manifest.requires?.ccd, manifest.requires?.ccd ? `CCD ${manifest.requires.ccd}` : 'app.json requires.ccd 필요 (예: ">=1.0.0")');
+        try { normalizeSettings(manifest.settings); ok('설치 설정', true, `${(manifest.settings || []).length}개`); } catch (e) { ok('설치 설정', false, e.message); }
+        ok('개인 경로 없음', !/[A-Z]:\\\\Users\\\\|[A-Z]:\/Users\//i.test(JSON.stringify(manifest)), '');
+        ok('아이콘', manifest.store?.icon, manifest.store?.icon || 'app.json store.icon 권장', true);
+      }
+      return send(200, { repo, manifest: manifest ? { id: manifest.id, name: manifest.name, description: manifest.description, version: manifest.version || '',
+        type: manifest.type, store: manifest.store || {}, settings: manifest.settings || [], hubPlugin: manifest.hubPlugin || '' } : null,
+        release, checks, valid: checks.every((c) => c.pass || c.optional) });
+    }
+    // icon / screenshots of a local package (GitHub packages give https URLs in the registry)
+    if (p === '/api/apps-store/asset' && req.method === 'GET') {
+      const file = String(url.searchParams.get('file') || '');
+      if (!assetFile(file)) return send(404, { error: 'not found' });
+      // a store page loads many images at once: reuse the catalog read by the page (no git / network per image)
+      if (!recentCatalog || Date.now() - recentCatalog.at > 120000) {
+        recentCatalog = { at: Date.now(), entries: (await (recentCatalogPending ||= appStore.catalog(store.sources).finally(() => { recentCatalogPending = null; }))).entries };
+      }
+      const entry = recentCatalog.entries.find(item => item.key === url.searchParams.get('key') && item.local);
+      const target = entry ? resolveInside(entry.local, file) : null;
+      if (!target || !fs.existsSync(target)) return send(404, { error: 'not found' });
+      return serveFile(req, res, target);
     }
     if (p === '/api/apps-store/source' && ['POST', 'DELETE'].includes(req.method)) {
       try {
-        const source = githubSource((await readBody()).source);
+        const value = (await readBody()).source;
+        const source = localSource(value) || githubSource(value);
         if (source.owner && req.method === 'POST') await appStore.discovery(source.owner);
+        if (source.path && req.method === 'POST' && !fs.existsSync(source.path)) throw new Error(`경로가 없습니다: ${source.path}`);
         const current = loadStore();
-        const field = source.owner ? 'owner' : 'repo';
+        const field = source.owner ? 'owner' : source.path ? 'path' : source.url ? 'url' : 'repo';
         current.sources = current.sources.filter(entry => entry[field] !== source[field]);
         if (req.method === 'POST') current.sources.push(source);
         saveStore(current);
@@ -760,27 +986,82 @@ module.exports = function appsModule(deps = {}) {
     }
     if (p === '/api/apps-store/package' && req.method === 'POST') {
       try {
-        const { key, digest } = await readBody();
+        const { key, digest, settings: settingInput, update } = await readBody();
         if (digest && !/^sha256:[a-f\d]{64}$/.test(digest)) throw new Error('잘못된 패키지 SHA-256입니다.');
         const { entries } = await appStore.catalog(store.sources);
         const entry = entries.find(item => item.key === key);
         if (!entry) return send(404, { error: '카탈로그에 등록된 앱을 찾을 수 없습니다.' });
+        const previous = store.apps.find(item => item.storeSource?.key === entry.key) || null;
+        if (update && !previous) throw new Error('업데이트할 설치본이 없습니다.');
+        if (digest && update) {
+          if (activeProcs.has(previous.id)) throw new Error('실행 중인 작업을 먼저 중단하세요.');
+          await runScript(previous, 'stop.ps1'); // the old version's servers, before its folder is replaced
+        }
         const result = await appStore.withPackage(entry, digest, (manifest, pkg) => {
           const app = normalizeApp(manifest);
           if (app.type === 'url' && !/^https?:\/\//i.test(app.entryUrl)) throw new Error('앱 URL은 HTTP 또는 HTTPS여야 합니다.');
           for (const dir of [app.outputs.viewDir, app.outputs.dataDir]) {
             if (dir && (path.isAbsolute(dir) || !resolveInside(app.cwd, dir))) throw new Error('앱 산출물 경로는 앱 폴더 안에 있어야 합니다.');
           }
-          const source = { key: entry.key, repo: entry.repo, version: pkg.version, digest: pkg.digest };
+          const source = { key: entry.key, repo: entry.repo, version: pkg.version, digest: pkg.digest,
+            ...(pkg.commit ? { commit: pkg.commit, dirty: Boolean(pkg.dirty) } : {}) };
           const hasSetup = Boolean(app.cwd && fs.existsSync(path.join(app.cwd, 'setup.ps1')));
-          if (!digest) return { name: app.name, description: app.description, actions: app.actions, url: app.entryUrl, hasSetup, ...source };
+          const plugin = app.hubPlugin ? pluginManifest(app) : null;
+          if (app.hubPlugin && !plugin) throw new Error('앱의 hubPlugin 폴더에 올바른 plugin.json이 없습니다.');
+          // every store app is an add-on for this hub: refuse one whose platform requirement is not met
+          const missing = unmet(manifest.requires, platform());
+          if (digest && missing.length) throw new Error(`이 허브에서 설치할 수 없습니다: ${missing.join(', ')}`);
+          if (!digest) {
+            return { name: app.name, description: app.description, actions: app.actions, url: app.entryUrl, hasSetup,
+              settings: app.settings, hubPlugin: plugin ? plugin.id : '', author: entry.author || '', verified: Boolean(entry.verified),
+              registry: entry.registry || '', ...describePackage(app, plugin), requires: manifest.requires || null, unmet: missing, installedDigest: previous?.storeSource.digest || '',
+              // the user's own values (unresolved: {{APP_DIR}} must follow the app into its new folder)
+              installedId: previous?.id || '',
+              currentSettings: previous ? Object.fromEntries((previous.settings || []).map((s) => [s.key, previous.env?.[s.key] ?? s.default])) : null,
+              ...source };
+          }
           const current = loadStore();
-          if (current.apps.some(item => item.id === app.id || item.storeSource?.key === entry.key)) throw new Error('이미 설치된 스토어 앱입니다.');
+          const old = update ? current.apps.find(item => item.id === previous.id) : null;
+          if (current.apps.some(item => item !== old && (item.id === app.id || item.storeSource?.key === entry.key))) throw new Error('이미 설치된 스토어 앱입니다.');
+          if (old) app.createdAt = old.createdAt;
+          // upgrade: values of renamed settings follow them (app.json "renamedSettings": { "OLD": "NEW" })
+          const renamed = manifest.renamedSettings && typeof manifest.renamedSettings === 'object' ? manifest.renamedSettings : {};
+          const input = { ...(settingInput || old?.env || {}) };
+          for (const [from, to] of Object.entries(renamed)) if (input[from] !== undefined && input[to] === undefined) { input[to] = input[from]; delete input[from]; }
+          app.env = acceptSettings(app, input);
           app.storeSource = source;
+          if (old && old.hubPlugin && old.id !== app.id) removePlugin(old);
+          const pluginId = plugin ? installPlugin(app) : '';
+          current.apps = current.apps.filter(item => item !== old);
           current.apps.push(app);
           saveStore(current);
-          return { id: app.id, hasSetup, app, ...source };
+          const setupTimeoutSec = Math.min(3600, Math.max(60, Number(manifest.setupTimeoutSec) || 300));
+          // folders an update carries over from the old package (app.json "keepOnUpdate": [".venv", "data"])
+          const keepOnUpdate = (Array.isArray(manifest.keepOnUpdate) ? manifest.keepOnUpdate : [])
+            .filter((k) => typeof k === 'string' && k && !path.isAbsolute(k) && !k.split(/[\\/]/).includes('..')).slice(0, 10);
+          return { id: app.id, hasSetup, app, hubPlugin: pluginId, restartRequired: Boolean(pluginId), setupTimeoutSec, keepOnUpdate, updated: Boolean(old), ...source };
         });
+        // an update leaves the old package folder behind: carry over its keepOnUpdate folders, then remove it
+        // (skipped while files are still locked)
+        if (digest && update && previous.cwd && appStore.owns(previous.cwd) && appStore.packageDir(previous.cwd) !== appStore.packageDir(result.app.cwd)) {
+          const keepFailed = [];
+          for (const rel of result.keepOnUpdate || []) {
+            const from = resolveInside(previous.cwd, rel), to = resolveInside(result.app.cwd, rel);
+            if (!from || !to || !fs.existsSync(from) || fs.existsSync(to)) continue;
+            fs.mkdirSync(path.dirname(to), { recursive: true });
+            // a rename can fail while a scanner still holds a file: wait a little, then copy instead
+            let moved = false;
+            for (let i = 0; i < 5 && !moved; i++) {
+              try { fs.renameSync(from, to); moved = true; } catch { await new Promise((r) => setTimeout(r, 400)); }
+            }
+            if (!moved) {
+              try { fs.cpSync(from, to, { recursive: true }); moved = true; } catch (e) { keepFailed.push(`${rel}: ${e.code || e.message}`); }
+            }
+          }
+          result.keepFailed = keepFailed;
+          // never delete a folder whose kept data could not be carried over
+          if (!keepFailed.length) { try { fs.rmSync(appStore.packageDir(previous.cwd), { recursive: true, force: true }); } catch {} }
+        }
         let setupRun = null;
         if (digest && result.hasSetup && result.app) {
           setupRun = await runAction(result.app, {
@@ -788,10 +1069,10 @@ module.exports = function appsModule(deps = {}) {
             label: '초기 환경 구성 (setup.ps1)',
             kind: 'command',
             cmd: 'powershell -NoProfile -ExecutionPolicy Bypass -File setup.ps1',
-            timeoutSec: 300,
+            timeoutSec: result.setupTimeoutSec || 300,
           }).catch(() => null);
         }
-        const { app: _installedApp, ...pubResult } = result;
+        const { app: _installedApp, setupTimeoutSec: _t, keepOnUpdate: _k, ...pubResult } = result;
         return send(200, { ok: true, package: { ...pubResult, setupRun } });
       } catch (e) { return send(400, { error: e.message }); }
     }
@@ -852,10 +1133,13 @@ module.exports = function appsModule(deps = {}) {
       const b = await readBody();
       try {
         const updated = normalizeApp({ ...b, id: app.id }, app);
+        // store apps: only the declared settings may change their environment
+        if (app.storeSource) updated.env = acceptSettings(updated, b.settingValues || b.env || app.env || {});
         const idx = store.apps.findIndex((a) => a.id === app.id);
         store.apps[idx] = updated;
         saveStore(store);
-        return send(200, { ok: true, app: enrichApp(updated) });
+        if (updated.hubPlugin) writePluginSettings(updated);
+        return send(200, { ok: true, app: enrichApp(updated), restartRequired: Boolean(updated.hubPlugin) });
       } catch (e) {
         return send(400, { error: e.message });
       }
@@ -866,6 +1150,14 @@ module.exports = function appsModule(deps = {}) {
       if (activeProcs.has(app.id)) {
         return send(409, { error: '실행 중인 작업을 먼저 중단한 뒤 앱을 제거하세요' });
       }
+      // store apps: their uninstall.ps1 first (stop servers, unregister); ?force=1 skips a failing one
+      let uninstallRun = null;
+      if (app.storeSource && !/^(1|true)$/.test(url.searchParams.get('force') || '')) {
+        uninstallRun = await runScript(app, 'uninstall.ps1');
+        if (uninstallRun && uninstallRun.code !== 0) {
+          return send(500, { error: `uninstall.ps1 실패 (exit ${uninstallRun.code}). 다시 시도하거나 강제 제거하세요.`, output: uninstallRun.output });
+        }
+      }
       const removedFiles = [];
       if (purge) {
         const files = getAppFiles(app);
@@ -873,9 +1165,24 @@ module.exports = function appsModule(deps = {}) {
           try { fs.unlinkSync(f.path); removedFiles.push(f.name); } catch {}
         }
       }
+      const pluginId = app.hubPlugin ? pluginManifest(app)?.id : null;
+      const removedPlugin = app.hubPlugin ? removePlugin(app) : null;
+      // ?purgeData=1 also deletes the plugin's own data folder (hub/data/plugins/<id>); kept by default
+      let purgedData = false;
+      if (removedPlugin && /^(1|true)$/.test(url.searchParams.get('purgeData') || '') && pluginId) {
+        try { fs.rmSync(path.join(path.dirname(dataFile), 'plugins', pluginId), { recursive: true, force: true }); purgedData = true; } catch {}
+      }
       store.apps = store.apps.filter((a) => a.id !== app.id);
       saveStore(store);
-      return send(200, { ok: true, id: app.id, purgedOutputs: purge, removedFiles });
+      // the installed package folder belongs to the store; remove it with the app
+      let removedPackage = false;
+      if (app.storeSource && app.cwd && appStore.owns(app.cwd)) {
+        try { fs.rmSync(appStore.packageDir(app.cwd), { recursive: true, force: true }); removedPackage = true; } catch {}
+      }
+      const runs = loadRuns();
+      if (runs[app.id]) { delete runs[app.id]; saveRuns(runs); }
+      return send(200, { ok: true, id: app.id, purgedOutputs: purge, removedFiles, removedPlugin, removedPackage, purgedData,
+        restartRequired: Boolean(removedPlugin), uninstallRun });
     }
 
     if (sub === 'export-info' && req.method === 'GET') {
