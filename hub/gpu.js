@@ -215,7 +215,7 @@ module.exports = function gpuQueue({ dir, file = 'gpu-queue.json', config = {}, 
     // detached remote jobs of this server: exit code file, else is the pid alive
     const jobs = st.tickets.filter((t) => t.status === 'granted' && t.remoteJob && String(t.gpu || '').split(':')[0] === s.id);
     const jobCheck = jobs.map((t) => `if [ -f ${t.remoteJob.dir}/exit ]; then echo "__JOB__ ${t.id} exit $(cat ${t.remoteJob.dir}/exit)"; elif kill -0 ${t.remoteJob.pid} 2>/dev/null; then echo "__JOB__ ${t.id} run"; else echo "__JOB__ ${t.id} gone"; fi`).join('; ');
-    const r = await run('ssh', [...sshArgs(s), `nvidia-smi ${QUERY.join(' ')}; echo __MEM__; grep -E '^(MemTotal|MemAvailable):' /proc/meminfo; echo __THERM__; nvidia-smi ${THERMAL.join(' ')}; echo __CPU__ $(cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null | sort -n | tail -1)${jobCheck ? `; ${jobCheck}` : ''}`], 15000);
+    const r = await run('ssh', [...sshArgs(s), `nvidia-smi ${QUERY.join(' ')}; echo __MEM__; grep -E '^(MemTotal|MemAvailable):' /proc/meminfo; echo __THERM__; nvidia-smi ${THERMAL.join(' ')}; echo __CPU__ $(cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null | sort -n | tail -1); echo __STAT__ $(head -1 /proc/stat); sleep 1; echo __STAT2__ $(head -1 /proc/stat) __LOAD__ $(cut -d' ' -f1 /proc/loadavg) $(nproc)${jobCheck ? `; ${jobCheck}` : ''}`], 15000);
     const [gOut, memOut = ''] = String(r.out || '').split('__MEM__');
     for (const m of memOut.matchAll(/__JOB__ (\S+) (run|exit|gone)(?: (-?\d+))?/g)) {
       const t = jobs.find((x) => x.id === m[1]);
@@ -227,9 +227,19 @@ module.exports = function gpuQueue({ dir, file = 'gpu-queue.json', config = {}, 
     const [, thermOut = ''] = memOut.split('__THERM__');
     const cpuM = /__CPU__ (\d+)/.exec(memOut);
     const parsed = r.out && gOut.trim() ? parse(s.id, gOut) : [];
+    // host CPU use (2 /proc/stat samples 1 s apart), load and RAM, shown next to the server's GPUs
+    const st1 = /__STAT__ cpu\s+([\d ]+)/.exec(memOut), st2 = /__STAT2__ cpu\s+([\d ]+?)\s+__LOAD__ ([\d.]+) (\d+)/.exec(memOut);
+    let host = {};
+    if (st1 && st2) {
+      const a = st1[1].trim().split(/\s+/).map(Number), b = st2[1].trim().split(/\s+/).map(Number);
+      const idle = (v) => v[3] + (v[4] || 0), tot = (v) => v.reduce((x, y) => x + y, 0);
+      const dt = tot(b) - tot(a);
+      host = { cpuPct: dt > 0 ? Math.round(100 * (1 - (idle(b) - idle(a)) / dt)) : null, cpuLoad: Number(st2[2]), cpuCores: Number(st2[3]) };
+    }
+    if (kb('MemTotal')) Object.assign(host, { ramTotalMB: Math.round(kb('MemTotal') / 1024), ramUsedMB: Math.round((kb('MemTotal') - kb('MemAvailable')) / 1024) });
     if (!parsed.length && gOut.trim()) r.err = gOut.trim().split(/\r?\n/)[0]; // e.g. "Failed to initialize NVML: Unknown Error"
     const list = parsed.length
-      ? applyThermal(parse(s.id, gOut).map((x) => ({ ...unify(x), server: s.name || s.id })), thermOut.split('__CPU__')[0], cpuM ? Math.round(Number(cpuM[1]) / 1000) : NaN)
+      ? applyThermal(parse(s.id, gOut).map((x) => ({ ...unify(x), ...host, server: s.name || s.id })), thermOut.split('__CPU__')[0], cpuM ? Math.round(Number(cpuM[1]) / 1000) : NaN)
       : [{ key: `${s.id}:?`, host: s.id, server: s.name || s.id, index: -1, name: '연결 안 됨', totalMB: 0, usedMB: 0, util: 0, procs: [],
           error: (r.err || '').split('\n').map((l) => l.trim()).filter(Boolean).pop() || 'unreachable' }];
     remote.set(s.id, { at: Date.now(), list });
@@ -343,6 +353,10 @@ module.exports = function gpuQueue({ dir, file = 'gpu-queue.json', config = {}, 
     // The local 4090 also drives the displays: 11-18 the desktop compositor (dwm) alone held ~12 GB and jobs that
     // grew past their leases pushed the card into shared memory (screen froze). Keep cfg.localDisplayReserveMB free.
     const base = serverCfg(g.host)?.reserveBaseMB ?? (g.unified ? 56000 : g.host === "local" ? (cfg.localDisplayReserveMB ?? 4000) : 0);
+    // Shared servers (config "idleOnly": true): only use a GPU nobody else is using — memory in use beyond our own
+    // leases above idleMB (default 2000) blocks new grants on it.
+    const sc = serverCfg(g.host);
+    if (sc?.idleOnly && g.usedMB - reserved > (sc.idleMB ?? 2000)) return false;
     const occupied = Math.max(g.usedMB + pendingReserve(g, now), reserved + base);
     const free = g.totalMB - occupied - cfg.marginMB;
     return free >= (t.memMB || 0);
