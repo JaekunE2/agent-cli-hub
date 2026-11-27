@@ -3,6 +3,7 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const { serve: serveFile } = require('./artifacts');
@@ -94,6 +95,332 @@ module.exports = function appsModule(deps = {}) {
   }));
 
   const activeProcs = new Map(); // appId -> { runId, proc, cancelRequested }
+  const exportJobs = new Map(); // jobId -> job state
+
+  function pruneExportJobs() {
+    const now = Date.now();
+    for (const [id, job] of exportJobs) {
+      if (job.status !== 'running' && now - (job.finishedAt || job.startedAt) > 30 * 60_000) {
+        if (job._tempExportDir) {
+          try { fs.rmSync(job._tempExportDir, { recursive: true, force: true }); } catch {}
+        }
+        exportJobs.delete(id);
+      }
+    }
+    if (exportJobs.size > 30) {
+      const oldest = [...exportJobs.values()]
+        .filter((j) => j.status !== 'running')
+        .sort((a, b) => a.startedAt - b.startedAt);
+      while (exportJobs.size > 30 && oldest.length) {
+        const j = oldest.shift();
+        if (j._tempExportDir) {
+          try { fs.rmSync(j._tempExportDir, { recursive: true, force: true }); } catch {}
+        }
+        exportJobs.delete(j.jobId);
+      }
+    }
+  }
+
+  function defaultExportDir() {
+    const home = os.homedir();
+    for (const candidate of [path.join(home, 'Downloads'), path.join(home, 'Desktop')]) {
+      try {
+        if (fs.statSync(candidate).isDirectory()) return candidate;
+      } catch {}
+    }
+    return path.join(path.dirname(dataFile), 'exports');
+  }
+
+  function formatExportStamp(d = new Date()) {
+    const p2 = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}`;
+  }
+
+  function buildExportFileName(app) {
+    const safeId = String(app.id || 'app').replace(/[^a-zA-Z0-9._-]/g, '_');
+    return `${safeId}-share-${formatExportStamp()}.zip`;
+  }
+
+  function uniqueZipPath(dir, fileName) {
+    const ext = path.extname(fileName) || '.zip';
+    const base = path.basename(fileName, ext);
+    let candidate = path.join(dir, `${base}${ext}`);
+    for (let i = 2; i <= 99 && fs.existsSync(candidate); i++) {
+      candidate = path.join(dir, `${base}-${i}${ext}`);
+    }
+    return candidate;
+  }
+
+  function publicJobView(job) {
+    return {
+      jobId: job.jobId,
+      appId: job.appId,
+      appName: job.appName,
+      status: job.status,
+      stage: job.stage,
+      stageLabel: job.stageLabel,
+      percent: job.percent,
+      filesDone: job.filesDone,
+      filesTotal: job.filesTotal,
+      skippedLarge: job.skippedLarge,
+      bytes: job.bytes,
+      fileName: job.fileName,
+      outputDir: job.outputDir,
+      outputPath: job.outputPath,
+      browserOnly: Boolean(job.browserOnly),
+      includeOutputs: Boolean(job.includeOutputs),
+      startedAt: job.startedAt,
+      finishedAt: job.finishedAt,
+      error: job.error,
+    };
+  }
+
+  function zipStageDirectory(tmpRoot, appFolderName, zipPath, onProgress) {
+    return new Promise((resolve, reject) => {
+      if (process.platform === 'win32') {
+        const psScript = [
+          '$ErrorActionPreference = "Stop"',
+          'Add-Type -AssemblyName System.IO.Compression',
+          'Add-Type -AssemblyName System.IO.Compression.FileSystem',
+          '$root = [System.IO.Path]::GetFullPath($env:HUB_STAGE_ROOT)',
+          '$stageDir = [System.IO.Path]::GetFullPath($env:HUB_STAGE_DIR)',
+          '$zipPath = $env:HUB_ZIP_PATH',
+          'if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }',
+          '$files = @(Get-ChildItem -LiteralPath $stageDir -Recurse -File -Force)',
+          '$total = $files.Count',
+          '$zip = [System.IO.Compression.ZipFile]::Open($zipPath, [System.IO.Compression.ZipArchiveMode]::Create)',
+          'try {',
+          '  $i = 0',
+          '  foreach ($f in $files) {',
+          '    $rel = $f.FullName.Substring($root.Length).TrimStart("\\", "/").Replace("\\", "/")',
+          '    [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $f.FullName, $rel, [System.IO.Compression.CompressionLevel]::Optimal)',
+          '    $i++',
+          '    if ($i -eq $total -or ($i % 5 -eq 0)) { [Console]::Out.WriteLine("PROGRESS $i/$total") }',
+          '  }',
+          '} finally { $zip.Dispose() }',
+        ].join('\n');
+        const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psScript], {
+          windowsHide: true,
+          env: { ...process.env, HUB_STAGE_ROOT: tmpRoot, HUB_STAGE_DIR: path.join(tmpRoot, appFolderName), HUB_ZIP_PATH: zipPath },
+        });
+        let stderr = '';
+        let buf = '';
+        const timer = setTimeout(() => {
+          try { child.kill('SIGKILL'); } catch {}
+          reject(new Error('ZIP 압축 시간이 초과되었습니다 (120초)'));
+        }, 120_000);
+        child.stdout.on('data', (chunk) => {
+          buf += chunk.toString('utf8');
+          const lines = buf.split(/\r?\n/);
+          buf = lines.pop() || '';
+          for (const line of lines) {
+            const m = /^PROGRESS\s+(\d+)\/(\d+)/.exec(line.trim());
+            if (m && onProgress) onProgress(Number(m[1]), Number(m[2]));
+          }
+        });
+        child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
+        child.on('error', (err) => { clearTimeout(timer); reject(err); });
+        child.on('close', (code) => {
+          clearTimeout(timer);
+          if (code === 0 && fs.existsSync(zipPath)) return resolve();
+          reject(new Error(stderr.trim() || `PowerShell ZIP 생성 실패 (exit ${code})`));
+        });
+        return;
+      }
+
+      const child = spawn('zip', ['-rq', zipPath, appFolderName], { cwd: tmpRoot });
+      let stderr = '';
+      const timer = setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch {}
+        reject(new Error('ZIP 압축 시간이 초과되었습니다 (120초)'));
+      }, 120_000);
+      child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
+      child.on('error', (err) => { clearTimeout(timer); reject(err); });
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        if (code === 0 && fs.existsSync(zipPath)) return resolve();
+        reject(new Error(stderr.trim() || `zip 명령 실행 실패 (exit ${code})`));
+      });
+    });
+  }
+
+  async function executeExportJob(app, job) {
+    const SKIP_DIRS = new Set(['.venv', 'venv', 'node_modules', '__pycache__', '.git', '.pytest_cache', '.mypy_cache', 'secrets']);
+    const SKIP_FILE_RE = /^(?:\.env(?:\..+)?|\.token|.*\.(?:key|pem|pfx|p12))$/i;
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ach-app-export-'));
+    const stageDir = path.join(tmpRoot, app.id);
+    const tmpZipPath = path.join(tmpRoot, job.fileName);
+
+    const excludedAbsDirs = new Set();
+    if (!job.includeOutputs && app.cwd) {
+      const filesMeta = getAppFiles(app);
+      if (filesMeta.viewAbs) excludedAbsDirs.add(path.resolve(filesMeta.viewAbs).toLowerCase());
+      if (filesMeta.dataAbs) excludedAbsDirs.add(path.resolve(filesMeta.dataAbs).toLowerCase());
+    }
+
+    try {
+      job.stage = 'scan';
+      job.stageLabel = '1/3 앱 파일 목록 수집 중…';
+      job.percent = 8;
+
+      const entries = [];
+      const walk = (src, relBase, depth = 0) => {
+        if (depth > 8 || !fs.existsSync(src)) return;
+        const absCur = path.resolve(src).toLowerCase();
+        if (excludedAbsDirs.has(absCur)) return;
+        let dirents;
+        try { dirents = fs.readdirSync(src, { withFileTypes: true }); } catch { return; }
+        for (const ent of dirents) {
+          if (ent.isSymbolicLink()) continue;
+          const full = path.join(src, ent.name);
+          const rel = relBase ? path.join(relBase, ent.name) : ent.name;
+          if (ent.isDirectory()) {
+            if (SKIP_DIRS.has(ent.name)) continue;
+            if (excludedAbsDirs.has(path.resolve(full).toLowerCase())) continue;
+            walk(full, rel, depth + 1);
+          } else if (ent.isFile()) {
+            if (SKIP_FILE_RE.test(ent.name)) continue;
+            if (job.outputPath && path.resolve(full).toLowerCase() === path.resolve(job.outputPath).toLowerCase()) continue;
+            try {
+              const st = fs.statSync(full);
+              if (st.size > 50 * 1024 * 1024) {
+                job.skippedLarge += 1;
+                continue;
+              }
+              entries.push({ full, rel, size: st.size });
+            } catch {}
+          }
+        }
+      };
+
+      if (app.cwd && fs.existsSync(app.cwd)) walk(app.cwd, '');
+      const totalFiles = entries.length + 2; // + app.json + SHARE_README.md
+      job.filesTotal = totalFiles;
+      job.filesDone = 0;
+      job.percent = 15;
+      job.stage = 'copy';
+      job.stageLabel = `2/3 패키지 파일 준비 중 (0/${totalFiles})…`;
+
+      fs.mkdirSync(stageDir, { recursive: true });
+      for (let i = 0; i < entries.length; i++) {
+        const item = entries[i];
+        const dst = path.join(stageDir, item.rel);
+        fs.mkdirSync(path.dirname(dst), { recursive: true });
+        try { fs.copyFileSync(item.full, dst); } catch {}
+        job.filesDone = i + 1;
+        job.percent = Math.min(48, 15 + Math.round((job.filesDone / Math.max(1, totalFiles)) * 33));
+        if (i % 12 === 0 || i === entries.length - 1) {
+          job.stageLabel = `2/3 패키지 파일 준비 중 (${job.filesDone}/${totalFiles})…`;
+          await new Promise((r) => setImmediate(r));
+        }
+      }
+
+      const portableManifest = { ...app, cwd: '' };
+      fs.writeFileSync(path.join(stageDir, 'app.json'), JSON.stringify(portableManifest, null, 2) + '\n', 'utf8');
+      const readme = [
+        `# ${app.name} (${app.id})`,
+        '',
+        app.description ? app.description : '',
+        app.usage ? `\n## 사용법\n${app.usage}` : '',
+        app.purpose ? `\n## 개발 의도\n${app.purpose}` : '',
+        '\n## Agent CLI Hub에서 가져오기',
+        '1. 이 압축 파일을 원하는 폴더에 풉니다.',
+        '2. Agent CLI Hub → **앱스** → **새 앱 추가** → **폴더에서 app.json 가져오기 (Import)**에 압축 푼 폴더 경로를 입력합니다.',
+        '3. Python/Node 의존성이 필요한 앱은 해당 폴더에서 `setup.ps1` 또는 `requirements.txt` / `package.json`을 설치한 뒤 실행하세요.',
+        '',
+      ].filter((x) => x !== '').join('\n');
+      fs.writeFileSync(path.join(stageDir, 'SHARE_README.md'), readme, 'utf8');
+      job.filesDone = totalFiles;
+      job.percent = 50;
+
+      job.stage = 'zip';
+      job.stageLabel = `3/3 ZIP 압축 생성 중 (0/${totalFiles})…`;
+      await zipStageDirectory(tmpRoot, app.id, tmpZipPath, (done, total) => {
+        job.filesDone = done;
+        job.filesTotal = Math.max(job.filesTotal, total);
+        job.percent = Math.min(94, 50 + Math.round((done / Math.max(1, total)) * 44));
+        job.stageLabel = `3/3 ZIP 압축 생성 중 (${done}/${total})…`;
+      });
+
+      job.stage = 'save';
+      job.stageLabel = '최종 위치에 저장 중…';
+      job.percent = 96;
+      fs.mkdirSync(job.outputDir, { recursive: true });
+      try {
+        fs.renameSync(tmpZipPath, job.outputPath);
+      } catch {
+        fs.copyFileSync(tmpZipPath, job.outputPath);
+        try { fs.unlinkSync(tmpZipPath); } catch {}
+      }
+
+      const st = fs.statSync(job.outputPath);
+      job.bytes = st.size;
+      job.percent = 100;
+      job.stage = 'done';
+      job.stageLabel = '저장 완료';
+      job.status = 'ok';
+      job.finishedAt = Date.now();
+    } catch (e) {
+      job.status = 'error';
+      job.stage = 'error';
+      job.stageLabel = '내보내기 실패';
+      job.error = e.message || String(e);
+      job.finishedAt = Date.now();
+    } finally {
+      try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
+    }
+    return job;
+  }
+
+  function startExportJob(app, opts = {}) {
+    pruneExportJobs();
+    const browserOnly = Boolean(opts.browserOnly);
+    const includeOutputs = opts.includeOutputs !== false;
+    let outputDir;
+    let tempExportDir = null;
+    if (browserOnly) {
+      tempExportDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ach-app-dl-'));
+      outputDir = tempExportDir;
+    } else {
+      const requested = String(opts.destDir || '').trim();
+      if (requested) {
+        if (!path.isAbsolute(requested)) throw new Error('저장 경로는 절대 경로여야 합니다');
+        outputDir = path.resolve(requested);
+      } else {
+        outputDir = defaultExportDir();
+      }
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+    const baseName = buildExportFileName(app);
+    const outputPath = uniqueZipPath(outputDir, baseName);
+    const jobId = `exp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const job = {
+      jobId,
+      appId: app.id,
+      appName: app.name,
+      status: 'running',
+      stage: 'scan',
+      stageLabel: '내보내기 준비 중…',
+      percent: 5,
+      filesDone: 0,
+      filesTotal: 0,
+      skippedLarge: 0,
+      bytes: 0,
+      fileName: path.basename(outputPath),
+      outputDir,
+      outputPath,
+      browserOnly,
+      includeOutputs,
+      startedAt: Date.now(),
+      finishedAt: null,
+      error: null,
+      _tempExportDir: tempExportDir,
+      _promise: null,
+    };
+    exportJobs.set(jobId, job);
+    job._promise = executeExportJob(app, job);
+    return job;
+  }
 
   function loadStore() {
     const raw = safeJsonRead(dataFile, { version: 1, apps: [] });
@@ -485,57 +812,68 @@ module.exports = function appsModule(deps = {}) {
       return send(200, { ok: true, id: app.id, purgedOutputs: purge, removedFiles });
     }
 
-    if (sub === 'export' && req.method === 'GET') {
-      const os = require('os');
-      const { execFileSync } = require('child_process');
-      const SKIP_DIRS = new Set(['.venv', 'venv', 'node_modules', '__pycache__', '.git', '.pytest_cache', '.mypy_cache', 'secrets']);
-      const SKIP_FILE_RE = /^(?:\.env(?:\..+)?|\.token|.*\.(?:key|pem|pfx|p12))$/i;
-      const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ach-app-export-'));
-      const stageDir = path.join(tmpRoot, app.id);
-      const zipPath = path.join(tmpRoot, `${app.id}-share.zip`);
-      const copySafe = (src, dst, depth = 0) => {
-        if (depth > 8 || !fs.existsSync(src)) return;
-        fs.mkdirSync(dst, { recursive: true });
-        for (const ent of fs.readdirSync(src, { withFileTypes: true })) {
-          if (ent.isSymbolicLink()) continue;
-          if (ent.isDirectory()) {
-            if (SKIP_DIRS.has(ent.name)) continue;
-            copySafe(path.join(src, ent.name), path.join(dst, ent.name), depth + 1);
-          } else if (ent.isFile()) {
-            if (SKIP_FILE_RE.test(ent.name)) continue;
-            try {
-              const st = fs.statSync(path.join(src, ent.name));
-              if (st.size > 50 * 1024 * 1024) continue;
-              fs.copyFileSync(path.join(src, ent.name), path.join(dst, ent.name));
-            } catch {}
-          }
-        }
-      };
+    if (sub === 'export-info' && req.method === 'GET') {
+      const defDir = defaultExportDir();
+      const fileName = buildExportFileName(app);
+      const files = getAppFiles(app);
+      return send(200, {
+        ok: true,
+        defaultDir: defDir,
+        fileName,
+        counts: { views: files.views.length, data: files.data.length },
+        hasOutputs: files.views.length > 0 || files.data.length > 0,
+      });
+    }
+
+    if (sub === 'export' && req.method === 'POST') {
+      const b = await readBody();
       try {
-        fs.mkdirSync(stageDir, { recursive: true });
-        if (app.cwd && fs.existsSync(app.cwd)) copySafe(app.cwd, stageDir);
-        const portableManifest = { ...app, cwd: '' };
-        fs.writeFileSync(path.join(stageDir, 'app.json'), JSON.stringify(portableManifest, null, 2) + '\n', 'utf8');
-        const readme = [
-          `# ${app.name} (${app.id})`,
-          '',
-          app.description ? app.description : '',
-          app.usage ? `\n## 사용법\n${app.usage}` : '',
-          app.purpose ? `\n## 개발 의도\n${app.purpose}` : '',
-          '\n## Agent CLI Hub에서 가져오기',
-          '1. 이 압축 파일을 원하는 폴더에 풉니다.',
-          '2. Agent CLI Hub → **앱스** → **새 앱 추가** → **폴더에서 app.json 가져오기 (Import)**에 압축 푼 폴더 경로를 입력합니다.',
-          '3. Python/Node 의존성이 필요한 앱은 해당 폴더에서 `setup.ps1` 또는 `requirements.txt` / `package.json`을 설치한 뒤 실행하세요.',
-          '',
-        ].filter((x) => x !== '').join('\n');
-        fs.writeFileSync(path.join(stageDir, 'SHARE_README.md'), readme, 'utf8');
-        if (process.platform === 'win32') {
-          const ps = `Compress-Archive -LiteralPath '${stageDir.replace(/'/g, "''")}' -DestinationPath '${zipPath.replace(/'/g, "''")}' -Force`;
-          execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { windowsHide: true, timeout: 60000 });
-        } else {
-          execFileSync('zip', ['-rq', zipPath, app.id], { cwd: tmpRoot, timeout: 60000 });
+        const job = startExportJob(app, {
+          destDir: b.destDir,
+          includeOutputs: b.includeOutputs !== false,
+          browserOnly: Boolean(b.browserOnly),
+        });
+        return send(200, { ok: true, job: publicJobView(job) });
+      } catch (e) {
+        return send(400, { error: `전달용 내보내기 시작 실패: ${e.message}` });
+      }
+    }
+
+    if (sub === 'export-status' && req.method === 'GET') {
+      const jobId = String(url.searchParams.get('jobId') || '').trim();
+      const job = exportJobs.get(jobId);
+      if (!job || job.appId !== app.id) return send(404, { error: '내보내기 작업을 찾을 수 없습니다' });
+      return send(200, { ok: true, job: publicJobView(job) });
+    }
+
+    if (sub === 'export-download' && req.method === 'GET') {
+      const jobId = String(url.searchParams.get('jobId') || '').trim();
+      const job = exportJobs.get(jobId);
+      if (!job || job.appId !== app.id) return send(404, { error: '내보내기 작업을 찾을 수 없습니다' });
+      if (job.status !== 'ok' || !job.outputPath || !fs.existsSync(job.outputPath)) {
+        return send(409, { error: '아직 내보내기 파일이 준비되지 않았습니다' });
+      }
+      const st = fs.statSync(job.outputPath);
+      const safeName = String(job.fileName || `${app.id}-share.zip`).replace(/[^a-zA-Z0-9._-]/g, '_');
+      res.writeHead(200, {
+        'content-type': 'application/zip',
+        'content-disposition': `attachment; filename="${safeName}"`,
+        'content-length': st.size,
+        'cache-control': 'no-store',
+      });
+      fs.createReadStream(job.outputPath).pipe(res);
+      return true;
+    }
+
+    if (sub === 'export' && req.method === 'GET') {
+      try {
+        const includeOutputs = url.searchParams.get('includeOutputs') !== 'false' && url.searchParams.get('includeOutputs') !== '0';
+        const job = startExportJob(app, { browserOnly: true, includeOutputs });
+        await job._promise;
+        if (job.status !== 'ok' || !fs.existsSync(job.outputPath)) {
+          throw new Error(job.error || 'ZIP 파일을 생성하지 못했습니다');
         }
-        const buf = fs.readFileSync(zipPath);
+        const buf = fs.readFileSync(job.outputPath);
         res.writeHead(200, {
           'content-type': 'application/zip',
           'content-disposition': `attachment; filename="${app.id.replace(/[^a-zA-Z0-9._-]/g, '_')}-share.zip"`,
@@ -543,11 +881,13 @@ module.exports = function appsModule(deps = {}) {
           'cache-control': 'no-store',
         });
         res.end(buf);
+        if (job._tempExportDir) {
+          try { fs.rmSync(job._tempExportDir, { recursive: true, force: true }); } catch {}
+        }
+        exportJobs.delete(job.jobId);
         return true;
       } catch (e) {
         return send(500, { error: `전달용 패키지 생성 실패: ${e.message}` });
-      } finally {
-        try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
       }
     }
 

@@ -225,7 +225,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
   };
   const savedSc = loadScStore()[scKey];
   let sideChatState = savedSc
-    ? { open: !!savedSc.open, selectedText: savedSc.selectedText || '', history: Array.isArray(savedSc.history) ? savedSc.history : [], busy: false }
+    ? { open: false, selectedText: savedSc.selectedText || '', history: Array.isArray(savedSc.history) ? savedSc.history : [], busy: false }
     : { open: false, selectedText: '', history: [], busy: false };
   let sideChatPinned = true;
   try { sideChatPinned = localStorage.getItem(SC_PIN_KEY) !== '0'; } catch {}

@@ -1,3 +1,275 @@
+// ---------- Custom Session Groups Helpers ----------
+const SGRP_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#64748b'];
+
+function getSessionGroupsData() {
+  const sg = state.sessionGroups;
+  return {
+    groups: Array.isArray(sg?.groups) ? sg.groups : [],
+    assignments: sg?.assignments && typeof sg.assignments === 'object' ? sg.assignments : {},
+  };
+}
+
+function sessionKeysForEntry(entry) {
+  if (!entry) return [];
+  if (entry.kind === 'term') {
+    const t = entry.item;
+    return [t?.sessionId ? `sid:${t.sessionId}` : '', t?.id != null ? `term:${t.id}` : ''].filter(Boolean);
+  }
+  if (entry.kind === 'recent') {
+    return entry.item?.sessionId ? [`sid:${entry.item.sessionId}`] : [];
+  }
+  if (entry.kind === 'console') {
+    const cs = sessionOfConsole(entry.item);
+    return cs?.sessionId ? [`sid:${cs.sessionId}`] : [];
+  }
+  return [];
+}
+
+function sessionKeysForSidebarKey(dataKey) {
+  const k = String(dataKey || '');
+  if (k.startsWith('term:')) {
+    const tid = k.slice(5);
+    const t = (state.terms || []).find((x) => String(x.id) === tid);
+    return [t?.sessionId ? `sid:${t.sessionId}` : '', `term:${tid}`].filter(Boolean);
+  }
+  if (k.startsWith('recent:')) {
+    const sid = k.slice(7);
+    const lt = (state.terms || []).find((x) => x.sessionId === sid);
+    return [`sid:${sid}`, lt ? `term:${lt.id}` : ''].filter(Boolean);
+  }
+  return [];
+}
+
+function groupOfSessionKeys(keys, sg = getSessionGroupsData()) {
+  for (const k of keys) {
+    const gid = sg.assignments[k];
+    if (gid) {
+      const grp = sg.groups.find((g) => g.id === gid);
+      if (grp) return grp;
+    }
+  }
+  return null;
+}
+
+async function mutateSessionGroups(body) {
+  const r = await api('/api/session-groups', { method: 'POST', body, requireOk: true });
+  if (r.sessionGroups) state.sessionGroups = r.sessionGroups;
+  renderSide();
+  return r;
+}
+
+function openSessionGroupAssignMenu(anchorBtn, dataKey) {
+  const keys = sessionKeysForSidebarKey(dataKey);
+  if (!keys.length) return;
+  const sg = getSessionGroupsData();
+  const curGrp = groupOfSessionKeys(keys, sg);
+  const items = [];
+  for (const g of sg.groups) {
+    const isCur = curGrp?.id === g.id;
+    items.push({
+      label: isCur ? `✓ ${g.name}` : g.name,
+      icon: `<span class="sgrp-dot" style="background:${esc(g.color)}"></span>`,
+      onClick: async () => {
+        try {
+          await mutateSessionGroups({ action: 'assign', keys, groupId: isCur ? '' : g.id });
+          toast(isCur ? '세션을 그룹에서 해제했습니다' : `“${g.name}” 그룹으로 이동했습니다`);
+        } catch (er) { toast(er.message, 4000, 'danger'); }
+      },
+    });
+  }
+  if (curGrp) {
+    items.push({
+      label: '그룹 해제 (미분류)',
+      icon: ICO.close,
+      onClick: async () => {
+        try {
+          await mutateSessionGroups({ action: 'assign', keys, groupId: '' });
+          toast('세션을 미분류로 이동했습니다');
+        } catch (er) { toast(er.message, 4000, 'danger'); }
+      },
+    });
+  }
+  if (items.length) items.push({ divider: true });
+  items.push({
+    label: '새 그룹 만들고 이동…',
+    icon: ICO.plus,
+    onClick: async () => {
+      const name = prompt('새 세션 그룹 이름을 입력하세요:');
+      if (!name || !name.trim()) return;
+      try {
+        const r = await mutateSessionGroups({ action: 'create', name: name.trim(), keys });
+        toast(`“${r.group.name}” 그룹을 만들고 세션을 이동했습니다`);
+      } catch (er) { toast(er.message, 4000, 'danger'); }
+    },
+  });
+  items.push({
+    label: '세션 그룹 관리…',
+    icon: ICO.settings,
+    onClick: () => openSessionGroupModal(),
+  });
+  openMoreMenu(anchorBtn, items);
+}
+
+function openSessionGroupModal(focusGroupId = '') {
+  const dlg = document.createElement('dialog');
+  dlg.className = 'pj-dialog';
+  dlg.style.width = 'min(540px, 94vw)';
+  dlg.setAttribute('aria-label', '세션 그룹 관리');
+  let pickedColor = SGRP_COLORS[getSessionGroupsData().groups.length % SGRP_COLORS.length];
+  let expandedGroupId = focusGroupId || '';
+
+  const collectGeneralSessions = () => {
+    const out = [];
+    const seenSid = new Set();
+    for (const t of sortTermsByState(state.terms || [])) {
+      if (t.operator || isProjectSubSession(t)) continue;
+      if (t.sessionId) seenSid.add(t.sessionId);
+      out.push({
+        keys: [t.sessionId ? `sid:${t.sessionId}` : '', `term:${t.id}`].filter(Boolean),
+        label: termLabel(t),
+        sub: [t.agent || 'shell', base(t.cwd)].filter(Boolean).join(' · '),
+      });
+    }
+    for (const r of (state.recent || []).slice(0, 30)) {
+      if (seenSid.has(r.sessionId) || isProjectSubRecent(r)) continue;
+      out.push({
+        keys: [`sid:${r.sessionId}`],
+        label: sessionLabel(r),
+        sub: [r.agent || 'claude', base(r.cwd), ago(r.mtime)].filter(Boolean).join(' · '),
+      });
+    }
+    return out;
+  };
+
+  const paint = () => {
+    const sg = getSessionGroupsData();
+    const generalSessions = collectGeneralSessions();
+    const countFor = (gid) => generalSessions.filter((s) => groupOfSessionKeys(s.keys, sg)?.id === gid).length;
+    const swatches = SGRP_COLORS.map((c) => `<button type="button" class="sgrp-swatch${pickedColor === c ? ' on' : ''}" data-sgrp-color="${c}" style="background:${c}" aria-label="${c}"></button>`).join('');
+    const listHtml = sg.groups.length
+      ? sg.groups.map((g) => {
+        const isExp = expandedGroupId === g.id;
+        const cnt = countFor(g.id);
+        const membersHtml = isExp
+          ? `<div class="sgrp-assign-list">${generalSessions.length
+            ? generalSessions.map((s, idx) => {
+              const cur = groupOfSessionKeys(s.keys, sg);
+              const checked = cur?.id === g.id;
+              return `<label class="sgrp-assign-row">
+                <input type="checkbox" data-assign-idx="${idx}" data-assign-gid="${esc(g.id)}" ${checked ? 'checked' : ''}>
+                <span class="sgrp-assign-main"><b>${esc(s.label)}</b><small>${esc(s.sub)}${cur && cur.id !== g.id ? ` · 현재: ${esc(cur.name)}` : ''}</small></span>
+              </label>`;
+            }).join('')
+            : '<div class="ums">배치할 일반 세션이 없습니다.</div>'}</div>`
+          : '';
+        return `<div class="sgrp-mgr-card">
+          <div class="sgrp-mgr-row">
+            <span class="sgrp-dot" style="background:${esc(g.color)}"></span>
+            <b class="sgrp-mgr-name">${esc(g.name)}</b>
+            <span class="badge">${cnt}개</span>
+            <div class="row" style="gap:4px;margin-left:auto">
+              <button type="button" class="btn-sm${isExp ? ' primary' : ''}" data-mgr-members="${esc(g.id)}">세션 배치</button>
+              <button type="button" class="btn-sm" data-mgr-rename="${esc(g.id)}">이름 변경</button>
+              <button type="button" class="btn-sm danger" data-mgr-del="${esc(g.id)}">삭제</button>
+            </div>
+          </div>
+          ${membersHtml}
+        </div>`;
+      }).join('')
+      : '<div class="empty" style="padding:18px;text-align:center">아직 만든 세션 그룹이 없습니다. 위에서 그룹을 추가해 일반 세션을 묶어 관리해 보세요.</div>';
+
+    dlg.innerHTML = `<div style="display:flex;flex-direction:column;gap:12px">
+      <div class="dlg-head">
+        <h3 style="margin:0">일반 세션 그룹 관리</h3>
+        <button type="button" class="ghost icon-btn btn-sm" data-sgrp-close aria-label="닫기">${ICO.close}</button>
+      </div>
+      <form id="sgrpCreateForm" style="display:flex;flex-direction:column;gap:8px;padding:12px;border:1px solid var(--line);border-radius:var(--radius-md);background:var(--bg)">
+        <div style="display:flex;gap:6px">
+          <input id="sgrpNewName" class="btn-sm" style="flex:1" maxlength="60" placeholder="새 그룹 이름 (예: 운영·모니터링, 실험, 리서치)">
+          <button type="submit" class="primary btn-sm">${ICO.plus} 그룹 추가</button>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">
+          <span>색상</span>
+          <div class="sgrp-swatches">${swatches}</div>
+        </div>
+      </form>
+      <div class="sgrp-mgr-list">${listHtml}</div>
+    </div>`;
+
+    $('[data-sgrp-close]', dlg).onclick = () => dlg.close();
+    dlg.querySelectorAll('[data-sgrp-color]').forEach((b) => {
+      b.onclick = () => { pickedColor = b.dataset.sgrpColor; paint(); };
+    });
+    $('#sgrpCreateForm', dlg).onsubmit = async (ev) => {
+      ev.preventDefault();
+      const name = $('#sgrpNewName', dlg).value.trim();
+      if (!name) return toast('그룹 이름을 입력하세요');
+      try {
+        const r = await mutateSessionGroups({ action: 'create', name, color: pickedColor });
+        expandedGroupId = r.group.id;
+        pickedColor = SGRP_COLORS[getSessionGroupsData().groups.length % SGRP_COLORS.length];
+        toast(`“${r.group.name}” 그룹을 추가했습니다`);
+        paint();
+      } catch (er) { toast(er.message, 4000, 'danger'); }
+    };
+    dlg.querySelectorAll('[data-mgr-members]').forEach((b) => {
+      b.onclick = () => {
+        const id = b.dataset.mgrMembers;
+        expandedGroupId = expandedGroupId === id ? '' : id;
+        paint();
+      };
+    });
+    dlg.querySelectorAll('[data-mgr-rename]').forEach((b) => {
+      b.onclick = async () => {
+        const id = b.dataset.mgrRename;
+        const g = getSessionGroupsData().groups.find((x) => x.id === id);
+        if (!g) return;
+        const next = prompt('새 그룹 이름:', g.name);
+        if (!next || !next.trim() || next.trim() === g.name) return;
+        try {
+          await mutateSessionGroups({ action: 'rename', id, name: next.trim() });
+          toast('그룹 이름을 변경했습니다');
+          paint();
+        } catch (er) { toast(er.message, 4000, 'danger'); }
+      };
+    });
+    dlg.querySelectorAll('[data-mgr-del]').forEach((b) => {
+      b.onclick = async () => {
+        const id = b.dataset.mgrDel;
+        const g = getSessionGroupsData().groups.find((x) => x.id === id);
+        if (!g || !confirm(`“${g.name}” 그룹을 삭제할까요? (포함된 세션은 미분류로 이동되며 삭제되지 않습니다)`)) return;
+        try {
+          await mutateSessionGroups({ action: 'delete', id });
+          if (expandedGroupId === id) expandedGroupId = '';
+          toast('그룹을 삭제했습니다');
+          paint();
+        } catch (er) { toast(er.message, 4000, 'danger'); }
+      };
+    });
+    dlg.querySelectorAll('[data-assign-idx]').forEach((chk) => {
+      chk.onchange = async () => {
+        const item = generalSessions[Number(chk.dataset.assignIdx)];
+        const gid = chk.dataset.assignGid;
+        if (!item) return;
+        try {
+          await mutateSessionGroups({ action: 'assign', keys: item.keys, groupId: chk.checked ? gid : '' });
+          paint();
+        } catch (er) {
+          toast(er.message, 4000, 'danger');
+          paint();
+        }
+      };
+    });
+  };
+
+  document.body.append(dlg);
+  dlg.onclose = () => dlg.remove();
+  dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
+  paint();
+  dlg.showModal();
+  $('#sgrpNewName', dlg)?.focus();
+}
+
 // ---------- Sidebar Navigation Tree ----------
 function resolvedFavs() {
   const favs = state.favs || new Set();
@@ -282,6 +554,7 @@ function renderSide() {
   );
 
   const renameButton = `<button type="button" class="ghost icon-btn side-rename" data-side-rename title="세션 명칭 수정" aria-label="세션 명칭 수정">${ICO.edit}</button>`;
+  const groupButton = `<button type="button" class="ghost icon-btn side-group-btn" data-side-group title="그룹 지정" aria-label="그룹 지정">${ICO.folder}</button>`;
   const renderUnifiedRow = (entry) => {
     if (entry.kind === 'term') {
       const t = entry.item;
@@ -306,7 +579,7 @@ function renderSide() {
       return `<div class="srow${isSel ? ' sel' : ''}${unread ? ' just-done' : ''}" data-key="term:${esc(t.id)}" title="${esc([termLabel(t), pj?.name, t.cwd, brTip].filter(Boolean).join(' · '))}">
         ${agentIcon(kind, dot)}
         <button type="button" class="ghost srow-main srow-open"><span class="srow-t">${esc(termLabel(t))}</span><span class="srow-s">${tags}</span></button>
-        <span class="srow-end">${t.operator ? '' : renameButton}${unread ? '<span class="srow-unread" title="방금 작업 완료"></span>' : ''}${fk ? `<span class="fav${isStar ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${isStar ? '즐겨찾기 해제' : '즐겨찾기'}">${isStar ? ICO.starFill : ICO.star}</span>` : ''}</span>
+        <span class="srow-end">${t.operator ? '' : `${groupButton}${renameButton}`}${unread ? '<span class="srow-unread" title="방금 작업 완료"></span>' : ''}${fk ? `<span class="fav${isStar ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${isStar ? '즐겨찾기 해제' : '즐겨찾기'}">${isStar ? ICO.starFill : ICO.star}</span>` : ''}</span>
       </div>`;
     }
     if (entry.kind === 'console') {
@@ -338,10 +611,38 @@ function renderSide() {
       ${agentIcon(ag, liveDot)}
       <button type="button" class="ghost srow-main srow-open"><span class="srow-t">${esc(sessionLabel(r))}</span><span class="srow-s">${subHTML}</span></button>
       <span class="srow-end">
+        ${groupButton}
         ${renameButton}
         <span class="fav${on ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${on ? '즐겨찾기 해제' : '즐겨찾기'}">${on ? ICO.starFill : ICO.star}</span>
         <button class="record-delete danger ghost icon-btn" data-hide-record="${esc(r.sessionId)}" title="${delRecTitle}" aria-label="${esc(delRecAria)}">${ICO.trash}</button>
       </span>
+    </div>`;
+  };
+
+  const sgData = getSessionGroupsData();
+  const hasCustomGroups = sgData.groups.length > 0;
+  const entryBusy = (entry) => (
+    entry.kind === 'term' ? termStateOf(entry.item) === 'busy'
+      : entry.kind === 'console' ? consoleStateOf(entry.item) === 'busy'
+        : liveBySid.get(entry.item?.sessionId)?.status === 'busy'
+  );
+  const renderCustomGroupBlock = (g, items) => {
+    const gFoldKey = `sgrp:${g.id}`;
+    const gFolded = folded.has(gFoldKey) && !fTerms.length;
+    const gBusy = items.filter(entryBusy).length;
+    return `<div class="sgrp-block" data-sgrp-id="${esc(g.id)}">
+      <div class="sgrp-hd">
+        ${foldBtnHTML(gFoldKey, gFolded, g.name)}
+        <span class="sgrp-dot" style="background:${esc(g.color)}"></span>
+        <span class="sgrp-name" data-sec-fold="${esc(gFoldKey)}">${esc(g.name)}</span>
+        <span class="srow-meta">${items.length}</span>
+        ${gFolded && gBusy ? `<span class="srow-tag busy">실행 ${gBusy}</span>` : ''}
+        <span class="sgrp-acts">
+          <button type="button" class="ghost icon-btn sgrp-act" data-sgrp-rename="${esc(g.id)}" title="그룹 이름 변경" aria-label="그룹 이름 변경">${ICO.edit}</button>
+          <button type="button" class="ghost icon-btn sgrp-act" data-sgrp-del="${esc(g.id)}" title="그룹 삭제" aria-label="그룹 삭제">${ICO.trash}</button>
+        </span>
+      </div>
+      ${gFolded ? '' : `<div class="sgrp-body">${items.map(renderUnifiedRow).join('') || '<div class="srow-empty" style="padding-left:22px">비어 있음</div>'}</div>`}
     </div>`;
   };
 
@@ -351,18 +652,65 @@ function renderSide() {
     if (!unifiedEntries.length) {
       recentRows = `<div class="srow-empty">${rf === 'live' ? '활성 대화 · 터미널 없음' : '최근 기록 없음'}</div>`;
     } else if (state.termGroupByProject) {
-      const groups = new Map();
+      const pjGroups = new Map();
+      const customBuckets = new Map(sgData.groups.map((g) => [g.id, []]));
+      const ungrouped = [];
       for (const entry of unifiedEntries) {
         const pj = entry.kind === 'term' ? projectOfTerm(entry.item)
           : entry.kind === 'console' ? projectOfSession(sessionOfConsole(entry.item)?.sessionId)
             : (state.projects || []).find((p) => p.id === entry.item.projectId)
               || projectOfSession(entry.item.sessionId) || projectOfSession(entry.item.branch?.parentSessionId);
-        const gKey = pj ? `pj:${pj.id}` : '_general';
-        const gLabel = pj ? pj.name : '일반 대화 · 터미널';
-        if (!groups.has(gKey)) groups.set(gKey, { label: gLabel, isPj: !!pj, items: [] });
-        groups.get(gKey).items.push(entry);
+        if (pj) {
+          const gKey = `pj:${pj.id}`;
+          if (!pjGroups.has(gKey)) pjGroups.set(gKey, { label: pj.name, items: [] });
+          pjGroups.get(gKey).items.push(entry);
+        } else {
+          const cg = groupOfSessionKeys(sessionKeysForEntry(entry), sgData);
+          if (cg && customBuckets.has(cg.id)) customBuckets.get(cg.id).push(entry);
+          else ungrouped.push(entry);
+        }
       }
-      recentRows = [...groups.values()].map((g) => `<div class="sgrp-lbl">${g.isPj ? '<span class="pj-dot"></span>' : ''}${esc(g.label)}</div>${g.items.map(renderUnifiedRow).join('')}`).join('');
+      const chunks = [];
+      for (const g of pjGroups.values()) {
+        chunks.push(`<div class="sgrp-lbl"><span class="pj-dot"></span>${esc(g.label)}</div>${g.items.map(renderUnifiedRow).join('')}`);
+      }
+      for (const g of sgData.groups) {
+        const items = customBuckets.get(g.id) || [];
+        if (fTerms.length && !items.length) continue;
+        chunks.push(renderCustomGroupBlock(g, items));
+      }
+      if (ungrouped.length) {
+        chunks.push(`<div class="sgrp-lbl">${hasCustomGroups ? '미분류' : '일반 대화 · 터미널'}</div>${ungrouped.map(renderUnifiedRow).join('')}`);
+      }
+      recentRows = chunks.join('');
+    } else if (hasCustomGroups) {
+      const buckets = new Map(sgData.groups.map((g) => [g.id, []]));
+      const ungrouped = [];
+      for (const entry of unifiedEntries) {
+        const cg = groupOfSessionKeys(sessionKeysForEntry(entry), sgData);
+        if (cg && buckets.has(cg.id)) buckets.get(cg.id).push(entry);
+        else ungrouped.push(entry);
+      }
+      const chunks = [];
+      for (const g of sgData.groups) {
+        const items = buckets.get(g.id) || [];
+        if (fTerms.length && !items.length) continue;
+        chunks.push(renderCustomGroupBlock(g, items));
+      }
+      if (ungrouped.length) {
+        const ugFolded = folded.has('sgrp:_ungrouped') && !fTerms.length;
+        const ugBusy = ungrouped.filter(entryBusy).length;
+        chunks.push(`<div class="sgrp-block">
+          <div class="sgrp-hd">
+            ${foldBtnHTML('sgrp:_ungrouped', ugFolded, '미분류')}
+            <span class="sgrp-name" data-sec-fold="sgrp:_ungrouped">미분류</span>
+            <span class="srow-meta">${ungrouped.length}</span>
+            ${ugFolded && ugBusy ? `<span class="srow-tag busy">실행 ${ugBusy}</span>` : ''}
+          </div>
+          ${ugFolded ? '' : `<div class="sgrp-body">${ungrouped.map(renderUnifiedRow).join('')}</div>`}
+        </div>`);
+      }
+      recentRows = chunks.join('');
     } else {
       recentRows = unifiedEntries.map(renderUnifiedRow).join('');
     }
@@ -377,11 +725,13 @@ function renderSide() {
   const cleanExitedAria = '종료된 터미널 정리';
   const cleanExitedTitle = `종료된 터미널 정리 (${exitedCount})`;
   const groupProjLbl = 'Project별 묶어보기';
+  const manageGroupsLbl = '일반 세션 그룹 관리';
   h += `<div class="ssec">
     <div class="ssec-hd">
       ${foldBtnHTML('recent', recFolded, isEnUI() ? 'Sessions' : '목록')}
       <span class="ssec-title" data-key="terms-recent" title="전체 목록 보기">작업 세션 ${liveCount ? `<span class="srow-meta">${liveCount}</span>` : ''}${recFolded && busyCount ? `<span class="srow-tag busy">실행 ${busyCount}</span>` : ''}</span>
       ${exitedCount ? `<button class="ghost icon-btn ssec-act" data-side-clean-exited="1" title="${cleanExitedTitle}" aria-label="${cleanExitedAria}">${ICO.trash}</button>` : ''}
+      <button class="ghost icon-btn ssec-act${hasCustomGroups ? ' on' : ''}" data-sgrp-manage="1" title="${manageGroupsLbl}" aria-label="${manageGroupsLbl}">${ICO.folder}</button>
       <button class="ghost icon-btn ssec-act${state.termGroupByProject ? ' on' : ''}" data-tgroup="1" title="${groupProjLbl}" aria-pressed="${state.termGroupByProject}" aria-label="${groupProjLbl}">${ICO.layers}</button>
       <button class="ghost icon-btn ssec-act" data-rrefresh="1" title="세션 기록 새로고침" aria-label="세션 기록 새로고침">${ICO.refresh}</button>
       <button class="ghost icon-btn ssec-act" data-hopen-new="1" title="새 대화 · 터미널 열기" aria-label="새 대화 · 터미널 열기">${ICO.plus}</button>
@@ -423,6 +773,41 @@ function renderSide() {
 const renderTopNav = renderSide;
 
 $('#side')?.addEventListener('click', async (e) => {
+  const grpBtn = e.target.closest('[data-side-group]');
+  if (grpBtn) {
+    e.stopPropagation();
+    const row = grpBtn.closest('[data-key]');
+    if (row) openSessionGroupAssignMenu(grpBtn, row.dataset.key);
+    return;
+  }
+  if (e.target.closest('[data-sgrp-manage]')) {
+    e.stopPropagation();
+    return openSessionGroupModal();
+  }
+  const sgrpRen = e.target.closest('[data-sgrp-rename]');
+  if (sgrpRen) {
+    e.stopPropagation();
+    const id = sgrpRen.dataset.sgrpRename;
+    const g = getSessionGroupsData().groups.find((x) => x.id === id);
+    if (!g) return;
+    const next = prompt('새 그룹 이름:', g.name);
+    if (!next || !next.trim() || next.trim() === g.name) return;
+    mutateSessionGroups({ action: 'rename', id, name: next.trim() })
+      .then(() => toast('그룹 이름을 변경했습니다'))
+      .catch((er) => toast(er.message, 4000, 'danger'));
+    return;
+  }
+  const sgrpDel = e.target.closest('[data-sgrp-del]');
+  if (sgrpDel) {
+    e.stopPropagation();
+    const id = sgrpDel.dataset.sgrpDel;
+    const g = getSessionGroupsData().groups.find((x) => x.id === id);
+    if (!g || !confirm(`“${g.name}” 그룹을 삭제할까요? (포함된 세션은 미분류로 이동됩니다)`)) return;
+    mutateSessionGroups({ action: 'delete', id })
+      .then(() => toast('그룹을 삭제했습니다'))
+      .catch((er) => toast(er.message, 4000, 'danger'));
+    return;
+  }
   const rename = e.target.closest('[data-side-rename]');
   if (rename) return renameSidebarItem(rename.closest('[data-key]'));
   const fold = e.target.closest('[data-sec-fold]');

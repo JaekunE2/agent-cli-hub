@@ -200,6 +200,259 @@
     });
   }
 
+  function fmtExportBytes(bytes) {
+    const n = Number(bytes || 0);
+    if (!Number.isFinite(n) || n <= 0) return '0 B';
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+  }
+
+  function showExportModal(app) {
+    const isRemote = typeof IS_REMOTE !== 'undefined' && IS_REMOTE;
+    const html = `
+      <div style="display:grid;gap:12px;font-size:.9rem;">
+        <p style="margin:0;color:var(--muted);line-height:1.5;">
+          <strong>${esc(app.name)}</strong> 앱을 다른 사람에게 전달하거나 다른 PC의 Agent CLI Hub로 가져올 수 있는 ZIP 패키지로 만듭니다.
+        </p>
+        <div id="expSetup">
+          ${isRemote
+            ? `<div style="padding:10px 12px;border:1px solid var(--line-strong);border-radius:10px;background:var(--surface-2);font-size:.84rem;color:var(--muted);">
+                원격 접속 중입니다. 패키징이 끝나면 브라우저 다운로드로 저장됩니다.
+              </div>`
+            : `<div style="display:grid;gap:6px;">
+                <label style="font-weight:600;font-size:.85rem;">저장 폴더</label>
+                <div style="display:flex;gap:6px;">
+                  <input id="expDestDir" class="btn-sm" style="flex:1;font-family:var(--mono);font-size:.82rem;" placeholder="기본 다운로드 폴더 불러오는 중…">
+                  <button type="button" class="btn-sm" id="btnPickExpDir">폴더 변경</button>
+                </div>
+                <div id="expPathPreview" style="font-size:.78rem;color:var(--muted);font-family:var(--mono);word-break:break-all;"></div>
+              </div>`}
+          <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:.86rem;cursor:pointer;">
+            <input type="checkbox" id="chkExpOutputs" checked>
+            <span>생성된 화면·데이터 산출물도 함께 포함 (${app.counts?.views || 0}뷰, ${app.counts?.data || 0}데이터)</span>
+          </label>
+          <div style="margin-top:8px;padding:9px 11px;border-radius:8px;background:var(--surface-2);color:var(--muted);font-size:.78rem;line-height:1.5;">
+            보안과 용량을 위해 <code>.venv</code>, <code>node_modules</code>, <code>.git</code>, <code>.env</code>, 키 파일 및 50MB 초과 파일은 자동 제외되며, 공유용 <code>app.json</code>과 <code>SHARE_README.md</code>가 포함됩니다.
+          </div>
+        </div>
+
+        <div id="expProgressBox" hidden style="padding:14px;border:1px solid var(--line-strong);border-radius:12px;background:var(--surface-2);display:grid;gap:10px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+            <strong id="expStageText" style="font-size:.9rem;">내보내기 준비 중…</strong>
+            <span id="expPctText" style="font-weight:700;font-variant-numeric:tabular-nums;color:var(--accent);">0%</span>
+          </div>
+          <div style="height:8px;border-radius:999px;background:var(--line);overflow:hidden;">
+            <div id="expBarFill" style="height:100%;width:0%;background:var(--accent);border-radius:999px;transition:width .22s ease;"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:.79rem;color:var(--muted);">
+            <span id="expFilesText">파일 확인 중…</span>
+            <span id="expElapsedText">0.0초</span>
+          </div>
+        </div>
+
+        <div id="expDoneBox" hidden style="padding:14px;border:1px solid color-mix(in srgb, var(--ok) 45%, transparent);border-radius:12px;background:color-mix(in srgb, var(--ok) 10%, var(--surface-2));display:grid;gap:8px;">
+          <div style="display:flex;align-items:center;gap:8px;font-weight:700;color:var(--ok);">
+            <span>전달용 패키지 저장 완료</span>
+          </div>
+          <div style="font-size:.82rem;color:var(--muted);" id="expDoneMeta"></div>
+          <div style="padding:8px 10px;border-radius:8px;background:var(--bg);border:1px solid var(--line);font-family:var(--mono);font-size:.8rem;word-break:break-all;" id="expDonePath"></div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;">
+            ${!isRemote ? `<button type="button" class="primary btn-sm" id="btnExpOpenDir">${ICO.folder} 탐색기에서 열기</button>` : ''}
+            <button type="button" class="btn-sm" id="btnExpCopyPath">${ICO.copy} 경로 복사</button>
+            <a class="btnlike btn-sm" id="btnExpBrowserDl" href="#" download>${ICO.upload} 파일 다운로드</a>
+          </div>
+        </div>
+
+        <div id="expErrBox" hidden style="padding:12px 14px;border:1px solid color-mix(in srgb, var(--danger) 45%, transparent);border-radius:10px;background:color-mix(in srgb, var(--danger) 11%, var(--bg));color:var(--danger);font-size:.85rem;line-height:1.5;"></div>
+
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px;">
+          <button type="button" class="btn-sm" data-close id="btnExpClose">닫기</button>
+          <button type="button" class="primary btn-sm" id="btnExpStart">${ICO.upload} 내보내기 시작</button>
+        </div>
+      </div>`;
+
+    openModal(`전달용 패키지 내보내기 — ${app.name}`, html, (wrap) => {
+      const destIn = wrap.querySelector('#expDestDir');
+      const pathPreview = wrap.querySelector('#expPathPreview');
+      const chkOutputs = wrap.querySelector('#chkExpOutputs');
+      const progressBox = wrap.querySelector('#expProgressBox');
+      const stageText = wrap.querySelector('#expStageText');
+      const pctText = wrap.querySelector('#expPctText');
+      const barFill = wrap.querySelector('#expBarFill');
+      const filesText = wrap.querySelector('#expFilesText');
+      const elapsedText = wrap.querySelector('#expElapsedText');
+      const doneBox = wrap.querySelector('#expDoneBox');
+      const doneMeta = wrap.querySelector('#expDoneMeta');
+      const donePath = wrap.querySelector('#expDonePath');
+      const errBox = wrap.querySelector('#expErrBox');
+      const btnStart = wrap.querySelector('#btnExpStart');
+      const btnPick = wrap.querySelector('#btnPickExpDir');
+      const btnOpenDir = wrap.querySelector('#btnExpOpenDir');
+      const btnCopyPath = wrap.querySelector('#btnExpCopyPath');
+      const btnBrowserDl = wrap.querySelector('#btnExpBrowserDl');
+
+      let suggestedFileName = `${app.id}-share.zip`;
+      let activeJob = null;
+      let pollId = null;
+
+      const stopJobPoll = () => {
+        if (pollId) { clearInterval(pollId); pollId = null; }
+      };
+
+      const updatePreview = () => {
+        if (!destIn || !pathPreview) return;
+        const dir = destIn.value.trim();
+        if (!dir) { pathPreview.textContent = ''; return; }
+        const sep = dir.endsWith('\\') || dir.endsWith('/') ? '' : '\\';
+        pathPreview.textContent = `예상 저장 위치: ${dir}${sep}${suggestedFileName}`;
+      };
+
+      if (destIn) {
+        destIn.addEventListener('input', updatePreview);
+        api(`/api/apps/${encodeURIComponent(app.id)}/export-info`)
+          .then((info) => {
+            if (!wrap.isConnected) return;
+            if (info?.fileName) suggestedFileName = info.fileName;
+            if (info?.defaultDir && !destIn.value.trim()) destIn.value = info.defaultDir;
+            updatePreview();
+          })
+          .catch(() => {});
+      }
+
+      btnPick?.addEventListener('click', () => {
+        if (typeof openFolderPickerDialog === 'function') {
+          openFolderPickerDialog(destIn?.value.trim() || '', (chosen) => {
+            if (chosen && destIn) { destIn.value = chosen; updatePreview(); }
+          });
+        }
+      });
+
+      const renderJob = (job) => {
+        activeJob = job;
+        const pct = Math.max(0, Math.min(100, Number(job.percent || 0)));
+        const sec = ((Number(job.finishedAt || Date.now()) - Number(job.startedAt || Date.now())) / 1000).toFixed(1);
+        stageText.textContent = job.stageLabel || '작업 중…';
+        pctText.textContent = `${pct}%`;
+        barFill.style.width = `${pct}%`;
+        filesText.textContent = job.filesTotal > 0 ? `${job.filesDone || 0} / ${job.filesTotal} 파일 처리` : '파일 목록 확인 중…';
+        elapsedText.textContent = `${sec}초`;
+
+        if (job.status === 'ok') {
+          stopJobPoll();
+          barFill.style.background = 'var(--ok)';
+          pctText.style.color = 'var(--ok)';
+          doneBox.hidden = false;
+          errBox.hidden = true;
+          btnStart.disabled = false;
+          btnStart.innerHTML = `${ICO.upload} 다시 내보내기`;
+          if (destIn) destIn.disabled = false;
+          if (btnPick) btnPick.disabled = false;
+          if (chkOutputs) chkOutputs.disabled = false;
+
+          const skipNote = job.skippedLarge > 0 ? ` · 50MB 초과 ${job.skippedLarge}개 제외` : '';
+          doneMeta.textContent = `파일 크기 ${fmtExportBytes(job.bytes)} · 총 ${job.filesTotal}개 파일 포함 (${sec}초 소요${skipNote})`;
+          donePath.textContent = isRemote ? `파일명: ${job.fileName}` : job.outputPath;
+          const dlUrl = `/api/apps/${encodeURIComponent(app.id)}/export-download?jobId=${encodeURIComponent(job.jobId)}&t=${encodeURIComponent(TOKEN)}`;
+          btnBrowserDl.href = dlUrl;
+          btnBrowserDl.setAttribute('download', job.fileName || `${app.id}-share.zip`);
+          if (isRemote) {
+            toast('패키지 생성이 완료되어 다운로드를 시작합니다');
+            btnBrowserDl.click();
+          } else {
+            toast(`전달용 패키지를 저장했습니다: ${job.fileName}`);
+          }
+        } else if (job.status === 'error') {
+          stopJobPoll();
+          barFill.style.background = 'var(--danger)';
+          pctText.style.color = 'var(--danger)';
+          doneBox.hidden = true;
+          errBox.hidden = false;
+          errBox.textContent = `내보내기 실패: ${job.error || '알 수 없는 오류'}`;
+          btnStart.disabled = false;
+          btnStart.innerHTML = `${ICO.upload} 다시 시도`;
+          if (destIn) destIn.disabled = false;
+          if (btnPick) btnPick.disabled = false;
+          if (chkOutputs) chkOutputs.disabled = false;
+        }
+      };
+
+      btnOpenDir?.addEventListener('click', () => {
+        if (!activeJob?.outputPath) return;
+        api('/api/fs/open-dir', { method: 'POST', body: { path: activeJob.outputPath } })
+          .catch((e) => toast(e.message, 4000, 'danger'));
+      });
+
+      btnCopyPath?.addEventListener('click', () => {
+        if (!activeJob?.outputPath) return;
+        if (typeof copyText === 'function') copyText(activeJob.outputPath);
+        else navigator.clipboard?.writeText(activeJob.outputPath).then(() => toast('경로를 복사했습니다')).catch(() => {});
+      });
+
+      btnStart.addEventListener('click', async () => {
+        stopJobPoll();
+        doneBox.hidden = true;
+        errBox.hidden = true;
+        progressBox.hidden = false;
+        barFill.style.background = 'var(--accent)';
+        pctText.style.color = 'var(--accent)';
+        barFill.style.width = '5%';
+        pctText.textContent = '5%';
+        stageText.textContent = '내보내기 요청 중…';
+        filesText.textContent = '파일 목록 확인 중…';
+        elapsedText.textContent = '0.0초';
+
+        btnStart.disabled = true;
+        btnStart.textContent = '내보내는 중…';
+        if (destIn) destIn.disabled = true;
+        if (btnPick) btnPick.disabled = true;
+        if (chkOutputs) chkOutputs.disabled = true;
+
+        try {
+          const r = await api(`/api/apps/${encodeURIComponent(app.id)}/export`, {
+            method: 'POST',
+            body: {
+              destDir: isRemote ? '' : (destIn?.value.trim() || ''),
+              includeOutputs: chkOutputs ? chkOutputs.checked : true,
+              browserOnly: isRemote,
+            },
+            requireOk: true,
+          });
+          if (!wrap.isConnected) return;
+          renderJob(r.job);
+          if (r.job?.status === 'running') {
+            pollId = setInterval(async () => {
+              if (!wrap.isConnected) return stopJobPoll();
+              try {
+                const st = await api(`/api/apps/${encodeURIComponent(app.id)}/export-status?jobId=${encodeURIComponent(r.job.jobId)}`);
+                if (!wrap.isConnected) return stopJobPoll();
+                if (st?.job) renderJob(st.job);
+              } catch (pe) {
+                stopJobPoll();
+                errBox.hidden = false;
+                errBox.textContent = `진행 상태 조회 실패: ${pe.message}`;
+                btnStart.disabled = false;
+                btnStart.innerHTML = `${ICO.upload} 다시 시도`;
+                if (destIn) destIn.disabled = false;
+                if (btnPick) btnPick.disabled = false;
+                if (chkOutputs) chkOutputs.disabled = false;
+              }
+            }, 250);
+          }
+        } catch (e) {
+          stopJobPoll();
+          errBox.hidden = false;
+          errBox.textContent = e.message || '내보내기를 시작하지 못했습니다';
+          btnStart.disabled = false;
+          btnStart.innerHTML = `${ICO.upload} 다시 시도`;
+          if (destIn) destIn.disabled = false;
+          if (btnPick) btnPick.disabled = false;
+          if (chkOutputs) chkOutputs.disabled = false;
+        }
+      });
+    });
+  }
+
   function showDeleteModal(app) {
     const html = `
       <p style="margin:0 0 12px;"><strong>${esc(app.name)}</strong> (${esc(app.id)}) 앱을 허브에서 제거합니다.</p>
@@ -274,7 +527,7 @@
           <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
             ${actionsHtml}
             ${app.status === 'running' ? `<button type="button" class="btn-sm danger" id="btnCancelRun">중단</button>` : ''}
-            <a class="btnlike btn-sm" id="btnExportApp" href="/api/apps/${encodeURIComponent(app.id)}/export?t=${encodeURIComponent(TOKEN)}" download="${esc(app.id)}-share.zip" title="다른 사람에게 전달할 수 있는 ZIP 패키지로 내보내기">${ICO.upload} 전달용 내보내기</a>
+            <button type="button" class="btn-sm" id="btnExportApp" title="다른 사람에게 전달할 수 있는 ZIP 패키지로 내보내기">${ICO.upload} 전달용 내보내기</button>
             <button type="button" class="btn-sm" id="btnEditApp" title="앱 설정">${ICO.edit}</button>
             <button type="button" class="btn-sm danger" id="btnDelApp" title="앱 제거">${ICO.trash}</button>
           </div>
@@ -297,6 +550,7 @@
     body.querySelectorAll('[data-apptab]').forEach((b) => {
       b.onclick = () => { activeTab = b.dataset.apptab; renderAppBody(app); };
     });
+    body.querySelector('#btnExportApp').onclick = () => showExportModal(app);
     body.querySelector('#btnEditApp').onclick = () => showAppFormModal(app);
     body.querySelector('#btnDelApp').onclick = () => showDeleteModal(app);
     body.querySelector('#btnCancelRun')?.addEventListener('click', async () => {
@@ -350,14 +604,21 @@
     const curFile = views.some((v) => v.name === selectedViewFile) ? selectedViewFile : views[0].name;
     selectedViewFile = curFile;
     const viewUrl = `/api/apps/${encodeURIComponent(app.id)}/view/${encodeURIComponent(curFile)}?t=${encodeURIComponent(TOKEN)}`;
+    const frameUrl = window.isTauriHost?.() ? `${viewUrl}&hub_ext=1` : viewUrl;
     box.innerHTML = `
       <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px;">
         <select id="selViewFile" class="btn-sm">${views.map((v) => `<option value="${esc(v.name)}" ${v.name === curFile ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select>
-        <a class="btn-sm" href="${viewUrl}" target="_blank" rel="noopener">${ICO.external} 새 창에서 열기</a>
+        <a class="btnlike btn-sm" id="btnOpenViewExt" href="${viewUrl}" target="_blank" rel="noopener">${ICO.external} 새 창에서 열기</a>
         <button type="button" class="btn-sm" id="btnAskView">${ICO.clip} 이 결과로 채팅 질문</button>
       </div>
-      <iframe src="${viewUrl}" sandbox="allow-scripts allow-popups" style="width:100%;height:74vh;border:1px solid var(--line-strong);border-radius:12px;background:#fff;"></iframe>`;
+      <iframe src="${frameUrl}" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms" style="width:100%;height:74vh;border:1px solid var(--line-strong);border-radius:12px;background:#fff;"></iframe>`;
     box.querySelector('#selViewFile').onchange = (e) => { selectedViewFile = e.target.value; renderViewTab(app, box); };
+    box.querySelector('#btnOpenViewExt').onclick = (e) => {
+      if (window.isTauriHost?.() && window.openExternalUrl) {
+        e.preventDefault();
+        void window.openExternalUrl(viewUrl);
+      }
+    };
     box.querySelector('#btnAskView').onclick = () => sendToChat(app, curFile, `${curFile} 내용을 바탕으로 핵심만 요약해 주세요.`);
   }
 

@@ -314,7 +314,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       helper: { ok: !hub.getHelperMissing(), error: hub.getHelperMissing() || null },
     };
     const projectRevisions = Object.fromEntries(projects.list().map((p) => [p.id, p.revision]));
-    return { live, consoles, terms: termsOut, consoleError: cons.error, favs: hub.liveFavs(), disk: diskLow, consolesOff: config.consoles === false, services, buildId, accountPrefs: accountPrefs.get(), projectRevisions };
+    return { live, consoles, terms: termsOut, consoleError: cons.error, favs: hub.liveFavs(), sessionGroups: hub.loadSessionGroups ? hub.loadSessionGroups() : { version: 1, groups: [], assignments: {} }, disk: diskLow, consolesOff: config.consoles === false, services, buildId, accountPrefs: accountPrefs.get(), projectRevisions };
   }
 
   function overviewSnapshot() {
@@ -1063,6 +1063,75 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       if (b.on) favs.unshift(keys[0]);
       fs.writeFileSync(hub.FAV_FILE, JSON.stringify(favs.slice(0, 50)));
       send(res, 200, { favs: hub.liveFavs() });
+      return true;
+    }
+    if (p === '/api/session-groups' && req.method === 'GET') {
+      send(res, 200, { ok: true, sessionGroups: hub.loadSessionGroups() });
+      return true;
+    }
+    if (p === '/api/session-groups' && req.method === 'POST') {
+      const b = await body(req);
+      const data = hub.loadSessionGroups();
+      const action = String(b.action || '').trim();
+      const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#64748b'];
+      const validSessionKey = (k) => /^(sid:[\w-]{4,120}|term:\d{1,8})$/.test(String(k || ''));
+      if (action === 'create') {
+        const name = String(b.name || '').trim().slice(0, 60);
+        if (!name) { send(res, 400, { error: '그룹 이름을 입력하세요' }); return true; }
+        const color = /^#[0-9a-fA-F]{6}$/.test(b.color || '') ? b.color : COLORS[data.groups.length % COLORS.length];
+        const group = { id: `grp_${crypto.randomBytes(4).toString('hex')}`, name, color, createdAt: Date.now() };
+        data.groups.push(group);
+        const initKeys = Array.isArray(b.keys) ? b.keys.map(String).filter(validSessionKey) : [];
+        for (const k of initKeys) data.assignments[k] = group.id;
+        hub.saveSessionGroups(data);
+        overviewStale();
+        send(res, 200, { ok: true, group, sessionGroups: data });
+        return true;
+      }
+      if (action === 'rename') {
+        const id = String(b.id || '').trim();
+        const grp = data.groups.find((g) => g.id === id);
+        if (!grp) { send(res, 404, { error: '그룹을 찾을 수 없습니다' }); return true; }
+        const name = String(b.name || '').trim().slice(0, 60);
+        if (!name) { send(res, 400, { error: '그룹 이름을 입력하세요' }); return true; }
+        grp.name = name;
+        if (/^#[0-9a-fA-F]{6}$/.test(b.color || '')) grp.color = b.color;
+        hub.saveSessionGroups(data);
+        overviewStale();
+        send(res, 200, { ok: true, group: grp, sessionGroups: data });
+        return true;
+      }
+      if (action === 'delete') {
+        const id = String(b.id || '').trim();
+        const before = data.groups.length;
+        data.groups = data.groups.filter((g) => g.id !== id);
+        if (data.groups.length === before) { send(res, 404, { error: '그룹을 찾을 수 없습니다' }); return true; }
+        for (const [k, v] of Object.entries(data.assignments)) {
+          if (v === id) delete data.assignments[k];
+        }
+        hub.saveSessionGroups(data);
+        overviewStale();
+        send(res, 200, { ok: true, sessionGroups: data });
+        return true;
+      }
+      if (action === 'assign') {
+        const keys = (Array.isArray(b.keys) ? b.keys : [b.key]).map(String).filter(validSessionKey);
+        if (!keys.length) { send(res, 400, { error: '대상 세션 키가 올바르지 않습니다' }); return true; }
+        const groupId = String(b.groupId || '').trim();
+        if (groupId && !data.groups.some((g) => g.id === groupId)) {
+          send(res, 404, { error: '그룹을 찾을 수 없습니다' });
+          return true;
+        }
+        for (const k of keys) {
+          if (groupId) data.assignments[k] = groupId;
+          else delete data.assignments[k];
+        }
+        hub.saveSessionGroups(data);
+        overviewStale();
+        send(res, 200, { ok: true, sessionGroups: data });
+        return true;
+      }
+      send(res, 400, { error: '알 수 없는 세션 그룹 작업입니다' });
       return true;
     }
     if (p === '/api/recent') {

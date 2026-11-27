@@ -72,7 +72,7 @@ function serve(req, res, file) {
     // ?dl=1 → attachment: browsers and app WebViews save it instead of showing it
     'content-disposition': `${MIME[ext] && !/[?&]dl=1(&|$)/.test(req.url || '') ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(path.basename(file))}` };
   // active content gets an opaque origin: it cannot read the dashboard's storage or call its API
-  if (/^(html?|svg)$/.test(ext)) headers['content-security-policy'] = 'sandbox allow-scripts allow-popups';
+  if (/^(html?|svg)$/.test(ext)) headers['content-security-policy'] = 'sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms';
   const m = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
   if (m && (m[1] || m[2])) {
     let start = m[1] ? Number(m[1]) : st.size - Number(m[2]);
@@ -82,6 +82,17 @@ function serve(req, res, file) {
     end = Math.min(end, st.size - 1);
     res.writeHead(206, { ...headers, 'content-range': `bytes ${start}-${end}/${st.size}`, 'content-length': end - start + 1 });
     return fs.createReadStream(file, { start, end }).pipe(res);
+  }
+  const isDl = /[?&]dl=1(&|$)/.test(req.url || '');
+  if (/^html?$/.test(ext) && !isDl && st.size <= 10 * 1024 * 1024) {
+    try {
+      const bridge = '<script data-hub-link-bridge>(function(){if(window.parent===window)return;var tauri=/[?&]hub_ext=1(&|$)/.test(location.search);function send(u){try{window.parent.postMessage({type:"hub-open-external",url:u},"*");}catch(_){}}document.addEventListener("click",function(e){var a=e.target&&e.target.closest?e.target.closest("a[href]"):null;if(!a||a.hasAttribute("download"))return;var raw=(a.getAttribute("href")||"").trim();if(!raw||raw.charAt(0)==="#"||/^javascript:/i.test(raw))return;var u=a.href;if(!/^https?:\\/\\//i.test(u))return;if(tauri){e.preventDefault();send(u);return;}if(!a.target||a.target==="_self"){a.target="_blank";a.rel="noopener noreferrer";}},true);if(tauri){var oo=window.open;window.open=function(u){if(typeof u==="string"&&/^https?:\\/\\//i.test(u)){send(u);return null;}return oo?oo.apply(window,arguments):null;};}})();</script>';
+      const html = fs.readFileSync(file, 'utf8');
+      const injected = /<\/body>/i.test(html) ? html.replace(/<\/body>/i, `${bridge}</body>`) : `${html}\n${bridge}`;
+      const buf = Buffer.from(injected, 'utf8');
+      res.writeHead(200, { ...headers, 'content-length': buf.length });
+      return res.end(buf);
+    } catch {}
   }
   res.writeHead(200, { ...headers, 'content-length': st.size });
   fs.createReadStream(file).pipe(res);

@@ -49,7 +49,7 @@ let booted = false;
 let activeBuildId = null;
 let updateNoticeShown = false;
 const state = {
-  sel: { kind: 'home' }, tab: 'screen', showHidden: false, favs: new Set(), showDesktop: (() => { try { return !!localStorage.getItem('ccd-show-desktop'); } catch { return false; } })(),
+  sel: { kind: 'home' }, tab: 'screen', showHidden: false, favs: new Set(), sessionGroups: { version: 1, groups: [], assignments: {} }, showDesktop: (() => { try { return !!localStorage.getItem('ccd-show-desktop'); } catch { return false; } })(),
   live: [], consoles: [], terms: [], recent: [], projects: [], err: null,
   usage: null, research: [], gpu: null, services: null, hubDown: false,
   termFilter: '', termsTab: 'active', termsView: 'list', recentQuery: '', sysTab: 'usage',
@@ -391,6 +391,7 @@ async function refreshOverview() {
     Object.assign(state, { live: o.live || [], consoles: o.consoles || [], terms: o.terms || [], err: o.consoleError || null, services: o.services || state.services, hubDown: false });
     if (o.accountPrefs && typeof syncServerAccountPrefs === 'function') syncServerAccountPrefs(o.accountPrefs);
     if (Array.isArray(o.favs)) state.favs = new Set(o.favs);
+    if (o.sessionGroups && Array.isArray(o.sessionGroups.groups)) state.sessionGroups = o.sessionGroups;
     state.disk = o.disk || null;
     state.consolesOff = !!o.consolesOff;
   } catch (e) {

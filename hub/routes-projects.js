@@ -349,12 +349,19 @@ function createProjectRoutes(hub) {
       const b = await body(req);
       const raw = String(b.path || '').trim();
       const target = raw && path.isAbsolute(raw) ? path.resolve(raw) : '';
-      if (!target || !fs.statSync(target, { throwIfNoEntry: false })?.isDirectory()) {
+      const st = target ? fs.statSync(target, { throwIfNoEntry: false }) : null;
+      if (!target || !st || (!st.isDirectory() && !st.isFile())) {
         send(res, 404, { error: '열 폴더를 찾을 수 없습니다.' });
         return true;
       }
-      const opener = process.platform === 'win32' ? 'explorer.exe' : (process.platform === 'darwin' ? 'open' : 'xdg-open');
-      spawn(opener, [target], { detached: true, stdio: 'ignore' }).unref();
+      if (process.platform === 'win32') {
+        const args = st.isFile() ? [`/select,${target}`] : [target];
+        spawn('explorer.exe', args, { detached: true, stdio: 'ignore' }).unref();
+      } else if (process.platform === 'darwin') {
+        spawn('open', st.isFile() ? ['-R', target] : [target], { detached: true, stdio: 'ignore' }).unref();
+      } else {
+        spawn('xdg-open', [st.isFile() ? path.dirname(target) : target], { detached: true, stdio: 'ignore' }).unref();
+      }
       send(res, 200, { ok: true, path: target });
       return true;
     }

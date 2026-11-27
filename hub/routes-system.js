@@ -29,7 +29,7 @@ function createSystemRoutes(hub) {
       const href = parsed.href;
       try {
         if (process.platform === 'win32') {
-          spawn('cmd.exe', ['/c', 'start', '', href], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+          spawn('rundll32.exe', ['url.dll,FileProtocolHandler', href], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
         } else if (process.platform === 'darwin') {
           spawn('open', [href], { detached: true, stdio: 'ignore' }).unref();
         } else {

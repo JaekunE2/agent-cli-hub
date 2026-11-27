@@ -268,3 +268,79 @@ test('data query, path traversal guard, data delete, app delete, and send-to-cha
     fs.rmSync(h.tmp, { recursive: true, force: true });
   }
 });
+
+test('tracked app export saves zip with progress, excludes secrets, and serves view link bridge', async () => {
+  const h = makeHarness();
+  try {
+    fs.writeFileSync(path.join(h.appDir, '.env'), 'SECRET=123\n', 'utf8');
+    fs.mkdirSync(path.join(h.appDir, '.venv'), { recursive: true });
+    fs.writeFileSync(path.join(h.appDir, '.venv', 'ignore.txt'), 'skip', 'utf8');
+    fs.writeFileSync(path.join(h.appDir, 'main.py'), 'print("ok")\n', 'utf8');
+
+    const created = await h.call('POST', '/api/apps', {
+      id: 'export-app',
+      name: 'Export App',
+      type: 'report',
+      cwd: h.appDir,
+      outputs: { viewDir: 'views', viewGlob: '*.html', dataDir: 'data', dataGlob: '*.json' },
+      actions: [],
+    });
+    assert.equal(created.status, 200);
+
+    // View endpoint sets allow-popups-to-escape-sandbox CSP and injects link bridge
+    const viewRes = await h.call('GET', '/api/apps/export-app/view/report.html');
+    assert.equal(viewRes.status, 200);
+    assert.match(viewRes.headers['content-security-policy'] || '', /allow-popups-to-escape-sandbox/);
+    assert.match(String(viewRes.payload || ''), /data-hub-link-bridge/);
+
+    // Export info returns default dir and filename
+    const info = await h.call('GET', '/api/apps/export-app/export-info');
+    assert.equal(info.status, 200);
+    assert.equal(info.payload.hasOutputs, true);
+    assert.match(info.payload.fileName, /^export-app-share-\d{8}-\d{4}\.zip$/);
+
+    // Tracked async export to custom destination folder
+    const destDir = path.join(h.tmp, 'out-zips');
+    const started = await h.call('POST', '/api/apps/export-app/export', { destDir, includeOutputs: true });
+    assert.equal(started.status, 200);
+    assert.ok(started.payload.job?.jobId);
+
+    let job = started.payload.job;
+    for (let i = 0; i < 80 && job.status === 'running'; i++) {
+      await new Promise((r) => setTimeout(r, 150));
+      const st = await h.call('GET', `/api/apps/export-app/export-status?jobId=${encodeURIComponent(job.jobId)}`);
+      assert.equal(st.status, 200);
+      job = st.payload.job;
+    }
+    assert.equal(job.status, 'ok', job.error || 'export should succeed');
+    assert.equal(job.percent, 100);
+    assert.ok(job.bytes > 100);
+    assert.equal(job.outputDir, path.resolve(destDir));
+    assert.equal(fs.existsSync(job.outputPath), true);
+    const sig = fs.readFileSync(job.outputPath).subarray(0, 4);
+    assert.deepEqual([...sig], [0x50, 0x4b, 0x03, 0x04]);
+
+    // Download endpoint streams the created ZIP
+    const dl = await new Promise((resolve) => {
+      const url = new URL(`http://127.0.0.1/api/apps/export-app/export-download?jobId=${encodeURIComponent(job.jobId)}`);
+      const chunks = [];
+      let status = 0;
+      const headers = {};
+      const res = {
+        writeHead(code, hdrs) { status = code; Object.assign(headers, hdrs || {}); },
+        on() { return this; },
+        once() { return this; },
+        emit() { return true; },
+        write(c) { chunks.push(Buffer.from(c)); return true; },
+        end(c) { if (c) chunks.push(Buffer.from(c)); resolve({ status, headers, buf: Buffer.concat(chunks) }); },
+      };
+      h.mod.handle(url.pathname, url, { method: 'GET', url: url.pathname + url.search, headers: {} }, async () => ({}), (code, obj) => resolve({ status: code, obj }), res);
+    });
+    assert.equal(dl.status, 200);
+    assert.equal(dl.headers['content-type'], 'application/zip');
+    assert.equal(dl.buf.length, job.bytes);
+  } finally {
+    h.mod.stop();
+    fs.rmSync(h.tmp, { recursive: true, force: true });
+  }
+});

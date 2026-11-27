@@ -656,7 +656,10 @@ async function openArtifact(sid, it, url = artUrl(sid, it.path)) {
   if (it.kind === 'video') body.innerHTML = `<video controls autoplay playsinline src="${url}" style="max-width:100%;max-height:72vh;background:#000"></video>`;
   else if (it.kind === 'audio') body.innerHTML = `<audio controls autoplay src="${url}" style="width:100%"></audio>`;
   else if (it.kind === 'image') body.innerHTML = `<img src="${url}" style="max-width:100%;max-height:74vh;object-fit:contain">`;
-  else if (it.kind === 'pdf' || it.kind === 'html') body.innerHTML = `<iframe src="${url}" style="width:100%;height:74vh;border:0;background:#fff"${it.kind === 'html' ? ' sandbox="allow-scripts allow-popups"' : ''}></iframe>`;
+  else if (it.kind === 'pdf' || it.kind === 'html') {
+    const frameUrl = it.kind === 'html' && window.isTauriHost?.() ? `${url}${url.includes('?') ? '&' : '?'}hub_ext=1` : url;
+    body.innerHTML = `<iframe src="${frameUrl}" style="width:100%;height:74vh;border:0;background:#fff"${it.kind === 'html' ? ' sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms"' : ''}></iframe>`;
+  }
   // PowerPoint / Word: the server renders a PDF (LibreOffice, cached) — first open takes a few seconds
   else if (/^(pptx?|ppsx?|odp|docx?|odt|rtf)$/i.test(it.ext || '')) {
     body.innerHTML = '<div class="empty">슬라이드를 PDF로 변환하는 중… (처음 한 번만 몇 초 걸립니다)</div>';

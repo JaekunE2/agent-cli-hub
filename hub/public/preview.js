@@ -140,7 +140,7 @@
       if (item.kind === 'html') {
         const f = document.createElement('iframe');
         f.className = 'pv-frame';
-        f.setAttribute('sandbox', 'allow-scripts allow-popups');
+        f.setAttribute('sandbox', 'allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms');
         f.srcdoc = text;
         bodyEl.replaceChildren(f);
         return;
@@ -178,7 +178,8 @@
     } else if (it.kind === 'image') {
       bodyEl.innerHTML = `<div class="pv-center"><img src="${url}" style="max-width:100%;max-height:100%;object-fit:contain"></div>`;
     } else if (it.kind === 'html' && mode !== 'source') {
-      bodyEl.innerHTML = `<iframe class="pv-frame" src="${url}" sandbox="allow-scripts allow-popups"></iframe>`;
+      const frameUrl = window.isTauriHost?.() ? `${url}${url.includes('?') ? '&' : '?'}hub_ext=1` : url;
+      bodyEl.innerHTML = `<iframe class="pv-frame" src="${frameUrl}" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms"></iframe>`;
     } else if (it.kind === 'pdf') {
       bodyEl.innerHTML = `<iframe class="pv-frame" src="${url}"></iframe>`;
     } else if (/^(pptx?|ppsx?|odp|docx?|odt|rtf)$/i.test(it.ext || '')) {
@@ -538,16 +539,7 @@
       }
       chatItems = found.reverse();
       if (!selectedId && chatItems.length) selectedId = chatItems[0].id;
-
-      // Auto-split the Canvas Preview inside Conversation History whenever previewable blocks exist
-      const sid = getSessionId?.() || '';
-      const splitWidth = splitEl ? splitEl.getBoundingClientRect().width : window.innerWidth;
-      const wideEnough = splitWidth >= 680 && window.innerWidth > 900;
-      if ((chatItems.length > 0 || manualItems.length > 0) && !isDismissed(sid) && wideEnough) {
-        setVisible(true);
-      } else if (!chatItems.length && !manualItems.length && !isPaneVisible) {
-        setVisible(false);
-      }
+      // Keep the side panel closed unless the user explicitly opens it (no intrusive auto-split).
       if (isPaneVisible) syncControlsAndPaint();
     };
 
@@ -603,7 +595,17 @@
       syncControlsAndPaint(true);
     };
     const togglePanel = (kind = 'preview') => {
+      if (kind === 'toggle') {
+        if (isPaneVisible) {
+          setDismissed(getSessionId?.() || '', true);
+          setVisible(false);
+          return false;
+        }
+        openPanel(paneKind || 'preview');
+        return true;
+      }
       if (isPaneVisible && paneKind === kind) {
+        setDismissed(getSessionId?.() || '', true);
         setVisible(false);
         return false;
       }
@@ -636,7 +638,7 @@
       if (!cur) return;
       if (cur.source === 'artifact' && cur.artifact) {
         const u = window.artUrl(cur.sid || getSessionId?.(), cur.artifact.path);
-        return window.open(u, '_blank', 'noopener');
+        return window.openExternalUrl ? window.openExternalUrl(u) : window.open(u, '_blank', 'noopener');
       }
       if (cur.source === 'code') {
         const mime = cur.kind === 'html' ? 'text/html;charset=utf-8' : cur.kind === 'svg' ? 'image/svg+xml;charset=utf-8' : 'text/plain;charset=utf-8';
@@ -650,7 +652,7 @@
       syncControlsAndPaint(true);
     };
     $('[data-pv-close]', rootEl).onclick = () => {
-      if (paneKind === 'preview') setDismissed(getSessionId?.() || '', true);
+      setDismissed(getSessionId?.() || '', true);
       setVisible(false);
     };
 

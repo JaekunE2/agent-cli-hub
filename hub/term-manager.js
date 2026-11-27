@@ -214,6 +214,7 @@ function createTermManager(hub) {
   const PTY_URL = `http://127.0.0.1:${PTY_PORT}`;
   const TERMS_STATE = path.join(baseDir, port === 7777 ? 'terms-state.json' : `terms-state-${port}.json`);
   const FAV_FILE = path.join(baseDir, 'favorites.json');
+  const SESSION_GROUPS_FILE = path.join(baseDir, 'session-groups.json');
   const UPLOAD_DIR = path.join(baseDir, 'uploads');
 
   const ptyChains = new Map();
@@ -963,6 +964,44 @@ function createTermManager(hub) {
     return removed;
   }
 
+  function loadSessionGroups() {
+    try {
+      const raw = JSON.parse(fs.readFileSync(SESSION_GROUPS_FILE, 'utf8'));
+      const groups = Array.isArray(raw?.groups)
+        ? raw.groups
+          .filter((g) => g && typeof g.id === 'string' && typeof g.name === 'string' && g.name.trim())
+          .map((g) => ({
+            id: g.id.slice(0, 64),
+            name: g.name.trim().slice(0, 60),
+            color: /^#[0-9a-fA-F]{6}$/.test(g.color || '') ? g.color : '#3b82f6',
+            createdAt: Number(g.createdAt) || 0,
+          }))
+        : [];
+      const validIds = new Set(groups.map((g) => g.id));
+      const assignments = {};
+      if (raw?.assignments && typeof raw.assignments === 'object') {
+        for (const [k, v] of Object.entries(raw.assignments)) {
+          if (typeof k === 'string' && /^(sid:[\w-]{4,120}|term:\d{1,8})$/.test(k) && validIds.has(v)) {
+            assignments[k] = v;
+          }
+        }
+      }
+      return { version: 1, groups, assignments };
+    } catch {
+      return { version: 1, groups: [], assignments: {} };
+    }
+  }
+
+  function saveSessionGroups(data) {
+    const clean = {
+      version: 1,
+      groups: Array.isArray(data?.groups) ? data.groups : [],
+      assignments: data?.assignments && typeof data.assignments === 'object' ? data.assignments : {},
+    };
+    fs.writeFileSync(SESSION_GROUPS_FILE, JSON.stringify(clean, null, 2) + '\n', 'utf8');
+    return clean;
+  }
+
   function liveFavs() {
     const hidden = projects.hidden();
     const termMap = new Map([...terms.values()].map((t) => [String(t.id), t]));
@@ -1089,6 +1128,9 @@ function createTermManager(hub) {
     FAV_FILE,
     loadFavs,
     liveFavs,
+    SESSION_GROUPS_FILE,
+    loadSessionGroups,
+    saveSessionGroups,
     dedupeTermsBySession,
     locateFile,
     saveUpload,

@@ -336,10 +336,18 @@
   }
   window.bindEnterSubmit = bindEnterSubmit;
 
+  function isTauriHost() {
+    return document.documentElement.classList.contains('is-tauri') || !!window.__TAURI_INTERNALS__?.invoke;
+  }
+  window.isTauriHost = isTauriHost;
+
   async function openExternalUrl(href) {
     const raw = String(href || '').trim();
-    if (!/^https?:\/\//i.test(raw)) return false;
-    const isTauri = document.documentElement.classList.contains('is-tauri') || !!window.__TAURI_INTERNALS__?.invoke;
+    if (!raw) return false;
+    let abs = '';
+    try { abs = new URL(raw, location.href).href; } catch { return false; }
+    if (!/^https?:\/\//i.test(abs)) return false;
+    const isTauri = isTauriHost();
     const isLocal = ['127.0.0.1', 'localhost', '[::1]'].includes(location.hostname);
     if (isTauri && isLocal) {
       try {
@@ -347,12 +355,12 @@
         const r = await fetch('/api/open-url', {
           method: 'POST',
           headers: { 'x-token': tok, 'content-type': 'application/json' },
-          body: JSON.stringify({ url: raw }),
+          body: JSON.stringify({ url: abs }),
         });
         if (r.ok) return true;
       } catch {}
     }
-    const w = window.open(raw, '_blank', 'noopener,noreferrer');
+    const w = window.open(abs, '_blank', 'noopener,noreferrer');
     return !!w;
   }
   window.openExternalUrl = openExternalUrl;
@@ -360,13 +368,30 @@
   document.addEventListener('click', (e) => {
     const a = e.target?.closest?.('a[href]');
     if (!a || a.hasAttribute('download')) return;
-    const href = a.getAttribute('href') || '';
-    if (!/^https?:\/\//i.test(href)) return;
-    const isTauri = document.documentElement.classList.contains('is-tauri') || !!window.__TAURI_INTERNALS__?.invoke;
-    if (!isTauri) return;
+    if (!isTauriHost()) return;
+    const rawHref = (a.getAttribute('href') || '').trim();
+    if (!rawHref || rawHref.startsWith('#') || /^javascript:/i.test(rawHref)) return;
+    const isExternalScheme = /^https?:\/\//i.test(rawHref);
+    const isBlankTarget = a.target === '_blank';
+    if (!isExternalScheme && !isBlankTarget) return;
+    if (!/^https?:\/\//i.test(a.href || '')) return;
     e.preventDefault();
     void openExternalUrl(a.href);
   }, true);
+
+  window.addEventListener('message', (e) => {
+    const data = e.data;
+    if (!data || data.type !== 'hub-open-external' || typeof data.url !== 'string') return;
+    const url = data.url.trim();
+    if (!/^https?:\/\//i.test(url)) return;
+    const frames = document.querySelectorAll('iframe');
+    let fromChildFrame = false;
+    for (const f of frames) {
+      if (f.contentWindow === e.source) { fromChildFrame = true; break; }
+    }
+    if (!fromChildFrame) return;
+    void openExternalUrl(url);
+  });
 
   if (window.__TAURI_INTERNALS__?.invoke) {
     const tb = document.getElementById('tauriTitlebar');

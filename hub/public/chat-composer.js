@@ -10,7 +10,8 @@ function dockTopSegHTML({ openSet, isContentTab = false, hasTerm = true, hasChat
     ${showFiles ? `<button type="button" role="tab" aria-selected="${curTab === 'files'}" data-tab="files" class="${curTab === 'files' ? 'on' : ''}" title="이 세션의 산출물 보기 및 지정">산출물</button>` : ''}
     <button type="button" role="tab" aria-selected="${curTab === 'floorplan'}" data-tab="floorplan" class="${curTab === 'floorplan' ? 'on' : ''}" title="코드 구조(Floorplan) 및 보안·품질 점검">${ICO.layers} 코드 구조</button>
   </div>
-  ${hasTerm && hasChat ? `<button type="button" class="ghost btn-sm bar-face-btn" data-face-toggle title="TUI(터미널) ↔ GUI(대화 기록) 즉시 전환 (Alt+J)">${ICO.swap || ''} TUI⇄GUI</button>` : ''}`;
+  ${hasTerm && hasChat ? `<button type="button" class="ghost btn-sm bar-face-btn" data-face-toggle title="TUI(터미널) ↔ GUI(대화 기록) 즉시 전환 (Alt+J)">${ICO.swap || ''} TUI⇄GUI</button>` : ''}
+  ${hasChat ? `<button type="button" class="ghost btn-sm" data-pv-side="toggle" aria-pressed="false" title="우측 미리보기 · 산출물 · 코드 구조 패널 열기/닫기">${ICO.layers} 미리보기</button>` : ''}`;
 }
 
 function setSessionBar(identity, views, actions, subagents, folders) {
@@ -41,9 +42,6 @@ function mountChatWorkspace(body, { sid, gen, at = -1, terms = [], composerOpts 
     </div>
     <div class="chat-pv-resizer" hidden role="separator" aria-orientation="vertical" aria-label="미리보기 크기 조절"></div>
     <aside class="chat-pv-pane" hidden aria-label="미리보기"></aside>
-    <nav class="pv-rail" aria-label="사이드 도구 모음">
-      <button type="button" class="pv-rail-btn" data-pv-side="toggle" aria-pressed="false" title="사이드 패널 (미리보기 · 산출물 · 코드 구조)">${ICO.layers}</button>
-    </nav>
   </div>`;
   const splitEl = $('.chat-split', body);
   const scrollEl = $('.chat-scroll', body);
@@ -68,10 +66,6 @@ function mountChatWorkspace(body, { sid, gen, at = -1, terms = [], composerOpts 
     });
     window.ACH_PREVIEW.setActiveController(pvCtl);
     pvCtl?.refresh(false);
-    $('.pv-rail', splitEl)?.addEventListener('click', (e) => {
-      const btn = e.target.closest('[data-pv-side]');
-      if (btn) pvCtl?.togglePanel?.(btn.dataset.pvSide === 'toggle' ? (pvCtl.currentPanel?.() || 'preview') : btn.dataset.pvSide);
-    });
   }
   renderChat(sid, gen, at, terms, scrollEl);
   mountChatComposer({ barHost: compEl, chatHost: scrollEl, sid, ...composerOpts });
