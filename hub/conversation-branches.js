@@ -117,6 +117,105 @@ function editClaudeJsonlAt({ sourceFile, sessionId, atIndex, newText, mode = 'sa
   return { ok: true, mode: 'save' };
 }
 
+function newUuidV7(nowMs = Date.now()) {
+  const bytes = crypto.randomBytes(16);
+  const ms = BigInt(Math.max(0, Math.floor(nowMs)));
+  bytes[0] = Number((ms >> 40n) & 0xffn);
+  bytes[1] = Number((ms >> 32n) & 0xffn);
+  bytes[2] = Number((ms >> 24n) & 0xffn);
+  bytes[3] = Number((ms >> 16n) & 0xffn);
+  bytes[4] = Number((ms >> 8n) & 0xffn);
+  bytes[5] = Number(ms & 0xffn);
+  bytes[6] = (bytes[6] & 0x0f) | 0x70;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function inferCodexHomeFromFile(file) {
+  if (!file || typeof file !== 'string') return null;
+  const resolved = path.resolve(file);
+  const m = /^(.*?)[\\/](?:sessions|archived_sessions)[\\/]/i.exec(resolved);
+  return m && m[1] ? m[1] : null;
+}
+
+/**
+ * Fork a Codex rollout JSONL session up to `cutIndex` (inclusive by default, or exclusive when inclusive=false).
+ */
+function forkCodexJsonlAt({
+  sourceFile,
+  codexHome = '',
+  newSessionId = newUuidV7(),
+  cutIndex,
+  inclusive = true,
+  cwd = '',
+  title = '',
+}) {
+  if (!sourceFile || !fs.existsSync(sourceFile)) throw new Error('원본 Codex 대화 파일을 찾을 수 없습니다.');
+  const raw = fs.readFileSync(sourceFile, 'utf8');
+  const lines = raw.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  const msgIndices = codexMessageLineIndices(lines);
+  if (!msgIndices.length) throw new Error('분기할 대화 메시지가 없습니다.');
+
+  const maxIdx = msgIndices.length - 1;
+  const clamped = Math.max(0, Math.min(maxIdx, Number(cutIndex) || 0));
+  const targetMsgIdx = inclusive ? clamped : clamped - 1;
+  const stopLine = targetMsgIdx >= 0 ? msgIndices[targetMsgIdx] : Math.max(0, msgIndices[0] - 1);
+
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  let metaCwd = cwd || process.cwd();
+  let sourceId = '';
+  let firstUserMsg = '';
+  const outLines = [];
+
+  for (let i = 0; i <= stopLine; i++) {
+    try {
+      const obj = JSON.parse(lines[i]);
+      if (obj?.type === 'session_meta' && obj.payload && typeof obj.payload === 'object') {
+        sourceId = obj.payload.id || obj.payload.session_id || sourceId;
+        if (obj.payload.cwd && !cwd) metaCwd = obj.payload.cwd;
+        obj.timestamp = nowIso;
+        obj.payload.id = newSessionId;
+        obj.payload.session_id = newSessionId;
+        obj.payload.timestamp = nowIso;
+        if (sourceId && sourceId !== newSessionId) obj.payload.forked_from_id = sourceId;
+        obj.payload.history_mode = 'legacy';
+        delete obj.payload.history_base;
+      } else if (!firstUserMsg) {
+        const parsed = codexLine(obj);
+        if (parsed?.msg?.role === 'user' && parsed.msg.text) firstUserMsg = parsed.msg.text;
+      }
+      outLines.push(JSON.stringify(obj));
+    } catch {
+      outLines.push(lines[i]);
+    }
+  }
+
+  const targetHome = codexHome || inferCodexHomeFromFile(sourceFile) || path.dirname(sourceFile);
+  const now = new Date(nowMs);
+  const yyyy = String(now.getUTCFullYear());
+  const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(now.getUTCDate()).padStart(2, '0');
+  const stamp = nowIso.replace(/[:.]/g, '-').slice(0, 19);
+  const sessDir = codexHome || inferCodexHomeFromFile(sourceFile)
+    ? path.join(targetHome, 'sessions', yyyy, mm, dd)
+    : path.dirname(sourceFile);
+  fs.mkdirSync(sessDir, { recursive: true });
+  const outFile = path.join(sessDir, `rollout-${stamp}-${newSessionId}.jsonl`);
+  fs.writeFileSync(outFile, outLines.join('\n') + '\n', 'utf8');
+
+  const effectiveTitle = String(title || firstUserMsg.split('\n')[0] || '').slice(0, 120);
+  if (codexHome || inferCodexHomeFromFile(sourceFile)) {
+    registerCodexThreadSqlite({ codexHome: targetHome, sessionId: newSessionId, outFile, cwd: metaCwd, title: effectiveTitle, firstUserMsg, nowMs });
+    try {
+      const idxFile = path.join(targetHome, 'session_index.jsonl');
+      if (effectiveTitle) fs.appendFileSync(idxFile, JSON.stringify({ id: newSessionId, thread_name: effectiveTitle, updated_at: nowIso }) + '\n', 'utf8');
+    } catch {}
+  }
+  return { file: outFile, newSessionId, messageCount: Math.max(0, targetMsgIdx + 1) };
+}
+
 /**
  * Edit a message in a Codex rollout JSONL file at message index `atIndex`.
  */
@@ -579,7 +678,10 @@ function writeNativeCodexSession({ sessionId = crypto.randomUUID(), codexHome, c
 module.exports = {
   claudeMessageLineIndices,
   codexMessageLineIndices,
+  newUuidV7,
+  inferCodexHomeFromFile,
   forkClaudeJsonlAt,
+  forkCodexJsonlAt,
   editClaudeJsonlAt,
   editCodexJsonlAt,
   writeBranchContextFile,

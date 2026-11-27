@@ -58,7 +58,9 @@ async function openBranchDialog({ sid, atIndex = null, message = null, agent = '
     else brMeCtl?.setCli(tAg);
     hintEl.textContent = (sourceAg === 'claude' && tAg === 'claude' && capabilities?.canNativeFork !== false)
       ? 'Claude 원본 JSONL을 이 지점까지만 복제해 네이티브 분기 세션으로 엽니다.'
-      : '이 지점까지의 대화 맥락을 브리핑 파일로 정리해 새 세션에 전달합니다.';
+      : (sourceAg === 'codex' && tAg === 'codex' && capabilities?.canNativeFork !== false)
+        ? 'Codex 네이티브 분기로 이 지점까지의 대화 맥락을 그대로 이어 새 세션을 엽니다.'
+        : '이 지점까지의 대화 맥락을 브리핑 파일로 정리해 새 세션에 전달합니다.';
   };
   const loadAccounts = async () => {
     try {

@@ -7,6 +7,7 @@ const path = require('node:path');
 const {
   claudeMessageLineIndices,
   forkClaudeJsonlAt,
+  forkCodexJsonlAt,
   editClaudeJsonlAt,
   editCodexJsonlAt,
   writeBranchContextFile,
@@ -102,6 +103,54 @@ test('editCodexJsonlAt updates message payload cleanly with backup', () => {
     assert.equal(fs.readdirSync(backupDir).length, 1);
     const updated = fs.readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
     assert.equal(updated[1].payload.content[0].text, 'Updated codex ask');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('forkCodexJsonlAt slices rollout natively, rewrites session_meta, and registers sqlite/index', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ach-cx-fork-'));
+  try {
+    const codexHome = path.join(dir, '.codex');
+    const sessDir = path.join(codexHome, 'sessions', '2026', '11', '27');
+    fs.mkdirSync(sessDir, { recursive: true });
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(path.join(codexHome, 'state_5.sqlite'));
+    db.exec('CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, cwd TEXT, title TEXT, history_mode TEXT)');
+    db.close();
+
+    const srcId = '44444444-4444-7444-8444-444444444444';
+    const srcFile = path.join(sessDir, `rollout-2026-11-27T10-00-00-${srcId}.jsonl`);
+    const rows = [
+      { timestamp: '2026-11-27T01:00:00Z', type: 'session_meta', payload: { id: srcId, session_id: srcId, cwd: dir, history_mode: 'paginated', history_base: { thread_id: 'old' } } },
+      { timestamp: '2026-11-27T01:00:01Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'First codex prompt' }] } },
+      { timestamp: '2026-11-27T01:00:02Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'First codex reply' }] } },
+      { timestamp: '2026-11-27T01:00:03Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Second codex prompt' }] } },
+    ];
+    fs.writeFileSync(srcFile, rows.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+
+    const forked = forkCodexJsonlAt({ sourceFile: srcFile, codexHome, cutIndex: 1, inclusive: true, cwd: dir, title: '(분기) Codex Test' });
+    assert.equal(forked.messageCount, 2);
+    assert.ok(fs.existsSync(forked.file));
+    const out = fs.readFileSync(forked.file, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.equal(out.length, 3);
+    assert.equal(out[0].payload.id, forked.newSessionId);
+    assert.equal(out[0].payload.session_id, forked.newSessionId);
+    assert.equal(out[0].payload.forked_from_id, srcId);
+    assert.equal(out[0].payload.history_mode, 'legacy');
+    assert.equal('history_base' in out[0].payload, false);
+
+    const check = new DatabaseSync(path.join(codexHome, 'state_5.sqlite'), { readOnly: true });
+    try {
+      const row = check.prepare('SELECT id, rollout_path, title, history_mode FROM threads WHERE id = ?').get(forked.newSessionId);
+      assert.equal(row.id, forked.newSessionId);
+      assert.equal(row.rollout_path, forked.file);
+      assert.equal(row.title, '(분기) Codex Test');
+      assert.equal(row.history_mode, 'legacy');
+    } finally { check.close(); }
+
+    const idx = fs.readFileSync(path.join(codexHome, 'session_index.jsonl'), 'utf8');
+    assert.ok(idx.includes(forked.newSessionId));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

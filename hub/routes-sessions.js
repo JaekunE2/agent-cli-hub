@@ -30,7 +30,7 @@ const OV_TTL = 2500;
 function createSessionRoutes(hub, workspaceContexts, logError) {
   const {
     baseDir, port, config, buildId, claudeDir, index, projects, accountPrefs, conversationBranches, termEvents,
-    sessionDisplayTitle, branchBackupDir, forkClaudeJsonlAt, editClaudeJsonlAt, editCodexJsonlAt,
+    sessionDisplayTitle, branchBackupDir, forkClaudeJsonlAt, forkCodexJsonlAt, inferCodexHomeFromFile, editClaudeJsonlAt, editCodexJsonlAt,
     writeBranchContextFile, validSessionId, cleanModelEffort, cliModelEffortArgs, fingerprint,
     PTY_KEYS, stripAnsi,
   } = hub;
@@ -226,7 +226,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
         return ov ? { ...m, text: String(ov.text || '').slice(0, 24000), edited: true } : { ...m, text: m.text.slice(0, 24000) };
       }),
       lineage: conversationBranches.lineageFor(sessionId, (id) => sessionDisplayTitle(id, index.get(id))),
-      capabilities: { canNativeFork: ag === 'claude', canRewindEdit: ag === 'claude', canEditSource: ag === 'claude' || ag === 'codex' },
+      capabilities: { canNativeFork: ag === 'claude' || ag === 'codex', canRewindEdit: ag === 'claude', canEditSource: ag === 'claude' || ag === 'codex' },
     };
   }
 
@@ -930,12 +930,17 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
 
     const reqME = cleanModelEffort(b.model, b.effort);
     accountPrefs.save({ account: launchAccount?.account?.id || b.account || '', agent: targetAgent, model: reqME.model, effort: reqME.effort });
-    const launchAndDeliver = async ({ agent, resumeId, title, promptToSend }) => {
+    const launchAndDeliver = async ({ agent, resumeId, forkId, title, promptToSend, extraEnv = {} }) => {
       const workspaceLaunch = await branchPlan(agent, resumeId);
       if (!!workspaceLaunch !== !!inherited) throw new WorkspaceError(409, 'REVISION_CONFLICT', 'Folder settings changed during launch');
       let cmd, args = [];
       if (agent === 'codex') {
-        ({ cmd, args } = hub.codexLaunch([...(!workspaceLaunch ? ['--dangerously-bypass-approvals-and-sandbox'] : []), ...cliModelEffortArgs('codex', reqME.model, reqME.effort), ...(resumeId ? ['resume', resumeId] : []), ...(!resumeId && promptToSend ? [promptToSend] : [])]));
+        ({ cmd, args } = hub.codexLaunch([
+          ...(!workspaceLaunch ? ['--dangerously-bypass-approvals-and-sandbox'] : []),
+          ...cliModelEffortArgs('codex', reqME.model, reqME.effort),
+          ...(forkId ? ['fork', forkId] : resumeId ? ['resume', resumeId] : []),
+          ...(!resumeId && promptToSend ? [promptToSend] : []),
+        ]));
       } else if (agent === 'agy') {
         cmd = hub.agyExe();
         if (resumeId) args.push('--conversation', resumeId);
@@ -946,7 +951,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
         if (resumeId) args.push('--resume', resumeId);
         args.push(...(!workspaceLaunch ? ['--dangerously-skip-permissions'] : []), ...cliModelEffortArgs('claude', reqME.model, reqME.effort));
       }
-      const term = hub.createTerm({ cwd, cmd, args, env: launchAccount?.env || {}, title, account: launchAccount?.account || null, model: reqME.model, effort: reqME.effort, workspaceLaunch, workspaceCli: agent });
+      const term = hub.createTerm({ cwd, cmd, args, env: { ...(launchAccount?.env || {}), ...extraEnv }, title, account: launchAccount?.account || null, model: reqME.model, effort: reqME.effort, workspaceLaunch, workspaceCli: agent });
       if (promptToSend && (agent === 'claude' || resumeId)) {
         (async () => {
           if (await hub.waitFor(() => term.exited === null && hub.inputReady(term), 45000, 700)) {
@@ -1002,6 +1007,35 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       const branch = conversationBranches.addBranch({ parentSessionId: id, childSessionId: forked.newSessionId, termId: term.id, sourceAgent, targetAgent, mode, atIndex, branchTitle, anchorText, editedText: isEdit ? newText.slice(0, 500) : '', native: true });
       overviewStale();
       return send(res, 200, { ok: true, mode, native: true, term: hub.termInfo(term), branch, childSessionId: forked.newSessionId });
+    }
+
+    if (sourceAgent === 'codex' && targetAgent === 'codex') {
+      const defaultCodexHome = path.join(os.homedir(), '.codex');
+      const sourceCodexHome = inferCodexHomeFromFile?.(sourceFile) || defaultCodexHome;
+      const targetCodexHome = launchAccount?.env?.CODEX_HOME || sourceCodexHome;
+      const sameCodexHome = path.resolve(sourceCodexHome).toLowerCase() === path.resolve(targetCodexHome).toLowerCase();
+      const extraEnv = targetCodexHome ? { CODEX_HOME: targetCodexHome } : {};
+      // At the latest message in the same CODEX_HOME, use Codex CLI's native `codex fork <id>` (supports paginated history too).
+      if (inclusive && atIndex >= messages.length - 1 && sameCodexHome) {
+        const term = await launchAndDeliver({ agent: 'codex', forkId: id, title: branchTitle, promptToSend: newText, extraEnv });
+        const branch = conversationBranches.addBranch({ parentSessionId: id, childSessionId: null, termId: term.id, sourceAgent, targetAgent, mode, atIndex, branchTitle, anchorText, editedText: '', native: true });
+        overviewStale();
+        return send(res, 200, { ok: true, mode, native: true, term: hub.termInfo(term), branch, childSessionId: null });
+      }
+      if (sourceFile && forkCodexJsonlAt) {
+        let forked;
+        try {
+          forked = forkCodexJsonlAt({ sourceFile, codexHome: targetCodexHome, cutIndex: atIndex, inclusive, cwd, title: branchTitle });
+          conversationBranches.setTitle(forked.newSessionId, branchTitle);
+          await index.updateFile(forked.file);
+        } catch (e) {
+          return send(res, 400, { error: e.message });
+        }
+        const term = await launchAndDeliver({ agent: 'codex', resumeId: forked.newSessionId, title: branchTitle, promptToSend: newText, extraEnv });
+        const branch = conversationBranches.addBranch({ parentSessionId: id, childSessionId: forked.newSessionId, termId: term.id, sourceAgent, targetAgent, mode, atIndex, branchTitle, anchorText, editedText: isEdit ? newText.slice(0, 500) : '', native: true });
+        overviewStale();
+        return send(res, 200, { ok: true, mode, native: true, term: hub.termInfo(term), branch, childSessionId: forked.newSessionId });
+      }
     }
 
     const { instruction } = writeBranchContextFile({
@@ -1352,12 +1386,12 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       const agent = ['claude', 'codex', 'agy'].includes(b.agent) ? b.agent : (d?.agent || 'claude');
       const cwd = (d?.cwd && fs.existsSync(d.cwd)) ? d.cwd : os.homedir();
       const normSel = selectedText.replace(/\s+/g, ' ').slice(0, 80);
-      let ctxMsgs = msgs.slice(-8);
+      let ctxMsgs = msgs.slice(-12);
       if (normSel) {
         const hitIdx = msgs.findIndex((m) => String(m.text || '').replace(/\s+/g, ' ').includes(normSel));
-        if (hitIdx >= 0) ctxMsgs = msgs.slice(Math.max(0, hitIdx - 2), Math.min(msgs.length, hitIdx + 3));
+        if (hitIdx >= 0) ctxMsgs = msgs.slice(Math.max(0, hitIdx - 4), Math.min(msgs.length, hitIdx + 5));
       }
-      const ctxText = ctxMsgs.map((m) => `[${m.role}] ${String(m.text || '').slice(0, 900)}`).join('\n\n');
+      const ctxText = ctxMsgs.map((m) => `[${m.role}] ${String(m.text || '').slice(0, 1400)}`).join('\n\n');
       const histText = Array.isArray(b.history) && b.history.length
         ? b.history.slice(-6).map((h) => `[${h.role === 'user' ? 'User' : 'Assistant'}] ${String(h.text || '').slice(0, 800)}`).join('\n')
         : '';
@@ -1368,13 +1402,22 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
         histText ? `[사이드 채팅 이전 질문/답변]\n${histText}` : '',
         `[질문]\n${question}`,
       ].filter(Boolean).join('\n\n');
+      const nativeSidePrompt = [
+        'Answer the user side question concisely using the current conversation context and the selected excerpt below. Do not modify files or run tools.',
+        selectedText ? `[사용자가 드래그해 선택한 부분]\n${selectedText}` : '',
+        histText ? `[사이드 채팅 이전 질문/답변]\n${histText}` : '',
+        `[질문]\n${question}`,
+      ].filter(Boolean).join('\n\n');
       try {
         let reply = '';
+        let native = false;
         if (agent === 'codex') {
           const outFile = path.join(os.tmpdir(), `sidechat-${crypto.randomUUID()}.txt`);
+          const codexHome = inferCodexHomeFromFile?.(d?.file);
+          const codexEnv = codexHome ? { ...process.env, CODEX_HOME: codexHome } : process.env;
           try {
             const { args, cmd } = hub.codexLaunch(['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '--ephemeral', '--color', 'never', '-o', outFile, '-']);
-            const { stdout } = await spawnCli(cmd, args, { cwd, env: process.env, timeoutMs: 90_000, stdinText: prompt });
+            const { stdout } = await spawnCli(cmd, args, { cwd, env: codexEnv, timeoutMs: 90_000, stdinText: prompt });
             reply = fs.existsSync(outFile) ? fs.readFileSync(outFile, 'utf8').trim() : stripAnsi(stdout).trim();
           } finally { fs.rmSync(outFile, { force: true }); }
         } else if (agent === 'agy') {
@@ -1388,18 +1431,31 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
               convId = parsed.conversation_id || '';
               reply = String(parsed.response || parsed.result || '').trim();
             } catch { reply = stripAnsi(stdout).trim(); }
+            if (!convId && hub.readAgySession) {
+              try { convId = hub.readAgySession(logFile) || ''; } catch {}
+            }
           } finally {
             fs.rmSync(logFile, { force: true });
             if (convId && hub.deleteCliRecord) {
-              try { await hub.deleteCliRecord({ sessionId: convId, agent: 'agy' }); } catch {}
+              try { await hub.deleteCliRecord({ id: convId, agent: 'agy' }, { agyRoots: index.agyRoot }); } catch {}
               try { index.docs?.delete?.(convId); } catch {}
             }
           }
         } else {
-          const { stdout } = await spawnCli('claude.exe', ['--print', '--no-session-persistence', '--tools', '', '--output-format', 'text'], { cwd, env: process.env, timeoutMs: 90_000, stdinText: prompt });
-          reply = stripAnsi(stdout).trim();
+          const canNativeClaude = !!(id && validSessionId(id) && (d?.agent || 'claude') === 'claude');
+          if (canNativeClaude) {
+            try {
+              const { stdout } = await spawnCli('claude.exe', ['--resume', id, '--fork-session', '--no-session-persistence', '--print', '--tools', '', '--output-format', 'text'], { cwd, env: process.env, timeoutMs: 90_000, stdinText: nativeSidePrompt });
+              reply = stripAnsi(stdout).trim();
+              native = !!reply;
+            } catch {}
+          }
+          if (!reply) {
+            const { stdout } = await spawnCli('claude.exe', ['--print', '--no-session-persistence', '--tools', '', '--output-format', 'text'], { cwd, env: process.env, timeoutMs: 90_000, stdinText: prompt });
+            reply = stripAnsi(stdout).trim();
+          }
         }
-        send(res, 200, { ok: true, reply: reply || '(응답 없음)', agent });
+        send(res, 200, { ok: true, reply: reply || '(응답 없음)', agent, native });
       } catch (e) {
         send(res, 502, { ok: false, error: e.message || '사이드 채팅 응답 생성 실패' });
       }

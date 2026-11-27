@@ -3745,5 +3745,6 @@
   "폴더 경로를 자동으로 찾지 못했습니다 (": "Could not locate folder path automatically (",
   "폴더 경로를 확인하지 못했습니다 (": "Could not verify folder path (",
   "Codex에서 대화를 삭제하지 못했습니다 (": "Failed to delete Codex conversation (",
-  "폴더 지정": "Pick folder"
+  "폴더 지정": "Pick folder",
+  "Codex 네이티브 분기로 이 지점까지의 대화 맥락을 그대로 이어 새 세션을 엽니다.": "Opens a new session with Codex native fork preserving conversation history up to this point."
 }

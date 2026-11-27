@@ -36,7 +36,7 @@ const { runTaskSubChatTurn } = require('./task-subchat');
 const { deleteCliRecord, uuid: recordUuid } = require('./delete-cli-record');
 const { ownedRoots, verifiedRoot, probeRoot, stopTerminal } = require('./project-stop');
 const { pickDirectory } = require('./win-folder-picker');
-const { forkClaudeJsonlAt, editClaudeJsonlAt, editCodexJsonlAt, writeBranchContextFile, createBranchStore } = require('./conversation-branches');
+const { forkClaudeJsonlAt, forkCodexJsonlAt, inferCodexHomeFromFile, editClaudeJsonlAt, editCodexJsonlAt, writeBranchContextFile, createBranchStore } = require('./conversation-branches');
 const { createUnifiedVault } = require('./unified-vault');
 const { createTermManager } = require('./term-manager');
 const { createTermEventStore } = require('./term-events');
@@ -152,7 +152,7 @@ const hub = {
   CA, codexRecoveryArgs, cliModelEffortArgs, buildRecoveryLaunchArgs, cleanModelEffort,
   fingerprint, projectSession, validSessionId, generatePlan, generateSubtasks, inspectWorkspace, scanFloorplan,
   runTaskSubChatTurn, deleteCliRecord, recordUuid, ownedRoots, verifiedRoot, probeRoot, stopTerminal, pickDirectory,
-  forkClaudeJsonlAt, editClaudeJsonlAt, editCodexJsonlAt, writeBranchContextFile,
+  forkClaudeJsonlAt, forkCodexJsonlAt, inferCodexHomeFromFile, editClaudeJsonlAt, editCodexJsonlAt, writeBranchContextFile,
   PTY_KEYS, agyStatusFromScreen, readAgySession, stripAnsi,
   helperCall, refreshIndex, getLastIndexAt: () => lastIndexAt, getHelperMissing: () => helperMissing,
   setConsoleTitleCache: (m) => { consoleTitleCache = m; },
