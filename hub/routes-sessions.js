@@ -1234,9 +1234,16 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
         if (/[\\/]\.hub-worktrees[\\/]/i.test(cwd) || /[\\/]hub-(?:project-plan|accept-cli|badge-probe|subagent-probe|app-export)-[\w-]+/i.test(cwd)) return true;
         // Antigravity subagent child conversations start with SYSTEM_MESSAGE and have no user input (firstPrompt & title empty)
         if ((s.agent || '') === 'agy' && !s.firstPrompt && !hasCustomTitle && !s.title) return true;
-        if (/^(?:You are an independent automated reviewer|Create a proposed work plan only\.|Read the entire UTF-8 project task file at\b|Answer the user question concisely based on the selected excerpt|Resolve this Git merge in the current integration worktree\.|\/plan\s+(?:This is an isolated QA test|Invoke exactly one built-in subagent|For an isolated local integration test))/i.test(txt)) return true;
+        if (/^(?:You are an independent automated reviewer|Create a proposed work plan only\.|Read the entire UTF-8 project task file at\b|Answer the user question concisely based on the selected excerpt|Resolve this Git merge in the current integration worktree\.|\/plan\s+(?:This is an isolated QA test|Invoke exactly one built-in subagent|For an isolated local integration test)|Reply with (?:just|only|exactly)\s+(?:OK|HUB[A-Z0-9_-]+)\b)/i.test(txt)) return true;
         if (/^(?:\[?프로젝트\s*(?:통합|병합)|프로젝트 병합 최종 검증 세션:|\[병합\])/.test(txt)) return true;
         if (/\[사용자가 드래그해 선택한 부분\]|\[사이드 채팅 이전 질문\/답변\]/.test(txt)) return true;
+        if (!hasCustomTitle) {
+          const doc = index.get(s.sessionId);
+          const firstMsg = String(doc?.msgs?.find((m) => m.role === 'user')?.text || '').slice(0, 800);
+          const probe = firstMsg ? `${txt}\n${firstMsg}` : txt;
+          if (/\[Primary Sources & Assumptions\]|\[Methods & Boundaries\]|\[Project version:\s*v?[\d.]/i.test(probe)) return true;
+          if (/\[완료 기준\][\s\S]{0,500}\[(?:작업 지시|선행 작업 완료 결과|검증)\]|\[(?:작업 지시|선행 작업 완료 결과)\][\s\S]{0,500}\[완료 기준\]/.test(probe)) return true;
+        }
         return false;
       };
       const rawLimit = includeInternal ? n : Math.min(400, Math.max(n * 4, 160));

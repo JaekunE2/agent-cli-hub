@@ -681,8 +681,8 @@ function projectOfTerm(t) {
 function isEphemeralInternalText(txt) {
   const s = String(txt || '').trim();
   if (!s) return false;
-  return /^(?:You are an independent automated reviewer|Create a proposed work plan only\.|Read the entire UTF-8 project task file at\b|Answer the user question concisely based on the selected excerpt|Resolve this Git merge in the current integration worktree\.|\[?프로젝트\s*(?:통합|병합)|프로젝트 병합 최종 검증 세션:|\[병합\])/i.test(s)
-    || /\[사용자가 드래그해 선택한 부분\]|\[사이드 채팅 이전 질문\/답변\]/.test(s);
+  return /^(?:You are an independent automated reviewer|Create a proposed work plan only\.|Read the entire UTF-8 project task file at\b|Answer the user question concisely based on the selected excerpt|Resolve this Git merge in the current integration worktree\.|\[?프로젝트\s*(?:통합|병합)|프로젝트 병합 최종 검증 세션:|\[병합\]|Reply with (?:just|only|exactly)\s+(?:OK|HUB[A-Z0-9_-]+)\b)/i.test(s)
+    || /\[사용자가 드래그해 선택한 부분\]|\[사이드 채팅 이전 질문\/답변\]|\[Primary Sources & Assumptions\]|\[Methods & Boundaries\]|\[Project version:\s*v?[\d.]/i.test(s);
 }
 function isEphemeralTerm(t) {
   if (!t || t.operator) return false;
