@@ -8,6 +8,7 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
+const { claudeLimits } = require('./claude-limits');
 
 // Share mode: hides this PC's own accounts and never hands out tokens (LAN-shareable).
 const SHARE_MODE = process.env.SHARE_MODE === '1';
@@ -211,22 +212,9 @@ async function claudeUsageProfile(id, token) {
 }
 
 function buildClaudeResult(usage, profile, fallback = {}) {
-  const meters = [];
-  if (Array.isArray(usage.limits) && usage.limits.length) {
-    for (const l of usage.limits) {
-      let name = { session: '5시간 세션', weekly_all: '주간 (전체 모델)' }[l.kind];
-      if (!name) {
-        const scope = l.scope?.model?.display_name || l.scope?.surface || '';
-        name = l.group === 'weekly' ? `주간 (${scope || l.kind})` : scope || l.kind;
-      }
-      meters.push({ name, usedPercent: clampPct(l.percent), resetsAt: l.resets_at });
-    }
-  } else {
-    const legacy = { five_hour: '5시간 세션', seven_day: '주간 (전체 모델)', seven_day_opus: '주간 (Opus)', seven_day_sonnet: '주간 (Sonnet)' };
-    for (const [k, name] of Object.entries(legacy)) {
-      if (usage[k]) meters.push({ name, usedPercent: clampPct(usage[k].utilization), resetsAt: usage[k].resets_at });
-    }
-  }
+  const meters = claudeLimits(usage).map(m => ({
+    ...m, usedPercent: m.usedPercent != null ? clampPct(m.usedPercent) : null,
+  }));
   const extra = usage.extra_usage;
   if (extra?.is_enabled && extra.monthly_limit) {
     meters.push({

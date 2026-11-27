@@ -169,10 +169,11 @@ function createAccountSwitchService(hub) {
     const emailOf = (c) => (c.usage?.email || (c.id === 'default' ? null : c.label) || '').toLowerCase() || null;
     const curEmail = list.find((c) => c.id === currentId) && emailOf(list.find((c) => c.id === currentId));
     const out = list.map((c) => {
-      const fiveH = meterPct(c.usage, /5시간/), weekly = meterPct(c.usage, /주간 \(전체|주간/);
+      const fiveH = meterPct(c.usage, /5시간|5-hour/i);
+      const weekly = meterPct(c.usage, /^(?:주간(?: \(전체 모델\)| 한도)?|weekly(?: \(all models\)| limit)?)$/i);
       const known = c.usage?.ok && (fiveH !== null || weekly !== null);
       const score = known ? Math.min(100 - (fiveH ?? 0), 100 - (weekly ?? 0)) : 50;
-      const reset = (c.usage?.meters || []).find((m) => /5시간/.test(m.name))?.resetsAt || null;
+      const reset = (c.usage?.meters || []).find((m) => /5시간|5-hour/i.test(m.name))?.resetsAt || null;
       const current = !!currentId && (c.id === currentId || (!!curEmail && emailOf(c) === curEmail));
       return { id: c.id, agent: 'claude', provider: 'Claude', label: c.label, fiveH, weekly, score, reset, current, sameAccount: current && c.id !== currentId, usable: c.usage?.ok !== false && score > 0 };
     });

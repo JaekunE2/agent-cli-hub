@@ -60,6 +60,30 @@ function keyMeters(a) {
 }
 const bar = (pct, thin) => `<span class="ubar${thin ? ' thin' : ''}"><i class="${level(pct)}" style="width:${Math.max(2, Math.min(100, pct))}%"></i></span>`;
 const remainingBar = (used, remaining) => `<span class="ubar" aria-hidden="true"><i class="${level(used)}" style="width:${Math.min(100, remaining)}%"></i></span>`;
+
+function usageWindowHTML(label, meter) {
+  const used = meter?.usedPercent;
+  const available = Number.isFinite(used);
+  const remaining = available ? Math.min(100, Math.max(0, Math.round(100 - used))) : null;
+  const resets = Number.isFinite(Date.parse(meter?.resetsAt)) ? shortResetAt(meter.resetsAt) : meter?.detail;
+  return `<div class="usage-window">
+    <div class="umt"><span>${esc(label)}</span>${available
+      ? `<b class="up ${level(used)}">${remaining}% 남음</b>`
+      : '<span class="ums">한도 정보 없음</span>'}</div>
+    ${available ? remainingBar(used, remaining) : ''}
+    ${resets ? `<div class="ums">${esc(resets)}</div>` : ''}
+  </div>`;
+}
+
+function usageAccountWindows(a, kind) {
+  const meters = a.meters || [];
+  const five = meters.find(m => /(?:^|\s)5\s*(?:시간|h\b|-hour\b)/i.test(m.name));
+  const weekly = meters.find(m => /^(?:Codex )?(?:주간(?: \(전체 모델\)| 한도)?|weekly(?: \(all models\)| limit)?)$/i.test(m.name));
+  const fable = meters.find(m => /fable|페이블/i.test(m.name) && /주간|weekly/i.test(m.name));
+  const windows = [['5시간', five], [kind === 'claude' ? '주간 (전체 모델)' : '주간', weekly]];
+  if (kind === 'claude') windows.push(['주간 (Fable)', fable]);
+  return `<div class="usage-windows">${windows.map(([label, meter]) => usageWindowHTML(label, meter)).join('')}</div>`;
+}
 async function openAgyUsage(btn) {
   const prev = btn?.innerHTML;
   if (btn) { btn.disabled = true; btn.textContent = btn.classList.contains('qact') ? '…' : 'agy 조회 중…'; }
@@ -163,15 +187,6 @@ const shortResetAt = (iso) => {
 };
 const cleanNote = (n) => String(n || '').replace(/(\d+)\.\d{4,}/g, (_, intPart) => Number(intPart).toLocaleString('en-US'));
 
-function agyResetLabel(iso, fallbackText) {
-  if (iso) {
-    const s = (new Date(iso) - Date.now()) / 1000;
-    if (s <= 0) return '사용 가능';
-    return untilText(iso);
-  }
-  if (!fallbackText || /^quota available$/i.test(fallbackText)) return '사용 가능';
-  return fallbackText;
-}
 function agyResetDetail(iso, fallbackText) {
   if (iso) {
     const s = (new Date(iso) - Date.now()) / 1000;
@@ -237,26 +252,14 @@ function agyCardHTML(swapAcc) {
       <div class="ucard-foot"><span>${esc(hint)}</span><span class="ico">${ICO.chevRight}</span></div>
     </div>`;
   }
-  const buckets = [];
-  for (const g of q.groups) {
-    if (g.fiveH != null) buckets.push({ label: `${g.name} 5시간`, used: g.fiveH, iso: g.fiveHResetAt, text: g.fiveHReset });
-    if (g.weekly != null) buckets.push({ label: `${g.name} 주간`, used: g.weekly, iso: g.weeklyResetAt, text: g.weeklyReset });
-  }
-  buckets.sort((a, b) => b.used - a.used);
-  const tight = buckets[0];
-  const worst = tight ? tight.used : 0;
-  const rem = Math.max(0, Math.round(100 - worst));
   const soon = q.groups.some((g) => isResetTodayIso(g.weeklyResetAt) || isResetTodayText(g.weeklyReset));
-  const resetHint = refreshing
-    ? '갱신 중…'
-    : (tight ? `${tight.label} · ${agyResetLabel(tight.iso, tight.text)}` : (q.account || '상세 보기'));
   return `<div class="ucard click${activeCls}${soon ? ' reset-soon' : ''}" data-usage-card="${esc(cardKey)}" title="${esc(swapAcc?.email || '')}">
     <div class="uh">${agentIcon('agy', refreshing ? 'busy' : (swapAcc?.active ? 'idle' : ''))}<b style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(titleTxt)}</b>${activeBadge}${switchBtn}${soon ? `<span class="badge soon">${ICO.clock} 금일 리셋</span>` : ''}</div>
-    <div>
-      <div class="ucard-hero"><span class="ucard-big ${level(worst)}">${rem}%</span><span class="ums" style="margin:0">남음</span></div>
-      <div style="margin-top:8px">${remainingBar(worst, rem)}</div>
-    </div>
-    <div class="ucard-foot"><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(resetHint)}</span><span class="ico">${ICO.chevRight}</span></div>
+    <div class="usage-windows">${q.groups.map(g => `<div class="ugrp"><div class="ugrp-title">${esc(g.name)}</div>
+      ${usageWindowHTML('5시간', { usedPercent: g.fiveH, resetsAt: g.fiveHResetAt, detail: g.fiveHReset })}
+      ${usageWindowHTML('주간', { usedPercent: g.weekly, resetsAt: g.weeklyResetAt, detail: g.weeklyReset })}
+    </div>`).join('')}</div>
+    <div class="ucard-foot"><span>${refreshing ? '갱신 중…' : '상세 보기'}</span><span class="ico">${ICO.chevRight}</span></div>
   </div>`;
 }
 function agyDrawerBodyHTML(q, swapAcc) {
@@ -480,24 +483,25 @@ function paintUsage() {
     </select>
   </div>`;
 
-  // Minimal 3-element cards: Brand + Name | Big Remaining % + Bar | Next Reset (click → Detail Drawer)
   const cards = sorted.map((a) => {
     const worst = usageWorstOf(a);
     const rem = worst != null ? Math.max(0, Math.round(100 - worst)) : null;
     const soon = a.ok && (a.meters || []).some((m) => /주간|weekly/i.test(m.name || '') && (isResetTodayIso(m.resetsAt) || isResetTodayText(m.detail)));
     const kind = usageKindOf(a) === 'other' ? 'bot' : usageKindOf(a);
+    const showWindows = kind === 'claude' || kind === 'codex';
     const tightMeter = (a.meters || []).slice().sort((x, y) => (y.usedPercent ?? -1) - (x.usedPercent ?? -1))[0];
     const resetHint = !a.ok
       ? (a.error || '조회 실패')
+      : showWindows ? '상세 보기'
       : tightMeter?.resetsAt
         ? `${tightMeter.name} · ${untilText(tightMeter.resetsAt)}`
         : tightMeter?.detail || a.plan || '상세 보기';
     return { attention: !a.ok || (worst ?? 0) >= 90, worst, label: String(a.label || ''), html: `<div class="ucard click${soon ? ' reset-soon' : ''}" data-usage-card="${esc(a.id || a.label)}">
       <div class="uh">${agentIcon(kind, a.live ? 'idle' : '')}<b>${esc(shortLabel(a))}</b>${!a.ok ? '<span class="badge lim">조회 실패</span>' : ''}${soon ? `<span class="badge soon">${ICO.clock} 금일 리셋</span>` : ''}</div>
-      <div>
+      ${showWindows ? usageAccountWindows(a, kind) : `<div>
         <div class="ucard-hero"><span class="ucard-big ${worst != null ? level(worst) : ''}"${rem == null ? ' style="font-size:18px;font-weight:650;color:var(--muted)"' : ''}>${rem != null ? `${rem}%` : a.ok ? '유효' : '—'}</span><span class="ums" style="margin:0">${rem != null ? '남음' : a.ok ? '인증 상태' : '조회 실패'}</span></div>
         <div style="margin-top:8px">${worst != null ? remainingBar(worst, rem) : ''}</div>
-      </div>
+      </div>`}
       <div class="ucard-foot"><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(resetHint)}</span><span class="ico">${ICO.chevRight}</span></div>
     </div>` };
   });
