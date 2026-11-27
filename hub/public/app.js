@@ -752,6 +752,8 @@ if (desktopInvoke) window.addEventListener('hashchange', () => {
   else if (open === 'calendar') select({ kind: 'calendar' });
   else if (open === 'schedules') select({ kind: 'schedules' });
   else if (open === 'apps') select({ kind: 'apps' });
+  else if (open.startsWith('apps:')) select({ kind: 'apps', id: open.slice(5) });
+  else if (open === 'store' || open.startsWith('store:')) { select({ kind: 'apps' }); setTimeout(() => window.viewAppStore?.(open.length > 6 ? { page: 'app', key: decodeURIComponent(open.slice(6)) } : null), 300); }
   else if (open.startsWith('switch:')) { const sid = open.slice(7); select({ kind: 'recent', id: sid }); setTimeout(() => openSwitch(sid), 900); } // from the phone alert
   else if (open === 'gpu') select({ kind: 'gpu' });
   else if (open === 'vault') select({ kind: 'vault' });

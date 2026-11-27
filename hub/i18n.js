@@ -60,7 +60,7 @@ function translateText(text, quote = '') {
   };
   const one = (m, inAttr) => {
     const t = m.trim();
-    const tr = d[t]; // "" is a real translation (Korean counters like 개 / 건 have no English word)
+    const tr = overlay && typeof overlay[t] === 'string' ? overlay[t] : d[t]; // "" is a real translation (Korean counters like 개 / 건 have no English word)
     return typeof tr === 'string' ? m.replace(t, () => esc(tr, inAttr)) : m;
   };
   // attribute values inside tags, then the text between tags (split on \n escapes as well)
@@ -147,14 +147,20 @@ function extract(src, kind) {
 // ---------- runtime ----------
 const cache = new Map();
 /** a browser file's text in the current language (null → serve the file as is) */
-function forFile(file) {
+// a plugin's own i18n/en.json, used for that plugin's files only (App Store plugins carry their translations)
+let overlay = null;
+function forFile(file, extraDict) {
   if (language() !== 'en') return null;
   const st = fs.statSync(file);
+  let extra = null, em = 0;
+  if (extraDict) { try { em = fs.statSync(extraDict).mtimeMs; extra = JSON.parse(fs.readFileSync(extraDict, 'utf8')); } catch {} }
   const hit = cache.get(file);
-  if (hit && hit.m === st.mtimeMs) return hit.text;
+  if (hit && hit.m === st.mtimeMs && hit.em === em) return hit.text;
   const src = fs.readFileSync(file, 'utf8');
-  const text = /\.html?$/i.test(file) ? translateHtml(src) : /\.m?js$/i.test(file) ? translateJs(src) : src;
-  cache.set(file, { m: st.mtimeMs, text });
+  overlay = extra;
+  let text;
+  try { text = /\.html?$/i.test(file) ? translateHtml(src) : /\.m?js$/i.test(file) ? translateJs(src) : src; } finally { overlay = null; }
+  cache.set(file, { m: st.mtimeMs, em, text });
   return text;
 }
 /** a message built at runtime (API errors, notes) */

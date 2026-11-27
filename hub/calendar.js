@@ -4,14 +4,18 @@
 //   - the hub's own events (default data/calendar.json: meetings … anything with a time),
 //   - Google Calendar when connected (your own OAuth "Desktop app" client in data/secrets/google-oauth-client.json):
 //     hub items are pushed one way into a dedicated Google calendar "Agent CLI Hub", and the account's primary
-//     calendar is read back so its events show here too (read-only).
+//     calendar is read back so its events show here too (read-only),
+//   - read-only sources from plugins (hook calendarSources: [{ id, label, cls, events(), status(), refresh(), maybeRefresh() }]),
+//     shown in the hub only (never pushed to Google).
 // todo.md stays the source of truth for tasks: the hub only flips a checkbox or appends a task line.
 'use strict';
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-module.exports = function calendar({ config = {}, port = 7777 } = {}) {
+module.exports = function calendar({ config = {}, port = 7777, sources = () => [] } = {}) {
+  const srcList = () => { try { return sources() || []; } catch { return []; } };
+  const srcEvents = () => srcList().flatMap((s) => { try { return s.events() || []; } catch { return []; } });
   const C = config.calendar || {};
   const DATA = path.join(__dirname, 'data');
   const TODO = C.todo || path.join(DATA, 'todo.md');
@@ -299,7 +303,11 @@ module.exports = function calendar({ config = {}, port = 7777 } = {}) {
   async function handle(p, url, req, getBody, send) {
     if (p === '/api/calendar') {
       const t = parseTodo();
-      return send(200, { items: [...t.items, ...loadEvents().map((e) => ({ kind: 'event', ...e })), ...gCache.events, ...msCache.events], todoError: t.error || null,
+      for (const s of srcList()) s.maybeRefresh?.(); // background; this answer uses each source's cache
+      const want = url.searchParams.get('refresh');
+      if (want) await srcList().find((s) => s.id === want)?.refresh?.();
+      return send(200, { items: [...t.items, ...loadEvents().map((e) => ({ kind: 'event', ...e })), ...gCache.events, ...srcEvents(), ...msCache.events], todoError: t.error || null,
+        sources: srcList().map((s) => ({ id: s.id, label: s.label || s.id, cls: s.cls || '', ...(s.status?.() || {}) })),
         google: { configured: !!client(), connected: !!gState?.refresh_token, account: gState?.account || null, calendarId: gState?.calendarId || null, lastSync: gState?.lastSync || null, lastResult: gState?.lastResult || null, error: gCache.error, hint: ACCOUNT },
         ms: { connected: !!msState?.url, label: msState?.label || 'Teams', lastSync: msState?.lastSync || null, count: msCache.events.length, error: msCache.error } });
     }
