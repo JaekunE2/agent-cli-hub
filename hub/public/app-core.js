@@ -801,6 +801,7 @@ function systemTopHTML(activeTab, actionsHTML = '') {
     `<button role="tab" data-systab="${id}" aria-selected="${activeTab === id}" class="${activeTab === id ? 'on' : ''}">${icon} ${label}${badge}</button>`;
   return `<div class="sys-top">
     <div class="tablist" role="tablist" aria-label="설정 메뉴">
+      ${tab('appearance', ICO.monitor, '화면 설정')}
       ${tab('usage', ICO.chart, 'AI 사용량')}
       ${tab('gpu', ICO.gpu, 'GPU 대기열', gpuWait ? ` <span class="badge lim" style="margin-left:3px">${gpuWait}</span>` : '')}
       ${tab('vault', ICO.layers, '공통 자원')}

@@ -10,6 +10,13 @@
 <meta name="theme-color" content="#1f1f23">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<script>
+  try {
+    const font = localStorage.getItem('ach-font');
+    if (font === 'system' || font === 'mono') document.documentElement.dataset.font = font;
+  } catch {}
+</script>
+<link rel="preload" href="/fonts/jetbrains-mono.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/styles.css">
 <link rel="stylesheet" href="/components.css">
 <link rel="stylesheet" href="/schedules.css">

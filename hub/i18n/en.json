@@ -1,4 +1,9 @@
 {
+  "화면 설정": "Appearance",
+  "appearance font 글꼴 폰트 화면 설정 settings": "appearance font typography display settings",
+  "전체 글꼴": "App font",
+  "시스템 기본": "System default",
+  "시스템 고정폭": "System monospace",
   "신뢰됨": "Trusted",
   "미신뢰": "Untrusted",
   "신뢰 확인 불가": "Trust unknown",

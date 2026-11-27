@@ -2,7 +2,7 @@
 'use strict';
 (function () {
   let mermaidPromise = null;
-  let lastTheme = '';
+  let lastAppearance = '';
   let renderSeq = 0;
   let activeCtl = null;
 
@@ -37,9 +37,11 @@
     if (!hosts.length) return;
     const dark = isDarkTheme();
     const theme = dark ? 'dark' : 'light';
+    const appearance = theme + ':' + (document.documentElement.dataset.font || 'jetbrains');
     try {
       const mmd = await ensureMermaid();
-      if (lastTheme !== theme) {
+      if (lastAppearance !== appearance) {
+        const fontFamily = getComputedStyle(document.documentElement).getPropertyValue('--ui-font').trim();
         mmd.initialize({
           startOnLoad: false,
           securityLevel: 'strict',
@@ -56,7 +58,7 @@
               clusterBkg: '#161b25',
               clusterBorder: '#475163',
               edgeLabelBackground: '#12161f',
-              fontFamily: '"Pretendard Variable", "Pretendard", system-ui, sans-serif',
+              fontFamily,
               fontSize: '13px',
             }
             : {
@@ -70,16 +72,16 @@
               clusterBkg: '#ececea',
               clusterBorder: '#c3c8d2',
               edgeLabelBackground: '#f5f5f3',
-              fontFamily: '"Pretendard Variable", "Pretendard", system-ui, sans-serif',
+              fontFamily,
               fontSize: '13px',
             },
           flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'stepAfter' },
         });
-        lastTheme = theme;
+        lastAppearance = appearance;
       }
       for (const h of hosts) {
         if (!h.isConnected) continue;
-        if (h.dataset.mmdTheme === theme && h.dataset.mmdDone === '1') continue;
+        if (h.dataset.mmdAppearance === appearance && h.dataset.mmdDone === '1') continue;
         const src = h.dataset.mermaidSrc || '';
         if (!src.trim()) continue;
         try {
@@ -87,7 +89,7 @@
           if (!h.isConnected) continue;
           h.innerHTML = svg;
           bindFunctions?.(h);
-          h.dataset.mmdTheme = theme;
+          h.dataset.mmdAppearance = appearance;
           h.dataset.mmdDone = '1';
           h.classList.add('ready');
         } catch {

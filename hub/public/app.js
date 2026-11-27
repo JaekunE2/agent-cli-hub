@@ -87,6 +87,7 @@ function select(sel, tab, persistTab = false) {
   renderSide();
   window.ACH_PREVIEW?.setActiveController(null);
   if (sel.kind === 'schedules') return viewSchedules();
+  if (sel.kind === 'appearance') return viewAppearance();
   return ({ home: viewHome, terms: viewTerms, projects: window.viewProjects || (() => { setBar('<h2>Project</h2>'); $('#view').textContent = 'Project 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }), console: viewConsole, recent: viewTranscript, term: viewTerm, search: viewSearch, usage: viewUsage, research: viewResearch, gpu: viewGpu, operator: window.viewOperator || (() => { setBar('<h2>관제 세션</h2>'); }), 'trusted-folders': viewUsage, calendar: viewCalendar, apps: () => (window.viewApps ? window.viewApps(sel.id || '') : setBar('<h2>Apps</h2>')), vault: window.viewVault || (() => { setBar('<h2>공통 자원</h2>'); $('#view').textContent = '공통 자원 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }) })[sel.kind]?.();
 }
 
@@ -258,6 +259,7 @@ function openCommandPalette(initialQuery = '') {
       { icon: ICO.clock || ICO.calendar, title: '스케줄', sub: '정기 자동 실행 관리', keys: 'schedule schedules 스케줄 자동 실행 cron', run: () => select({ kind: 'schedules' }) },
       { icon: ICO.grid, title: 'Apps', sub: '설치된 웹·리포트 앱', keys: 'apps 앱 앱스', run: () => select({ kind: 'apps' }) },
       { icon: ICO.calendar, title: '캘린더', sub: '일정 · 할 일', keys: 'calendar 캘린더 일정', run: () => select({ kind: 'calendar' }) },
+      { icon: ICO.monitor, title: '화면 설정', sub: '설정', keys: 'appearance font 글꼴 폰트 화면 설정 settings', run: () => select({ kind: 'appearance' }) },
       { icon: ICO.chart, title: 'AI 사용량', sub: '설정', keys: 'usage ai 사용량 한도 설정 settings', run: () => select({ kind: 'usage' }) },
       { icon: ICO.gpu, title: 'GPU 대기열', sub: '설정', keys: 'gpu vram 대기열 설정 settings', run: () => select({ kind: 'gpu' }) },
       { icon: ICO.layers, title: '공통 자원', sub: '설정 · 스킬/MCP/하네스', keys: 'vault shared resources skills mcp harness 공통 자원 통합 볼트 스킬 하네스 설정 settings', run: () => select({ kind: 'vault' }) },
@@ -553,6 +555,36 @@ async function openPhoneDrawer() {
       <li>이 창을 다시 열면 QR이 나옵니다 (서버가 15초마다 Tailscale 주소를 자동 감지)</li></ol>`;
   }
 }
+function viewAppearance() {
+  setBar('');
+  const view = $('#view');
+  view.innerHTML = `<div class="sys-shell">${systemTopHTML('appearance')}
+    <div class="sys-body"><section class="page-wrap">
+      <div class="page-hd"><h1>화면 설정</h1></div>
+      <div class="rcard">
+        <label class="row" for="hubFont">전체 글꼴
+          <select id="hubFont">
+            <option value="jetbrains">JetBrains Mono</option>
+            <option value="system">시스템 기본</option>
+            <option value="mono">시스템 고정폭</option>
+          </select>
+        </label>
+      </div>
+    </section></div></div>`;
+  const font = $('#hubFont', view);
+  font.value = document.documentElement.dataset.font || 'jetbrains';
+  font.onchange = () => {
+    const value = font.value;
+    if (value === 'system' || value === 'mono') document.documentElement.dataset.font = value;
+    else delete document.documentElement.dataset.font;
+    try { localStorage.setItem('ach-font', value); } catch {}
+  };
+  view.onclick = (event) => {
+    const tab = event.target.closest('[data-systab]');
+    if (tab && tab.dataset.systab !== 'appearance') select({ kind: tab.dataset.systab });
+  };
+}
+
 // ---------- Theme Switcher (System / Light / Dark) ----------
 function applyTheme(mode) {
   const m = mode === 'light' || mode === 'dark' ? mode : 'system';
@@ -736,7 +768,7 @@ if (desktopInvoke) window.addEventListener('hashchange', () => {
       }
       const saved = fromHash || previous;
       const s = saved?.sel;
-      if (s && ['home', 'terms', 'projects', 'usage', 'calendar', 'schedules', 'apps', 'gpu', 'vault', 'operator', 'recent', 'research'].includes(s.kind)) restored = saved;
+      if (s && ['home', 'terms', 'projects', 'appearance', 'usage', 'calendar', 'schedules', 'apps', 'gpu', 'vault', 'operator', 'recent', 'research'].includes(s.kind)) restored = saved;
       else if (s?.kind === 'term' && terminalExists(s.id)) restored = saved;
       else if (s?.kind === 'console' && state.consoles.some((c) => String(c.id) === String(s.id))) restored = saved;
     } catch {}

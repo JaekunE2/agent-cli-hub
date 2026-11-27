@@ -384,7 +384,15 @@ function resolvedFavs() {
   return out;
 }
 
+function sideLiveStateTag(st, dormant = false) {
+  if (st === 'busy') return '<span class="srow-tag srow-status busy">실행 중</span>';
+  if (st === 'exited') return '<span class="srow-tag">종료됨</span>';
+  if (dormant) return '<span class="srow-tag srow-status dormant" title="1시간 이상 입력·출력 활동 없음">유휴</span>';
+  return '<span class="srow-tag srow-status waiting">대기</span>';
+}
+
 function renderSide() {
+  const liveBySid = new Map((state.live || []).filter((x) => x.sessionId).map((x) => [x.sessionId, x]));
   if (isSideDragging) { pendingSideRender = true; return; }
   const side = $('#side');
   if (!side) return;
@@ -395,7 +403,7 @@ function renderSide() {
   const focusedSession = focusedControl?.closest?.('[data-key]')?.dataset.key;
   const folded = sideFolded();
   const curKind = state.sel.kind;
-  const isSys = ['usage', 'gpu', 'vault', 'operator'].includes(curKind);
+  const isSys = ['appearance', 'usage', 'gpu', 'vault', 'operator'].includes(curKind);
 
   const calItems = ((typeof CAL !== 'undefined' && CAL?.data?.items) || []).filter((x) => !(x.kind === 'task' && x.done));
   const now = new Date();
@@ -437,15 +445,14 @@ function renderSide() {
       } else if (entry.kind === 'term') {
         const t = entry.item;
         if (!matchSide(termLabel(t), t.cwd || '')) continue;
-        const st = termStateOf(t);
-        const dot = st === 'exited' ? 'dead' : st === 'busy' ? 'busy' : 'idle';
+        const meta = termStatusMeta(t);
         const isSel = curKind === 'term' && String(state.sel.id) === String(t.id);
         const unread = state.unreadTerms.has(String(t.id));
         const isBr = !!t.branch?.isBranch;
         const favAliasKeys = [...new Set([...(entry.allKeys || [fk]), t.sessionId ? `sid:${t.sessionId}` : '', `term:${t.id}`].filter(Boolean))];
         favRowsArr.push(`<div class="srow${isSel ? ' sel' : ''}${unread ? ' just-done' : ''}" data-key="term:${esc(t.id)}"${isBr ? ` title="${esc(branchTooltip(t.branch))}"` : ''}>
-          ${agentIcon(t.operator ? 'operator' : t.agent || 'shell', dot)}
-          <div class="srow-main"><div class="srow-t">${esc(termLabel(t))}</div></div>
+          ${agentIcon(t.operator ? 'operator' : t.agent || 'shell', meta.dot)}
+          <div class="srow-main"><div class="srow-t">${esc(termLabel(t))}</div><div class="srow-s">${sideLiveStateTag(meta.state, meta.dormant)}</div></div>
           <span class="srow-end">${branchTagHTML(t.branch, true)}${unread ? '<span class="srow-tag done">완료</span>' : ''}<span class="fav on" data-fav="${esc(fk)}" data-fav-keys="${esc(favAliasKeys.join(','))}" role="button" tabindex="0" aria-label="즐겨찾기 해제">${ICO.starFill}</span></span>
         </div>`);
       } else if (entry.kind === 'sid') {
@@ -455,9 +462,11 @@ function renderSide() {
         if (!matchSide(lbl, r?.cwd || '')) continue;
         const isSel = curKind === 'recent' && state.sel.id === sid;
         const isBr = !!r?.branch?.isBranch;
+        const live = liveBySid.get(sid);
+        const dot = live ? (live.status === 'busy' ? 'busy' : 'idle') : null;
         favRowsArr.push(`<div class="srow${isSel ? ' sel' : ''}" data-key="recent:${esc(sid)}"${isBr ? ` title="${esc(branchTooltip(r.branch))}"` : ''}>
-          ${agentIcon(r?.agent || 'claude')}
-          <div class="srow-main"><div class="srow-t">${esc(lbl)}</div></div>
+          ${agentIcon(r?.agent || 'claude', dot)}
+          <div class="srow-main"><div class="srow-t">${esc(lbl)}</div>${dot ? `<div class="srow-s">${sideLiveStateTag(dot)}</div>` : ''}</div>
           <span class="srow-end">${branchTagHTML(r?.branch, true)}<span class="fav on" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="즐겨찾기 해제">${ICO.starFill}</span></span>
         </div>`);
       }
@@ -532,7 +541,6 @@ function renderSide() {
   const rf = state.recentFilter || '';
   const fbtn = (val, label, cnt = 0) => `<button data-rfilt="${val}" class="${rf === val ? 'on' : ''}">${label}${cnt ? ` <span class="seg-cnt">${cnt}</span>` : ''}</button>`;
 
-  const liveBySid = new Map((state.live || []).filter((x) => x.sessionId).map((x) => [x.sessionId, x]));
   const busyCount = terms.filter((t) => termStateOf(t) === 'busy').length + cons.filter((c) => consoleStateOf(c) === 'busy').length;
   const exitedCount = terms.filter((t) => termStateOf(t) === 'exited').length;
   const activeTermCount = terms.filter((t) => termStateOf(t) !== 'exited').length + cons.length;
@@ -586,18 +594,6 @@ function renderSide() {
   const unifiedEntries = [...combinedLive, ...unlinkedRecent].sort((a, b) => compareUnifiedEntries(a, b, recentMap));
   const liveCount = activeTermCount + (state.recent || []).filter((r) => !seenSids.has(r.sessionId) && liveBySid.has(r.sessionId) && (showProjTerms || !isProjectSubRecent(r))).length;
 
-  const sideLiveStateTag = (st, unread = false, dormant = false) => (
-    st === 'busy'
-      ? '<span class="srow-tag busy">실행 중</span>'
-      : unread
-        ? '<span class="srow-tag done">완료</span>'
-        : st === 'exited'
-          ? '<span class="srow-tag">종료됨</span>'
-          : dormant
-            ? '<span class="srow-tag dormant" title="1시간 이상 입력·출력 활동 없음">유휴</span>'
-            : '<span class="srow-tag idle">대기</span>'
-  );
-
   const groupButton = `<button type="button" class="ghost icon-btn side-group-btn" data-side-group title="그룹 지정" aria-label="그룹 지정">${ICO.folder}</button>`;
   const renderUnifiedRow = (entry, bucketKey = '_ungrouped') => {
     const pkey = sessionKeysForEntry(entry)[0] || '';
@@ -620,9 +616,10 @@ function renderSide() {
         : (!t.agent ? '<span class="srow-tag">셸</span>' : '');
       const brTip = branchTooltip(t.branch);
       const tags = [
+        sideLiveStateTag(st, meta.dormant),
+        unread && st !== 'busy' ? '<span class="srow-tag done">완료</span>' : '',
         branchTagHTML(t.branch, true),
         subKindTag,
-        sideLiveStateTag(st, unread, meta.dormant),
       ].filter(Boolean).join('');
       const closeTermBtn = t.operator
         ? ''
@@ -640,7 +637,7 @@ function renderSide() {
       const isSel = curKind === 'console' && String(state.sel.id) === String(c.id);
       return `<div class="srow${isSel ? ' sel' : ''}" data-key="console:${esc(c.id)}">
         ${agentIcon(cs ? (cs.agent || 'claude') : 'shell', st === 'busy' ? 'busy' : 'idle')}
-        <button type="button" class="ghost srow-main srow-open"><span class="srow-t">${esc(consoleLabel(c))}</span><span class="srow-s"><span class="srow-tag con">콘솔</span>${sideLiveStateTag(st)}</span></button>
+        <button type="button" class="ghost srow-main srow-open"><span class="srow-t">${esc(consoleLabel(c))}</span><span class="srow-s">${sideLiveStateTag(st)}<span class="srow-tag con">콘솔</span></span></button>
       </div>`;
     }
     const r = entry.item;
@@ -653,9 +650,9 @@ function renderSide() {
     const delRecTitle = '기록 삭제';
     const delRecAria = `기록 삭제: ${sessionLabel(r)}`;
     const subHTML = [
+      liveProc ? sideLiveStateTag(liveDot) : '',
       r.ideOnly ? '<span class="badge" title="Antigravity IDE 전용 세션 (입력 시 새 CLI 세션으로 자동 인계)">IDE</span>' : '',
       branchTagHTML(r.branch, true),
-      liveProc ? sideLiveStateTag(liveProc.status === 'busy' ? 'busy' : 'idle') : '',
       `<span>${esc(ago(r.mtime))}</span>`,
     ].filter(Boolean).join('');
     return `<div class="srow${isSel ? ' sel' : ''}" data-key="recent:${esc(r.sessionId)}"${dragAttrs} title="${esc([sessionLabel(r), r.cwd, brTip].filter(Boolean).join(' · '))}">

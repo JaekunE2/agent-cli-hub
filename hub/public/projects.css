@@ -471,7 +471,7 @@ svg.fm-map-edges path.fm-edge.dim { opacity: 0.06; }
 .pg-files { display: flex; flex-direction: column; gap: 3px; }
 .pg-file-btn { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 5px 8px; border-radius: var(--radius-sm); background: var(--bg); border: 1px solid var(--line); cursor: pointer; font-size: 12px; }
 .pg-file-btn:hover, .pg-file-btn.on { border-color: var(--accent); }
-.pg-st { font-family: monospace; font-weight: 700; width: 14px; text-align: center; flex: none; }
+.pg-st { font-family: var(--mono); font-weight: 700; width: 14px; text-align: center; flex: none; }
 .pg-st.st-m { color: var(--warn); }
 .pg-st.st-a, .pg-st.st-u { color: var(--ok); }
 .pg-st.st-d { color: var(--danger, #e05252); }

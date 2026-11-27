@@ -489,9 +489,11 @@ function ensureOperator(force = false) {
 Object.assign(hub, { readNotices, postNotice, OPERATOR_DIR, operatorTerm, ensureOperator, saveOperatorConfig });
 
 // ---------- HTTP & WebSocket ----------
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2' };
 const STATIC = {
   '/styles.css': 'public/styles.css', '/components.css': 'public/components.css',
+  '/fonts/jetbrains-mono.woff2': 'public/fonts/jetbrains-mono.woff2',
+  '/fonts/jetbrains-mono-italic.woff2': 'public/fonts/jetbrains-mono-italic.woff2',
   '/schedules.css': 'public/schedules.css', '/schedules-ui.js': 'public/schedules-ui.js',
   '/schedule-form.js': 'public/schedule-form.js', '/schedule-history.js': 'public/schedule-history.js',
   '/schedule-trigger.js': 'public/schedule-trigger.js', '/schedule-target.js': 'public/schedule-target.js',
@@ -563,7 +565,7 @@ const server = http.createServer(async (req, res) => {
     const bustIndex = (html) => (p === '/'
       ? html.replace(/((?:src|href)="\/[^"?]+\.(?:css|js))"/g, `$1?v=${SERVER_BUILD_ID}"`)
       : html);
-    const text = file.startsWith('public/') ? I18N.forFile(path.join(__dirname, file)) : null;
+    const text = file.startsWith('public/') && !file.endsWith('.woff2') ? I18N.forFile(path.join(__dirname, file)) : null;
     if (text !== null) {
       const out = bustIndex(local ? text.replace('<head>', `<head><script>window.LOCAL_TOKEN=${JSON.stringify(TOKEN)}</script>`) : text);
       return res.end(out);

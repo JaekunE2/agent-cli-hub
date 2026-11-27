@@ -1,11 +1,22 @@
 // ---------- Embedded Xterm Mirrors, Consoles & Managed Terminals ----------
+const terminalFallbackFont = getComputedStyle(document.documentElement).getPropertyValue('--system-mono').trim();
+
+function applyTerminalFont(term, refit) {
+  if (document.documentElement.dataset.font) return;
+  document.fonts.load('13px "JetBrains Mono"').catch(() => []).then((faces) => {
+    if (!faces.length || !term.element?.isConnected) return;
+    term.options.fontFamily = getComputedStyle(document.documentElement).getPropertyValue('--mono').trim();
+    refit();
+  });
+}
+
 // Read-only mirror: the xterm keeps the pty's exact cols/rows and is scaled down
 // with CSS to fit the card, so full-screen TUIs like claude lay out correctly.
 function mountMini(t) {
   const host = $(`#mini-${t.id}`);
   if (!host) return;
   const term = new Terminal({ cols: t.cols || 120, rows: t.rows || 32, fontSize: 12, disableStdin: true, cursorBlink: false,
-    scrollback: 0, fontFamily: '"Cascadia Mono", Consolas, "D2Coding", monospace', theme: { background: '#0e0e11' } });
+    scrollback: 0, fontFamily: terminalFallbackFont, theme: { background: '#0e0e11' } });
   term.open($('.mini-in', host));
   const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/term?id=${t.id}&t=${TOKEN}`);
   const m = { id: String(t.id), term, ws, host };
@@ -17,6 +28,7 @@ function mountMini(t) {
   };
   minis.push(m);
   requestAnimationFrame(() => fitMini(m));
+  applyTerminalFont(term, () => fitMini(m));
 }
 function unmountMini(m) {
   try { m.ws.close(); } catch {}
@@ -364,7 +376,7 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
       })
     : null;
   termTsCtl?.setVisible(!chatHost);
-  xterm = new Terminal({ fontFamily: '"Cascadia Mono", Consolas, "D2Coding", monospace', fontSize: IS_MOBILE ? 11 : 13, cursorBlink: true, scrollback: 10000, theme: { background: '#0e0e11' } });
+  xterm = new Terminal({ fontFamily: terminalFallbackFont, fontSize: IS_MOBILE ? 11 : 13, cursorBlink: true, scrollback: 10000, theme: { background: '#0e0e11' } });
   const fit = new FitAddon.FitAddon();
   xterm.loadAddon(fit);
   xterm.open(wrapEl);
@@ -476,6 +488,7 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
       sendHttp({ cols: xterm.cols, rows: xterm.rows });
     }
   };
+  applyTerminalFont(xterm, resize);
   const showExit = (code) => {
     exited = true;
     xterm?.write(`\r\n\x1b[90m[프로세스 종료: ${code}]\x1b[0m\r\n`);
