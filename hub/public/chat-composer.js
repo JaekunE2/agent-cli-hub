@@ -713,6 +713,7 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
     sendingReply = true;
     lastReplyText = bodyText;
     lastReplyAt = Date.now();
+    repHist?.sent(typed);
     repIn.value = ''; fitRep();
     repBtn.disabled = true;
     const prevBtnTxt = repBtn.textContent;
@@ -795,6 +796,9 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       openChatAction: (action, args) => openSlashChatAction(action, args, barHost, chatHost),
     };
   }, sendReply, { showButton: false }) : null;
+  const histKey = sid || resolveTermSessionId(state.terms.find((x) => String(x.id) === String(termId)))
+    || (termId ? `term:${termId}` : consolePid ? `con:${consolePid}` : '');
+  const repHist = window.bindPromptHistory?.(repIn, histKey, { onChange: fitRep });
   repBtn.onclick = () => sendReply();
   if (typeof window.bindEnterSubmit === 'function') window.bindEnterSubmit(repIn, () => sendReply());
   else repIn.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendReply(); } };

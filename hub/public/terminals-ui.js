@@ -152,11 +152,13 @@ function mountConsoleScreen(hostEl, { pid, gen, s, chatHost = null }) {
     const raw = inp.value;
     const text = [...paths, raw].filter(Boolean).join(' ');
     inp.value = ''; fitInp();
+    inpHist?.sent(raw);
     const r = await api('/api/console/send', { method: 'POST', body: text ? { pid, text, submit: true } : { pid, keys: ['enter'] } });
     if (!r.ok) alertBar(r.error);
     setTimeout(tick, 150);
   };
   if (typeof window.bindEnterSubmit === 'function') window.bindEnterSubmit(inp, sendText);
+  const inpHist = window.bindPromptHistory?.(inp, s?.sessionId || `con:${pid}`, { onChange: fitInp });
   inp.onkeydown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) return;
     if (e.key === 'Escape') { e.preventDefault(); sendKey('esc'); return; }
@@ -325,7 +327,6 @@ function getTuiKeysOpen() {
   } catch {}
   return IS_MOBILE;
 }
-const termPromptHist = [];
 
 function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = null }) {
   if (!hostEl) return;
@@ -629,7 +630,6 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
     },
     sendCtrlV: () => send('\x16'),
   });
-  let histIdx = -1;
   let termSubmitting = false;
   let lastTermSentText = '';
   let lastTermSentAt = 0;
@@ -659,11 +659,7 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
     lastTermSentAt = now;
     tin.value = '';
     fitTin();
-    histIdx = -1;
-    if (v.trim()) {
-      if (termPromptHist[0] !== v) termPromptHist.unshift(v);
-      if (termPromptHist.length > 50) termPromptHist.pop();
-    }
+    tinHist?.sent(typed);
     submitBtn.disabled = true;
     try {
       const r = await api('/api/term/send', { method: 'POST', body: { id: termId, text: nativeCommand ? v.trim() : v, submit: true, fromTerminalInput: true, clearDraft: true, nativeSlash: !!nativeCommand } });
@@ -697,6 +693,8 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
       },
     };
   }, submit) : null;
+  // after the slash picker, so an open picker keeps ↑/↓ for its own list
+  const tinHist = window.bindPromptHistory?.(tin, resolveTermSessionId(t) || `term:${termId}`, { onChange: fitTin });
   $('#tsend', fullEl).onclick = submit;
   $('#tArt', fullEl).onclick = () => pickArtifact((abs) => insert(quotePath(abs)));
   if (typeof window.bindEnterSubmit === 'function') window.bindEnterSubmit(tin, submit);
@@ -704,15 +702,14 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
     if (e.key === 'Enter' && !e.shiftKey) return;
     if (e.key === 'Escape') { e.preventDefault(); send(PTY_KEYS.esc); if (!IS_MOBILE) xterm?.focus(); return; }
     if (!tin.value) {
-      if (e.key === 'ArrowUp' && !e.altKey) { e.preventDefault(); send(PTY_KEYS.up); return; }
-      if (e.key === 'ArrowDown' && !e.altKey) { e.preventDefault(); send(PTY_KEYS.down); return; }
+      if (e.key === 'ArrowUp' && !e.altKey && !e.shiftKey) { e.preventDefault(); send(PTY_KEYS.up); return; }
+      if (e.key === 'ArrowDown' && !e.altKey && !e.shiftKey) { e.preventDefault(); send(PTY_KEYS.down); return; }
       if (e.key === 'Tab') { e.preventDefault(); send(e.shiftKey ? PTY_KEYS['shift+tab'] : PTY_KEYS.tab); return; }
     }
-    if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && termPromptHist.length) {
+    // ↑/↓ in the box recall sent prompts (bindPromptHistory); Alt+↑/↓ always go to the terminal (menus, CLI history)
+    if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
       e.preventDefault();
-      histIdx = e.key === 'ArrowUp' ? Math.min(termPromptHist.length - 1, histIdx + 1) : Math.max(-1, histIdx - 1);
-      tin.value = histIdx >= 0 ? termPromptHist[histIdx] : '';
-      fitTin();
+      send(e.key === 'ArrowUp' ? PTY_KEYS.up : PTY_KEYS.down);
     }
   };
   fullEl.addEventListener('click', (e) => {

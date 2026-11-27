@@ -336,6 +336,87 @@
   }
   window.bindEnterSubmit = bindEnterSubmit;
 
+  // Prompt boxes remember, per session, the unsent draft and what was sent: ↑ on the first line
+  // recalls earlier prompts (newest first, then the shared history of all sessions), ↓ on the last
+  // line goes forward and back to the draft. Shift/Alt/Ctrl+↑↓, IME composition and an open picker
+  // are left alone. Stored in this browser only (localStorage), never sent to the terminal.
+  const HISTORY_MAX = 100;
+  function lsRead(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } }
+  function lsWrite(k, v) { try { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+  function promptHistoryList(key) {
+    const own = lsRead(`ccd.inputHistory.${key}`, []);
+    const shared = lsRead('ccd.inputHistory', []);
+    const out = [];
+    for (const x of [...(Array.isArray(own) ? own : [])].reverse().concat([...(Array.isArray(shared) ? shared : [])].reverse())) {
+      if (typeof x === 'string' && x && !out.includes(x)) out.push(x);
+    }
+    return out;
+  }
+  function rememberPrompt(key, sent) {
+    const text = String(sent || '');
+    if (!text.trim()) return;
+    for (const k of [`ccd.inputHistory.${key}`, 'ccd.inputHistory']) {
+      const h = lsRead(k, []);
+      const list = (Array.isArray(h) ? h : []).filter((x) => x !== text);
+      list.push(text);
+      lsWrite(k, list.slice(-HISTORY_MAX));
+    }
+  }
+  function bindPromptHistory(el, key, { onChange } = {}) {
+    if (!el || !key) return { sent() {} };
+    const draftKey = `ccd.draft.${key}`;
+    const changed = () => { try { onChange?.(); } catch {} };
+    if (!el.value) {
+      const d = lsRead(draftKey, '');
+      if (typeof d === 'string' && d) { el.value = d; changed(); }
+    }
+    let pos = -1; // index into the history while browsing, -1 = editing the draft
+    let stash = '';
+    let shown = '';
+    el.addEventListener('input', () => { pos = -1; lsWrite(draftKey, el.value ? el.value : null); });
+    el.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+      if (e.defaultPrevented || e.isComposing || e.keyCode === 229 || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+      const v = el.value;
+      const browsing = pos !== -1 && v === shown;
+      if (!browsing) pos = -1;
+      if (!browsing) {
+        const a = el.selectionStart ?? 0, b = el.selectionEnd ?? 0;
+        if (a !== b) return;
+        if (e.key === 'ArrowUp' && v.lastIndexOf('\n', a - 1) !== -1) return; // not on the first line: move the caret
+        if (e.key === 'ArrowDown') return; // nothing to go forward to
+      }
+      const h = promptHistoryList(key);
+      if (!h.length) return;
+      let next;
+      if (e.key === 'ArrowUp') {
+        if (pos === -1) stash = v;
+        if (pos >= h.length - 1) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+        pos += 1;
+        next = h[pos];
+      } else {
+        pos -= 1;
+        next = pos === -1 ? stash : h[pos];
+      }
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      el.value = next;
+      shown = next;
+      if (pos === -1) shown = '';
+      el.setSelectionRange(next.length, next.length);
+      changed();
+    }, true);
+    return {
+      sent(text) {
+        pos = -1; stash = ''; shown = '';
+        rememberPrompt(key, text);
+        lsWrite(draftKey, null);
+      },
+    };
+  }
+  window.bindPromptHistory = bindPromptHistory;
+  window.promptHistoryList = promptHistoryList;
+
   function isTauriHost() {
     return document.documentElement.classList.contains('is-tauri') || !!window.__TAURI_INTERNALS__?.invoke;
   }
