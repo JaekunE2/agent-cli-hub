@@ -36,10 +36,11 @@ function stripAnsi(s) {
   return String(s || '').replace(ANSI_RE, '');
 }
 
-function agyStatusFromScreen(screen, { exited = null, lastOutputAt = 0, spawnedAt = 0, now = Date.now() } = {}) {
+function agyStatusFromScreen(screen, { exited = null, lastOutputAt = 0, lastResizeAt = 0, spawnedAt = 0, now = Date.now() } = {}) {
   if (exited !== null) return 'exited';
   if (AGY_BUSY_RE.test(String(screen || ''))) return 'busy';
-  if (lastOutputAt && now - lastOutputAt < 1800 && now - (spawnedAt || 0) > 3500) return 'busy';
+  const resizeQuiet = lastResizeAt && now - lastResizeAt < 2500;
+  if (!resizeQuiet && lastOutputAt && now - lastOutputAt < 1800 && now - (spawnedAt || 0) > 3500) return 'busy';
   return 'idle';
 }
 

@@ -708,6 +708,7 @@ if (desktopInvoke) window.addEventListener('hashchange', () => {
   await Promise.all([refreshOverview(), refreshRecent(), refreshProjects(), refreshUsage(), refreshResearch(), typeof loadCalendar === 'function' ? loadCalendar() : Promise.resolve()]);
   setInterval(whenShown(() => typeof loadCalendar === 'function' && loadCalendar()), 300000);
   booted = true;
+  bootedAt = Date.now();
   setInterval(whenShown(refreshResearch), 10000);
   refreshGpu(); setInterval(whenShown(refreshGpu), 5000);
   setInterval(whenShown(refreshUsage), 120000);

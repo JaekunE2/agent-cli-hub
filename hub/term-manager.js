@@ -390,18 +390,26 @@ function createTermManager(hub) {
 
   function codexStatus(t) {
     if (t.exited !== null) return 'exited';
+    if (t.restoring) return 'idle';
     try { return CODEX_BUSY.test(readTerm(t, 12).join('\n')) ? 'busy' : 'idle'; } catch { return null; }
   }
 
   function claudeStatus(t) {
     if (t.exited !== null) return 'exited';
+    if (t.restoring) return 'idle';
     try { return CODEX_BUSY.test(readTerm(t, 12).join('\n')) ? 'busy' : 'idle'; } catch { return null; }
   }
 
   function agyStatus(t) {
     if (t.exited !== null) return 'exited';
+    if (t.restoring) return 'idle';
     let screen = ''; try { screen = readTerm(t, 16).join('\n'); } catch { return 'idle'; }
-    return agyStatusFromScreen(screen, { exited: t.exited, lastOutputAt: t.lastOutputAt, spawnedAt: t.meta?.spawnedAt });
+    return agyStatusFromScreen(screen, {
+      exited: t.exited,
+      lastOutputAt: t.lastOutputAt,
+      lastResizeAt: t.lastResizeAt || 0,
+      spawnedAt: t.meta?.spawnedAt || t.startedAt || 0,
+    });
   }
 
   const codexHeadCache = new Map();
@@ -497,7 +505,10 @@ function createTermManager(hub) {
     } : {}),
     lastOutputAt: t.lastOutputAt || 0,
     lastInputAt: t.lastInputAt || t.meta?.lastInputAt || t.startedAt || t.meta?.spawnedAt || 0,
-    startedAt: t.startedAt || 0,
+    lastResizeAt: t.lastResizeAt || 0,
+    startedAt: t.startedAt || t.meta?.spawnedAt || 0,
+    restoring: !!t.restoring,
+    hasInitialPrompt: !!(t.meta?.projectPrompt || (t.args || t.meta?.args || []).some((a) => /^(-i|--prompt-interactive|-p|--print)$/.test(a))),
     projectTask: t.meta?.projectTask, projectMerge: t.meta?.projectMerge || null, cwd: t.cwd, pid: t.pid, exited: t.exited, cols: t.cols, rows: t.rows,
   });
 
@@ -505,7 +516,10 @@ function createTermManager(hub) {
     const t = {
       id, title: meta.defaultTitle ?? meta.title, cwd: meta.cwd, cmd: meta.cmd, args: meta.args || [], account: meta.account || null, research: meta.research || null,
       meta, buf: '', clients: new Set(), exited, pid: 0, cols, rows, liveTitle: '',
+      startedAt: Number(meta.spawnedAt) || Date.now(),
       lastInputAt: Number(meta.lastInputAt) || Number(meta.spawnedAt) || 0,
+      lastResizeAt: 0,
+      restoring: false,
     };
     t.vt = new HeadlessTerminal({ cols, rows, scrollback: 3000, allowProposedApi: true });
     t.vt.onTitleChange((s) => { t.liveTitle = s; });
@@ -537,7 +551,8 @@ function createTermManager(hub) {
     t.vt.write(d);
     t.outputEnd = (t.outputEnd ?? t.buf.length) + d.length;
     t.buf = (t.buf + d).slice(-400_000);
-    if (stripAnsi(d).trim()) t.lastOutputAt = Date.now();
+    const now = Date.now();
+    if (!t.restoring && now - (t.lastResizeAt || 0) >= 2000 && stripAnsi(d).trim()) t.lastOutputAt = now;
     termMonitor?.onOutput(t);
     for (const ws of t.clients) ws.send(JSON.stringify({ type: 'data', data: d }));
   }
@@ -612,6 +627,7 @@ function createTermManager(hub) {
 
   function resizeTerm(t, cols, rows) {
     if (cols === t.cols && rows === t.rows) return false;
+    t.lastResizeAt = Date.now();
     t.proc.resize(cols, rows);
     t.vt.resize(cols, rows);
     t.cols = cols; t.rows = rows;
@@ -881,11 +897,19 @@ function createTermManager(hub) {
       if (terms.has(x.id)) return;
       const t = makeMirror(x);
       t.pid = x.pid;
-      t.startedAt = x.startedAt || null;
+      t.startedAt = x.startedAt || t.meta?.spawnedAt || null;
       if (!t.lastInputAt) t.lastInputAt = t.startedAt || Date.now();
       if (buf) {
+        t.restoring = true;
         t.buf = buf.slice(-400_000);
-        t.vt.write(t.buf, () => { try { termMonitor?.inspect(t); } catch {} });
+        t.vt.write(t.buf, () => {
+          t.restoring = false;
+          t.restoredAt = Date.now();
+          try { termMonitor?.inspect(t); } catch {}
+        });
+      } else {
+        t.restoring = false;
+        t.restoredAt = Date.now();
       }
     };
     if (!inf.snapshot) {
@@ -916,7 +940,10 @@ function createTermManager(hub) {
         t.exitedAt = Date.now();
         for (const ws of t.clients) ws.send(JSON.stringify({ type: 'exit', code: e.code }));
       }
-      else if (e.type === 'resize' && t && (t.cols !== e.cols || t.rows !== e.rows)) { t.cols = e.cols; t.rows = e.rows; t.vt.resize(e.cols, e.rows); }
+      else if (e.type === 'resize' && t && (t.cols !== e.cols || t.rows !== e.rows)) {
+        t.lastResizeAt = Date.now();
+        t.cols = e.cols; t.rows = e.rows; t.vt.resize(e.cols, e.rows);
+      }
     });
     ev.on('close', () => {
       ptyHostPid = 0;

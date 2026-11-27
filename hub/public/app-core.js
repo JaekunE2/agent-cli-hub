@@ -46,8 +46,11 @@ async function api(path, { requireOk = false, ...opts } = {}) {
 }
 
 let booted = false;
+let bootedAt = 0;
 let activeBuildId = null;
 let updateNoticeShown = false;
+const initialBusyTerms = new Set();
+const termBusySince = new Map();
 const state = {
   sel: { kind: 'home' }, tab: 'screen', showHidden: false, favs: new Set(), sessionGroups: { version: 1, groups: [], assignments: {}, groupOrders: {} }, showDesktop: (() => { try { return !!localStorage.getItem('ccd-show-desktop'); } catch { return false; } })(),
   live: [], consoles: [], terms: [], recent: [], projects: [], err: null,
@@ -361,14 +364,32 @@ function paintActiveTermStatus() {
 }
 
 // ---------- data ----------
+function shouldSuppressTermDoneNotice(t, busyInfo, now = Date.now()) {
+  if (!t || isEphemeralTerm(t) || t.restoring) return true;
+  const startedAt = Number(t.startedAt) || 0;
+  const lastInputAt = Number(t.lastInputAt) || 0;
+  const lastResizeAt = Number(t.lastResizeAt) || 0;
+  const hadPostStartInput = !startedAt || lastInputAt > startedAt + 1500;
+  // Cold-boot CLI startup banner/spinner finishing without user input is not a completed task.
+  if (startedAt && (now - startedAt) < 15_000 && !t.hasInitialPrompt && !hadPostStartInput) return true;
+  // Terminal load/resize TUI redraw flicker without new input after resize.
+  if (lastResizeAt && (now - lastResizeAt) < 6000 && (!busyInfo || busyInfo.at >= lastResizeAt - 2000) && lastInputAt < lastResizeAt) return true;
+  // Initial page-load settle window: ignore resize/attach glitches for terminals that were idle on boot.
+  if (bootedAt && (now - bootedAt) < 8000 && !initialBusyTerms.has(String(t.id)) && lastInputAt < bootedAt) return true;
+  return false;
+}
+
 async function refreshOverview() {
   let projectRevisions;
   let previousTerms = state.terms;
+  const wasHubDown = state.hubDown;
+  let buildChanged = false;
   try {
     const o = await api('/api/overview');
     projectRevisions = o.projectRevisions;
     if (o.buildId) {
       if (activeBuildId && o.buildId !== activeBuildId) {
+        buildChanged = true;
         const ae = document.activeElement;
         const isTyping = !!(ae && (ae.matches('input, textarea') && ae.value) || ae?.classList?.contains('xterm-helper-textarea'));
         const isLiveTerm = (state.sel.kind === 'term' && ['screen', 'split', 'dock'].includes(state.tab)) || state.sel.kind === 'console';
@@ -400,28 +421,56 @@ async function refreshOverview() {
   }
 
   // Detect busy → idle / exited transitions for subtle completion indicator & notification
+  const now = Date.now();
+  if (booted && !bootedAt) bootedAt = now;
+  const resyncQuiet = state.hubDown || wasHubDown || buildChanged;
   const aliveIds = new Set();
   const previousById = new Map(previousTerms.map((t) => [String(t.id), t]));
   let projTermChanged = false;
-  for (const t of state.terms) {
-    const id = String(t.id);
-    aliveIds.add(id);
-    const cur = termStateOf(t);
-    const prev = prevTermStates.get(id);
-    const previous = previousById.get(id);
-    const startup = terminalStartupLabel(t);
-    if (t.projectTask && (prev !== cur || terminalStartupLabel(previous) !== startup)) projTermChanged = true;
-    if (desktopInvoke && booted && previous?.startupBlock !== t.startupBlock &&
-        ['folder-trust', 'permission', 'confirmation'].includes(t.startupBlock)) {
-      notifyTerminal(id, `${startup}: ${termLabel(t)}`, state.sel.kind === 'term' && String(state.sel.id) === id);
+  if (!state.hubDown) {
+    for (const t of state.terms) {
+      const id = String(t.id);
+      aliveIds.add(id);
+      const cur = termStateOf(t);
+      const prev = prevTermStates.get(id);
+      const previous = previousById.get(id);
+      const startup = terminalStartupLabel(t);
+      if (t.projectTask && (prev !== cur || terminalStartupLabel(previous) !== startup)) projTermChanged = true;
+      if (desktopInvoke && booted && !resyncQuiet && previous?.startupBlock !== t.startupBlock &&
+          ['folder-trust', 'permission', 'confirmation'].includes(t.startupBlock)) {
+        notifyTerminal(id, `${startup}: ${termLabel(t)}`, state.sel.kind === 'term' && String(state.sel.id) === id);
+      }
+      if (!booted && cur === 'busy') initialBusyTerms.add(id);
+      if (resyncQuiet) {
+        if (cur === 'busy') termBusySince.set(id, { at: now, polls: 1 });
+        else termBusySince.delete(id);
+        prevTermStates.set(id, cur);
+        continue;
+      }
+      if (cur === 'busy') {
+        state.justDoneTerms.delete(id);
+        const info = termBusySince.get(id);
+        if (info) info.polls += 1;
+        else termBusySince.set(id, { at: now, polls: 1 });
+      } else {
+        const busyInfo = termBusySince.get(id) || null;
+        if (booted && prev === 'busy' && (cur === 'idle' || cur === 'exited') && !startup && !shouldSuppressTermDoneNotice(t, busyInfo, now)) {
+          fireTermDoneNotice(t, cur);
+        }
+        termBusySince.delete(id);
+      }
+      prevTermStates.set(id, cur);
     }
-    if (cur === 'busy') state.justDoneTerms.delete(id);
-    if (booted && prev === 'busy' && (cur === 'idle' || cur === 'exited') && !startup) {
-      fireTermDoneNotice(t, cur);
+    for (const id of [...prevTermStates.keys()]) {
+      if (!aliveIds.has(id)) {
+        prevTermStates.delete(id);
+        termBusySince.delete(id);
+        initialBusyTerms.delete(id);
+        state.unreadTerms.delete(id);
+        state.justDoneTerms.delete(id);
+      }
     }
-    prevTermStates.set(id, cur);
   }
-  for (const id of [...prevTermStates.keys()]) if (!aliveIds.has(id)) { prevTermStates.delete(id); state.unreadTerms.delete(id); state.justDoneTerms.delete(id); }
   updateDocTitle();
   paintActiveTermStatus();
   renderSide();
