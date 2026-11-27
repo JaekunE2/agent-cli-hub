@@ -830,3 +830,4 @@ body.side-collapsed .side-float-btn { display: inline-flex; }
   .ast-mine-row { grid-template-columns: auto 1fr; }
   .ast-mine-actions { grid-column: 1 / -1; justify-content: flex-start; }
 }
+.ast-mine-text > * { justify-self: start; max-width: 100%; }

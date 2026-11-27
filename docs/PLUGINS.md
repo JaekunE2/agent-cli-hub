@@ -57,6 +57,14 @@ and passed to the app's commands as environment variables together with `HUB_DIR
 `entryUrl` may use `{{SETTING}}`. Lifecycle scripts: `setup.ps1` (install / update), `stop.ps1` (before an update),
 `uninstall.ps1` (before removal). The store view (`public/app-store-ui.js`) has Browse / app page / My apps / Register.
 
+Every store app is an add-on for this hub (CCD): `app.json` `"requires": { "ccd": ">=1.0.0", "plugins": ["web-apps"] }`
+is checked against `hub/package.json` and the installed plugins; apps that do not fit are hidden in the store and
+refused by the install API. Store web apps (`type: "url"`, loopback `entryUrl`) are served by the `web-apps` plugin
+under the hub's URL and token (`/app-<id>/<token>/`, also a sidebar entry); opening one that is stopped makes the
+main hub run its `start` action. Apps reach the hub's services through the environment (`HUB_DIR`, `HUB_NODE`:
+`ccd gpu run`, `ccd llm`, `ccd gpt`), and `ccd apps ls|search|info|install|update|remove|open|sources|source` drives
+the store from a terminal (`--set KEY=VALUE` for settings).
+
 ## Hooks the core calls
 
 | hook | where | contract |
