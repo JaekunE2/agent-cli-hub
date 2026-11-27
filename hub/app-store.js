@@ -1,0 +1,95 @@
+'use strict';
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const { createHash } = require('node:crypto');
+const { githubRepo, githubSource, discoverRepos, latestPackage, downloadPackage, readLimited } = require('./app-store-github');
+
+const exec = promisify(execFile);
+const SHARED = 'https://raw.githubusercontent.com/JaekunE2/agent-cli-hub/dev_side/hub/app-catalog.json';
+const bundled = require('./app-catalog.json');
+
+module.exports = function createAppStore({ dataFile, fetcher = fetch, python = process.env.CCD_PYTHON || 'python' }) {
+  const root = path.join(path.dirname(dataFile), 'store-apps');
+  let shared = bundled;
+  let refreshAt = 0;
+  const feeds = new Map();
+
+  async function discovery(owner) {
+    const cached = feeds.get(owner);
+    if (cached && Date.now() < cached.until) return cached.result;
+    const result = discoverRepos(fetcher, owner);
+    feeds.set(owner, { result, until: Date.now() + 300000 });
+    return result;
+  }
+
+  async function catalog(local) {
+    if (Date.now() >= refreshAt) {
+      refreshAt = Date.now() + 300000;
+      try {
+        const r = await fetcher(SHARED, { redirect: 'error', signal: AbortSignal.timeout(3000) });
+        const next = JSON.parse(await readLimited(r, 256 * 1024));
+        if (Array.isArray(next.apps)) shared = next;
+      } catch {}
+    }
+    const owners = new Set();
+    for (const source of [...(Array.isArray(shared.sources) ? shared.sources : []), ...local]) {
+      if (!source?.owner) continue;
+      try {
+        const { owner } = githubSource(source.owner);
+        if (owner) owners.add(owner);
+      } catch {}
+    }
+    const results = await Promise.allSettled([...owners].map(discovery));
+    const discovered = results.flatMap(result => result.status === 'fulfilled' ? result.value : []);
+    const unavailable = [...owners].filter((_, i) => results[i].status === 'rejected');
+    const entries = new Map();
+    for (const entry of [...shared.apps, ...bundled.apps, ...local, ...discovered]) {
+      if (!entry?.repo) continue;
+      try {
+        const repo = githubRepo(entry.repo);
+        const asset = typeof entry.asset === 'string' ? entry.asset : '';
+        const key = repo + (asset ? ':' + asset : '');
+        if (!entries.has(key)) entries.set(key, { key, repo, asset, name: String(entry.name || repo), description: String(entry.description || '') });
+      } catch {}
+    }
+    return { entries: [...entries.values()], unavailable };
+  }
+
+  async function withPackage(entry, expected, callback) {
+    const pkg = await latestPackage(fetcher, entry.repo, entry.asset);
+    if (expected && expected !== pkg.digest) throw new Error('릴리스가 변경되었습니다. 설치 내용을 다시 확인하세요.');
+    const bytes = await downloadPackage(fetcher, pkg);
+    await fs.mkdir(root, { recursive: true });
+    const stage = await fs.mkdtemp(path.join(root, 'package-'));
+    let keep = false;
+    try {
+      const dir = path.join(stage, 'files'), zip = path.join(stage, 'app.zip');
+      await fs.writeFile(zip, bytes);
+      await exec(python, [path.join(__dirname, 'app-store-unzip.py'), zip, dir], { windowsHide: true, timeout: 30000 })
+        .catch(() => { throw new Error('안전한 ZIP 압축 해제에 실패했습니다. Python과 패키지 형식을 확인하세요.'); });
+      await fs.unlink(zip);
+      const top = await fs.readdir(dir, { withFileTypes: true });
+      const cwd = top.length === 1 && top[0].isDirectory() ? path.join(dir, top[0].name) : dir;
+      const file = path.join(cwd, 'app.json');
+      const info = await fs.stat(file).catch(() => null);
+      if (!info?.isFile() || info.size > 128 * 1024) throw new Error('올바른 app.json이 필요합니다.');
+      const manifest = JSON.parse(await fs.readFile(file, 'utf8'));
+      if (!/^[a-z0-9][a-z0-9_-]{1,47}$/.test(manifest.id)) throw new Error('패키지의 앱 ID가 올바르지 않습니다.');
+      const id = `gh-${createHash('sha256').update(entry.repo + '/' + manifest.id).digest('hex').slice(0, 20)}`;
+      const result = callback({ ...manifest, id, cwd, env: {}, secretRefs: [],
+        session: { autoMatchCwd: false, autoPinArtifacts: false }, schedule: { enabled: false } }, pkg);
+      keep = Boolean(expected);
+      return result;
+    } finally {
+      if (!keep) {
+        const realStage = await fs.realpath(stage), realRoot = await fs.realpath(root);
+        if (path.dirname(realStage) === realRoot && path.basename(realStage).startsWith('package-')) {
+          await fs.rm(realStage, { recursive: true, force: true });
+        }
+      }
+    }
+  }
+  return { catalog, discovery, withPackage };
+};

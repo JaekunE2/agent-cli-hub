@@ -7,6 +7,8 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const { serve: serveFile } = require('./artifacts');
+const createAppStore = require('./app-store');
+const { githubSource } = require('./app-store-github');
 
 const VALID_TYPES = new Set(['report', 'url', 'command']);
 const VALID_KINDS = new Set(['command', 'agent', 'pipeline']);
@@ -83,6 +85,7 @@ function applyTemplate(str, vars) {
 
 module.exports = function appsModule(deps = {}) {
   const dataFile = deps.dataFile || path.join(__dirname, 'data', 'apps.json');
+  const appStore = createAppStore({ dataFile, fetcher: deps.storeFetch, python: deps.python });
   const runsFile = deps.runsFile || path.join(__dirname, 'data', 'app-runs.json');
   const secretsDir = deps.secretsDir || path.join(__dirname, 'secrets');
   const terms = deps.terms || new Map();
@@ -317,7 +320,11 @@ module.exports = function appsModule(deps = {}) {
         }
       }
 
-      const portableManifest = { ...app, cwd: '' };
+      const portableManifest = {
+        ...app, cwd: '', env: {}, secretRefs: [], schedule: { enabled: false },
+        session: { ...app.session, pinnedSessionId: '' },
+      };
+      delete portableManifest.storeSource;
       fs.writeFileSync(path.join(stageDir, 'app.json'), JSON.stringify(portableManifest, null, 2) + '\n', 'utf8');
       const readme = [
         `# ${app.name} (${app.id})`,
@@ -426,11 +433,11 @@ module.exports = function appsModule(deps = {}) {
 
   function loadStore() {
     const raw = safeJsonRead(dataFile, { version: 1, apps: [] });
-    return { version: 1, apps: Array.isArray(raw.apps) ? raw.apps : [] };
+    return { version: 1, apps: Array.isArray(raw.apps) ? raw.apps : [], sources: Array.isArray(raw.sources) ? raw.sources : [] };
   }
 
   function saveStore(store) {
-    safeJsonWrite(dataFile, { version: 1, apps: store.apps });
+    safeJsonWrite(dataFile, store);
   }
 
   function loadRuns() {
@@ -521,6 +528,7 @@ module.exports = function appsModule(deps = {}) {
       schedule: input.schedule && typeof input.schedule === 'object' ? input.schedule : (existing?.schedule || { enabled: false, cron: '' }),
       createdAt: existing?.createdAt || now,
       updatedAt: now,
+      ...(existing?.storeSource ? { storeSource: existing.storeSource } : {}),
     };
   }
 
@@ -580,7 +588,7 @@ module.exports = function appsModule(deps = {}) {
   }
 
   function buildEnv(app, paramVars) {
-    const env = { ...process.env };
+    const env = { PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', ...process.env };
     if (app.cwd) Object.assign(env, parseDotEnv(path.join(app.cwd, '.env')));
     for (const ref of app.secretRefs || []) {
       const safeName = String(ref || '').replace(/[^a-zA-Z0-9_.-]/g, '');
@@ -731,6 +739,62 @@ module.exports = function appsModule(deps = {}) {
     if (!p.startsWith('/api/apps')) return false;
     const store = loadStore();
     const byId = (id) => store.apps.find((a) => a.id === id);
+
+    if (p === '/api/apps-store' && req.method === 'GET') {
+      const { entries, unavailable } = await appStore.catalog(store.sources);
+      return send(200, { sources: store.sources, unavailable, entries: entries.map(entry => ({
+        ...entry, installed: store.apps.find(app => app.storeSource?.key === entry.key)?.storeSource.version || '',
+      })) });
+    }
+    if (p === '/api/apps-store/source' && ['POST', 'DELETE'].includes(req.method)) {
+      try {
+        const source = githubSource((await readBody()).source);
+        if (source.owner && req.method === 'POST') await appStore.discovery(source.owner);
+        const current = loadStore();
+        const field = source.owner ? 'owner' : 'repo';
+        current.sources = current.sources.filter(entry => entry[field] !== source[field]);
+        if (req.method === 'POST') current.sources.push(source);
+        saveStore(current);
+        return send(200, { ok: true });
+      } catch (e) { return send(400, { error: e.message }); }
+    }
+    if (p === '/api/apps-store/package' && req.method === 'POST') {
+      try {
+        const { key, digest } = await readBody();
+        if (digest && !/^sha256:[a-f\d]{64}$/.test(digest)) throw new Error('잘못된 패키지 SHA-256입니다.');
+        const { entries } = await appStore.catalog(store.sources);
+        const entry = entries.find(item => item.key === key);
+        if (!entry) return send(404, { error: '카탈로그에 등록된 앱을 찾을 수 없습니다.' });
+        const result = await appStore.withPackage(entry, digest, (manifest, pkg) => {
+          const app = normalizeApp(manifest);
+          if (app.type === 'url' && !/^https?:\/\//i.test(app.entryUrl)) throw new Error('앱 URL은 HTTP 또는 HTTPS여야 합니다.');
+          for (const dir of [app.outputs.viewDir, app.outputs.dataDir]) {
+            if (dir && (path.isAbsolute(dir) || !resolveInside(app.cwd, dir))) throw new Error('앱 산출물 경로는 앱 폴더 안에 있어야 합니다.');
+          }
+          const source = { key: entry.key, repo: entry.repo, version: pkg.version, digest: pkg.digest };
+          const hasSetup = Boolean(app.cwd && fs.existsSync(path.join(app.cwd, 'setup.ps1')));
+          if (!digest) return { name: app.name, description: app.description, actions: app.actions, url: app.entryUrl, hasSetup, ...source };
+          const current = loadStore();
+          if (current.apps.some(item => item.id === app.id || item.storeSource?.key === entry.key)) throw new Error('이미 설치된 스토어 앱입니다.');
+          app.storeSource = source;
+          current.apps.push(app);
+          saveStore(current);
+          return { id: app.id, hasSetup, app, ...source };
+        });
+        let setupRun = null;
+        if (digest && result.hasSetup && result.app) {
+          setupRun = await runAction(result.app, {
+            id: '__setup__',
+            label: '초기 환경 구성 (setup.ps1)',
+            kind: 'command',
+            cmd: 'powershell -NoProfile -ExecutionPolicy Bypass -File setup.ps1',
+            timeoutSec: 300,
+          }).catch(() => null);
+        }
+        const { app: _installedApp, ...pubResult } = result;
+        return send(200, { ok: true, package: { ...pubResult, setupRun } });
+      } catch (e) { return send(400, { error: e.message }); }
+    }
 
     if (p === '/api/apps' && req.method === 'GET') {
       return send(200, { apps: store.apps.map(enrichApp) });

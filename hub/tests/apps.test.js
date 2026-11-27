@@ -5,12 +5,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+const { createHash } = require('node:crypto');
 const { URL } = require('node:url');
 
 const createApps = require('../apps');
 const createArtifacts = require('../artifacts');
 
-function makeHarness() {
+function makeHarness(overrides = {}) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ach-apps-test-'));
   const appDir = path.join(tmp, 'sample-app');
   const viewDir = path.join(appDir, 'views');
@@ -42,6 +44,7 @@ function makeHarness() {
     liveSessions: () => live,
     writeInteractiveTerm: async (t, text) => { sentMessages.push({ termId: t.id, text }); return true; },
     artifactsMod,
+    ...overrides,
   });
 
   async function call(method, reqPath, bodyObj = null) {
@@ -65,6 +68,58 @@ function makeHarness() {
 
   return { tmp, appDir, viewDir, dataDir, mod, call, live, sentMessages, pinned, terms };
 }
+
+test('GitHub source discovers tagged repositories and installs the reviewed release without running it', async (t) => {
+  const repo = 'owner/report-tool';
+  const download = 'https://github.com/' + repo + '/releases/download/v1/report-tool.zip';
+  let zip, digest;
+  const h = makeHarness({ storeFetch: async (input) => {
+    const url = String(input);
+    if (url.includes('raw.githubusercontent.com')) return Response.json({ apps: [{ repo: 'team/tools', name: 'Shared app' }] });
+    if (url.endsWith('page=1')) return Response.json([
+      { full_name: 'owner/unrelated', topics: ['different-topic'] },
+    ], { headers: { link: '<https://api.github.com/next>; rel="next"' } });
+    if (url.endsWith('page=2')) return Response.json([
+      { full_name: repo, name: 'Report tool', topics: ['agent-cli-hub-app'] },
+    ]);
+    if (url.endsWith('/releases/latest')) return Response.json({
+      tag_name: 'v1', assets: [{ name: 'report-tool.zip', digest, size: zip.length, browser_download_url: download, state: 'uploaded' }],
+    });
+    assert.equal(url, download);
+    return new Response(zip);
+  } });
+  t.after(() => {
+    const target = fs.realpathSync(h.tmp);
+    if (path.dirname(target) === fs.realpathSync(os.tmpdir()) && path.basename(target).startsWith('ach-apps-test-')) {
+      fs.rmSync(target, { recursive: true, force: true });
+    }
+  });
+  fs.writeFileSync(path.join(h.appDir, 'app.json'), JSON.stringify({
+    id: 'report-tool', name: 'Report tool', cwd: 'from-author-machine', env: { SAMPLE: 'ignored' },
+    secretRefs: ['sample'], schedule: { enabled: true }, actions: [{ cmd: 'example-command' }],
+  }));
+  const zipPath = path.join(h.tmp, 'app.zip');
+  execFileSync(process.env.CCD_PYTHON || 'python', ['-m', 'zipfile', '-c', zipPath, h.appDir], { windowsHide: true });
+  zip = fs.readFileSync(zipPath);
+  digest = 'sha256:' + createHash('sha256').update(zip).digest('hex');
+
+  assert.equal((await h.call('POST', '/api/apps-store/source', { source: 'https://github.com/Owner' })).status, 200);
+  const store = (await h.call('GET', '/api/apps-store')).payload;
+  assert.deepEqual(store.entries.map(item => item.repo), ['team/tools', repo]);
+  const preview = (await h.call('POST', '/api/apps-store/package', { key: repo })).payload.package;
+  assert.equal(preview.actions[0].cmd, 'example-command');
+  assert.deepEqual(h.mod.loadStore().apps, []);
+  assert.equal((await h.call('POST', '/api/apps-store/package', { key: repo, digest: 'sha256:' + '0'.repeat(64) })).status, 400);
+  assert.equal((await h.call('POST', '/api/apps-store/package', { key: repo, digest: preview.digest })).status, 200);
+  const [app] = h.mod.loadStore().apps;
+  assert.equal(app.storeSource.version, 'v1');
+  assert.equal(app.schedule.enabled, false);
+  assert.deepEqual(app.secretRefs, []);
+  assert.deepEqual(app.env, {});
+  assert.equal((await h.call('GET', `/api/apps/${app.id}/runs`)).payload.runs.length, 0);
+  assert.equal((await h.call('DELETE', '/api/apps-store/source', { source: 'owner' })).status, 200);
+  assert.equal(h.mod.loadStore().apps.length, 1);
+});
 
 test('apps CRUD, validation, and folder import', async () => {
   const h = makeHarness();

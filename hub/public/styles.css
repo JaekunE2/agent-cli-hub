@@ -673,12 +673,22 @@ body.side-collapsed .side-float-btn { display: inline-flex; }
 .cday { background: var(--panel); min-height: 0; padding: 6px 7px; cursor: pointer; display: flex; flex-direction: column; gap: 3px; min-width: 0; overflow: hidden; transition: background .12s; }
 .cday:hover { background: color-mix(in srgb, var(--panel2) 38%, var(--panel)); }
 .cday.out { opacity: .42; background: color-mix(in srgb, var(--bg) 55%, var(--panel)); }
-.cday.wk .cnum { color: var(--muted); }
 .cnum { align-self: flex-start; justify-content: center; min-width: 24px; width: 24px; min-height: 24px; height: 24px; padding: 0; border: 0; border-radius: var(--radius-full); background: transparent; font-size: 12px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; box-shadow: none; }
 .cnum:hover { background: var(--panel2); color: var(--text); }
 .cday.today .cnum { background: var(--accent-fill); color: var(--on-accent); font-weight: 700; }
 .cday.selected { background: var(--sel); box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 68%, transparent); }
 .cday.selected:not(.today) .cnum { color: var(--accent); font-weight: 750; background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.cal-date { display: flex; align-items: center; gap: 3px; min-width: 0; }
+.cal-sat { --cal-day-color: var(--badge-agy-fg); }
+.cal-sun, .cal-holiday { --cal-day-color: var(--danger); }
+.chead:is(.cal-sat, .cal-sun), .cal-holiday-name,
+.cday:is(.cal-sat, .cal-sun, .cal-holiday) .cnum {
+  color: var(--cal-day-color); font-weight: 700;
+}
+.cday:is(.cal-sat, .cal-sun, .cal-holiday):is(.today, .selected) .cnum {
+  color: var(--cal-day-color); background: color-mix(in srgb, var(--cal-day-color) 14%, var(--panel));
+}
+.cal-holiday-name { font-size: 11px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cchip { font-size: 11.5px; line-height: 1.35; padding: 2px 6px; border-radius: var(--radius-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border: 1px solid; font-weight: 500; }
 .cchip.done { text-decoration: line-through; opacity: .5; }
 .cmore { font-size: 11px; color: var(--muted); padding-left: 4px; font-weight: 550; }
@@ -706,6 +716,8 @@ body.side-collapsed .side-float-btn { display: inline-flex; }
   .calwrap { padding: 10px 12px; gap: 10px; }
   .cgrid { grid-template-rows: auto repeat(6, minmax(40px, auto)); }
   .cday { padding: 3px 4px; }
+  .cal-date { flex-direction: column; align-items: start; gap: 0; }
+  .cal-holiday-name { max-width: 100%; }
   .cchip { font-size: 0; min-height: 4px; padding: 0; }
 }
 .chat-prompt-card { display: flex; flex-direction: column; gap: 10px; }

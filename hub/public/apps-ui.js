@@ -25,8 +25,12 @@
     return appsCache;
   }
 
-  function statusBadge(st) {
-    if (st === 'running') return '<span class="pill warn">실행 중</span>';
+  function statusBadge(st, run = null) {
+    if (st === 'running') {
+      return run?.actionId === '__setup__'
+        ? '<span class="pill warn">환경 구성 중</span>'
+        : '<span class="pill warn">실행 중</span>';
+    }
     if (st === 'error') return '<span class="pill bad">오류</span>';
     if (st === 'ok') return '<span class="pill ok">완료</span>';
     if (st === 'cancelled') return '<span class="pill muted">중단됨</span>';
@@ -50,7 +54,11 @@
     </div>`;
     let downOnBackdrop = false;
     const onKey = (e) => {
-      if (e.key === 'Escape') { e.preventDefault(); close(); }
+      if (e.key === 'Escape' && [...document.querySelectorAll('.modal-bg.dlg')].at(-1) === wrap) {
+        e.preventDefault();
+        close();
+        e.stopImmediatePropagation();
+      }
     };
     const close = () => {
       document.removeEventListener('keydown', onKey, true);
@@ -686,7 +694,7 @@
           ${run.status === 'running' ? '' : `<button type="button" class="btn-sm" data-remove-run="${esc(run.runId)}">기록 삭제</button>`}
         </div>
         ${run.stdout ? `<pre style="max-height:180px;overflow:auto;font-size:.78rem;background:var(--bg);padding:8px;border-radius:8px;margin:6px 0 0;">${esc(run.stdout)}</pre>` : ''}
-        ${run.stderr ? `<pre style="max-height:140px;overflow:auto;font-size:.78rem;background:color-mix(in srgb, var(--danger) 11%, var(--bg));color:var(--danger);border:1px solid color-mix(in srgb, var(--danger) 30%, transparent);padding:8px;border-radius:8px;margin:6px 0 0;">${esc(run.stderr)}</pre>` : ''}
+        ${run.stderr ? `<pre style="max-height:140px;overflow:auto;font-size:.78rem;${run.status === 'error' ? 'background:color-mix(in srgb, var(--danger) 11%, var(--bg));color:var(--danger);border:1px solid color-mix(in srgb, var(--danger) 30%, transparent);' : 'background:var(--bg);color:var(--muted);'}padding:8px;border-radius:8px;margin:6px 0 0;">${esc(run.stderr)}</pre>` : ''}
       </div>`).join('');
     box.querySelectorAll('[data-remove-run]').forEach((button) => {
       button.onclick = async () => {
@@ -778,6 +786,117 @@
     toast(`${app.name} 실행을 시작했습니다`);
   };
 
+  function showStorePackage(entry, onInstalled) {
+    openModal('설치 내용 확인', '<p>릴리스 ZIP 확인 중…</p>', async (dialog, close) => {
+      const body = $('.m-body', dialog);
+      const endpoint = '/api/apps-store/package';
+      try {
+        const { package: pkg } = await api(endpoint, { method: 'POST', body: { key: entry.key }, requireOk: true });
+        if (!dialog.isConnected) return;
+        body.innerHTML = `<p><b>${esc(pkg.name)}</b> · ${esc(pkg.version)}<br>${esc(pkg.repo)}</p>
+          <p>${esc(pkg.description)}</p>
+          ${pkg.url ? `<p>${esc(pkg.url)}</p>` : ''}
+          ${pkg.actions.map(a => `<details><summary>${esc(a.label)}</summary><pre class="mdpre">${esc([a.cmd, a.prompt].filter(Boolean).join('\n'))}</pre></details>`).join('')}
+          <p class="ums">${pkg.hasSetup ? '설치 시 초기 환경 구성(<code>setup.ps1</code>)이 자동으로 실행됩니다.' : '설치 후 사용자가 실행을 선택하면 앱 명령이 이 PC에서 실행됩니다.'}</p>
+          <p role="alert"></p><button type="button" class="primary" data-store-install>설치</button>`;
+        const install = $('[data-store-install]', body);
+        install.onclick = async () => {
+          install.disabled = true;
+          install.textContent = pkg.hasSetup ? '설치 및 환경 구성 시작 중…' : '설치 중…';
+          try {
+            const res = await api(endpoint, { method: 'POST', body: { key: entry.key, digest: pkg.digest }, requireOk: true });
+            close();
+            if (res.package?.setupRun) {
+              toast(`${pkg.name} 설치 완료 — 초기 환경 구성을 진행 중입니다…`, 5000);
+              document.querySelectorAll('.modal-bg').forEach((m) => m.remove());
+              viewApps(res.package.id);
+              return;
+            }
+            onInstalled();
+          } catch (error) {
+            $('p[role="alert"]', body).textContent = error.message;
+            install.disabled = false;
+            install.textContent = '설치';
+          }
+        };
+      } catch (error) { body.textContent = error.message; }
+    });
+  }
+
+  function showAppStore() {
+    openModal('앱 스토어', `<div class="row" style="flex-wrap:wrap">
+      <input type="search" data-store-search aria-label="스토어 검색" placeholder="앱 또는 저장소 검색">
+      <button type="button" data-store-add>GitHub 소스 추가</button>
+      <a class="btnlike btn-sm" href="https://github.com/JaekunE2/agent-cli-hub/blob/dev_side/hub/app-catalog.json" target="_blank" rel="noopener">공용 카탈로그</a>
+      </div><p class="ums" data-store-status role="status"></p>
+      <details><summary>등록한 소스</summary><div data-store-sources></div></details>
+      <div data-store-list role="region" aria-label="스토어 앱"></div>`, (dialog) => {
+      const search = $('[data-store-search]', dialog);
+      const list = $('[data-store-list]', dialog);
+      const sources = $('[data-store-sources]', dialog);
+      const status = $('[data-store-status]', dialog);
+      let entries = [];
+      const paint = () => {
+        const filter = search.value.trim().toLowerCase();
+        const matches = entries.filter(item => [item.name, item.repo, item.description].some(value => value.toLowerCase().includes(filter)));
+        list.innerHTML = matches.map(item => `<article class="rcard">
+          <div class="row" style="justify-content:space-between;flex-wrap:wrap">
+            <strong>${esc(item.name)}</strong>
+            ${item.installed ? `<span class="badge">설치됨 · ${esc(item.installed)}</span>` : `<button type="button" data-store-key="${esc(item.key)}">설치 확인</button>`}
+          </div><div class="ums">${esc(item.repo)}</div>${item.description ? `<p>${esc(item.description)}</p>` : ''}
+        </article>`).join('') || '<p class="empty">표시할 스토어 앱이 없습니다.</p>';
+      };
+      const refresh = async () => {
+        try {
+          const result = await api('/api/apps-store', { requireOk: true });
+          entries = result.entries || [];
+          status.textContent = (result.unavailable || []).length
+            ? 'GitHub 목록 확인 실패: ' + result.unavailable.join(', ') : '';
+          sources.innerHTML = (result.sources || []).map(item => {
+            const source = esc(item.owner || item.repo);
+            return `<div class="row"><span>${source}</span><button type="button" class="ghost btn-sm" data-store-remove="${source}">제거</button></div>`;
+          }).join('');
+          paint();
+        } catch (error) { list.textContent = error.message; }
+      };
+      search.oninput = paint;
+      list.onclick = (event) => {
+        const key = event.target.closest('[data-store-key]')?.dataset.storeKey;
+        const entry = entries.find(item => item.key === key);
+        if (entry) showStorePackage(entry, () => { refresh(); if (state.sel.kind === 'apps') viewApps(); });
+      };
+      sources.onclick = async (event) => {
+        const button = event.target.closest('[data-store-remove]');
+        if (!button) return;
+        button.disabled = true;
+        try {
+          await api('/api/apps-store/source', { method: 'DELETE', body: { source: button.dataset.storeRemove }, requireOk: true });
+          await refresh();
+        } catch (error) { status.textContent = error.message; button.disabled = false; }
+      };
+      $('[data-store-add]', dialog).onclick = () => openModal('GitHub 소스 추가', `<form class="row" style="flex-wrap:wrap">
+        <label>사용자·조직 또는 저장소 주소 <input name="source" placeholder="https://github.com/owner" required></label>
+        <p class="ums"><code>agent-cli-hub-app</code> 토픽이 붙은 공개 저장소를 찾습니다.</p>
+        <button class="primary">추가</button><p role="alert"></p></form>`, (wrap, close) => {
+        const form = $('form', wrap);
+        form.onsubmit = async (event) => {
+          event.preventDefault();
+          const submit = $('button', form);
+          submit.disabled = true;
+          try {
+            await api('/api/apps-store/source', { method: 'POST', body: { source: form.elements.source.value }, requireOk: true });
+            close();
+            refresh();
+          } catch (error) {
+            $('p[role="alert"]', form).textContent = error.message;
+            submit.disabled = false;
+          }
+        };
+      });
+      refresh();
+    });
+  }
+
   window.viewApps = async function viewApps(appId = '') {
     stopPoll();
     const gen = viewGen;
@@ -793,10 +912,12 @@
     selectedAppId = appId;
     setBar(`<h2 style="flex:none">${ICO.grid} Apps</h2>
       ${appId ? '<button type="button" class="btn-sm" id="btnAppList">앱 목록</button>' : ''}
+      <button type="button" class="btn-sm" id="btnAppStore">앱 스토어</button>
       <button type="button" class="primary btn-sm" id="btnNewApp">${ICO.plus} 앱 추가</button>`);
     $('#view').innerHTML = '<div id="appsBody" style="padding:12px 16px 40px;">불러오는 중…</div>';
     const body = $('#appsBody');
     $('#btnNewApp').onclick = () => showAppFormModal();
+    $('#btnAppStore').onclick = showAppStore;
     $('#btnAppList')?.addEventListener('click', () => viewApps());
 
     try { await fetchApps(); }
