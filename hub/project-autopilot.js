@@ -705,7 +705,11 @@ async function prepareReview(hub, project, task, onPhase, taskOut, dir) {
   const workspace = versionWorkspace(project, task.version);
   if (task.version && (!workspace || (workspace !== project.cwd && !fs.existsSync(workspace)))) throw new Error('버전 작업 폴더를 열어주세요.');
   const workCwd = reviewWorkspace(project, task);
-  const [gitSummary, testCheck] = await Promise.all([readGitSummary(workCwd), runPreReviewChecks(workCwd)]);
+  const [head, gitSummary, testCheck] = await Promise.all([
+    execGit(workCwd, ['rev-parse', '--verify', 'HEAD'], 5000),
+    readGitSummary(workCwd),
+    runPreReviewChecks(workCwd),
+  ]);
   onPhase(`${agent} 교차 검토 중 (최대 ${REVIEW_TIMEOUT_MS / 1000}초)`);
   const harnessBlock = buildTaskHarnessPrompt(project, { ...task, kind: 'review', role: 'review' }, agent, harnessState);
   const refsBlock = hub.projectRefs?.promptBlock ? hub.projectRefs.promptBlock(project.id, task.version) : '';
@@ -721,11 +725,13 @@ async function prepareReview(hub, project, task, onPhase, taskOut, dir) {
     'Use the supplied automated test output before considering more commands. Do not repeat an already completed test suite. Limit inspection to evidence relevant to this task.',
     `[Project: ${project.name}]`,
     `[Task: ${task.title}]\n${task.detail || ''}`,
-    taskOut ? `[에이전트 최종 출력/보고]\n${taskOut}` : '',
+    harnessBlock,
+    head.ok ? `[Review baseline HEAD: ${head.stdout.trim()}]` : '[Review target: workspace without a Git HEAD]',
+    'Review the available diff, workspace, and test evidence first. Use the author report afterward for context.',
     testBlock,
     gitSummary ? `[Workspace Git Summary & Diff]\n${gitSummary}` : '',
-    harnessBlock,
     refsBlock,
+    taskOut ? `[에이전트 최종 출력/보고]\n${taskOut}` : '',
   ].filter(Boolean).join('\n\n');
 
   const extraME = cliModelEffortArgs(agent, revCfg.model, revCfg.effort);

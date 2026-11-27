@@ -309,14 +309,18 @@ test('listed accounts expose only labels and resolve within their CLI', () => {
 });
 
 test('buildPlanPrompt and buildSubtaskPrompt embed deepening rules automatically during initial design', () => {
-  const p = buildPlanPrompt({ name: 'Demo', goal: '인증 개선' }, { isExistingProject: true, summaryText: 'server/auth.js' });
+  const harness = { roles: { plan: { label: 'Plan', template: 'Project-specific planning constraint' } } };
+  const p = buildPlanPrompt({ name: 'Demo', goal: '인증 개선' }, { isExistingProject: true, summaryText: 'server/auth.js' }, harness);
   assert.ok(p.includes('DO NOT DO MORE. DO IT DEEPER'));
   assert.ok(p.includes('[Primary Sources & Assumptions]'));
   assert.ok(p.includes('[Methods & Boundaries]'));
   assert.ok(p.includes('[Independent Validation]'));
   assert.ok(p.includes('server/auth.js'));
+  assert.ok(p.includes('Project-specific planning constraint'));
+  assert.ok(p.includes('인수 조건'));
 
-  const sp = buildSubtaskPrompt({ name: 'Demo', goal: '인증 개선' }, { title: '토큰 검증', detail: 'JWT 검증' }, { isExistingProject: false });
+  const sp = buildSubtaskPrompt({ name: 'Demo', goal: '인증 개선' }, { title: '토큰 검증', detail: 'JWT 검증' }, { isExistingProject: false }, harness);
   assert.ok(sp.includes('DO NOT DO MORE. DO IT DEEPER'));
   assert.ok(sp.includes('토큰 검증'));
+  assert.ok(sp.includes('Project-specific planning constraint'));
 });

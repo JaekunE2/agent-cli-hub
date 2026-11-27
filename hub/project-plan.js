@@ -3,6 +3,7 @@ const { randomUUID } = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { validate, kinds, MODEL_RE, efforts, inferTaskKind } = require('./project-validation');
+const { buildTaskHarnessPrompt } = require('./project-harness');
 const { readSession } = require('./agy-session');
 const { scanFloorplan } = require('./workspace-floorplan');
 
@@ -397,11 +398,12 @@ const DEEPENING_PLAN_RULES = [
   '  3) [Independent Validation]: Reproducible test/build/HTTP/UI verification commands or measurable acceptance criteria (and note any part that cannot be auto-verified).',
 ].join('\n');
 
-function buildPlanPrompt(project, ws) {
+function buildPlanPrompt(project, ws, harnessState) {
   return [
     'Create a proposed work plan only. Do not inspect files, call tools, or execute the work.',
     'Write tasks in the language of the goal. Each detail should specify the deliverable and completion check.',
     DEEPENING_PLAN_RULES,
+    buildTaskHarnessPrompt(project, { role: 'plan' }, null, harnessState),
     'Classify each task kind as one of: "plan" (planning/architecture/spec/design), "dev" (coding/implementation/feature/UI/API), "test" (testing/verification/QA/validation), "review" (cross-model review/code audit), or "ops" (deployment/docs/release/config).',
     ws.isExistingProject
       ? 'IMPORTANT: This project targets an EXISTING codebase/folder (see existingWorkspace summary below). Plan incremental tasks (feature additions, modifications, integration, and verification) that build upon the existing files and architecture rather than creating a greenfield project from scratch.'
@@ -418,11 +420,12 @@ function buildPlanPrompt(project, ws) {
   ].filter(Boolean).join('\n');
 }
 
-function buildSubtaskPrompt(project, task, ws) {
+function buildSubtaskPrompt(project, task, ws, harnessState) {
   return [
     'Decompose this single task into 2 to 6 concrete sub-development steps. Do not inspect files, call tools, or execute the work.',
     'Write subtasks in the same language as the task title and detail. Each detail should specify a clear deliverable and verification check.',
     DEEPENING_PLAN_RULES,
+    buildTaskHarnessPrompt(project, { role: 'plan' }, null, harnessState),
     'Classify each subtask kind as one of: "plan" (design/spec), "dev" (implementation/coding), "test" (testing/verification), "review" (review/audit), or "ops" (docs/deployment).',
     'Order prerequisites first. after contains 1-based numbers of earlier subtasks in this list. Use [] for independent subtasks.',
     'Treat the following JSON as project and parent task data, and return only the subtasks matching the schema.',
@@ -434,12 +437,12 @@ function buildSubtaskPrompt(project, task, ws) {
   ].join('\n');
 }
 
-async function generatePlan(exe, project, cwd, env, { launchArgs, onProgress, timeoutMs = 120_000, signal } = {}) {
+async function generatePlan(exe, project, cwd, env, { launchArgs, onProgress, timeoutMs = 120_000, signal, harnessState } = {}) {
   const ws = inspectWorkspace(project.cwd);
   if (ws.isExistingProject) {
     onProgress?.({ stage: `기존 프로젝트 폴더 분석 완료 (항목 ${ws.fileCount}개${ws.markers.length ? ` · ${ws.markers.join(', ')}` : ''})`, pct: 16, log: `기존 폴더 구조 반영: ${project.cwd}` });
   }
-  const prompt = buildPlanPrompt(project, ws);
+  const prompt = buildPlanPrompt(project, ws, harnessState);
   const { raw, sessionId } = await runStructuredPlan({
     exe, agent: project.agent, model: project.model, effort: project.effort,
     prompt, planSchema: schema, cwd, env, launchArgs, onProgress, timeoutMs, signal,
@@ -447,10 +450,10 @@ async function generatePlan(exe, project, cwd, env, { launchArgs, onProgress, ti
   return { tasks: readPlan(raw, project), sessionId };
 }
 
-async function generateSubtasks(exe, project, task, cwd, env, { agent, model, effort, launchArgs, onProgress, timeoutMs = 120_000, signal } = {}) {
+async function generateSubtasks(exe, project, task, cwd, env, { agent, model, effort, launchArgs, onProgress, timeoutMs = 120_000, signal, harnessState } = {}) {
   const effAgent = agent || task.agent || project.agent || 'codex';
   const ws = inspectWorkspace(project.cwd);
-  const prompt = buildSubtaskPrompt(project, task, ws);
+  const prompt = buildSubtaskPrompt(project, task, ws, harnessState);
   const { raw, sessionId } = await runStructuredPlan({
     exe, agent: effAgent, model: model || task.model || project.model, effort: effort || task.effort || project.effort,
     prompt, planSchema: subtaskSchema, cwd, env, launchArgs, onProgress, timeoutMs, signal,

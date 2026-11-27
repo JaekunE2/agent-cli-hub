@@ -564,7 +564,9 @@ function createProjectRoutes(hub) {
         const prep = await unifiedVault.prepareLaunch(effAgent, { env, cwd });
         projects.recordVaultRun(project.id, [task.id], 'plan', effAgent, prep.vault);
         if (prep.blocked) throw new Error(`필수 MCP 준비 실패 · ${requiredMcpMessage(prep.blocked)}`);
-        const { tasks, sessionId } = await generateSubtasks(exe, { ...project, cwd }, task, dir, { ...env, ...prep.env }, { agent: effAgent, model: effModel, effort: effEffort, launchArgs: prep.extraArgs, onProgress });
+        const { tasks, sessionId } = await generateSubtasks(exe, { ...project, cwd }, task, dir, { ...env, ...prep.env }, {
+          agent: effAgent, model: effModel, effort: effEffort, launchArgs: prep.extraArgs, onProgress, harnessState: hub.projectHarness?.get(),
+        });
         if (recordUuid(sessionId)) projects.remember([{ projectId: project.id, taskId: task.id, sessionId, agent: effAgent }]);
         projectPlanState.stage = `서브 작업 ${tasks.length}개 생성 완료`;
         projectPlanState.pct = 100;
@@ -663,7 +665,9 @@ function createProjectRoutes(hub) {
         const prep = await unifiedVault.prepareLaunch(b.agent, { env, cwd: fs.existsSync(cwd) ? cwd : undefined });
         if (prep.blocked) throw new Error(`필수 MCP 준비 실패 · ${requiredMcpMessage(prep.blocked)}`);
         const at = Date.now();
-        const { tasks, sessionId } = await generatePlan(exe, draft, dir, { ...env, ...prep.env }, { launchArgs: prep.extraArgs, onProgress, signal: controller.signal });
+        const { tasks, sessionId } = await generatePlan(exe, draft, dir, { ...env, ...prep.env }, {
+          launchArgs: prep.extraArgs, onProgress, signal: controller.signal, harnessState: hub.projectHarness?.get(),
+        });
         projectPlanState.stage = `작업 ${tasks.length}개 생성 완료`;
         projectPlanState.pct = 100;
         const now = Date.now();

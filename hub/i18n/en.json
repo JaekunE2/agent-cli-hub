@@ -3797,5 +3797,11 @@
   "CLI가 대기 상태일 때 명령어를 실행하세요.": "Run the command when the CLI is idle.",
   "현재 세션 실행 설정": "Current session settings",
   "사이드 채팅 열기": "Open side chat",
-  "채팅 창을 먼저 열어 주세요.": "Open the chat pane first."
+  "채팅 창을 먼저 열어 주세요.": "Open the chat pane first.",
+  "[검증 지침]": "[Verification guidance]",
+  "- 완료 여부는 실행한 검사와 관찰한 결과로 뒷받침하고, 미실행 항목은 이유와 함께 표시합니다.": "- Support completion with checks you ran and results you observed. List unchecked items and why.",
+  "- 각 작업에 산출물, 관찰 가능한 인수 조건, 확인 명령 또는 수동 검증 절차를 연결합니다.": "- Give each task a deliverable, observable acceptance criteria, and a verification command or manual procedure.",
+  "- 할당 범위에서 구현하고 인수 조건별 검증을 통과한 항목만 완료로 표시합니다.": "- Implement within the assigned scope and mark each item complete only after its acceptance checks pass.",
+  "- 검토 기준 커밋 또는 작업 폴더 상태를 명시하고, 작성자 보고에 앞서 변경 코드와 테스트 결과를 독립적으로 검토합니다.": "- Identify the baseline commit or workspace state. Review the code changes and test results independently before reading the author report.",
+  "- 실제 사용자 흐름으로 인수 조건을 검증하고, 실패 시 재현 절차와 기대·실제 결과를 기록합니다.": "- Verify acceptance criteria along real user flows. For failures, record reproduction steps and expected and actual results."
 }

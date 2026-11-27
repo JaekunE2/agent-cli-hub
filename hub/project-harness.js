@@ -6,6 +6,19 @@ const { kinds, agents, efforts, MODEL_RE, inferTaskKind } = require('./project-v
 
 const ROLE_IDS = ['plan', 'dev', 'test', 'review', 'merge', 'ops'];
 const ADAPTER_CLIS = ['codex', 'claude', 'agy'];
+const VERIFY_COMPLETION = '- 완료 여부는 실행한 검사와 관찰한 결과로 뒷받침하고, 미실행 항목은 이유와 함께 표시합니다.';
+const ROLE_VERIFICATION = {
+  plan: '- 각 작업에 산출물, 관찰 가능한 인수 조건, 확인 명령 또는 수동 검증 절차를 연결합니다.',
+  dev: '- 할당 범위에서 구현하고 인수 조건별 검증을 통과한 항목만 완료로 표시합니다.',
+  review: '- 검토 기준 커밋 또는 작업 폴더 상태를 명시하고, 작성자 보고에 앞서 변경 코드와 테스트 결과를 독립적으로 검토합니다.',
+  test: '- 실제 사용자 흐름으로 인수 조건을 검증하고, 실패 시 재현 절차와 기대·실제 결과를 기록합니다.',
+};
+
+function roleTemplateWithVerification(roleId, template) {
+  template = String(template ?? '');
+  const rules = [VERIFY_COMPLETION, ROLE_VERIFICATION[roleId]].filter(rule => rule && !template.includes(rule));
+  return rules.length ? [template, '[검증 지침]', ...rules].filter(Boolean).join('\n') : template;
+}
 
 /**
  * Default Role Presets pre-populated from universal-agent-harness (roles/*.md & AGENTS.md).
@@ -143,8 +156,10 @@ const DEFAULT_AGENT_ADAPTERS = {
 };
 
 function cloneDefaults() {
+  const roles = JSON.parse(JSON.stringify(DEFAULT_ROLE_PRESETS));
+  for (const role of Object.values(roles)) role.template = roleTemplateWithVerification(role.id, role.template);
   return {
-    roles: JSON.parse(JSON.stringify(DEFAULT_ROLE_PRESETS)),
+    roles,
     adapters: JSON.parse(JSON.stringify(DEFAULT_AGENT_ADAPTERS)),
   };
 }
@@ -283,9 +298,7 @@ function buildTaskHarnessPrompt(project, task, effectiveAgent, harnessState) {
   const role = harnessState?.roles?.[roleId] || DEFAULT_ROLE_PRESETS[roleId] || DEFAULT_ROLE_PRESETS.dev;
   const adapter = harnessState?.adapters?.[effectiveAgent] || DEFAULT_AGENT_ADAPTERS[effectiveAgent] || null;
   const parts = [];
-  if (role?.template) {
-    parts.push(`[Role 하네스 · ${role.label || roleId}]\n${role.template}`);
-  }
+  parts.push(`[Role 하네스 · ${role.label || roleId}]\n${roleTemplateWithVerification(roleId, role.template)}`);
   if (adapter?.rules) {
     parts.push(`[CLI 어댑터 · ${adapter.label || effectiveAgent}]\n${adapter.rules}`);
   }
@@ -342,6 +355,7 @@ module.exports = {
   resolveTaskRole,
   resolveTaskConfig,
   buildTaskHarnessPrompt,
+  roleTemplateWithVerification,
   checkRoleWriteScope,
   computeHarnessStats,
 };

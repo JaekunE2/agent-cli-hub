@@ -750,6 +750,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
   hub.startProjectMergeSession = async (project, queue, result) => {
     const harnessState = hub.projectHarness?.get?.();
     const mergeRole = harnessState?.roles?.merge;
+    const mergeHarness = buildTaskHarnessPrompt(project, { role: 'merge' }, null, harnessState);
     const rawAgent = mergeRole?.agent || project?.agent || 'codex';
     const agent = ['claude', 'codex', 'agy', 'cursor'].includes(rawAgent) ? rawAgent : 'codex';
     const model = String(mergeRole?.model || project?.model || '').trim();
@@ -812,7 +813,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       '2. 만약 `hub: auto-stash before target merge` 스태시가 남아 있다면(`git stash list`), 충돌 여부를 확인해 안전하게 복원·정리합니다.',
       '3. 프로젝트의 핵심 테스트/빌드 검증을 실행해 최종 병합 상태에 이상이 없는지 확인합니다.',
       '4. 확인이 끝나면 검증 결과를 간략히 요약하고 작업을 마칩니다.',
-      ...(mergeRole?.template ? ['', `[Role 하네스 · ${mergeRole.label || 'merge'}]`, mergeRole.template] : []),
+      mergeHarness,
     ].join('\n') : [
       `프로젝트 통합 · 병합 에이전트 세션: ${project.name}`,
       `대상 브랜치(${project.cwd})에 아래 검토 완료 작업들을 직접 병합하고 검증해 주세요.`,
@@ -825,7 +826,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       '2. 만약 `hub: auto-stash before target merge` 스태시가 남아 있다면(`git stash list`), 충돌 여부를 확인해 안전하게 복원·정리합니다.',
       '3. 프로젝트의 테스트(`npm test` 등)를 실행해 실패하는 항목이 있으면 원인을 수정하고 모두 통과시킵니다.',
       '4. `git status` 및 `git log -n 5 --oneline`을 확인해 최종 병합 결과를 요약하고 마칩니다.',
-      ...(mergeRole?.template ? ['', `[Role 하네스 · ${mergeRole.label || 'merge'}]`, mergeRole.template] : []),
+      mergeHarness,
     ].join('\n');
 
     t._projectDispatchPending = true;

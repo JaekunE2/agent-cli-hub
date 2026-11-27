@@ -13,6 +13,7 @@ const {
   resolveTaskRole,
   resolveTaskConfig,
   buildTaskHarnessPrompt,
+  roleTemplateWithVerification,
 } = require('../project-harness');
 const { validate, inferTaskKind } = require('../project-validation');
 
@@ -42,6 +43,13 @@ test('createProjectHarnessStore initializes universal-agent-harness presets and 
     assert.equal(saved.roles.dev.model, 'sonnet');
     assert.equal(saved.roles.dev.template, 'custom dev rule');
     assert.equal(saved.adapters.claude.rules, 'custom claude adapter');
+    const effective = buildTaskHarnessPrompt({}, { role: 'dev' }, 'claude', saved);
+    assert.match(effective, /custom dev rule/);
+    assert.match(effective, /인수 조건별 검증을 통과한 항목만 완료/);
+    assert.match(effective, /미실행 항목은 이유와 함께/);
+    const updated = roleTemplateWithVerification('test', saved.roles.test.template);
+    assert.equal(roleTemplateWithVerification('test', updated), updated);
+    assert.match(updated, /실제 사용자 흐름/);
 
     const reset = store.reset();
     assert.equal(reset.roles.dev.agent, 'codex');
