@@ -608,7 +608,7 @@ function renderSide() {
       ].filter(Boolean).join('');
       const closeTermBtn = t.operator
         ? ''
-        : `<button type="button" class="side-close-term danger ghost icon-btn" data-close-term="${esc(t.id)}" title="${st === 'exited' ? '목록에서 제거' : '세션 종료'}" aria-label="${st === 'exited' ? '목록에서 제거' : '세션 종료'}">${ICO.close}</button>`;
+        : `<button type="button" class="side-close-term danger ghost icon-btn" data-close-term="${esc(t.id)}" title="${st === 'exited' ? '목록에서 제거' : '세션 종료'}" aria-label="${st === 'exited' ? '목록에서 제거' : '세션 종료'}">${ICO.trash}</button>`;
       return `<div class="srow${isSel ? ' sel' : ''}${unread ? ' just-done' : ''}" data-key="term:${esc(t.id)}"${dragAttrs} title="${esc([termLabel(t), pj?.name, t.cwd, brTip].filter(Boolean).join(' · '))}">
         ${agentIcon(kind, dot)}
         <button type="button" class="ghost srow-main srow-open"><span class="srow-t">${esc(termLabel(t))}</span><span class="srow-s">${tags}</span></button>

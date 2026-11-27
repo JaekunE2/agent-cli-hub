@@ -532,7 +532,7 @@ function consoleLabel(c) {
 // sessions the Claude desktop app runs headless (stream-json over pipes): no screen to show
 const isDesktopSession = (s) => s?.entrypoint === 'claude-desktop';
 const desktopConsole = (c) => c.pids.some((p) => isDesktopSession(state.live.find((s) => s.pid === p)));
-const visibleConsoles = () => state.consoles.filter((c) => (state.showHidden || c.visible) && !c.managed && !desktopConsole(c));
+const visibleConsoles = () => state.consoles.filter((c) => !c.managed && !desktopConsole(c) && (state.showHidden || (c.visible && !!sessionOfConsole(c))));
 
 const ICO = window.UI_ICO || {};
 window.ICO = ICO;
