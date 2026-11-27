@@ -635,7 +635,8 @@ function isProjectSubSession(t) {
 function isProjectSubRecent(r) {
   if (!r) return false;
   return !!(r.auto || projectOfSession(r.sessionId)
-    || /[\\/]\.hub-worktrees[\\/]/i.test(r.cwd || '') || /[\\/]hub-project-plan-[\w-]+/i.test(r.cwd || '')
+    || ((r.agent || '') === 'agy' && !r.firstPrompt && !r.title)
+    || /[\\/]\.hub-worktrees[\\/]/i.test(r.cwd || '') || /[\\/]hub-(?:project-plan|accept-cli|badge-probe|subagent-probe|app-export)-[\w-]+/i.test(r.cwd || '')
     || isEphemeralInternalText(r.firstPrompt || r.title));
 }
 function termKindLabel(t) {

@@ -125,7 +125,11 @@ function codexText(content) {
 /** one rollout line → {cwd?, auto?, msg?: {role, text, ts}, limit?} */
 function codexLine(e) {
   const pl = e.payload || {};
-  if (e.type === 'session_meta') return { cwd: pl.cwd || null, auto: /exec/i.test(`${pl.originator || ''} ${pl.source || ''}`) };
+  if (e.type === 'session_meta') {
+    const srcText = typeof pl.source === 'string' ? pl.source : JSON.stringify(pl.source || '');
+    const isSub = !!(pl.source && typeof pl.source === 'object' && pl.source.subagent) || /subagent/i.test(srcText);
+    return { cwd: pl.cwd || null, auto: isSub || /exec/i.test(`${pl.originator || ''} ${srcText}`) };
+  }
   if (e.type === 'turn_context') {
     const mode = (typeof pl.collaboration_mode === 'object' ? pl.collaboration_mode?.mode : pl.collaboration_mode) || pl.approval_policy || '';
     const effort = pl.effort || pl.reasoning_effort || '';
@@ -394,6 +398,11 @@ class SearchIndex {
         pushMsg(r.msg);
       };
       const handleAgy = (lineBuf) => {
+        // Detect subagent child conversations: step 0 is a SYSTEM_MESSAGE with sender=<parent-id> and no USER_INPUT
+        if (!doc.msgs.length && !doc.firstPrompt && lineBuf.includes('"SYSTEM_MESSAGE"') && lineBuf.includes('sender=')) {
+          doc.auto = true;
+          return;
+        }
         // Fast raw-buffer pre-filter: skips large GENERIC / SYSTEM_MESSAGE lines before UTF-8 decode & JSON.parse
         // while preserving support for spaced or late "type" fields.
         if (!lineBuf.includes('USER_INPUT') && !lineBuf.includes('PLANNER_RESPONSE')) return;

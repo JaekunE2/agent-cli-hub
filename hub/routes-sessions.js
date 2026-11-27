@@ -1210,16 +1210,18 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       const agent = url.searchParams.get('agent') || '';
       const hidden = projects.hidden();
       const owners = projects.sessionOwners();
-      const isInternalEphemeral = (s, titleText) => {
+      const isInternalEphemeral = (s, titleText, hasCustomTitle) => {
         const txt = String(titleText || s.firstPrompt || s.title || '').trim();
         const cwd = String(s.cwd || '');
-        if (/[\\/]\.hub-worktrees[\\/]/i.test(cwd) || /[\\/]hub-project-plan-[\w-]+/i.test(cwd)) return true;
-        if (/^(?:You are an independent automated reviewer|Create a proposed work plan only\.|Read the entire UTF-8 project task file at\b|Answer the user question concisely based on the selected excerpt|Resolve this Git merge in the current integration worktree\.)/i.test(txt)) return true;
+        if (/[\\/]\.hub-worktrees[\\/]/i.test(cwd) || /[\\/]hub-(?:project-plan|accept-cli|badge-probe|subagent-probe|app-export)-[\w-]+/i.test(cwd)) return true;
+        // Antigravity subagent child conversations start with SYSTEM_MESSAGE and have no user input (firstPrompt & title empty)
+        if ((s.agent || '') === 'agy' && !s.firstPrompt && !hasCustomTitle && !s.title) return true;
+        if (/^(?:You are an independent automated reviewer|Create a proposed work plan only\.|Read the entire UTF-8 project task file at\b|Answer the user question concisely based on the selected excerpt|Resolve this Git merge in the current integration worktree\.|\/plan\s+(?:This is an isolated QA test|Invoke exactly one built-in subagent|For an isolated local integration test))/i.test(txt)) return true;
         if (/^(?:\[?프로젝트\s*(?:통합|병합)|프로젝트 병합 최종 검증 세션:|\[병합\])/.test(txt)) return true;
         if (/\[사용자가 드래그해 선택한 부분\]|\[사이드 채팅 이전 질문\/답변\]/.test(txt)) return true;
         return false;
       };
-      const rawLimit = includeInternal ? n : Math.min(300, Math.max(n * 3, 120));
+      const rawLimit = includeInternal ? n : Math.min(400, Math.max(n * 4, 160));
       const raw = index.ready ? index.recent(rawLimit, auto, agent, hidden, owners) : recentSessions(rawLimit).filter((s) => !hidden.has(s.sessionId) && (!agent || (s.agent || 'claude') === agent));
       const mapped = raw.map((s) => {
         const branch = conversationBranches.branchMetaFor({ sessionId: s.sessionId, lookupTitleFn: (id) => sessionDisplayTitle(id, index.get(id)) });
@@ -1227,9 +1229,11 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
         const fallbackBranchTitle = branch?.isBranch ? (branch.branchTitle || (branch.parentTitle ? `(분기) ${String(branch.parentTitle).slice(0, 36)}` : null)) : null;
         const owner = owners.get(s.sessionId) || owners.get(branch?.parentSessionId);
         const ideOnly = (s.agent || 'claude') === 'agy' && !hasAgyCliConversation(s.sessionId);
-        return { ...s, title: customTitle || fallbackBranchTitle || conversationBranches.baseTitle(s.sessionId, s.title), projectId: owner?.projectId, ...(branch ? { branch } : {}), ...(ideOnly ? { ideOnly: true } : {}) };
+        return { ...s, _hasCustomTitle: Boolean(customTitle), title: customTitle || fallbackBranchTitle || conversationBranches.baseTitle(s.sessionId, s.title), projectId: owner?.projectId, ...(branch ? { branch } : {}), ...(ideOnly ? { ideOnly: true } : {}) };
       });
-      const sessions = (includeInternal ? mapped : mapped.filter((s) => !isInternalEphemeral(s, s.firstPrompt || s.title))).slice(0, n);
+      const sessions = (includeInternal ? mapped : mapped.filter((s) => !isInternalEphemeral(s, s.firstPrompt || s.title, s._hasCustomTitle)))
+        .slice(0, n)
+        .map(({ _hasCustomTitle, ...rest }) => rest);
       send(res, 200, { sessions: await folderList(sessions, req, listedFolderKey) });
       return true;
     }
