@@ -82,8 +82,8 @@ Small, generic changes to upstream files, each a candidate for an upstream pull 
 
 ```
 git fetch origin
-git branch my-branch-backup-$(date +%Y%m%d) my-branch     # keep the old state
-git rebase origin/dev_side my-branch                         # or: git merge origin/dev_side
+git branch my-branch-backup-$(date +%Y%m%d) my-branch           # keep the old state (my-branch = your branch on top of upstream)
+git rebase origin/dev_side my-branch                           # or: git merge origin/dev_side
 #   conflicts are expected only in the core patch files listed above
 cd hub && npm ci                                               # only if package.json / package-lock.json changed
 npm test                                                       # compare failures with the upstream tip

@@ -49,3 +49,4 @@ hub/cwatch.pid
 hub/telegram-bridge.pid
 hub/llm-rules.md
 __pycache__/
+hub/terms-state*.json.tmp

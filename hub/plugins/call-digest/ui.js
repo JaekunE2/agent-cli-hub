@@ -4,7 +4,16 @@ const CD = { date: null };
 async function viewCalls(sel) {
   const gen = viewGen;
   if (sel?.id) CD.date = sel.id;
-  setBar('<h2>📞 통화 요약</h2><span class="sp"></span>');
+  setBar('<h2>📞 통화 요약</h2><span class="sp"></span><label class="btnlike btn-sm" title="폰 브라우저에서도 녹음 파일을 올릴 수 있습니다">녹음 올리기<input type="file" id="cdUp" accept="audio/*" multiple hidden></label>');
+  $('#cdUp').onchange = async (e) => {
+    const files = [...e.target.files];
+    for (const f of files) {
+      const date = new Date(f.lastModified || Date.now()).toLocaleDateString('sv-SE'); // local YYYY-MM-DD
+      const r = await fetch(`/api/calls/upload?date=${date}&name=${encodeURIComponent(f.name)}`, { method: 'POST', headers: { 'x-token': TOKEN }, body: f }).then((x) => x.json()).catch((er) => ({ error: er.message }));
+      toast(r.error ? `${f.name}: ${r.error}` : `${f.name} → ${r.saved}`, 5000);
+    }
+    viewCalls();
+  };
   const v = $('#view');
   v.innerHTML = '<div class="empty" style="padding:20px">불러오는 중…</div>';
   const r = await api('/api/calls/days').catch((e) => ({ error: e.message }));

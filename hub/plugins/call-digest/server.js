@@ -245,6 +245,29 @@ module.exports = function callDigestPlugin(api) {
         sendFile(res, f, 'text/plain; charset=utf-8');
         return true;
       }
+      // a recording uploaded from a phone (browser file picker or the hub's share target) → the source folder
+      if (p === '/api/calls/upload' && req.method === 'POST') {
+        if (api.instance && !api.instance.main) { req.resume(); send(res, 403, { error: 'side hub instance: upload on the main hub' }); return true; }
+        const name = path.basename(String(url.searchParams.get('name') || '')).replace(/[<>:"|?*\x00-\x1f]/g, '_');
+        if (!AUDIO.test(name) && !/\.json$/i.test(name)) { send(res, 400, { error: 'audio files only (m4a, mp3, wav, ...)' }); return true; }
+        if (src.type === 'drive') {
+          const base = driveUrl(src.drive); if (!base) { send(res, 400, { error: 'source drive not configured' }); return true; }
+          const up = http.request(`${base}/api/file?path=${encodeURIComponent(`${srcRoot}/${date}/${name}`)}`, { method: 'PUT', headers: { 'content-type': 'application/octet-stream', 'x-drive': '1', ...(req.headers['content-length'] ? { 'content-length': req.headers['content-length'] } : {}) } }, (r) => {
+            r.resume(); send(res, r.statusCode < 300 ? 200 : 502, r.statusCode < 300 ? { ok: true, saved: `${date}/${name}` } : { error: `drive ${r.statusCode}` });
+          });
+          up.on('error', (e) => send(res, 502, { error: e.message }));
+          req.pipe(up);
+          return true;
+        }
+        const dir = path.join(srcRoot, date);
+        fs.mkdirSync(dir, { recursive: true });
+        const file = path.join(dir, name);
+        const out = fs.createWriteStream(file + '.part');
+        req.pipe(out);
+        out.on('finish', () => { fs.renameSync(file + '.part', file); send(res, 200, { ok: true, saved: `${date}/${name}` }); });
+        out.on('error', (e) => send(res, 500, { error: e.message }));
+        return true;
+      }
       if (p === '/api/calls/run' && req.method === 'POST') {
         if (api.instance && !api.instance.main) { send(res, 403, { error: 'side hub instance: run the digest from the main hub' }); return true; }
         run(date).catch(() => {});

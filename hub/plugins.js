@@ -86,7 +86,8 @@ function createServerHost(hub) {
         const type = /\.css$/.test(m[2]) ? 'text/css' : /\.js$/.test(m[2]) ? 'text/javascript' : /\.html$/.test(m[2]) ? 'text/html; charset=utf-8' : 'application/octet-stream';
         const file = path.join(e.man.dir, m[2]);
         const text = /\.js$/.test(m[2]) && hub.I18N?.forFile ? safe(e.man.id, () => hub.I18N.forFile(file)) : null;
-        res.writeHead(200, { 'content-type': type, 'cache-control': 'no-cache' });
+        // a plugin's service worker may control the whole hub page (plugin.json serviceWorker)
+        res.writeHead(200, { 'content-type': type, 'cache-control': 'no-cache', ...(e.man.serviceWorker === m[2] ? { 'service-worker-allowed': '/' } : {}) });
         if (typeof text === 'string') res.end(text); else fs.createReadStream(file).pipe(res);
         return true;
       }

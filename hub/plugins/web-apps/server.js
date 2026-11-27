@@ -9,7 +9,6 @@ const { spawn, execFile } = require('child_process');
 // small shim that prefixes fetch / EventSource / XHR / image URLs). config webApps (older configs: "apps" when it
 // is a list of {id, url}): [{id, label, icon, url, page?, bridge?, start?, hint?}]. `page` = a local HTML file
 // served as the app's start page with `bridge` (a script in this plugin, e.g. llm-web-bridge.js) injected.
-// It also adds config homelink.url (an HTTPS relay that serves the hub) first to the remote-access URLs.
 module.exports = function webAppsPlugin(api) {
   const { hub, config: CONFIG, secretsDir: SECRETS } = api;
   const { token: TOKEN, port: PORT, baseDir } = hub;
@@ -83,9 +82,8 @@ module.exports = function webAppsPlugin(api) {
     return false;
   }
   return {
-    enabled: WEBAPPS.length > 0 || !!CONFIG.homelink?.url,
+    enabled: WEBAPPS.length > 0,
     handlePage, handleApi,
-    overview: () => ({ webApps: WEBAPPS.length > 0, ...(CONFIG.homelink?.url ? { relay: { url: CONFIG.homelink.url } } : {}) }),
-    hooks: { remoteUrls: () => (CONFIG.homelink?.url ? [CONFIG.homelink.url] : undefined) },
+    overview: () => ({ webApps: WEBAPPS.length > 0 }),
   };
 };

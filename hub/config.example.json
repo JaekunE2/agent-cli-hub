@@ -138,5 +138,76 @@
     "blockLocalLlm": false
   },
   "_plugins": "Optional features are plugins (hub/plugins/<id>, docs/PLUGINS.md); each turns on when its keys below are set.",
-  "researchHarness": "../research-harness"
+  "researchHarness": "../research-harness",
+  "remoteUrls": [
+    "https://<machine>.<tailnet>.ts.net/"
+  ],
+  "mobileWeb": true,
+  "callDigest": {
+    "_comment": "plugin call-digest: recordings in <source>/<YYYY-MM-DD>/ (+ optional <file>.json sidecar) -> transcripts -> daily summary",
+    "source": {
+      "type": "local",
+      "dir": "C:\\path\\to\\call-recordings"
+    },
+    "transcriptsDir": "C:\\path\\to\\call-digest\\transcripts",
+    "summariesDir": "C:\\path\\to\\call-digest\\summaries",
+    "stt": {
+      "type": "faster-whisper",
+      "python": "python",
+      "model": "large-v3",
+      "device": "auto",
+      "language": "en",
+      "gpu": {
+        "mem": "6G",
+        "est": "20m"
+      }
+    },
+    "_sttAlternative": {
+      "type": "command",
+      "command": [
+        "ssh",
+        "user@gpu-host",
+        "python3 ~/stt.py {date}"
+      ]
+    },
+    "summary": {
+      "via": "llm"
+    },
+    "output": {
+      "drive": "gx10",
+      "dir": "Recordings/summaries"
+    },
+    "schedule": {
+      "at": "00:30",
+      "days": 1
+    }
+  },
+  "hubCleanup": {
+    "_comment": "plugin hub-cleanup: candidates -> per-drive .hub-trash/stage1 (restorable) -> stage2 after stage1Days -> purge after stage2Days only when approved",
+    "roots": [
+      "C:\\path\\to\\projects"
+    ],
+    "rules": {
+      "duplicates": true,
+      "oldVersions": true,
+      "caches": [
+        "__pycache__",
+        ".pytest_cache",
+        "node_modules/.cache"
+      ],
+      "oldLogsDays": 30,
+      "minSizeMB": 1
+    },
+    "protect": [
+      "**/.git/**",
+      "**/.claude/**",
+      "**/*.tex"
+    ],
+    "recentDays": 7,
+    "stage1Days": 14,
+    "stage2Days": 7,
+    "schedule": {
+      "every": "weekly"
+    }
+  }
 }
