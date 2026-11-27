@@ -229,11 +229,11 @@
                 <div id="expPathPreview" style="font-size:.78rem;color:var(--muted);font-family:var(--mono);word-break:break-all;"></div>
               </div>`}
           <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:.86rem;cursor:pointer;">
-            <input type="checkbox" id="chkExpOutputs" checked>
-            <span>생성된 화면·데이터 산출물도 함께 포함 (${app.counts?.views || 0}뷰, ${app.counts?.data || 0}데이터)</span>
+            <input type="checkbox" id="chkExpOutputs">
+            <span>생성된 산출물·reports·데이터도 함께 포함 (${app.counts?.views || 0}뷰, ${app.counts?.data || 0}데이터)</span>
           </label>
           <div style="margin-top:8px;padding:9px 11px;border-radius:8px;background:var(--surface-2);color:var(--muted);font-size:.78rem;line-height:1.5;">
-            보안과 용량을 위해 <code>.venv</code>, <code>node_modules</code>, <code>.git</code>, <code>.env</code>, 키 파일 및 50MB 초과 파일은 자동 제외되며, 공유용 <code>app.json</code>과 <code>SHARE_README.md</code>가 포함됩니다.
+            기본적으로 <code>산출물</code>, <code>reports</code>, 데이터 폴더와 <code>.venv</code>, <code>node_modules</code>, <code>.git</code>, <code>.env</code>, 키 파일은 자동 제외되며, 앱 소스·<code>app.json</code>·<code>SHARE_README.md</code>만 깔끔하게 포함됩니다.
           </div>
         </div>
 
@@ -413,7 +413,7 @@
             method: 'POST',
             body: {
               destDir: isRemote ? '' : (destIn?.value.trim() || ''),
-              includeOutputs: chkOutputs ? chkOutputs.checked : true,
+              includeOutputs: chkOutputs ? chkOutputs.checked : false,
               browserOnly: isRemote,
             },
             requireOk: true,

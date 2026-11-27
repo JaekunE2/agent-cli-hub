@@ -246,6 +246,7 @@ module.exports = function appsModule(deps = {}) {
 
   async function executeExportJob(app, job) {
     const SKIP_DIRS = new Set(['.venv', 'venv', 'node_modules', '__pycache__', '.git', '.pytest_cache', '.mypy_cache', 'secrets']);
+    const OUTPUT_DIR_NAMES = new Set(['산출물', 'reports', 'report', 'outputs', 'output', 'dist']);
     const SKIP_FILE_RE = /^(?:\.env(?:\..+)?|\.token|.*\.(?:key|pem|pfx|p12))$/i;
     const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ach-app-export-'));
     const stageDir = path.join(tmpRoot, app.id);
@@ -276,6 +277,7 @@ module.exports = function appsModule(deps = {}) {
           const rel = relBase ? path.join(relBase, ent.name) : ent.name;
           if (ent.isDirectory()) {
             if (SKIP_DIRS.has(ent.name)) continue;
+            if (!job.includeOutputs && OUTPUT_DIR_NAMES.has(ent.name.toLowerCase())) continue;
             if (excludedAbsDirs.has(path.resolve(full).toLowerCase())) continue;
             walk(full, rel, depth + 1);
           } else if (ent.isFile()) {
@@ -375,7 +377,7 @@ module.exports = function appsModule(deps = {}) {
   function startExportJob(app, opts = {}) {
     pruneExportJobs();
     const browserOnly = Boolean(opts.browserOnly);
-    const includeOutputs = opts.includeOutputs !== false;
+    const includeOutputs = opts.includeOutputs === true;
     let outputDir;
     let tempExportDir = null;
     if (browserOnly) {
@@ -830,7 +832,7 @@ module.exports = function appsModule(deps = {}) {
       try {
         const job = startExportJob(app, {
           destDir: b.destDir,
-          includeOutputs: b.includeOutputs !== false,
+          includeOutputs: b.includeOutputs === true,
           browserOnly: Boolean(b.browserOnly),
         });
         return send(200, { ok: true, job: publicJobView(job) });
@@ -867,7 +869,7 @@ module.exports = function appsModule(deps = {}) {
 
     if (sub === 'export' && req.method === 'GET') {
       try {
-        const includeOutputs = url.searchParams.get('includeOutputs') !== 'false' && url.searchParams.get('includeOutputs') !== '0';
+        const includeOutputs = url.searchParams.get('includeOutputs') === 'true' || url.searchParams.get('includeOutputs') === '1';
         const job = startExportJob(app, { browserOnly: true, includeOutputs });
         await job._promise;
         if (job.status !== 'ok' || !fs.existsSync(job.outputPath)) {

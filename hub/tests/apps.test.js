@@ -275,6 +275,10 @@ test('tracked app export saves zip with progress, excludes secrets, and serves v
     fs.writeFileSync(path.join(h.appDir, '.env'), 'SECRET=123\n', 'utf8');
     fs.mkdirSync(path.join(h.appDir, '.venv'), { recursive: true });
     fs.writeFileSync(path.join(h.appDir, '.venv', 'ignore.txt'), 'skip', 'utf8');
+    fs.mkdirSync(path.join(h.appDir, 'reports'), { recursive: true });
+    fs.writeFileSync(path.join(h.appDir, 'reports', 'old.md'), '# old report\n', 'utf8');
+    fs.mkdirSync(path.join(h.appDir, '산출물'), { recursive: true });
+    fs.writeFileSync(path.join(h.appDir, '산출물', 'out.html'), '<p>out</p>', 'utf8');
     fs.writeFileSync(path.join(h.appDir, 'main.py'), 'print("ok")\n', 'utf8');
 
     const created = await h.call('POST', '/api/apps', {
@@ -299,9 +303,9 @@ test('tracked app export saves zip with progress, excludes secrets, and serves v
     assert.equal(info.payload.hasOutputs, true);
     assert.match(info.payload.fileName, /^export-app-share-\d{8}-\d{4}\.zip$/);
 
-    // Tracked async export to custom destination folder
+    // Tracked async export defaults to excluding outputs/reports/data
     const destDir = path.join(h.tmp, 'out-zips');
-    const started = await h.call('POST', '/api/apps/export-app/export', { destDir, includeOutputs: true });
+    const started = await h.call('POST', '/api/apps/export-app/export', { destDir });
     assert.equal(started.status, 200);
     assert.ok(started.payload.job?.jobId);
 
@@ -314,6 +318,9 @@ test('tracked app export saves zip with progress, excludes secrets, and serves v
     }
     assert.equal(job.status, 'ok', job.error || 'export should succeed');
     assert.equal(job.percent, 100);
+    assert.equal(job.includeOutputs, false);
+    // Only main.py + app.json + SHARE_README.md (views/data/reports/산출물/.env/.venv all excluded)
+    assert.equal(job.filesTotal, 3);
     assert.ok(job.bytes > 100);
     assert.equal(job.outputDir, path.resolve(destDir));
     assert.equal(fs.existsSync(job.outputPath), true);

@@ -3723,5 +3723,10 @@
   "미분류 세션 없음": "No ungrouped sessions",
   "미분류로 이동했습니다": "Moved to Ungrouped",
   "그룹": "Group",
-  "서브에이전트 이전 기록": "Previous subagent records"
+  "서브에이전트 이전 기록": "Previous subagent records",
+  "생성된 산출물·reports·데이터도 함께 포함 (": "Also include generated outputs, reports, and data (",
+  "기본적으로": "By default,",
+  ", 데이터 폴더와": ", data folders, and",
+  ", 키 파일은 자동 제외되며, 앱 소스·": ", and key files are automatically excluded, keeping only app source,",
+  "만 깔끔하게 포함됩니다.": "cleanly packaged."
 }
