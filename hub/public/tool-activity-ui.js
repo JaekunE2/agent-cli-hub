@@ -169,15 +169,14 @@
       hostEl.hidden = true;
       return null;
     }
-    hostEl.hidden = false;
+    hostEl.hidden = true;
     hostEl.innerHTML = `<div class="tool-stream-bar" data-ts-bar>
       <div class="ts-left">
-        <button type="button" class="ts-pill idle" data-ts-status title="툴 목록 또는 Traces 열기">대기</button>
-        <div class="ts-beats" data-ts-beats><span class="ums" style="margin:0">툴 활동 대기 중…</span></div>
+        <button type="button" class="ts-pill idle" data-ts-status title="최근 툴 호출 목록 펼치기/접기"></button>
+        <div class="ts-beats" data-ts-beats></div>
       </div>
       <div class="ts-right">
         <button type="button" class="ghost btn-sm ts-btn" data-ts-expand title="최근 툴 호출 목록 펼치기/접기" hidden>목록</button>
-        <button type="button" class="ghost btn-sm ts-btn" data-ts-traces title="세션 Traces · 컨텍스트 인스펙터 열기">${ICO.layers || ''}<span>Traces</span></button>
       </div>
       <div class="ts-drawer" data-ts-drawer hidden></div>
     </div>`;
@@ -185,14 +184,18 @@
     const statusEl = $('[data-ts-status]', hostEl);
     const beatsEl = $('[data-ts-beats]', hostEl);
     const expandBtn = $('[data-ts-expand]', hostEl);
-    const tracesBtn = $('[data-ts-traces]', hostEl);
     const drawerEl = $('[data-ts-drawer]', hostEl);
 
     let events = [];
     let expanded = false;
+    let visibleAllowed = true;
     let ws = null;
     let closed = false;
     const request = new AbortController();
+
+    const syncVisibility = (hasEvents) => {
+      hostEl.hidden = !(visibleAllowed && hasEvents);
+    };
 
     const render = () => {
       if (!hostEl.isConnected || (gen && gen !== viewGen)) {
@@ -201,26 +204,26 @@
       }
       const folded = foldClientEvents(events);
       const latest = folded[folded.length - 1];
+      const barEl = $('[data-ts-bar]', hostEl);
+      if (!folded.length) {
+        barEl?.classList.add('is-empty');
+        statusEl.textContent = '';
+        beatsEl.innerHTML = '';
+        expandBtn.hidden = true;
+        drawerEl.hidden = true;
+        syncVisibility(false);
+        return;
+      }
+      barEl?.classList.remove('is-empty');
+      syncVisibility(true);
+
       if (latest && latest.status === 'start') {
         statusEl.className = 'ts-pill busy';
         statusEl.innerHTML = `<span class="dot busy" style="width:6px;height:6px"></span> ${esc(latest.tool)}`;
       } else if (latest) {
         statusEl.className = 'ts-pill active';
         statusEl.textContent = `${latest.tool}${latest.count > 1 ? ` ×${latest.count}` : ''}`;
-      } else {
-        statusEl.className = 'ts-pill idle';
-        statusEl.textContent = '툴 대기';
       }
-
-      const barEl = $('[data-ts-bar]', hostEl);
-      if (!folded.length) {
-        barEl?.classList.add('is-empty');
-        beatsEl.innerHTML = '<span class="ums" style="margin:0">활동 대기</span>';
-        expandBtn.hidden = true;
-        drawerEl.hidden = true;
-        return;
-      }
-      barEl?.classList.remove('is-empty');
 
       expandBtn.hidden = false;
       expandBtn.textContent = expanded ? '접기' : `목록 (${folded.length})`;
@@ -263,10 +266,8 @@
 
     statusEl.onclick = () => {
       if (foldClientEvents(events).length) { expanded = !expanded; render(); }
-      else openTracesDrawer({ termId, sessionId, cwd });
     };
     expandBtn.onclick = () => { expanded = !expanded; render(); };
-    tracesBtn.onclick = () => openTracesDrawer({ termId, sessionId, cwd });
 
     const qs = new URLSearchParams({
       ...(termId ? { termId } : {}),
@@ -300,7 +301,11 @@
     if (typeof positionFolderToolbox === 'function') positionFolderToolbox();
     return {
       destroy: cleanup,
-      setVisible: (visible) => { hostEl.hidden = !visible; positionSubagents?.(); },
+      setVisible: (visible) => {
+        visibleAllowed = !!visible;
+        syncVisibility(foldClientEvents(events).length > 0);
+        positionSubagents?.();
+      },
     };
   }
 

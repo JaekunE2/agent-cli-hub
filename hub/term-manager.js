@@ -1137,15 +1137,16 @@ function createTermManager(hub) {
 
     const home = os.homedir();
     const rawRoots = [];
-    const pushRoot = (p, maxDepth = 3) => {
+    const pushRoot = (p, maxDepth = 3, allowInternal = false) => {
       if (!p || typeof p !== 'string') return;
+      if (!allowInternal && /[\\/]\.hub-worktrees(?:[\\/]|$)|[\\/]hub-project-plan-[\w-]+/i.test(p)) return;
       try {
         const res = path.resolve(p);
         if (fs.existsSync(res) && fs.statSync(res).isDirectory()) rawRoots.push({ dir: res, maxDepth });
       } catch {}
     };
     if (cwd) {
-      pushRoot(cwd, 4);
+      pushRoot(cwd, 4, true);
       const p1 = path.dirname(cwd);
       if (p1 && p1 !== cwd) {
         pushRoot(p1, 3);
