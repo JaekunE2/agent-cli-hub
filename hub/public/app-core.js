@@ -133,7 +133,7 @@ function paintServerStatusPopover(pop) {
   const swapAccs = state.agySwapAccounts || [];
   const activeSwap = swapAccs.find((a) => a.active);
   const agySelectHTML = swapAccs.length > 1
-    ? `<select id="popAgySwap" class="btn-sm" style="max-width:136px" aria-label="Antigravity 활성 계정 전환">${swapAccs.map((a) => `<option value="${esc(a.email)}" ${a.active ? 'selected' : ''}>${a.active ? '● ' : ''}${esc(a.name || a.email.replace(/@.*/, ''))}</option>`).join('')}</select>`
+    ? `<select id="popAgySwap" class="btn-sm" style="flex:none;max-width:136px" aria-label="Antigravity 활성 계정 전환">${swapAccs.map((a) => `<option value="${esc(a.email)}" ${a.active ? 'selected' : ''}>${a.active ? '● ' : ''}${esc(a.name || a.email.replace(/@.*/, ''))}</option>`).join('')}</select>`
     : `<span class="badge ${agyOk ? 'ok' : ''}">${agyOk ? 'ON' : 'READY'}</span>`;
   pop.innerHTML = `
     <div class="srv-pop-hd">
@@ -158,9 +158,9 @@ function paintServerStatusPopover(pop) {
       <div class="srv-row-l"><span class="dot ${agyOk ? 'idle' : 'dead'}"></span><div><b>Antigravity 쿼터</b><div class="srv-row-sub">${esc(activeSwap?.email || state.agyQuota?.account || srv.agyQuota?.account || (state.agyRefreshing ? '조회 중…' : '대기 중'))}</div></div></div>
       ${agySelectHTML}
     </div>
-    <div class="row" style="justify-content:space-between;padding-top:6px;border-top:1px solid var(--line);gap:6px">
+    <div class="srv-pop-foot">
       <button type="button" class="btn-sm" id="btnPopHome">${ICO.home} 홈으로</button>
-      <div class="row" style="gap:4px">
+      <div class="row">
         <button type="button" class="btn-sm" id="btnPopTray" title="Windows 작업 표시줄 트레이에 허브 상태 아이콘 띄우기">트레이 아이콘</button>
         <button type="button" class="btn-sm" id="btnPopUsage">${ICO.chart} 사용량 보기</button>
       </div>
@@ -216,7 +216,7 @@ function toggleServerStatusPopover(anchor) {
   if (anchor) {
     const r = anchor.getBoundingClientRect();
     const minTop = document.documentElement.classList.contains('is-tauri') ? 38 : 8;
-    const maxLeft = Math.max(8, window.innerWidth - 304);
+    const maxLeft = Math.max(8, window.innerWidth - 348);
     pop.style.top = `${Math.max(minTop, Math.round(r.bottom + 6))}px`;
     pop.style.left = `${Math.min(maxLeft, Math.max(8, Math.round(r.left)))}px`;
   }

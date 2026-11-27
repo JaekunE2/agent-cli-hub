@@ -206,11 +206,16 @@ input[type="checkbox"], input[type="radio"] { min-height: 0; padding: 0; accent-
 .srv-pip.ok i { background: var(--ok); }
 .srv-pip.warn i { background: var(--warn); }
 .srv-pip.down i { background: var(--danger); }
-.srv-pop { position: fixed; top: 52px; left: 10px; z-index: 80; width: 292px; background: var(--popover); border: 1px solid var(--line-strong); border-radius: var(--radius-lg); padding: 14px; box-shadow: var(--shadow-med); display: flex; flex-direction: column; gap: 10px; animation: toast-in .14s ease-out; }
+.srv-pop { position: fixed; top: 52px; left: 10px; z-index: 80; width: min(336px, calc(100vw - 16px)); background: var(--popover); border: 1px solid var(--line-strong); border-radius: var(--radius-lg); padding: 14px; box-shadow: var(--shadow-med); display: flex; flex-direction: column; gap: 10px; animation: toast-in .14s ease-out; }
 .srv-pop-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12.5px; font-weight: 700; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
-.srv-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12.5px; }
-.srv-row-l { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.srv-row-sub { font-size: 11px; color: var(--muted); }
+.srv-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12.5px; min-width: 0; }
+.srv-row-l { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.srv-row-l > div { flex: 1; min-width: 0; }
+.srv-row-l b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.srv-row-sub { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.srv-pop-foot { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding-top: 8px; border-top: 1px solid var(--line); }
+.srv-pop-foot .row { flex-wrap: nowrap; gap: 6px; }
+.srv-pop-foot button { white-space: nowrap; }
 
 #side { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 8px 16px; display: flex; flex-direction: column; gap: 14px; }
 .snav { display: flex; flex-direction: column; gap: 2px; }
