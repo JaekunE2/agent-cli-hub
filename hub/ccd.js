@@ -46,7 +46,7 @@ const HELP = `ccd — Agent CLI Hub CLI  (server ${BASE})
                                    autonomous research projects (director sessions driven by research-harness)
   app ls | run <id> [--action A] [--wait] | data <id> [--file latest] [--q K] | files <id> | import <dir> | rm <id> [--purge-outputs] | data-rm <id> [--file F | --older-than N]
                                    lightweight hub apps (UI + session-callable tools & data integration)
-  apps ls [--all] | search <text> | info <app> | install <app|repo URL|folder> [--set KEY=VALUE ...] | update <app> | remove <app> [--force] | open <app> [--browser] | sources | source add|rm <x>
+  apps ls [--all] | search <text> | info <app> | install <app|repo URL|folder> [--set KEY=VALUE ...] | update <app> | remove <app> [--force] [--purge-data] | open <app> [--browser] | sources | source add|rm <x>
                                    App Store: add-on apps for this hub from registries and app repositories
   schedule ls | add --name N --project P (--every M | --cron E [--tz TZ]) --prompt "..." [--cli codex|claude|agy] [--account ID] [--version V] [--task ID] [--model M] | rm <id|name> | pause <id|name> | resume <id|name> | run <id|name> | runs <id|name>
                                    manage scheduled CLI runs (add/remove/run/pause/resume by id or name)
@@ -928,9 +928,10 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
     }
     const a = pick(await installed(), q, (x) => [x.name, x.id, x.storeSource.repo]) || die(`no installed store app "${q}" (ccd apps ls)`);
     if (sub === 'remove') {
-      const r = await api(`/api/apps/${encodeURIComponent(a.id)}${flags.force ? '?force=1' : ''}`, null, 'DELETE');
+      const qs = new URLSearchParams({ ...(flags.force ? { force: '1' } : {}), ...(flags['purge-data'] ? { purgeData: '1' } : {}) }).toString();
+      const r = await api(`/api/apps/${encodeURIComponent(a.id)}${qs ? `?${qs}` : ''}`, null, 'DELETE');
       if (r.error) die(`${r.error}${r.output ? `\n${r.output}` : ''}`);
-      return console.log(`removed ${a.name}${r.removedPlugin ? ` and its hub plugin ${r.removedPlugin} (restart the hub)` : ''}`);
+      return console.log(`removed ${a.name}${r.removedPlugin ? ` and its hub plugin ${r.removedPlugin} (restart the hub)` : ''}${r.purgedData ? '; its data folder too' : ''}`);
     }
     if (sub === 'open') {
       const proxied = a.type === 'url' ? `${BASE}/app-${a.id}/${token()}/` : null;

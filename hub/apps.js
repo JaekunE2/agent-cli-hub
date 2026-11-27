@@ -897,6 +897,7 @@ module.exports = function appsModule(deps = {}) {
     return runObj;
   }
 
+  let recentCatalog = null, recentCatalogPending = null;
   async function handle(p, url, req, readBody, send, res) {
     if (!p.startsWith('/api/apps')) return false;
     const store = loadStore();
@@ -904,6 +905,7 @@ module.exports = function appsModule(deps = {}) {
 
     if (p === '/api/apps-store' && req.method === 'GET') {
       const { entries, unavailable, submitUrls = [] } = await appStore.catalog(store.sources);
+      recentCatalog = { at: Date.now(), entries };
       const plat = platform();
       return send(200, { sources: store.sources, unavailable, submitUrls, hubVersion: plat.hubVersion, entries: entries.map(entry => {
         const mine = store.apps.find(app => app.storeSource?.key === entry.key);
@@ -959,8 +961,11 @@ module.exports = function appsModule(deps = {}) {
     if (p === '/api/apps-store/asset' && req.method === 'GET') {
       const file = String(url.searchParams.get('file') || '');
       if (!assetFile(file)) return send(404, { error: 'not found' });
-      const { entries } = await appStore.catalog(store.sources);
-      const entry = entries.find(item => item.key === url.searchParams.get('key') && item.local);
+      // a store page loads many images at once: reuse the catalog read by the page (no git / network per image)
+      if (!recentCatalog || Date.now() - recentCatalog.at > 120000) {
+        recentCatalog = { at: Date.now(), entries: (await (recentCatalogPending ||= appStore.catalog(store.sources).finally(() => { recentCatalogPending = null; }))).entries };
+      }
+      const entry = recentCatalog.entries.find(item => item.key === url.searchParams.get('key') && item.local);
       const target = entry ? resolveInside(entry.local, file) : null;
       if (!target || !fs.existsSync(target)) return send(404, { error: 'not found' });
       return serveFile(req, res, target);
