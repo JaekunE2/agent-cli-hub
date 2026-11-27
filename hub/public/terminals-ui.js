@@ -622,10 +622,10 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
   const submit = async () => {
     const submitBtn = $('#tsend', fullEl);
     if (termSubmitting || submitBtn.disabled) return;
-    if (slash.dispatch()) return;
-    slash.close();
+    if (slash?.dispatch()) return;
+    slash?.close();
     const typed = tin.value;
-    const nativeCommand = slash.native(typed.trim());
+    const nativeCommand = slash?.native(typed.trim());
     if (!nativeCommand && !dockCollapsed && tAttCtl.isLoading()) return toast('첨부 파일을 준비하는 중입니다…');
     const attPaths = !nativeCommand && !dockCollapsed ? tAttCtl.takePaths() : [];
     const v = [...attPaths, typed].filter(Boolean).join(' ');
@@ -670,7 +670,7 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
       chatHost._triggerPoll?.();
     }
   };
-  const slash = bindSlashPicker(tin, () => {
+  const slash = typeof bindSlashPicker === 'function' ? bindSlashPicker(tin, () => {
     const term = state.terms.find(item => String(item.id) === String(termId)) || t;
     return {
       term, sid: resolveTermSessionId(term), cwd: term?.cwd || '', agent: term?.agent, accountId: term?.account?.id,
@@ -682,7 +682,7 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
         openSlashChatAction(action, args, $('#view .chat-comp-host'), $('#view .chat-scroll'));
       },
     };
-  }, submit);
+  }, submit) : null;
   $('#tsend', fullEl).onclick = submit;
   $('#tArt', fullEl).onclick = () => pickArtifact((abs) => insert(quotePath(abs)));
   if (typeof window.bindEnterSubmit === 'function') window.bindEnterSubmit(tin, submit);

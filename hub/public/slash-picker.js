@@ -3,6 +3,7 @@
 let slashPickerId = 0;
 
 function bindSlashPicker(input, getContext, submit) {
+  if (typeof slashCatalog !== 'function' || typeof runHubSlash !== 'function') return null;
   const row = input.parentElement;
   row.classList.add('slash-anchor');
   const button = document.createElement('button');

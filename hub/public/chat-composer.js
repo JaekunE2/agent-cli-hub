@@ -689,10 +689,10 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
   let lastReplyAt = 0;
   const sendReply = async (retry = false) => {
     if (sendingReply || repBtn.disabled) return;
-    if (slash.dispatch()) return;
-    slash.close();
+    if (slash?.dispatch()) return;
+    slash?.close();
     const typed = repIn.value.trim();
-    const nativeCommand = slash.native(typed);
+    const nativeCommand = slash?.native(typed);
     if (!nativeCommand && chatAttCtl.isLoading()) return toast('첨부 파일을 준비하는 중입니다…');
     const attPaths = nativeCommand ? [] : chatAttCtl.takePaths();
     const bodyText = [...attPaths, typed].filter(Boolean).join(' ');
@@ -784,7 +784,7 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       }
     }
   };
-  const slash = bindSlashPicker(repIn, () => {
+  const slash = typeof bindSlashPicker === 'function' ? bindSlashPicker(repIn, () => {
     const term = findLiveTerm();
     const cfg = getConfig();
     return {
@@ -794,7 +794,7 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       accountId: userEditedSettings ? cfg.account : term?.account?.id || cfg.account,
       openChatAction: (action, args) => openSlashChatAction(action, args, barHost, chatHost),
     };
-  }, sendReply);
+  }, sendReply) : null;
   repBtn.onclick = () => sendReply();
   if (typeof window.bindEnterSubmit === 'function') window.bindEnterSubmit(repIn, () => sendReply());
   else repIn.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendReply(); } };

@@ -505,6 +505,8 @@ const STATIC = {
   '/tool-stream-ui.js': 'public/tool-stream-ui.js',
   '/subagent-viewer.js': 'public/subagent-viewer.js',
   '/files-artifacts.js': 'public/files-artifacts.js', '/chat-composer.js': 'public/chat-composer.js',
+  '/slash-commands.js': 'public/slash-commands.js', '/slash-actions.js': 'public/slash-actions.js',
+  '/slash-picker.js': 'public/slash-picker.js', '/slash-picker.css': 'public/slash-picker.css',
   '/chat-ui.js': 'public/chat-ui.js', '/usage-ui.js': 'public/usage-ui.js',
   '/switch-gpu-ui.js': 'public/switch-gpu-ui.js', '/research-ui.js': 'public/research-ui.js',
   '/dock.js': 'public/dock.js', '/preview.js': 'public/preview.js', '/vault.js': 'public/vault.js', '/apps-ui.js': 'public/apps-ui.js',
