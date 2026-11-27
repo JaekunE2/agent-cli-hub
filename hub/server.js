@@ -200,7 +200,7 @@ const watchdogOn = INSTANCE.watchdog;
 function makeGpuQ() {
   const config = (() => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { return CONFIG; } })();
   return require('./gpu')({
-    dir: __dirname, file: PORT === 7777 ? 'gpu-queue.json' : `gpu-queue-${PORT}.json`, config, pidAlive: hub.pidAlive, describePid,
+    dir: __dirname, file: PORT === 7777 ? 'gpu-queue.json' : `gpu-queue-${PORT}.json`, config, pidAlive: hub.pidAlive, describePid, readOnly: !INSTANCE.gpuGrant,
     procTable: async () => {
       const t = await procTable();
       if (t) {

@@ -251,6 +251,7 @@ function openGpuDeviceDrawer(g) {
            <div class="ums"><span class="lg lease"></span>대기열 예약 ${fmtMB(g.leasedMB)} · <span class="lg ext"></span>기타 ${fmtMB(ext)}</div>`
         : bar(memPct)}</div>
     <div>
+      ${Number.isFinite(g.cpuPct) ? `<div class="drw-kv"><span>서버 CPU</span><b>${g.cpuPct}% (${g.cpuCores}코어, load ${g.cpuLoad})${Number.isFinite(g.ramTotalMB) && !g.unified ? ` · RAM ${(g.ramUsedMB / 1024).toFixed(0)}/${(g.ramTotalMB / 1024).toFixed(0)} GB` : ''}</b></div>` : ''}
       ${Number.isFinite(g.tempC) ? `<div class="drw-kv"><span>온도</span><b>${g.tempC}°C${g.hot ? ' (과열 — 배정 보류)' : ''}</b></div>` : ''}
       ${g.powerW != null ? `<div class="drw-kv"><span>소비 전력</span><b>${g.powerW}W${g.powerLimitW ? ` / ${g.powerLimitW}W` : ''}</b></div>` : ''}
       ${clkInfo ? `<div class="drw-kv"><span>클럭 상태</span><b>${esc(clkInfo)}</b></div>` : ''}

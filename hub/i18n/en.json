@@ -1,4 +1,6 @@
 {
+  "서버 CPU": "Server CPU",
+  "코어, load": "cores, load",
   "GitHub 저장소 주소는 owner/repository 형식이어야 합니다.": "Enter a GitHub account or an owner/repository address.",
   "GitHub 요청 실패 (HTTP": "GitHub request failed (HTTP",
   "다운로드 용량 한도를 초과했습니다.": "The download exceeded the size limit.",

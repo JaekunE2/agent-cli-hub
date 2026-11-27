@@ -9,6 +9,29 @@
   "usageUrl": "http://127.0.0.1:4777",
   "usageDir": "../ai-usage",
   "locateRoots": ["D:\\work"],
+  "gpu": {
+    "_comment": "GPU queue (gpu.js lists every key). servers = optional remote GPU boxes reached over ssh (key auth).",
+    "localDisplayReserveMB": 4000,
+    "unifiedReserveMB": 16000,
+    "hotC": 85,
+    "servers": [
+      {
+        "id": "bigbox",
+        "name": "Big-memory box",
+        "ssh": "user@bigbox",
+        "key": "C:\\path\\to\\ssh-key",
+        "auto": true,
+        "reserveBaseMB": 24000
+      },
+      {
+        "id": "shared",
+        "name": "Shared lab server",
+        "ssh": "user@shared-gpu",
+        "idleOnly": true,
+        "idleMB": 2000
+      }
+    ]
+  },
   "calendar": {
     "todo": "D:\\notes\\todo.md",
     "events": "D:\\notes\\calendar.json",
