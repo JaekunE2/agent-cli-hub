@@ -375,8 +375,7 @@
     let cliData = null;
     let dTab = 'skills';
     let onlyUnvaulted = false;
-    let moveSkills = true;
-    let importScope = 'all'; // 'all' | 'only'
+    let importScope = 'none';
 
     const paintDrawer = () => {
       const drwBody = $('.drw-body', d);
@@ -401,7 +400,7 @@
             : sk.inVault
               ? '<span class="badge">공통에 등록됨</span>'
               : '<span class="badge lim">로컬 전용</span>';
-          const btnLbl = sk.isLinkedToVault ? '다시 연결' : sk.inVault ? '링크 전환' : (moveSkills ? '공통으로 이동' : '가져오기');
+          const btnLbl = sk.isLinkedToVault ? '적용 대상 변경' : 'Vault로 이동';
           return `<div class="v-row" style="align-items:flex-start">
             <div class="v-row-main">
               <div class="row" style="gap:6px;flex-wrap:wrap">
@@ -475,13 +474,13 @@
         <div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap;padding:6px 9px;border-radius:8px;background:var(--panel2)">
           <span class="ums" style="margin:0">가져온 뒤 적용 대상:</span>
           <div class="seg">
-            <button type="button" data-dc-scope="none" class="${importScope === 'none' ? 'on' : ''}">목록만 (미적용)</button>
+            <button type="button" data-dc-scope="none" class="${importScope === 'none' ? 'on' : ''}">가져오기만</button>
             <button type="button" data-dc-scope="only" class="${importScope === 'only' ? 'on' : ''}">선택한 CLI에만 적용</button>
             <button type="button" data-dc-scope="all" class="${importScope === 'all' ? 'on' : ''}">모든 CLI 공용</button>
           </div>
         </div>
         <div class="row" style="justify-content:space-between;gap:10px;flex-wrap:wrap">
-          <label class="v-en" style="font-size:12px"><input type="checkbox" id="dcMoveChk" ${moveSkills ? 'checked' : ''}><span>가져올 때 원본 스킬 폴더를 공통 링크(Junction)로 이동 전환</span></label>
+          ${dTab === 'skills' ? '<span class="ums">스킬은 Vault로 이동하고, 적용한 CLI에서 Vault 원본을 참조합니다.</span>' : ''}
           <label class="v-en" style="font-size:12px"><input type="checkbox" id="dcUnvaultChk" ${onlyUnvaulted ? 'checked' : ''}><span>미등록 항목만 보기</span></label>
         </div>
         <div class="v-list">${listHtml}</div>
@@ -490,9 +489,11 @@
       const runImport = async (payload) => {
         const targets = importScope === 'only' ? [cliKey] : ['claude', 'codex', 'agy'];
         const enabled = importScope !== 'none';
+        const hasSkills = Boolean(payload.skills?.length);
+        const sync = (hasSkills && enabled) || ((!hasSkills || payload.mcps?.length) && vaultState?.autoLoad !== false);
         const res = await api('/api/vault/import', {
           method: 'POST',
-          body: { cli: cliKey, moveSkills, targets, enabled, sync: vaultState?.autoLoad !== false, ...payload },
+          body: { cli: cliKey, targets, enabled, sync, ...payload },
         });
         if (res.error) return toast(res.error, 4000, 'danger');
         if (res.cliData) cliData = res.cliData;
@@ -500,14 +501,13 @@
         paintDrawer();
         const parts = [];
         if (res.importedSkills) parts.push(`스킬 +${res.importedSkills}`);
-        if (res.movedSkills) parts.push(`링크 전환 ${res.movedSkills}`);
+        if (res.movedSkills) parts.push(`CLI 원본 이동 ${res.movedSkills}`);
         if (res.importedMcps) parts.push(`MCP +${res.importedMcps}`);
         if (res.importedRules) parts.push(`규칙 +${res.importedRules}`);
         if (res.importedHarness) parts.push('하네스 병합');
         toast(parts.length ? `공통 자원 이동 완료: ${parts.join(' · ')}` : '공통 자원 상태를 갱신했습니다');
       };
 
-      $('#dcMoveChk', drwBody).onchange = (e) => { moveSkills = !!e.target.checked; paintDrawer(); };
       $('#dcUnvaultChk', drwBody).onchange = (e) => { onlyUnvaulted = !!e.target.checked; paintDrawer(); };
       if ($('#dcImpSel', drwBody)) {
         $('#dcImpSel', drwBody).onclick = () => {

@@ -14,7 +14,9 @@ const {
   copyDirRecursive,
   isSymlinkOrJunction,
   pointsInside,
-  linkOrCopySkillDir,
+  moveDirSafe,
+  backupSkillDir,
+  linkSkillDir,
   parseSkillFrontmatter,
   parseCodexMcpToml,
   serializeCodexMcpBlock,
@@ -22,6 +24,30 @@ const {
   upsertManagedMarkdownBlock,
   normalizeImportedMcp,
 } = require('./vault-formats');
+
+function relocateSkill(src, dst, backupRoot) {
+  const linked = isSymlinkOrJunction(src);
+  if (pointsInside(src, dst)) return { added: false, moved: false };
+  let added = false;
+  if (fs.existsSync(dst)) {
+    if (!linked) backupSkillDir(src, backupRoot);
+  } else if (linked) {
+    const stage = fs.mkdtempSync(path.join(path.dirname(dst), '.import-'));
+    try {
+      copyDirRecursive(fs.realpathSync(src), stage);
+      fs.renameSync(stage, dst);
+    } catch (err) {
+      fs.rmSync(stage, { recursive: true, force: true });
+      throw err;
+    }
+    added = true;
+  } else {
+    moveDirSafe(src, dst);
+    added = true;
+  }
+  if (linked) fs.unlinkSync(src);
+  return { added, moved: true };
+}
 
 const supportsMcp = (cli, cfg) => (!cfg.cliOnly || cfg.source === cli)
   && (Array.isArray(cfg.targets) ? cfg.targets : ALL_CLIS).includes(cli);
@@ -89,6 +115,10 @@ function createVaultCliOps(ctx) {
     readManifest, writeManifest, readMcps, writeMcps,
     readRawCliMcps, maskMcpForView, listSkills, listRules, getState,
   } = ctx;
+  const sourceSkillDirs = (p, cli) => [...p[cli].skillDirs,
+    ...(cli === 'codex' ? [path.join(homeDir, '.agents', 'skills')] : []),
+    ...(cli === 'agy' ? [path.join(homeDir, '.gemini', 'skills')] : []),
+  ];
 
   const gatherFromClis = () => {
     const l = ensureVaultDirs();
@@ -102,7 +132,7 @@ function createVaultCliOps(ctx) {
     const skillSources = [
       ...p.claude.skillDirs.map((d) => ['claude', d]),
       ...p.codex.skillDirs.map((d) => ['codex', d]),
-      ...p.agy.skillDirs.map((d) => ['agy', d]),
+      ...sourceSkillDirs(p, 'agy').map((d) => ['agy', d]),
       ['shared', path.join(homeDir, '.agents', 'skills')],
       ['hub', path.join(repoRoot, 'skills')],
     ];
@@ -112,15 +142,19 @@ function createVaultCliOps(ctx) {
       for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
         if (BUNDLED_SYSTEM_SKILLS.has(ent.name) || ent.name.startsWith('.') || removedSkills.has(ent.name.toLowerCase())) continue;
         if (!ent.isDirectory() && !ent.isSymbolicLink()) continue;
-        let realFrom;
-        try { realFrom = fs.realpathSync(path.join(dir, ent.name)); } catch { continue; }
-        if (!fs.existsSync(path.join(realFrom, 'SKILL.md'))) continue;
+        const src = path.join(dir, ent.name);
+        if (!fs.existsSync(path.join(src, 'SKILL.md'))) continue;
         const dstDir = path.join(l.skillsDir, ent.name);
-        if (!fs.existsSync(dstDir)) {
-          copyDirRecursive(realFrom, dstDir);
-          addedSkills++;
+        if (pointsInside(src, dstDir)) continue;
+        if (srcLabel === 'hub') {
+          if (!fs.existsSync(dstDir)) {
+            copyDirRecursive(src, dstDir);
+            addedSkills++;
+          }
+        } else {
+          if (relocateSkill(src, dstDir, path.join(l.backupDir, srcLabel)).added) addedSkills++;
         }
-        const prev = manifest.skills[ent.name] || { enabled: true, targets: [...ALL_CLIS], sources: [] };
+        const prev = manifest.skills[ent.name] || { enabled: false, targets: [...ALL_CLIS], sources: [] };
         if (!prev.sources.includes(srcLabel)) prev.sources.push(srcLabel);
         manifest.skills[ent.name] = prev;
       }
@@ -183,10 +217,9 @@ function createVaultCliOps(ctx) {
           fs.mkdirSync(sdir, { recursive: true });
           const dst = path.join(sdir, sk.name);
           if (active) {
-            const st = linkOrCopySkillDir(sk.path, dst, path.join(l.backupDir, cli));
-            if (st === 'linked' || st === 'copied') summary.skillsLinked++;
+            if (linkSkillDir(sk.path, dst, path.join(l.backupDir, cli)) === 'linked') summary.skillsLinked++;
           } else if (isSymlinkOrJunction(dst) && pointsInside(dst, sk.path)) {
-            fs.rmSync(dst, { recursive: true, force: true });
+            fs.unlinkSync(dst);
             summary.skillsRemoved++;
           }
         }
@@ -256,7 +289,7 @@ function createVaultCliOps(ctx) {
     const manifest = readManifest();
 
     const skillMap = new Map();
-    for (const sdir of cfg.skillDirs) {
+    for (const sdir of sourceSkillDirs(p, cliKey)) {
       if (!sdir || !fs.existsSync(sdir)) continue;
       for (const ent of fs.readdirSync(sdir, { withFileTypes: true })) {
         if (BUNDLED_SYSTEM_SKILLS.has(ent.name) || ent.name.startsWith('.')) continue;
@@ -337,7 +370,7 @@ function createVaultCliOps(ctx) {
     };
   };
 
-  const importFromCli = ({ cli, skills = [], mcps = [], rules = [], importHarness = false, moveSkills = true, targets = null, enabled = true }) => {
+  const importFromCli = ({ cli, skills = [], mcps = [], rules = [], importHarness = false, targets = null, enabled }) => {
     if (!ALL_CLIS.includes(cli)) throw new Error('알 수 없는 CLI입니다.');
     const l = ensureVaultDirs();
     const p = cliPaths();
@@ -346,22 +379,23 @@ function createVaultCliOps(ctx) {
     const vaultMcps = readMcps();
     const customTargets = Array.isArray(targets) ? targets.filter((x) => ALL_CLIS.includes(x)) : null;
     const isEnabled = enabled !== false;
+    const skillEnabled = enabled === true;
     let importedSkills = 0, movedSkills = 0, importedMcps = 0, importedRules = 0, importedHarness = false;
 
     for (const rawSkillName of (skills || [])) {
       const name = safeName(rawSkillName);
-      if (!name) continue;
-      const foundDir = cfg.skillDirs.map((sdir) => path.join(sdir, name)).find((cand) => fs.existsSync(cand)) || '';
-      if (!foundDir) continue;
-      let realFrom;
-      try { realFrom = fs.realpathSync(foundDir); } catch { continue; }
+      if (!name || name.startsWith('.') || BUNDLED_SYSTEM_SKILLS.has(name)) continue;
+      const sources = sourceSkillDirs(p, cli).map((dir) => path.join(dir, name))
+        .filter((dir) => fs.existsSync(path.join(dir, 'SKILL.md')));
+      if (!sources.length) continue;
       const dstDir = path.join(l.skillsDir, name);
-      if (realFrom !== path.resolve(dstDir) && !fs.existsSync(dstDir)) {
-        copyDirRecursive(realFrom, dstDir);
-        importedSkills++;
+      for (const src of sources) {
+        const { added, moved } = relocateSkill(src, dstDir, path.join(l.backupDir, cli));
+        if (added) importedSkills++;
+        if (moved) movedSkills++;
       }
-      const prev = manifest.skills[name] || { enabled: isEnabled, targets: customTargets ? [...customTargets] : [...ALL_CLIS], sources: [] };
-      prev.enabled = isEnabled;
+      const prev = Object.hasOwn(manifest.skills, name) ? manifest.skills[name] : { targets: [...ALL_CLIS], sources: [] };
+      prev.enabled = skillEnabled;
       if (customTargets) prev.targets = [...customTargets];
       else {
         if (!Array.isArray(prev.targets)) prev.targets = [...ALL_CLIS];
@@ -371,8 +405,12 @@ function createVaultCliOps(ctx) {
       if (!prev.sources.includes(cli)) prev.sources.push(cli);
       manifest.skills[name] = prev;
       manifest.removedSkills = manifest.removedSkills.filter(removed => removed.toLowerCase() !== name.toLowerCase());
-      if (moveSkills && isEnabled && fs.existsSync(dstDir) && prev.targets.includes(cli)) {
-        if (linkOrCopySkillDir(dstDir, foundDir, path.join(l.backupDir, cli)) === 'linked') movedSkills++;
+      for (const target of ALL_CLIS) {
+        if (skillEnabled && prev.targets.includes(target)) continue;
+        for (const dir of sourceSkillDirs(p, target)) {
+          const slot = path.join(dir, name);
+          if (isSymlinkOrJunction(slot) && pointsInside(slot, dstDir)) fs.unlinkSync(slot);
+        }
       }
     }
 
@@ -538,11 +576,14 @@ function createVaultCliOps(ctx) {
     const activeSkillNames = new Set(selection.skills);
     for (const sk of skills) {
       if (activeSkillNames.has(sk.name)) {
-        linkOrCopySkillDir(sk.path, path.join(rtSkillsDir, sk.name), path.join(l.backupDir, 'rt-claude'));
+        linkSkillDir(sk.path, path.join(rtSkillsDir, sk.name), path.join(l.backupDir, 'rt-claude'));
       }
     }
     for (const ent of fs.readdirSync(rtSkillsDir, { withFileTypes: true })) {
-      if (!activeSkillNames.has(ent.name)) fs.rmSync(path.join(rtSkillsDir, ent.name), { recursive: true, force: true });
+      if (activeSkillNames.has(ent.name)) continue;
+      const slot = path.join(rtSkillsDir, ent.name);
+      if (ent.isSymbolicLink()) fs.unlinkSync(slot);
+      else backupSkillDir(slot, path.join(l.backupDir, 'rt-claude'));
     }
 
     const activeMcps = Object.fromEntries(Object.entries(activeMcpsFor('claude', readMcps(), selection.activate))

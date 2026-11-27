@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { linkSkillDir } = require('../vault-formats');
 
 const {
   createUnifiedVault,
@@ -27,6 +28,22 @@ function makeTempEnv() {
   fs.writeFileSync(configPath, '{}', 'utf8');
   return { base, homeDir, repoRoot, vaultDir, configPath };
 }
+
+test('link creation failure leaves the existing CLI skill and Vault original in place', (t) => {
+  const env = makeTempEnv();
+  t.after(() => fs.rmSync(env.base, { recursive: true, force: true }));
+  const source = path.join(env.vaultDir, 'skills', 'example');
+  const destination = path.join(env.homeDir, '.claude', 'skills', 'example');
+  fs.mkdirSync(source, { recursive: true });
+  fs.mkdirSync(destination, { recursive: true });
+  fs.writeFileSync(path.join(source, 'SKILL.md'), 'Vault');
+  fs.writeFileSync(path.join(destination, 'SKILL.md'), 'Existing CLI skill');
+  t.mock.method(fs, 'symlinkSync', () => { throw Object.assign(new Error('link denied'), { code: 'EPERM' }); });
+  assert.throws(() => linkSkillDir(source, destination, path.join(env.vaultDir, '.sync-backups')), { code: 'EPERM' });
+  assert.equal(fs.readFileSync(path.join(source, 'SKILL.md'), 'utf8'), 'Vault');
+  assert.equal(fs.readFileSync(path.join(destination, 'SKILL.md'), 'utf8'), 'Existing CLI skill');
+  assert.deepEqual(fs.readdirSync(path.dirname(destination)), ['example']);
+});
 
 test('prepareLaunch respects CLI targets, the Codex account home, and auto-load', (t) => {
   const env = makeTempEnv();
@@ -189,6 +206,10 @@ args = ["-y", "seq-mcp"]
     const gathered = vault.gatherFromClis();
     assert.equal(gathered.addedSkills, 3);
     assert.ok(gathered.addedMcps >= 3);
+    assert.ok(gathered.state.skills.every((skill) => !skill.enabled));
+    assert.equal(fs.existsSync(clSkill), false);
+    assert.equal(fs.existsSync(cxSkill), false);
+    assert.equal(vault.gatherFromClis().addedSkills, 0);
 
     // Secrets must be masked in HTTP state
     const gh = gathered.state.mcps.find((m) => m.name === 'github');
@@ -207,9 +228,15 @@ args = ["-y", "seq-mcp"]
 
     // Sync to all 3 CLIs
     const sync1 = vault.syncToClis({ clis: ['claude', 'codex', 'agy'] });
-    assert.ok(sync1.report.clis.claude.skillsLinked >= 4);
-    assert.ok(sync1.report.clis.codex.skillsLinked >= 4);
-    assert.ok(sync1.report.clis.agy.skillsLinked >= 4);
+    assert.equal(sync1.report.clis.claude.skillsLinked, 1);
+    assert.equal(sync1.report.clis.codex.skillsLinked, 1);
+    assert.ok(sync1.report.clis.agy.skillsLinked >= 1);
+    const sharedPath = path.join(env.vaultDir, 'skills', 'shared-team-skill');
+    for (const dir of ['.claude/skills', '.codex/skills', '.gemini/antigravity-cli/skills']) {
+      const slot = path.join(env.homeDir, dir, 'shared-team-skill');
+      assert.equal(fs.lstatSync(slot).isSymbolicLink(), true);
+      assert.equal(fs.realpathSync(slot), fs.realpathSync(sharedPath));
+    }
 
     // Top CLI status cards must NOT count vault-linked skills or vault-managed shared MCPs
     const st1 = vault.getState();
@@ -270,7 +297,7 @@ args = ["-y", "seq-mcp"]
     const savedCfg = JSON.parse(fs.readFileSync(env.configPath, 'utf8'));
     assert.equal(savedCfg.vaultDir, path.resolve(altVault));
 
-    // Per-CLI inspectCli + selective importFromCli (including moveSkills Junction conversion)
+    // Selective import moves the source, then explicit sync installs a reference.
     const lateSkill = path.join(env.homeDir, '.claude', 'skills', 'late-added-skill');
     fs.mkdirSync(lateSkill, { recursive: true });
     fs.writeFileSync(path.join(lateSkill, 'SKILL.md'), '---\nname: late-added-skill\ndescription: Added later in Claude\n---\n\n# Late\n', 'utf8');
@@ -280,17 +307,17 @@ args = ["-y", "seq-mcp"]
     assert.equal(foundLate.inVault, false);
     assert.equal(foundLate.isLinkedToVault, false);
 
-    const imp = vault.importFromCli({ cli: 'claude', skills: ['late-added-skill'], mcps: ['github'], moveSkills: true, importHarness: true });
+    const imp = vault.importFromCli({ cli: 'claude', skills: ['late-added-skill'], mcps: ['github'], enabled: true, importHarness: true });
     assert.equal(imp.importedSkills, 1);
     assert.equal(imp.importedMcps, 1);
-    assert.ok(imp.cliData.skills.find((s) => s.name === 'late-added-skill')?.isLinkedToVault);
+    assert.equal(fs.existsSync(lateSkill), false);
     assert.ok(fs.existsSync(path.join(altVault, 'skills', 'late-added-skill', 'SKILL.md')));
-    assert.ok(fs.lstatSync(lateSkill).isSymbolicLink());
     assert.ok(fs.readFileSync(path.join(altVault, 'harness', 'shared.md'), 'utf8').includes('# My Claude Prompt'));
 
     // prepareLaunch generates runtime dirs/MCP/harness args for Claude and honors autoLoad flag
     const prepClaude = vault.prepareLaunch('claude', { resume: false });
     assert.equal(prepClaude.synced, true);
+    assert.ok(fs.lstatSync(lateSkill).isSymbolicLink());
     assert.ok(prepClaude.extraArgs.includes('--add-dir'));
     assert.ok(prepClaude.extraArgs.includes('--mcp-config'));
     assert.ok(prepClaude.extraArgs.includes('--append-system-prompt-file'));
@@ -306,7 +333,7 @@ args = ["-y", "seq-mcp"]
     const cxOnlySkill = path.join(env.homeDir, '.codex', 'skills', 'codex-only-skill');
     fs.mkdirSync(cxOnlySkill, { recursive: true });
     fs.writeFileSync(path.join(cxOnlySkill, 'SKILL.md'), '---\nname: codex-only-skill\ndescription: Codex only\n---\n', 'utf8');
-    const impOnly = vault.importFromCli({ cli: 'codex', skills: ['codex-only-skill'], targets: ['codex'], moveSkills: true });
+    const impOnly = vault.importFromCli({ cli: 'codex', skills: ['codex-only-skill'], targets: ['codex'], enabled: true });
     const recOnly = impOnly.state.skills.find((s) => s.name === 'codex-only-skill');
     assert.deepEqual(recOnly.targets, ['codex']);
 

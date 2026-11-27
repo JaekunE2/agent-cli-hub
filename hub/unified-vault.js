@@ -14,6 +14,7 @@ const {
   isSymlinkOrJunction,
   pointsInside,
   moveDirSafe,
+  backupSkillDir,
   parseSkillFrontmatter,
   parseCodexMcpToml,
   serializeCodexMcpBlock,
@@ -264,16 +265,18 @@ function createUnifiedVault({ repoRoot, homeDir = os.homedir(), vaultDir = '', c
 
   const deleteSkill = (name) => {
     const clean = safeName(name);
-    if (!clean) throw new Error('삭제할 스킬 이름이 필요합니다.');
-    const skDir = path.join(ensureVaultDirs().skillsDir, clean);
+    if (!clean || clean.startsWith('.') || BUNDLED_SYSTEM_SKILLS.has(clean)) throw new Error('삭제할 스킬 이름이 필요합니다.');
+    const l = ensureVaultDirs();
+    const skDir = path.join(l.skillsDir, clean);
     const p = cliPaths();
-    for (const cli of ALL_CLIS) {
-      for (const sdir of p[cli].skillDirs) {
-        const dst = path.join(sdir, clean);
-        if (isSymlinkOrJunction(dst) && pointsInside(dst, skDir)) fs.rmSync(dst, { recursive: true, force: true });
-      }
+    const dirs = [...ALL_CLIS.flatMap(cli => p[cli].skillDirs),
+      path.join(l.root, '.runtime', 'claude', '.claude', 'skills')];
+    for (const sdir of dirs) {
+      const dst = path.join(sdir, clean);
+      if (isSymlinkOrJunction(dst) && pointsInside(dst, skDir)) fs.unlinkSync(dst);
     }
-    if (fs.existsSync(skDir)) fs.rmSync(skDir, { recursive: true, force: true });
+    if (isSymlinkOrJunction(skDir)) fs.unlinkSync(skDir);
+    else if (fs.existsSync(skDir)) backupSkillDir(skDir, path.join(l.backupDir, 'deleted'));
     const manifest = readManifest();
     delete manifest.skills[clean];
     if (!manifest.removedSkills.includes(clean.toLowerCase())) manifest.removedSkills.push(clean.toLowerCase());

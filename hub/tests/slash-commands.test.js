@@ -76,6 +76,10 @@ test('Vault removal and target changes exclude remaining local skill copies from
   assert.equal(await fs.readFile(local, 'utf8'), content);
   assert.deepEqual(await discover(), []);
   assert.equal(vault.gatherFromClis().state.skills.some(skill => skill.name === name), false);
-  vault.importFromCli({ cli: 'codex', skills: [name], moveSkills: false });
+  vault.importFromCli({ cli: 'codex', skills: [name] });
+  assert.deepEqual(await discover(), []);
+  await assert.rejects(fs.stat(local), { code: 'ENOENT' });
+  vault.saveSkill({ name, enabled: true, targets: ['codex'] });
+  vault.syncToClis({ clis: ['codex'] });
   assert.equal((await discover())[0].command, '$test-skill');
 });

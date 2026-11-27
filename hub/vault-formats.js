@@ -91,32 +91,38 @@ function moveDirSafe(src, dst, renameFn = fs.renameSync) {
   }
 }
 
-/** Link (junction/symlink) or copy a vault skill directory into a CLI skill slot. */
-function linkOrCopySkillDir(srcDir, dstDir, backupRoot) {
-  const realSrc = fs.existsSync(srcDir) ? fs.realpathSync(srcDir) : srcDir;
-  if (fs.existsSync(dstDir)) {
-    if (isSymlinkOrJunction(dstDir) && pointsInside(dstDir, realSrc)) {
-      return 'unchanged';
-    }
-    if (isSymlinkOrJunction(dstDir)) {
-      fs.rmSync(dstDir, { recursive: true, force: true });
-    } else {
-      if (backupRoot) {
-        fs.mkdirSync(backupRoot, { recursive: true });
-        const bak = path.join(backupRoot, `${path.basename(dstDir)}-${Date.now()}`);
-        moveDirSafe(dstDir, bak);
-      } else {
-        fs.rmSync(dstDir, { recursive: true, force: true });
-      }
-    }
-  }
+function backupSkillDir(src, backupRoot) {
+  fs.mkdirSync(backupRoot, { recursive: true });
+  const backup = path.join(fs.mkdtempSync(path.join(backupRoot, 'skill-')), path.basename(src));
+  moveDirSafe(src, backup);
+  return backup;
+}
+
+/** Install a reference to the Vault, preserving any existing slot until a link can be created. */
+function linkSkillDir(srcDir, dstDir, backupRoot) {
+  const realSrc = fs.realpathSync(srcDir);
+  const isLink = isSymlinkOrJunction(dstDir);
+  if (pointsInside(dstDir, realSrc)) return 'unchanged';
   fs.mkdirSync(path.dirname(dstDir), { recursive: true });
+  const stage = fs.mkdtempSync(path.join(path.dirname(dstDir), '.hub-skill-'));
+  const link = path.join(stage, 'link');
+  let backup;
   try {
-    fs.symlinkSync(realSrc, dstDir, process.platform === 'win32' ? 'junction' : 'dir');
+    fs.symlinkSync(realSrc, link, process.platform === 'win32' ? 'junction' : 'dir');
+    if (isLink) fs.renameSync(dstDir, path.join(stage, 'previous'));
+    else if (fs.existsSync(dstDir)) backup = backupSkillDir(dstDir, backupRoot);
+    try {
+      fs.renameSync(link, dstDir);
+    } catch (err) {
+      if (isLink) fs.renameSync(path.join(stage, 'previous'), dstDir);
+      else if (backup) moveDirSafe(backup, dstDir);
+      throw err;
+    }
+    if (isLink) fs.unlinkSync(path.join(stage, 'previous'));
     return 'linked';
-  } catch {
-    copyDirRecursive(realSrc, dstDir);
-    return 'copied';
+  } finally {
+    if (isSymlinkOrJunction(link)) fs.unlinkSync(link);
+    if (!fs.readdirSync(stage).length) fs.rmdirSync(stage);
   }
 }
 
@@ -398,7 +404,8 @@ module.exports = {
   isSymlinkOrJunction,
   pointsInside,
   moveDirSafe,
-  linkOrCopySkillDir,
+  backupSkillDir,
+  linkSkillDir,
   parseSkillFrontmatter,
   parseCodexMcpToml,
   serializeCodexMcpBlock,
