@@ -262,6 +262,15 @@ module.exports = function artifacts({ dir, index, terms = null }) {
       const sid = url.searchParams.get('session') || '', termId = url.searchParams.get('term') || '', want = String(url.searchParams.get('path') || '').toLowerCase();
       const it = (await list(sid, { termId })).find((x) => x.path.toLowerCase() === want);
       if (!it) return send(403, { error: '이 세션의 산출물로 등록된 파일만 열 수 있습니다' });
+      // a file the user downloads is one they want to keep: pin it (cleanup tools leave pinned outputs alone)
+      const pinKey = sid || (termId ? `term:${termId}` : '');
+      if (pinKey && /[?&]dl=1(&|$)/.test(req.url || '') && it.source !== 'pinned') {
+        const e = entry(pinKey);
+        if (!e.pinned.some((x) => x.path.toLowerCase() === it.path.toLowerCase())) {
+          e.pinned.unshift({ path: it.path, title: it.title || null, addedAt: Date.now(), via: 'download' });
+          save(); cache.delete(pinKey);
+        }
+      }
       return serve(req, res, it.path);
     }
     return false;
