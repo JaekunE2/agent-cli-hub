@@ -3721,5 +3721,7 @@
   "드래그하여 그룹 순서 변경 · 세션을 끌어다 놓으면 이 그룹으로 이동": "Drag to reorder group · Drop a session here to move it into this group",
   "여기로 세션을 드래그하세요": "Drag sessions here",
   "미분류 세션 없음": "No ungrouped sessions",
-  "미분류로 이동했습니다": "Moved to Ungrouped"
+  "미분류로 이동했습니다": "Moved to Ungrouped",
+  "그룹": "Group",
+  "서브에이전트 이전 기록": "Previous subagent records"
 }

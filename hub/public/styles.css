@@ -276,10 +276,10 @@ input[type="checkbox"], input[type="radio"] { min-height: 0; padding: 0; accent-
 .sgrp-block.drop-grp-after { box-shadow: inset 0 -2px 0 var(--accent); }
 .srow.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
 .srow.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
-.sgrp-hd[draggable="true"] { cursor: grab; }
-.sgrp-hd[draggable="true"]:active { cursor: grabbing; }
-.srow[draggable="true"] { cursor: grab; }
-.srow[draggable="true"]:active { cursor: grabbing; }
+.sgrp-hd[data-sgrp-drag] { cursor: grab; }
+.srow[data-srow-drag] { cursor: grab; }
+body.is-side-dragging, body.is-side-dragging * { user-select: none !important; cursor: grabbing !important; }
+.side-drag-ghost { position: fixed; top: 0; left: 0; z-index: 9999; pointer-events: none; max-width: 240px; padding: 6px 11px; border-radius: var(--radius-md); background: var(--popover); color: var(--text); border: 1px solid var(--accent); box-shadow: var(--shadow-med); font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: .94; }
 .sgrp-hd { display: flex; align-items: center; gap: 5px; padding: 3px 4px 3px 2px; border-radius: var(--radius-sm); min-height: 26px; }
 .sgrp-hd:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
 .sgrp-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; }

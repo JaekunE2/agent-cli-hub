@@ -507,7 +507,9 @@ function renderSide() {
   // Unified Recent Conversations & Active Terminals
   const showProjTerms = !!state.showProjectTerms || !!state.termGroupByProject || !!fTerms.length;
   const allCons = sortConsolesByState(visibleConsoles()).filter((c) => matchSide(consoleLabel(c), '콘솔'));
-  const allTerms = sortTermsByState(state.terms || []).filter((t) => matchSide(termLabel(t), t.cwd || '', projectOfTerm(t)?.name || '', t.agent || ''));
+  const allTerms = sortTermsByState(state.terms || [])
+    .filter((t) => !isEphemeralTerm(t))
+    .filter((t) => matchSide(termLabel(t), t.cwd || '', projectOfTerm(t)?.name || '', t.agent || ''));
   const hiddenProjTerms = showProjTerms ? 0 : allTerms.filter((t) => isProjectSubSession(t)).length;
   const cons = allCons;
   const terms = showProjTerms ? allTerms : allTerms.filter((t) => !isProjectSubSession(t));
@@ -548,6 +550,8 @@ function renderSide() {
   const rawRecent = (state.recentByAgent?.[recSourceKey] || state.recent)
     .filter((r) => {
       if (seenSids.has(r.sessionId)) return false;
+      if (isEphemeralInternalText(r.firstPrompt || r.title)) return false;
+      if (/[\\/]\.hub-worktrees[\\/]|[\\/]hub-project-plan-[\w-]+/i.test(r.cwd || '')) return false;
       if (!matchSide(sessionLabel(r), r.cwd || '', r.agent || '')) return false;
       if (rf === 'live') return liveBySid.has(r.sessionId);
       if (rf && (r.agent || 'claude') !== rf) return false;
@@ -578,11 +582,10 @@ function renderSide() {
             : '<span class="srow-tag idle">대기</span>'
   );
 
-  const renameButton = `<button type="button" class="ghost icon-btn side-rename" data-side-rename title="세션 명칭 수정" aria-label="세션 명칭 수정">${ICO.edit}</button>`;
   const groupButton = `<button type="button" class="ghost icon-btn side-group-btn" data-side-group title="그룹 지정" aria-label="그룹 지정">${ICO.folder}</button>`;
   const renderUnifiedRow = (entry, bucketKey = '_ungrouped') => {
     const pkey = sessionKeysForEntry(entry)[0] || '';
-    const dragAttrs = pkey ? ` draggable="true" data-srow-bucket="${esc(bucketKey)}" data-srow-pkey="${esc(pkey)}"` : '';
+    const dragAttrs = pkey ? ` data-srow-drag="1" data-srow-bucket="${esc(bucketKey)}" data-srow-pkey="${esc(pkey)}"` : '';
     if (entry.kind === 'term') {
       const t = entry.item;
       const meta = termStatusMeta(t);
@@ -606,7 +609,7 @@ function renderSide() {
       return `<div class="srow${isSel ? ' sel' : ''}${unread ? ' just-done' : ''}" data-key="term:${esc(t.id)}"${dragAttrs} title="${esc([termLabel(t), pj?.name, t.cwd, brTip].filter(Boolean).join(' · '))}">
         ${agentIcon(kind, dot)}
         <button type="button" class="ghost srow-main srow-open"><span class="srow-t">${esc(termLabel(t))}</span><span class="srow-s">${tags}</span></button>
-        <span class="srow-end">${t.operator ? '' : `${groupButton}${renameButton}`}${unread ? '<span class="srow-unread" title="방금 작업 완료"></span>' : ''}${fk ? `<span class="fav${isStar ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${isStar ? '즐겨찾기 해제' : '즐겨찾기'}">${isStar ? ICO.starFill : ICO.star}</span>` : ''}</span>
+        <span class="srow-end">${t.operator ? '' : groupButton}${unread ? '<span class="srow-unread" title="방금 작업 완료"></span>' : ''}${fk ? `<span class="fav${isStar ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${isStar ? '즐겨찾기 해제' : '즐겨찾기'}">${isStar ? ICO.starFill : ICO.star}</span>` : ''}</span>
       </div>`;
     }
     if (entry.kind === 'console') {
@@ -639,7 +642,6 @@ function renderSide() {
       <button type="button" class="ghost srow-main srow-open"><span class="srow-t">${esc(sessionLabel(r))}</span><span class="srow-s">${subHTML}</span></button>
       <span class="srow-end">
         ${groupButton}
-        ${renameButton}
         <span class="fav${on ? ' on' : ''}" data-fav="${esc(fk)}" role="button" tabindex="0" aria-label="${on ? '즐겨찾기 해제' : '즐겨찾기'}">${on ? ICO.starFill : ICO.star}</span>
         <button class="record-delete danger ghost icon-btn" data-hide-record="${esc(r.sessionId)}" title="${delRecTitle}" aria-label="${esc(delRecAria)}">${ICO.trash}</button>
       </span>
@@ -659,7 +661,7 @@ function renderSide() {
     const gFolded = folded.has(gFoldKey) && !fTerms.length;
     const gBusy = orderedItems.filter(entryBusy).length;
     return `<div class="sgrp-block" data-sgrp-id="${esc(g.id)}">
-      <div class="sgrp-hd" draggable="true" data-sgrp-drag="${esc(g.id)}" title="드래그하여 그룹 순서 변경 · 세션을 끌어다 놓으면 이 그룹으로 이동">
+      <div class="sgrp-hd" data-sgrp-drag="${esc(g.id)}" title="드래그하여 그룹 순서 변경 · 세션을 끌어다 놓으면 이 그룹으로 이동">
         ${foldBtnHTML(gFoldKey, gFolded, g.name)}
         <span class="sgrp-dot" style="background:${esc(g.color)}"></span>
         <span class="sgrp-name" data-sec-fold="${esc(gFoldKey)}">${esc(g.name)}</span>
@@ -940,13 +942,16 @@ $('#side')?.addEventListener('dblclick', (e) => {
   renameSidebarItem(e.target.closest('[data-key]'));
 });
 
-// ---------- Sidebar Drag & Drop (Move Sessions into Groups + Reorder Sessions & Groups) ----------
+// ---------- Sidebar Pointer Drag & Drop (Works reliably on buttons & WebView2!) ----------
 (() => {
   const side = $('#side');
   if (!side) return;
+  let candidate = null;
+  let ghostEl = null;
   let lastDropMark = null;
   let lastDropPos = '';
   let lastIntoBlock = null;
+  let suppressClickUntil = 0;
 
   const clearDropVisuals = () => {
     if (lastDropMark) {
@@ -960,9 +965,12 @@ $('#side')?.addEventListener('dblclick', (e) => {
     lastDropPos = '';
   };
 
-  const finishDrag = () => {
+  const cleanupDrag = () => {
     side.querySelectorAll('.is-dragging').forEach((el) => el.classList.remove('is-dragging'));
     clearDropVisuals();
+    if (ghostEl) { ghostEl.remove(); ghostEl = null; }
+    document.body.classList.remove('is-side-dragging');
+    candidate = null;
     sideDragPayload = null;
     isSideDragging = false;
     if (pendingSideRender) {
@@ -971,52 +979,90 @@ $('#side')?.addEventListener('dblclick', (e) => {
     }
   };
 
-  side.addEventListener('dragstart', (e) => {
-    if (e.target.closest('.sgrp-acts, [data-sec-fold], [data-fav], [data-side-group], [data-side-rename], [data-hide-record]')) {
+  // Swallow the synthetic click emitted right after a completed drag
+  side.addEventListener('click', (e) => {
+    if (Date.now() < suppressClickUntil) {
       e.preventDefault();
-      return;
+      e.stopImmediatePropagation();
     }
+  }, true);
+
+  side.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+    if (e.target.closest('.sgrp-acts, [data-sec-fold], [data-fav], [data-side-group], [data-hide-record], input, select, textarea')) return;
+
     const grpHd = e.target.closest('.sgrp-hd[data-sgrp-drag]');
     if (grpHd) {
       const gid = grpHd.dataset.sgrpDrag;
       if (!gid) return;
-      sideDragPayload = { type: 'group', groupId: gid };
-      isSideDragging = true;
-      e.dataTransfer.effectAllowed = 'move';
-      try { e.dataTransfer.setData('text/plain', `group:${gid}`); } catch {}
-      grpHd.closest('.sgrp-block')?.classList.add('is-dragging');
+      candidate = {
+        type: 'group',
+        groupId: gid,
+        sourceEl: grpHd.closest('.sgrp-block'),
+        label: grpHd.querySelector('.sgrp-name')?.textContent?.trim() || '그룹',
+        startX: e.clientX,
+        startY: e.clientY,
+      };
       return;
     }
-    const row = e.target.closest('.side-history .srow[draggable="true"]');
+
+    const row = e.target.closest('.side-history .srow[data-srow-drag]');
     if (!row) return;
     const dataKey = row.dataset.key || '';
     const keys = sessionKeysForSidebarKey(dataKey);
     const primaryKey = row.dataset.srowPkey || keys[0] || '';
     if (!keys.length || !primaryKey) return;
-    sideDragPayload = {
+    candidate = {
       type: 'session',
       dataKey,
       keys,
       primaryKey,
       sourceBucket: row.dataset.srowBucket || '_ungrouped',
+      sourceEl: row,
+      label: row.querySelector('.srow-t')?.textContent?.trim() || '세션',
+      startX: e.clientX,
+      startY: e.clientY,
     };
-    isSideDragging = true;
-    e.dataTransfer.effectAllowed = 'move';
-    try { e.dataTransfer.setData('text/plain', `session:${primaryKey}`); } catch {}
-    row.classList.add('is-dragging');
   });
 
-  side.addEventListener('dragover', (e) => {
-    if (!sideDragPayload) return;
+  window.addEventListener('pointermove', (e) => {
+    if (!candidate) return;
+    if (!sideDragPayload) {
+      if (Math.hypot(e.clientX - candidate.startX, e.clientY - candidate.startY) < 6) return;
+      sideDragPayload = candidate;
+      isSideDragging = true;
+      candidate.sourceEl?.classList.add('is-dragging');
+      document.body.classList.add('is-side-dragging');
+      ghostEl = document.createElement('div');
+      ghostEl.className = 'side-drag-ghost';
+      ghostEl.textContent = candidate.label;
+      document.body.appendChild(ghostEl);
+    }
+
+    if (ghostEl) {
+      ghostEl.style.transform = `translate3d(${Math.round(e.clientX + 14)}px, ${Math.round(e.clientY + 12)}px, 0)`;
+    }
+
+    // Auto-scroll #side near top/bottom edges while dragging
+    const sideRect = side.getBoundingClientRect();
+    if (e.clientX >= sideRect.left && e.clientX <= sideRect.right) {
+      if (e.clientY < sideRect.top + 36) side.scrollTop -= 12;
+      else if (e.clientY > sideRect.bottom - 36) side.scrollTop += 12;
+    }
+
+    const hit = document.elementFromPoint(e.clientX, e.clientY);
+    if (!hit || !side.contains(hit)) {
+      clearDropVisuals();
+      return;
+    }
+
     if (sideDragPayload.type === 'group') {
-      const blk = e.target.closest('.sgrp-block[data-sgrp-id]');
+      const blk = hit.closest('.sgrp-block[data-sgrp-id]');
       const gid = blk?.dataset.sgrpId || '';
       if (!blk || !gid || gid === '_ungrouped' || gid === sideDragPayload.groupId) {
         clearDropVisuals();
         return;
       }
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
       const rect = blk.getBoundingClientRect();
       const pos = (e.clientY - rect.top) < rect.height / 2 ? 'before' : 'after';
       if (lastDropMark !== blk || lastDropPos !== pos) {
@@ -1028,11 +1074,8 @@ $('#side')?.addEventListener('dblclick', (e) => {
       return;
     }
 
-    // Dragging a session row
-    const targetRow = e.target.closest('.side-history .srow[draggable="true"]');
+    const targetRow = hit.closest('.side-history .srow[data-srow-drag]');
     if (targetRow && targetRow.dataset.key !== sideDragPayload.dataKey && targetRow.dataset.srowBucket !== '_project') {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
       const rect = targetRow.getBoundingClientRect();
       const pos = (e.clientY - rect.top) < rect.height / 2 ? 'before' : 'after';
       const parentBlk = targetRow.closest('.sgrp-block[data-sgrp-id]');
@@ -1049,10 +1092,8 @@ $('#side')?.addEventListener('dblclick', (e) => {
       return;
     }
 
-    const blk = e.target.closest('.sgrp-block[data-sgrp-id]');
+    const blk = hit.closest('.sgrp-block[data-sgrp-id]');
     if (blk && blk.dataset.sgrpId) {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
       if (lastIntoBlock !== blk || lastDropMark) {
         clearDropVisuals();
         blk.classList.add('drop-into');
@@ -1063,19 +1104,15 @@ $('#side')?.addEventListener('dblclick', (e) => {
     clearDropVisuals();
   });
 
-  side.addEventListener('dragleave', (e) => {
-    if (!sideDragPayload) return;
-    if (!e.relatedTarget || !side.contains(e.relatedTarget)) clearDropVisuals();
-  });
-
-  side.addEventListener('drop', async (e) => {
-    if (!sideDragPayload) return;
+  const handleDrop = async () => {
+    if (!candidate) return;
+    if (!sideDragPayload) { candidate = null; return; }
     const payload = sideDragPayload;
     const dropMark = lastDropMark;
     const dropPos = lastDropPos;
     const intoBlk = lastIntoBlock;
-    e.preventDefault();
-    finishDrag();
+    suppressClickUntil = Date.now() + 280;
+    cleanupDrag();
 
     if (payload.type === 'group') {
       const targetGid = dropMark?.dataset?.sgrpId;
@@ -1091,7 +1128,6 @@ $('#side')?.addEventListener('dblclick', (e) => {
       return;
     }
 
-    // Dropping a session row
     const collectBucketKeys = (bucket) => {
       const out = [];
       const keySet = new Set(payload.keys);
@@ -1107,7 +1143,7 @@ $('#side')?.addEventListener('dblclick', (e) => {
       const targetPkey = dropMark.dataset.srowPkey || '';
       if (targetBucket === '_project' || !targetPkey) return;
       const order = collectBucketKeys(targetBucket);
-      let idx = order.indexOf(targetPkey);
+      const idx = order.indexOf(targetPkey);
       if (idx < 0) order.push(payload.primaryKey);
       else order.splice(dropPos === 'after' ? idx + 1 : idx, 0, payload.primaryKey);
       const changedGroup = targetBucket !== payload.sourceBucket;
@@ -1146,7 +1182,8 @@ $('#side')?.addEventListener('dblclick', (e) => {
         }
       } catch (er) { toast(er.message, 4000, 'danger'); }
     }
-  });
+  };
 
-  side.addEventListener('dragend', finishDrag);
+  window.addEventListener('pointerup', handleDrop);
+  window.addEventListener('pointercancel', cleanupDrag);
 })();

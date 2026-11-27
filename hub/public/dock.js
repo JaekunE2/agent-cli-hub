@@ -299,11 +299,21 @@
       const curDomOrder = [...wsEl.querySelectorAll(':scope > .dock-pane')].map((n) => n.dataset.dockPane);
       const targetOrder = order.filter((id) => paneEls.has(id));
       const orderChanged = curDomOrder.length !== targetOrder.length || curDomOrder.some((id, idx) => id !== targetOrder[idx]);
+      const visibleSum = visibleIds.reduce((acc, id) => acc + Math.max(0.25, Number(sizes[id]) || 1), 0);
       for (const id of order) {
         const el = paneEls.get(id);
         if (!el) continue;
-        el.hidden = !openSet.has(id);
-        el.classList.toggle('single', visibleIds.length === 1 && openSet.has(id));
+        const vis = openSet.has(id);
+        el.hidden = !vis;
+        el.classList.toggle('single', visibleIds.length === 1 && vis);
+        if (vis) {
+          if (visibleIds.length === 1) el.style.flex = '1 1 0';
+          else {
+            const raw = Math.max(0.25, Number(sizes[id]) || 1);
+            const norm = visibleSum < visibleIds.length ? (raw / visibleSum) * visibleIds.length : raw;
+            el.style.flex = `${norm.toFixed(3)} 1 0`;
+          }
+        }
         if (orderChanged) wsEl.appendChild(el);
       }
       // Insert draggable split resizers between every two visible panes

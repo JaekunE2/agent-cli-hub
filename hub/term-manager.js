@@ -498,7 +498,7 @@ function createTermManager(hub) {
     lastOutputAt: t.lastOutputAt || 0,
     lastInputAt: t.lastInputAt || t.meta?.lastInputAt || t.startedAt || t.meta?.spawnedAt || 0,
     startedAt: t.startedAt || 0,
-    projectTask: t.meta?.projectTask, cwd: t.cwd, pid: t.pid, exited: t.exited, cols: t.cols, rows: t.rows,
+    projectTask: t.meta?.projectTask, projectMerge: t.meta?.projectMerge || null, cwd: t.cwd, pid: t.pid, exited: t.exited, cols: t.cols, rows: t.rows,
   });
 
   function makeMirror({ id, meta = {}, cols = 120, rows = 32, exited = null }) {
@@ -555,7 +555,7 @@ function createTermManager(hub) {
     return { kind, args: [...args, ...(prep?.extraArgs || [])], env: { ...env, ...prep?.env }, vault: prep?.vault, blocked: prep?.blocked };
   }
 
-  function createTerm({ cwd, cmd, args = [], title, customTitle, env = {}, account = null, model = '', effort = '', lastInputAt = 0, research = null, operator = false, projectTask, projectPrompt, parentTermId, agent, preparedVault, workspaceLaunch, workspaceCli }) {
+  function createTerm({ cwd, cmd, args = [], title, customTitle, env = {}, account = null, model = '', effort = '', lastInputAt = 0, research = null, operator = false, projectTask, projectMerge, projectPrompt, parentTermId, agent, preparedVault, workspaceLaunch, workspaceCli }) {
     const id = String(++termSeq);
     const baseArgs = args;
     const resolved = resolveLaunchFolders({ cli: workspaceCli, cmd, args, env, plan: workspaceLaunch });
@@ -589,6 +589,7 @@ function createTermManager(hub) {
     };
     if (projectTask) Object.assign(meta, { projectTask, projectPrompt,
       projectAutoClose: !args.some(a => /^(?:resume|--resume|--conversation|--continue)$/.test(a)) });
+    if (projectMerge) Object.assign(meta, { projectMerge, projectAutoClose: true });
     if (workspaceLaunch) {
       hub.workspaceExecution.rememberLaunch(id, now, workspaceLaunch);
       meta.workspaceFolders = { cli: workspaceCli, row: workspaceLaunch.row, applied: resolved.applied,

@@ -1204,13 +1204,24 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
     }
     if (p === '/api/recent') {
       const n = Number(url.searchParams.get('n') || 40), auto = url.searchParams.get('auto') === '1';
+      const includeInternal = url.searchParams.get('includeInternal') === '1';
       if (url.searchParams.get('fresh') === '1' || Date.now() - hub.getLastIndexAt() > 5000) await hub.refreshIndex();
       conversationBranches.resolveLinks(hub.terms, hub.termSessionId);
       const agent = url.searchParams.get('agent') || '';
       const hidden = projects.hidden();
       const owners = projects.sessionOwners();
-      const raw = index.ready ? index.recent(n, auto, agent, hidden, owners) : recentSessions(n).filter((s) => !hidden.has(s.sessionId) && (!agent || (s.agent || 'claude') === agent));
-      const sessions = raw.map((s) => {
+      const isInternalEphemeral = (s, titleText) => {
+        const txt = String(titleText || s.firstPrompt || s.title || '').trim();
+        const cwd = String(s.cwd || '');
+        if (/[\\/]\.hub-worktrees[\\/]/i.test(cwd) || /[\\/]hub-project-plan-[\w-]+/i.test(cwd)) return true;
+        if (/^(?:You are an independent automated reviewer|Create a proposed work plan only\.|Read the entire UTF-8 project task file at\b|Answer the user question concisely based on the selected excerpt|Resolve this Git merge in the current integration worktree\.)/i.test(txt)) return true;
+        if (/^(?:\[?프로젝트\s*(?:통합|병합)|프로젝트 병합 최종 검증 세션:|\[병합\])/.test(txt)) return true;
+        if (/\[사용자가 드래그해 선택한 부분\]|\[사이드 채팅 이전 질문\/답변\]/.test(txt)) return true;
+        return false;
+      };
+      const rawLimit = includeInternal ? n : Math.min(300, Math.max(n * 3, 120));
+      const raw = index.ready ? index.recent(rawLimit, auto, agent, hidden, owners) : recentSessions(rawLimit).filter((s) => !hidden.has(s.sessionId) && (!agent || (s.agent || 'claude') === agent));
+      const mapped = raw.map((s) => {
         const branch = conversationBranches.branchMetaFor({ sessionId: s.sessionId, lookupTitleFn: (id) => sessionDisplayTitle(id, index.get(id)) });
         const customTitle = conversationBranches.getTitle(s.sessionId);
         const fallbackBranchTitle = branch?.isBranch ? (branch.branchTitle || (branch.parentTitle ? `(분기) ${String(branch.parentTitle).slice(0, 36)}` : null)) : null;
@@ -1218,6 +1229,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
         const ideOnly = (s.agent || 'claude') === 'agy' && !hasAgyCliConversation(s.sessionId);
         return { ...s, title: customTitle || fallbackBranchTitle || conversationBranches.baseTitle(s.sessionId, s.title), projectId: owner?.projectId, ...(branch ? { branch } : {}), ...(ideOnly ? { ideOnly: true } : {}) };
       });
+      const sessions = (includeInternal ? mapped : mapped.filter((s) => !isInternalEphemeral(s, s.firstPrompt || s.title))).slice(0, n);
       send(res, 200, { sessions: await folderList(sessions, req, listedFolderKey) });
       return true;
     }
@@ -1351,6 +1363,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
             fs.rmSync(logFile, { force: true });
             if (convId && hub.deleteCliRecord) {
               try { await hub.deleteCliRecord({ sessionId: convId, agent: 'agy' }); } catch {}
+              try { index.docs?.delete?.(convId); } catch {}
             }
           }
         } else {

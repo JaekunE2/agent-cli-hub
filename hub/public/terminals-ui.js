@@ -755,7 +755,6 @@ function viewTerm() {
     ? `<button id="btnBackProject" class="ghost btn-sm session-back" aria-label="${projectName}" data-proj-id="${esc(state.sel.project || pj.id)}">${ICO.chevLeft}<span>${projectName}</span></button>`
     : '';
   setSessionBar(`${back}<h2 title="더블클릭하여 명칭 변경" style="cursor:pointer">${ag ? agentIcon(ag) : ''}<span title="${title}">${title}</span></h2>
-    <button id="btnRenameTerm" class="ghost icon-btn btn-sm" title="세션 명칭 수정" aria-label="세션 명칭 수정">${ICO.edit}</button>
     <span id="termLiveBadge" class="term-live-pill ${pillCls}">${pillText}</span>
     <div class="session-meta">${sessionOriginButton(t?.branch)}${branchTagHTML(t?.branch)}${t?.account ? `<span class="badge c">${esc(t.account.label.replace(/@.*/, ''))}</span>` : ''}${(t?.model || t?.effort) ? `<span class="badge" title="선택된 모델 · 추론 성능">${esc([t.model, t.effort].filter(Boolean).join(' · '))}</span>` : ''}</div>`,
     dockTopSegHTML({ openSet: new Set(initialPanels), isContentTab, hasTerm: true, hasChat: true, showFiles: true, curTab: state.tab }),

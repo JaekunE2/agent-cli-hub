@@ -39,15 +39,15 @@ function mountSubagents(bar, params) {
     const running = items.filter(item => item.status === 'running');
     const history = items.filter(item => item.status !== 'running');
     button.classList.toggle('busy', !!running.length);
-    button.classList.toggle('active', !running.length && items.length > 0);
+    button.classList.toggle('active', !!running.length);
     button.querySelector('.dot').hidden = !running.length;
     const count = running.length
       ? `${label} 실행 ${running.length}`
-      : items.length ? `${label} ${items.length}` : label;
+      : label;
     if (counter.textContent !== count) counter.textContent = count;
     button.title = running.length
       ? `실행 중인 서브에이전트: ${running.map(x => x.name || x.tool).join(', ')}`
-      : items.length ? `서브에이전트 ${items.length}건 보기` : '서브에이전트 기록 보기';
+      : history.length ? `서브에이전트 이전 기록 ${history.length}건 보기` : '서브에이전트 기록 보기';
     if (list.hidden) return;
     placePopover();
     const group = (title, entries) => entries.length ? `<h3>${title}</h3>${entries.map(item => {

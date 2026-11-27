@@ -161,7 +161,6 @@ function viewTranscript() {
   const backLabel = state.sel.fromSearch ? '검색 결과' : '최근 대화';
   setSessionBar(`<button id="btnBackRecent" class="ghost btn-sm session-back" aria-label="${backLabel}">${ICO.chevLeft}<span>${backLabel}</span></button>
     <h2 title="더블클릭하여 명칭 변경" style="cursor:pointer"><span title="${title}">${title}</span></h2>
-    <button id="btnRenameSess" class="ghost icon-btn btn-sm" title="대화 제목 수정" aria-label="대화 제목 수정">${ICO.edit}</button>
     <div class="session-meta">${sessionOriginButton(r?.branch)}${branchTagHTML(r?.branch)}${agentBadge(r?.agent)}</div>`,
     dockTopSegHTML({
       openSet: new Set(initialPanels),

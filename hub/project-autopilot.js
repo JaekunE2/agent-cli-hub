@@ -170,13 +170,16 @@ function lintEvidence(gitSummary = '', taskOut = '') {
 }
 
 function cleanupDoneTerminals(hub, project, taskIds = []) {
-  if (!project?.autoCloseDoneTerms || !hub?.terms || !hub?.forgetTerm) return;
+  if (!hub?.terms || !hub?.forgetTerm) return;
+  const closeTaskTerms = project?.autoCloseDoneTerms !== false;
   const idSet = new Set(taskIds);
   for (const t of [...hub.terms.values()]) {
     if (t.exited !== null || t.meta?.operator) continue;
     const pt = t.meta?.projectTask;
     const ptm = t.meta?.projectMerge;
-    if ((pt?.projectId === project.id && idSet.has(pt.taskId)) || (ptm?.projectId === project.id && ptm.taskIds?.some((id) => idSet.has(id)))) {
+    const isMatchMerge = ptm?.projectId === project?.id && ptm.taskIds?.some((id) => idSet.has(id));
+    const isMatchTask = closeTaskTerms && pt?.projectId === project?.id && idSet.has(pt.taskId);
+    if (isMatchMerge || isMatchTask) {
       hub.forgetTerm(t);
     }
   }
@@ -1218,6 +1221,24 @@ async function checkAutopilotCompletions(hub) {
       if (recoveredMergeSession) {
         hub.projects.save({ ...project, tasks: checkedMergeTasks });
         hub.overviewStale?.();
+      }
+      // Sweep idle temporary merge terminals whose tasks are no longer in merge stage
+      if (hub.forgetTerm) {
+        const activeMergeTermIds = new Set(checkedMergeTasks.filter((tk) => tk.stage === 'merge' && tk.mergeTermId).map((tk) => String(tk.mergeTermId)));
+        const hasActiveMerge = checkedMergeTasks.some((tk) => tk.stage === 'merge');
+        for (const t of [...hub.terms.values()]) {
+          if (t.meta?.operator || t.clients?.size) continue;
+          const isMergeTerm = t.meta?.projectMerge?.projectId === project.id || (/^\[병합\]/.test(t.title || '') && t.cwd === project.cwd);
+          if (!isMergeTerm) continue;
+          if (activeMergeTermIds.has(String(t.id))) continue;
+          const lastAct = Math.max(t.lastOutputAt || 0, t.lastInputAt || 0, t.startedAt || 0);
+          const idleMs = now - lastAct;
+          const st = hub.isCodexTerm?.(t) ? hub.codexStatus?.(t) : hub.isAgyTerm?.(t) ? hub.agyStatus?.(t) : hub.claudeStatus?.(t);
+          if (t.exited !== null || (!hasActiveMerge && st !== 'busy' && idleMs > 90_000)) {
+            hub.forgetTerm(t);
+            hub.overviewStale?.();
+          }
+        }
       }
       const merge = mergeQueue(project)[0];
       if (merge && merge.reviewStatus !== 'merge-blocked' && !project.tasks.some((task) => reviewInFlight.has(`${project.id}:${task.id}`))

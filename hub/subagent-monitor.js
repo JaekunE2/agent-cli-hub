@@ -93,6 +93,10 @@ function sync(hub, state) {
   }, 2_000_000, false, { fastScan: true });
   claudeLogs(state);
   const now = Date.now();
+  let parentLogMtime = 0;
+  if (state.file) {
+    try { parentLogMtime = fs.statSync(state.file).mtimeMs; } catch {}
+  }
   const status = term && (term.exited != null ? 'exited' : term.status || hub[`${agent}Status`]?.(term));
   if (status === 'idle' && state.parentStatus === 'busy') state.idleAt = now;
   state.parentStatus = status;
@@ -124,15 +128,25 @@ function sync(hub, state) {
     const interruptedOrExited = (term?._subagentsInterruptedAt && term._subagentsInterruptedAt >= (call.resumedAt || call.startedAt))
       || status === 'exited' || (state.parentEnd && state.parentEnd >= (call.resumedAt || call.startedAt));
     const childTermAlive = !interruptedOrExited && call.targetTermId && hub.terms.get(String(call.targetTermId))?.exited === null;
+    let childLogMtime = 0;
     let childLogActive = false;
-    if (!interruptedOrExited && call.logPath && call.status === 'running' && state.idleAt) {
+    if (!interruptedOrExited && call.logPath && call.status === 'running') {
       try {
-        const mtime = fs.statSync(call.logPath).mtimeMs;
-        if (mtime > state.idleAt) childLogActive = true;
+        childLogMtime = fs.statSync(call.logPath).mtimeMs;
+        if (now - childLogMtime < 90_000 || (state.idleAt && childLogMtime > state.idleAt)) childLogActive = true;
       } catch {}
     }
-    const asyncAlive = !interruptedOrExited && !!call.async && call.status === 'running';
-    if (stoppedAt && !childTermAlive && !childLogActive && !asyncAlive) stopOrphan(call, stoppedAt);
+    const latestActivityMtime = Math.max(parentLogMtime, childLogMtime);
+    const asyncAlive = !interruptedOrExited && !!call.async && call.status === 'running'
+      && (status === 'busy' || !latestActivityMtime || (now - latestActivityMtime < 5 * 60_000));
+    const parentIdleOrDetached = !term || status === 'idle' || status === 'exited';
+    const staleAfterIdle = parentIdleOrDetached && latestActivityMtime > 0 && (now - latestActivityMtime >= 5 * 60_000);
+    const effectiveCutoff = stoppedAt || (staleAfterIdle ? now : 0);
+    if (call.status === 'running' && effectiveCutoff && !childTermAlive && !childLogActive && !asyncAlive) {
+      const msg = call.lastMessage || state.children.get(call.childSessionId)?.lastMessage || '';
+      if (msg) finish(call, 'done', effectiveCutoff, msg);
+      else stopOrphan(call, effectiveCutoff);
+    }
   }
   if (calls.size > 200) for (const [id, call] of calls) {
     if (call.status !== 'running') calls.delete(id);
