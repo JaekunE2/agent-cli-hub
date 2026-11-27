@@ -22,13 +22,16 @@ function createAttachmentStrip(stripEl, cwd) {
     stripEl.innerHTML = items.map((it) => {
       const visual = it.thumbUrl
         ? `<img class="att-thumb" src="${esc(it.thumbUrl)}" alt="">`
-        : `<span class="att-chip-ext">${esc(it.ext)}</span>`;
+        : it.isDir
+          ? `<span class="att-chip-ext dir">${ICO.folder || ''} FOLDER</span>`
+          : `<span class="att-chip-ext">${esc(it.ext)}</span>`;
       const meta = it.loading
         ? '<span class="att-chip-sz">준비 중…</span>'
         : it.failed
           ? '<span class="att-chip-sz" style="color:var(--danger)">실패</span>'
           : (it.size ? `<span class="att-chip-sz">${esc(fmtSize(it.size))}</span>` : '');
-      return `<span class="att-chip" title="${esc(it.path || it.name)}">${visual}<span class="att-chip-name">${esc(it.name)}</span>${meta}<button type="button" class="att-chip-rm" data-att-rm="${it.id}" aria-label="첨부 파일 제거" title="첨부 파일 제거">×</button></span>`;
+      const rmLbl = it.isDir ? '첨부 폴더 제거' : '첨부 파일 제거';
+      return `<span class="att-chip${it.isDir ? ' is-dir' : ''}" title="${esc(it.path || it.name)}">${visual}<span class="att-chip-name">${esc(it.name)}</span>${meta}<button type="button" class="att-chip-rm" data-att-rm="${it.id}" aria-label="${rmLbl}" title="${rmLbl}">×</button></span>`;
     }).join('');
     stripEl.querySelectorAll('[data-att-rm]').forEach((b) => {
       b.onclick = () => {
@@ -41,14 +44,76 @@ function createAttachmentStrip(stripEl, cwd) {
     });
   };
 
-  const addFiles = (fileList, dtItems = []) => {
+  const addDirEntry = (dirEntry) => {
+    const entry = {
+      id: ++seq,
+      name: dirEntry.name || 'folder',
+      size: 0,
+      ext: 'FOLDER',
+      isDir: true,
+      isImg: false,
+      thumbUrl: '',
+      path: null,
+      loading: true,
+      failed: false,
+    };
+    items.push(entry);
+    paint();
+    dirToPath(dirEntry, cwd)
+      .then((res) => {
+        entry.loading = false;
+        if (res?.path) {
+          entry.path = res.path;
+          paint();
+          if (res.ambiguous && typeof openFolderPickerDialog === 'function') {
+            toast(`동일한 폴더가 여러 곳에 있어 가장 가까운 경로를 첨부했습니다: ${res.path}`, 6000, 'default', {
+              label: '직접 선택',
+              onClick: () => openFolderPickerDialog(res.path, (picked) => {
+                if (!picked) return;
+                entry.path = picked;
+                entry.name = picked.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || entry.name;
+                paint();
+              }),
+            });
+          }
+          return;
+        }
+        items = items.filter((x) => x.id !== entry.id);
+        paint();
+        const pickerAction = typeof openFolderPickerDialog === 'function'
+          ? {
+            label: '폴더 선택',
+            onClick: () => openFolderPickerDialog(cwd || '', (picked) => {
+              if (!picked) return;
+              const clean = picked.replace(/[\\/]+$/, '');
+              items.push({ id: ++seq, name: clean.split(/[\\/]/).pop() || clean, ext: 'FOLDER', isDir: true, path: picked });
+              paint();
+            }),
+          }
+          : null;
+        toast(`폴더 경로를 자동으로 찾지 못했습니다 (${entry.name})`, 6000, 'default', pickerAction);
+      })
+      .catch(() => {
+        items = items.filter((x) => x.id !== entry.id);
+        paint();
+        toast(`폴더 경로를 확인하지 못했습니다 (${entry.name})`, 4000, 'danger');
+      });
+  };
+
+  const addFiles = (fileList, dtItems = [], preEntries = null) => {
     const arr = [...(fileList || [])];
-    if (!arr.length) return;
     const itemEntries = [...(dtItems || [])];
-    if (itemEntries.some((it) => it.webkitGetAsEntry?.()?.isDirectory)) toast('폴더는 경로를 알 수 없어 제외합니다 (파일만 가능)');
-    for (let i = 0; i < arr.length; i++) {
-      if (itemEntries[i]?.webkitGetAsEntry?.()?.isDirectory) continue;
+    const fsEntries = Array.isArray(preEntries) ? preEntries : itemEntries.map((it) => it.webkitGetAsEntry?.() || null);
+    const total = Math.max(arr.length, fsEntries.length);
+    if (!total) return;
+    for (let i = 0; i < total; i++) {
+      const fsEntry = fsEntries[i];
+      if (fsEntry?.isDirectory) {
+        addDirEntry(fsEntry);
+        continue;
+      }
       const f = arr[i];
+      if (!f) continue;
       const extM = /\.([a-z0-9]+)$/i.exec(f.name || '');
       const ext = extM ? extM[1].toUpperCase() : 'FILE';
       const isImg = /^image\//i.test(f.type || '') || IMAGE_EXT_RE.test(f.name || '');
@@ -59,6 +124,7 @@ function createAttachmentStrip(stripEl, cwd) {
         name: f.name || 'image.png',
         size: f.size || 0,
         ext,
+        isDir: false,
         isImg,
         thumbUrl,
         path: null,
@@ -84,11 +150,18 @@ function createAttachmentStrip(stripEl, cwd) {
 
   return {
     addFiles,
-    addPaths: (paths) => {
-      for (const path of paths) {
-        const name = path.split(/[\\/]/).pop();
-        const ext = /\.([a-z0-9]+)$/i.exec(name)?.[1].toUpperCase() || 'FILE';
-        items.push({ id: ++seq, name, ext, path });
+    addPaths: (paths, entries = null) => {
+      const list = Array.isArray(paths) ? paths : [];
+      const metaList = Array.isArray(entries) ? entries : null;
+      for (let i = 0; i < list.length; i++) {
+        const raw = list[i];
+        const p = typeof raw === 'string' ? raw : raw?.path;
+        if (!p) continue;
+        const clean = String(p).replace(/[\\/]+$/, '');
+        const name = clean.split(/[\\/]/).pop() || clean;
+        const isDir = !!(metaList?.[i]?.isDir ?? (typeof raw === 'object' && raw?.isDir));
+        const ext = isDir ? 'FOLDER' : (/\.([a-z0-9]+)$/i.exec(name)?.[1].toUpperCase() || 'FILE');
+        items.push({ id: ++seq, name, ext, isDir, path: p });
       }
       paint();
     },
@@ -139,6 +212,43 @@ async function fileToPath(f, cwd) {
     return (await r.json()).path;
   } finally { n.remove(); }
 }
+async function readDirDropSignature(dirEntry) {
+  const entries = [];
+  try {
+    const reader = dirEntry.createReader();
+    for (let round = 0; round < 20 && entries.length < 60; round++) {
+      const batch = await new Promise((res) => {
+        try { reader.readEntries((list) => res(list || []), () => res([])); } catch { res([]); }
+      });
+      if (!batch.length) break;
+      for (const e of batch) {
+        entries.push(e);
+        if (entries.length >= 60) break;
+      }
+    }
+  } catch {}
+  const children = entries.map((e) => ({ name: e.name, isDir: !!e.isDirectory }));
+  const samples = [];
+  for (const e of entries) {
+    if (e.isDirectory || samples.length >= 3) continue;
+    const f = await new Promise((res) => {
+      let done = false;
+      const timer = setTimeout(() => { if (!done) { done = true; res(null); } }, 800);
+      try {
+        e.file((file) => { if (!done) { done = true; clearTimeout(timer); res(file); } }, () => { if (!done) { done = true; clearTimeout(timer); res(null); } });
+      } catch { if (!done) { done = true; clearTimeout(timer); res(null); } }
+    });
+    if (f) samples.push({ name: f.name, size: f.size, mtime: f.lastModified });
+  }
+  return { name: dirEntry.name || '', children, samples };
+}
+
+async function dirToPath(dirEntry, cwd) {
+  if (!dirEntry?.name || IS_MOBILE || IS_REMOTE) return { path: null, matches: [], ambiguous: false };
+  const sig = await readDirDropSignature(dirEntry);
+  return api('/api/locate-dir', { method: 'POST', body: { ...sig, cwd } }).catch(() => ({ path: null, matches: [], ambiguous: false }));
+}
+
 // clipboard images sometimes come only as items (kind "file"), with dt.files empty
 const clipFiles = (dt) => { const f = [...(dt?.files || [])]; return f.length ? f : [...(dt?.items || [])].filter((it) => it.kind === 'file').map((it) => it.getAsFile()).filter(Boolean); };
 if (!window.__achDropGuard) {
@@ -154,19 +264,30 @@ if (!window.__achDropGuard) {
 }
 function attachFileInput(el, insert, cwd, opts = {}) {
   el.dataset.fileInput = '1';
-  if (desktopBridge) el.addEventListener('hub-file-paths', ({ detail: paths }) => {
-    if (opts.onPaths && opts.onPaths(paths) !== false) return;
+  if (desktopBridge) el.addEventListener('hub-file-paths', ({ detail }) => {
+    const paths = Array.isArray(detail) ? detail : (detail?.paths || []);
+    const entries = Array.isArray(detail) ? null : (detail?.entries || null);
+    if (!paths.length) return;
+    if (opts.onPaths && opts.onPaths(paths, entries) !== false) return;
     insert?.(paths.map(quotePath).join(' ') + ' ');
   });
   const handle = async (dt) => {
     const files = clipFiles(dt);
     const items = [...(dt.items || [])];
-    if (!files.length) return;
-    if (typeof opts.onFiles === 'function' && opts.onFiles(files, items) !== false) return;
-    if (items.some((it) => it.webkitGetAsEntry?.()?.isDirectory)) toast('폴더는 경로를 알 수 없어 제외합니다 (파일만 가능)');
+    // webkitGetAsEntry must be read synchronously inside the drop/paste event turn
+    const entries = items.map((it) => it.webkitGetAsEntry?.() || null);
+    if (!files.length && !entries.some(Boolean)) return;
+    if (typeof opts.onFiles === 'function' && opts.onFiles(files, items, entries) !== false) return;
     const paths = [];
-    for (let i = 0; i < files.length; i++) {
-      if (items[i]?.webkitGetAsEntry?.()?.isDirectory) continue;
+    const total = Math.max(files.length, entries.length);
+    for (let i = 0; i < total; i++) {
+      if (entries[i]?.isDirectory) {
+        const r = await dirToPath(entries[i], cwd).catch(() => null);
+        if (r?.path) paths.push(quotePath(r.path));
+        else toast(`폴더 경로를 자동으로 찾지 못했습니다 (${entries[i].name})`);
+        continue;
+      }
+      if (!files[i]) continue;
       const p = await fileToPath(files[i], cwd).catch(() => null);
       if (p) paths.push(quotePath(p));
     }
@@ -176,7 +297,7 @@ function attachFileInput(el, insert, cwd, opts = {}) {
   el.addEventListener('dragleave', (e) => { if (!el.contains(e.relatedTarget)) el.classList.remove('dropping'); });
   el.addEventListener('drop', (e) => {
     el.classList.remove('dropping');
-    if (!e.dataTransfer?.files?.length) return;
+    if (!e.dataTransfer?.files?.length && !e.dataTransfer?.items?.length) return;
     e.preventDefault();
     handle(e.dataTransfer);
   });
@@ -200,12 +321,12 @@ function attachFileInput(el, insert, cwd, opts = {}) {
 const filePasteSelector = 'textarea, input:not([type]), input[type=text], input[type=search]';
 const desktopBridge = typeof window.__TAURI_INTERNALS__?.invoke === 'function' ? (() => {
   let picking = false;
-  window.addEventListener('hub-native-drop', ({ detail: { paths, x, y } }) => {
+  window.addEventListener('hub-native-drop', ({ detail: { paths = [], entries = null, x, y } }) => {
     const scale = window.devicePixelRatio;
     const target = document.elementFromPoint(x / scale, y / scale);
     const dropZone = target?.closest('[data-file-input]');
     if (dropZone) {
-      dropZone.dispatchEvent(new CustomEvent('hub-file-paths', { detail: paths }));
+      dropZone.dispatchEvent(new CustomEvent('hub-file-paths', { detail: { paths, entries } }));
       return;
     }
     const box = target?.closest(filePasteSelector);

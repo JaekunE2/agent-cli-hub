@@ -3733,5 +3733,16 @@
   "세션 종료": "Close session",
   "” 세션을 종료할까요?": "\" session?",
   "세션을 종료했습니다:": "Closed session:",
-  "목록에서 제거했습니다:": "Removed from list:"
+  "목록에서 제거했습니다:": "Removed from list:",
+  "채팅 창": "Chat",
+  "채팅 창 패널 열기/닫기": "Toggle Chat Panel",
+  "\"채팅 창\" 패널 함께 열기": "Open \"Chat\" Panel",
+  "TUI(터미널) ↔ GUI(채팅 창) 즉시 전환 (Alt+J)": "Toggle TUI (Terminal) ↔ GUI (Chat) (Alt+J)",
+  "파일 · 폴더 · 이미지 첨부 (드래그&드롭 / 붙여넣기)": "Attach files, folders, or images (drag & drop / paste)",
+  "첨부 폴더 제거": "Remove attached folder",
+  "동일한 폴더가 여러 곳에 있어 가장 가까운 경로를 첨부했습니다:": "Multiple matching folders found; attached the closest path:",
+  "직접 선택": "Choose manually",
+  "폴더 경로를 자동으로 찾지 못했습니다 (": "Could not locate folder path automatically (",
+  "폴더 경로를 확인하지 못했습니다 (": "Could not verify folder path (",
+  "Codex에서 대화를 삭제하지 못했습니다 (": "Failed to delete Codex conversation ("
 }

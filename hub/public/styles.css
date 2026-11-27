@@ -556,8 +556,11 @@ body.side-collapsed .side-float-btn { display: inline-flex; }
 .att-strip { width: 100%; max-width: 880px; min-width: 0; margin: 0 auto 6px; display: flex; flex-wrap: wrap; gap: 6px; }
 .chat-reply-bar.compact .att-strip { max-width: 100%; }
 .att-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: var(--radius-md); background: var(--panel2); border: 1px solid var(--line-strong); font-size: 12px; color: var(--text); max-width: 240px; min-width: 0; }
+.att-chip.is-dir { border-color: color-mix(in srgb, var(--warn) 42%, var(--line-strong)); background: color-mix(in srgb, var(--warn) 8%, var(--panel2)); }
 .att-thumb { width: 24px; height: 24px; border-radius: var(--radius-xs); object-fit: cover; flex: none; background: var(--bg); }
 .att-chip-ext { font-size: 10px; font-weight: 700; padding: 2px 5px; border-radius: var(--radius-xs); background: color-mix(in srgb, var(--accent) 16%, var(--panel)); color: var(--accent); flex: none; }
+.att-chip-ext.dir { display: inline-flex; align-items: center; gap: 3px; background: color-mix(in srgb, var(--warn) 18%, var(--panel)); color: var(--warn); }
+.att-chip-ext.dir svg { width: 11px; height: 11px; flex: none; }
 .att-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
 .att-chip-sz { font-size: 10.5px; color: var(--muted); flex: none; }
 .att-chip-rm { background: none; border: 0; padding: 0 2px; min-height: 18px; height: 18px; color: var(--muted); cursor: pointer; font-size: 14px; line-height: 1; flex: none; }

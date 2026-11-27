@@ -60,3 +60,28 @@ test('Claude deletion is scoped to the conversation file, and Codex uses its UUI
   await deleteCliRecord({ agent: 'codex', id }, { codexExe: 'codex.exe', run: async (...args) => { command = args; } });
   assert.deepEqual(command.slice(0, 2), ['codex.exe', ['delete', '--force', id]]);
 }));
+
+test('Codex deletion infers CODEX_HOME from rollout path and falls back to safe rollout removal if CLI fails', async () => temp(async dir => {
+  const altHome = path.join(dir, 'alt-codex-home');
+  const dayDir = path.join(altHome, 'sessions', '2026', '11', '27');
+  fs.mkdirSync(dayDir, { recursive: true });
+  const rollout = path.join(dayDir, `rollout-2026-11-27T10-00-00-${id}.jsonl`);
+  fs.writeFileSync(rollout, '{"type":"session_meta"}\n');
+  fs.writeFileSync(path.join(altHome, 'session_index.jsonl'), `{"id":"${id}"}\n{"id":"${other}"}\n`);
+
+  let usedEnv;
+  const deleted = await deleteCliRecord({ agent: 'codex', id, file: rollout }, {
+    codexExe: 'codex.exe',
+    env: { CODEX_HOME: path.join(dir, 'wrong-home') },
+    run: async (_exe, _args, opts) => {
+      usedEnv = opts.env;
+      throw new Error('Error: failed to delete session');
+    },
+  });
+  assert.equal(deleted, true);
+  assert.equal(usedEnv.CODEX_HOME, altHome);
+  assert.equal(fs.existsSync(rollout), false);
+  const idx = fs.readFileSync(path.join(altHome, 'session_index.jsonl'), 'utf8');
+  assert.equal(idx.includes(id), false);
+  assert.equal(idx.includes(other), true);
+}));

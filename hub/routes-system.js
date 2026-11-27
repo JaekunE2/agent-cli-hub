@@ -223,6 +223,16 @@ function createSystemRoutes(hub) {
       send(res, 200, { path: hub.locateFile({ name: String(b.name || ''), size: Number(b.size), mtime: Number(b.mtime) || 0, cwd: b.cwd }) });
       return true;
     }
+    if (p === '/api/locate-dir' && req.method === 'POST') {
+      const b = await body(req);
+      send(res, 200, hub.locateDir({
+        name: String(b.name || ''),
+        children: Array.isArray(b.children) ? b.children : [],
+        samples: Array.isArray(b.samples) ? b.samples : [],
+        cwd: b.cwd,
+      }));
+      return true;
+    }
     if (p === '/api/upload' && req.method === 'POST') {
       send(res, 200, { path: await hub.saveUpload(req, url.searchParams.get('name')) });
       return true;

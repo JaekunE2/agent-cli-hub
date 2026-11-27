@@ -1118,6 +1118,150 @@ function createTermManager(hub) {
     return null;
   }
 
+  function locateDir({ name, children = [], samples = [], cwd }) {
+    const cleanName = String(name || '').trim();
+    if (!cleanName || /[\\/:*?"<>|]/.test(cleanName)) return { path: null, matches: [], ambiguous: false };
+    const isWin = process.platform === 'win32';
+    const norm = (s) => (isWin ? String(s || '').toLowerCase() : String(s || ''));
+    const targetName = norm(cleanName);
+    const ignoreSys = /^(?:desktop\.ini|thumbs\.db|\.ds_store)$/i;
+    const skipDir = /^(?:node_modules|\.git|\$recycle\.bin|system volume information|__pycache__|\.venv|venv|site-packages|windows|program files(?: \(x86\))?|programdata|appdata|\.hub-worktrees|target|recovery|perflogs)$/i;
+
+    const cleanChildren = Array.isArray(children)
+      ? children.filter((c) => c && typeof c.name === 'string' && c.name).slice(0, 60).map((c) => ({ name: c.name, key: norm(c.name), isDir: !!c.isDir }))
+      : [];
+    const cleanSamples = Array.isArray(samples)
+      ? samples.filter((s) => s && typeof s.name === 'string' && s.name && Number.isFinite(Number(s.size))).slice(0, 5)
+        .map((s) => ({ name: s.name, size: Number(s.size), mtime: Number(s.mtime) || 0 }))
+      : [];
+
+    const home = os.homedir();
+    const rawRoots = [];
+    const pushRoot = (p, maxDepth = 3) => {
+      if (!p || typeof p !== 'string') return;
+      try {
+        const res = path.resolve(p);
+        if (fs.existsSync(res) && fs.statSync(res).isDirectory()) rawRoots.push({ dir: res, maxDepth });
+      } catch {}
+    };
+    if (cwd) {
+      pushRoot(cwd, 4);
+      const p1 = path.dirname(cwd);
+      if (p1 && p1 !== cwd) {
+        pushRoot(p1, 3);
+        const p2 = path.dirname(p1);
+        if (p2 && p2 !== p1) pushRoot(p2, 2);
+      }
+    }
+    try {
+      for (const pj of (projects?.list?.() || [])) {
+        if (pj?.cwd) {
+          pushRoot(pj.cwd, 3);
+          const pp = path.dirname(pj.cwd);
+          if (pp && pp !== pj.cwd) pushRoot(pp, 2);
+        }
+      }
+    } catch {}
+    for (const t of terms.values()) {
+      if (t?.cwd) {
+        pushRoot(t.cwd, 3);
+        const tp = path.dirname(t.cwd);
+        if (tp && tp !== t.cwd) pushRoot(tp, 2);
+      }
+    }
+    for (const r of [
+      path.join(home, 'Desktop'),
+      path.join(home, 'OneDrive', 'Desktop'),
+      path.join(home, 'Downloads'),
+      path.join(home, 'Documents'),
+      path.join(home, 'Pictures'),
+      home,
+      ...(config.locateRoots || []),
+    ]) pushRoot(r, 3);
+    if (isWin) {
+      for (const drv of ['C:\\', 'D:\\', 'E:\\', 'F:\\']) pushRoot(drv, 2);
+    }
+
+    const rootMaxDepth = new Map();
+    const roots = [];
+    for (const r of rawRoots) {
+      const k = norm(r.dir);
+      if (rootMaxDepth.has(k)) {
+        if (r.maxDepth > rootMaxDepth.get(k)) rootMaxDepth.set(k, r.maxDepth);
+        continue;
+      }
+      rootMaxDepth.set(k, r.maxDepth);
+      roots.push(r.dir);
+    }
+
+    const matchDir = (dirPath) => {
+      if (norm(path.basename(dirPath)) !== targetName) return false;
+      try {
+        if (!fs.statSync(dirPath).isDirectory()) return false;
+      } catch { return false; }
+      for (const s of cleanSamples) {
+        try {
+          const st = fs.statSync(path.join(dirPath, s.name));
+          if (!st.isFile() || st.size !== s.size) return false;
+          if (s.mtime && Math.abs(st.mtimeMs - s.mtime) > 3000) return false;
+        } catch { return false; }
+      }
+      let ents;
+      try { ents = fs.readdirSync(dirPath, { withFileTypes: true }); } catch { return false; }
+      const visible = ents.filter((e) => !ignoreSys.test(e.name));
+      if (!cleanChildren.length) return visible.length === 0;
+      const byName = new Map(visible.map((e) => [norm(e.name), e.isDirectory()]));
+      for (const c of cleanChildren) {
+        if (!byName.has(c.key)) return false;
+        if (byName.get(c.key) !== c.isDir) return false;
+      }
+      if (cleanChildren.length < 60 && visible.length > cleanChildren.length + 8) return false;
+      return true;
+    };
+
+    const deadline = Date.now() + 2200;
+    const visited = new Set();
+    const matches = [];
+    const matchedKeys = new Set();
+    let level = [];
+    for (const r of roots) {
+      const k = norm(r);
+      if (visited.has(k)) continue;
+      visited.add(k);
+      level.push({ dir: r, depth: 0, maxDepth: rootMaxDepth.get(k) ?? 3 });
+    }
+    while (level.length && Date.now() < deadline && matches.length < 5) {
+      const next = [];
+      for (const { dir, depth, maxDepth } of level) {
+        if (Date.now() > deadline || matches.length >= 5) break;
+        const dirKey = norm(dir);
+        if (!matchedKeys.has(dirKey) && matchDir(dir)) {
+          matchedKeys.add(dirKey);
+          matches.push(dir);
+        }
+        const directHit = path.join(dir, cleanName);
+        const hitKey = norm(directHit);
+        if (!matchedKeys.has(hitKey) && matchDir(directHit)) {
+          matchedKeys.add(hitKey);
+          matches.push(directHit);
+        }
+        if (depth >= maxDepth) continue;
+        let ents;
+        try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+        for (const e of ents) {
+          if (!e.isDirectory() || skipDir.test(e.name)) continue;
+          const child = path.join(dir, e.name);
+          const ck = norm(child);
+          if (visited.has(ck)) continue;
+          visited.add(ck);
+          next.push({ dir: child, depth: depth + 1, maxDepth });
+        }
+      }
+      level = next;
+    }
+    return { path: matches[0] || null, matches, ambiguous: matches.length > 1 };
+  }
+
   function saveUpload(req, name) {
     const d = new Date(), pad = (x) => String(x).padStart(2, '0');
     const dir = path.join(UPLOAD_DIR, `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`);
@@ -1179,6 +1323,7 @@ function createTermManager(hub) {
     saveSessionGroups,
     dedupeTermsBySession,
     locateFile,
+    locateDir,
     saveUpload,
     termMonitor,
   };

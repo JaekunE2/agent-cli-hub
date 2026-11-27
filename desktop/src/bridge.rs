@@ -71,15 +71,22 @@ pub fn on_drag_drop(webview: &tauri::Webview, event: &WebviewEvent) {
         return;
     }
 
-    let paths: Vec<_> = paths
+    let entries: Vec<_> = paths
         .iter()
-        .filter(|path| path.is_absolute() && path.is_file())
-        .filter_map(|path| path.to_str())
+        .filter(|path| path.is_absolute() && (path.is_file() || path.is_dir()))
+        .filter_map(|path| {
+            path.to_str()
+                .map(|s| json!({ "path": s, "isDir": path.is_dir() }))
+        })
         .collect();
-    if paths.is_empty() {
+    if entries.is_empty() {
         return;
     }
-    let drop = json!({ "paths": paths, "x": position.x, "y": position.y });
+    let raw_paths: Vec<_> = entries
+        .iter()
+        .filter_map(|entry| entry.get("path").and_then(|v| v.as_str()))
+        .collect();
+    let drop = json!({ "paths": raw_paths, "entries": entries, "x": position.x, "y": position.y });
     // The document can navigate before WebView2 executes this script.
     let script = format!(
         "if (location.origin === {} && location.pathname === '/') window.dispatchEvent(new CustomEvent('hub-native-drop', {{ detail: {drop} }}));",

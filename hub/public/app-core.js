@@ -555,15 +555,27 @@ function renameSessionItem({ sessionId = '', termId = '', currentTitle = '' } = 
     <small>기본 제목으로 복원하려면 비워 두세요.</small>`, async form => {
     const id = sessionId || `term:${termId}`;
     const res = await api('/api/transcript/title', { method: 'POST', requireOk: true, body: { id, title: form.get('title') } });
+    const nextCustom = res.customTitle ?? (String(form.get('title') || '').trim());
     for (const item of [...state.recent, ...Object.values(state.recentByAgent || {}).flat(), ...(state.search.sessions || [])]) {
-      if (item.sessionId === res.sessionId) item.title = res.displayTitle;
+      if (res.sessionId && item.sessionId === res.sessionId) item.title = res.displayTitle;
     }
+    for (const t of (state.terms || [])) {
+      if ((termId && String(t.id) === String(termId)) || (res.sessionId && t.sessionId === res.sessionId)) {
+        t.customTitle = nextCustom;
+        if (res.displayTitle) t.sessionName = res.displayTitle;
+      }
+    }
+    const syncTopHeading = () => {
+      const active = state.sel;
+      const term = active.kind === 'term' && state.terms.find(t => String(t.id) === String(active.id));
+      const label = term ? termLabel(term) : active.kind === 'recent' ? sessionLabel(recentSession(active.id), active.id) : '';
+      const heading = $('#bar .session-head h2 [data-session-title]') || $('#bar .session-head h2 > span:last-of-type');
+      if (heading && label) heading.title = heading.textContent = label;
+    };
+    syncTopHeading();
+    renderSide();
     await Promise.all([refreshOverview(), refreshRecent()]);
-    const active = state.sel;
-    const term = active.kind === 'term' && state.terms.find(t => String(t.id) === String(active.id));
-    const label = term ? termLabel(term) : active.kind === 'recent' ? sessionLabel(recentSession(active.id), active.id) : '';
-    const heading = $('#bar .session-head h2 span');
-    if (heading && label) heading.title = heading.textContent = label;
+    syncTopHeading();
     renderSide();
     updateDocTitle();
     toast('세션 명칭을 수정했습니다');

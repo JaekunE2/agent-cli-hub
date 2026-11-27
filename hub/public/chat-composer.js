@@ -3,14 +3,14 @@ function dockTopSegHTML({ openSet, isContentTab = false, hasTerm = true, hasChat
   const on = (id) => !isContentTab && openSet.has(id);
   return `<div class="seg bar-dock-seg" role="group" aria-label="분할 패널 토글">
     ${hasTerm ? `<button type="button" data-dock-toggle="term" aria-pressed="${on('term')}" class="${on('term') ? 'on' : ''}" title="${esc(termTitle)}">${ICO.terminal} 터미널</button>` : ''}
-    ${hasChat ? `<button type="button" data-dock-toggle="chat" aria-pressed="${on('chat')}" class="${on('chat') ? 'on' : ''}" title="대화 기록 패널 열기/닫기">${ICO.chat} 대화 기록</button>` : ''}
+    ${hasChat ? `<button type="button" data-dock-toggle="chat" aria-pressed="${on('chat')}" class="${on('chat') ? 'on' : ''}" title="채팅 창 패널 열기/닫기">${ICO.chat} 채팅 창</button>` : ''}
     <button type="button" data-dock-toggle="windows" aria-pressed="${on('windows')}" class="${on('windows') ? 'on' : ''}" title="연결된 창 · 브라우저 미리보기 패널 열기/닫기">${ICO.monitor} 창 <span class="seg-cnt" data-dock-win-cnt>0</span></button>
   </div>
   <div class="seg bar-tab-seg" role="tablist" aria-label="전용 화면 탭">
     ${showFiles ? `<button type="button" role="tab" aria-selected="${curTab === 'files'}" data-tab="files" class="${curTab === 'files' ? 'on' : ''}" title="이 세션의 산출물 보기 및 지정">산출물</button>` : ''}
     <button type="button" role="tab" aria-selected="${curTab === 'floorplan'}" data-tab="floorplan" class="${curTab === 'floorplan' ? 'on' : ''}" title="코드 구조(Floorplan) 및 보안·품질 점검">${ICO.layers} 코드 구조</button>
   </div>
-  ${hasTerm && hasChat ? `<button type="button" class="ghost btn-sm bar-face-btn" data-face-toggle title="TUI(터미널) ↔ GUI(대화 기록) 즉시 전환 (Alt+J)">${ICO.swap || ''} TUI⇄GUI</button>` : ''}`;
+  ${hasTerm && hasChat ? `<button type="button" class="ghost btn-sm bar-face-btn" data-face-toggle title="TUI(터미널) ↔ GUI(채팅 창) 즉시 전환 (Alt+J)">${ICO.swap || ''} TUI⇄GUI</button>` : ''}`;
 }
 
 function setSessionBar(identity, views, actions, subagents, folders) {
@@ -160,7 +160,7 @@ function viewTranscript() {
   const title = esc(sessionLabel(r, sid, live?.name));
   const backLabel = state.sel.fromSearch ? '검색 결과' : '최근 대화';
   setSessionBar(`<button id="btnBackRecent" class="ghost btn-sm session-back" aria-label="${backLabel}">${ICO.chevLeft}<span>${backLabel}</span></button>
-    <h2 title="더블클릭하여 명칭 변경" style="cursor:pointer"><span title="${title}">${title}</span></h2>
+    <h2 title="더블클릭하여 명칭 변경" style="cursor:pointer"><span data-session-title title="${title}">${title}</span></h2>
     <div class="session-meta">${sessionOriginButton(r?.branch)}${branchTagHTML(r?.branch)}${agentBadge(r?.agent)}</div>`,
     dockTopSegHTML({
       openSet: new Set(initialPanels),
@@ -262,7 +262,7 @@ function viewTranscript() {
     openPanels: initialPanels,
     panelsMeta: {
       ...(hasLivePane ? { term: { title: '터미널', icon: ICO.terminal, onShow: ensureTermMounted } } : {}),
-      chat: { title: '대화 기록', icon: ICO.chat },
+      chat: { title: '채팅 창', icon: ICO.chat },
       windows: { title: '창', icon: ICO.monitor, onShow: () => winCtl?.renderWindows() },
     },
     onOpenChange: (openList) => {
@@ -343,8 +343,7 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       <button type="button" class="ghost icon-btn btn-sm" data-chat-quote-clear aria-label="참조 해제" title="참조 해제">${ICO.close}</button>
     </div>
     <div class="chat-reply-in">
-      <label class="ghost icon-btn btn-sm filebtn" title="파일 · 이미지 첨부 (드래그&드롭 / 붙여넣기)">${ICO.clip}<input type="file" class="fpick" multiple hidden></label>
-      <button type="button" class="ghost icon-btn btn-sm" data-chat-app-pick title="앱 결과물 첨부" aria-label="앱 결과물 첨부">${ICO.grid}</button>
+      <label class="ghost icon-btn btn-sm filebtn" title="파일 · 폴더 · 이미지 첨부 (드래그&드롭 / 붙여넣기)">${ICO.clip}<input type="file" class="fpick" multiple hidden></label>
       <textarea rows="1" aria-label="대화 프롬프트" placeholder="대화 프롬프트 · Enter 전송"></textarea>
       <button type="button" class="primary">대화 전송</button>
     </div>
@@ -677,9 +676,6 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
   const dropZone = barHost.closest('.chat-shell') || barHost;
   attachFileInput(dropZone, null, cwd, { onFiles: chatAttCtl.addFiles, onPaths: chatAttCtl.addPaths });
   bindFilePick(barHost, null, cwd, { onFiles: (fl, it) => chatAttCtl.addFiles(fl, it) });
-  $('[data-chat-app-pick]', barHost)?.addEventListener('click', () => {
-    window.openAppOutputPicker?.((paths) => chatAttCtl.addPaths(paths));
-  });
 
   let sendingReply = false;
   let lastReplyText = '';

@@ -161,10 +161,10 @@ function mountConsoleScreen(hostEl, { pid, gen, s, chatHost = null }) {
   };
   tick();
   const addPath = (txt) => { setConsoleInput(true); inp.value += (inp.value && !inp.value.endsWith(' ') ? ' ' : '') + txt; fitInp(); inp.focus(); };
-  const addFiles = (fl, it) => { setConsoleInput(true); return cAttCtl.addFiles(fl, it); };
+  const addFiles = (fl, it, ent) => { setConsoleInput(true); return cAttCtl.addFiles(fl, it, ent); };
   attachFileInput(fullEl, addPath, s?.cwd, {
     onFiles: addFiles,
-    onPaths: (paths) => { setConsoleInput(true); cAttCtl.addPaths(paths); },
+    onPaths: (paths, entries) => { setConsoleInput(true); cAttCtl.addPaths(paths, entries); },
   });
   bindFilePick(fullEl, addPath, s?.cwd, { onFiles: addFiles });
   if (!chatHost) inp.focus();
@@ -188,7 +188,7 @@ function viewConsole() {
   if (!initialPanels.length) initialPanels = ['term'];
 
   const title = esc(c ? consoleLabel(c) : 'pid ' + state.sel.id);
-  setSessionBar(`<h2 title="${title}"><span>${title}</span></h2>`,
+  setSessionBar(`<h2 title="${title}"><span data-session-title>${title}</span></h2>`,
     dockTopSegHTML({ openSet: new Set(initialPanels), isContentTab, hasTerm: true, hasChat: !!sid, showFiles: !!sid, curTab: state.tab }),
     `<button id="btnConMore" class="ghost icon-btn btn-sm desk" aria-label="콘솔 메뉴" aria-haspopup="menu" aria-expanded="false">${ICO.more}</button>`,
     sid ? { sessionId: sid } : null, folderTarget(s || c || {}, false, true));
@@ -267,7 +267,7 @@ function viewConsole() {
     openPanels: initialPanels,
     panelsMeta: {
       term: { title: '터미널', icon: ICO.terminal },
-      ...(sid ? { chat: { title: '대화 기록', icon: ICO.chat, onShow: ensureChatMounted } } : {}),
+      ...(sid ? { chat: { title: '채팅 창', icon: ICO.chat, onShow: ensureChatMounted } } : {}),
       windows: { title: '창', icon: ICO.monitor, onShow: () => { winCtl?.renderWindows(); winCtl?.refreshWindows(true); } },
     },
     onOpenChange: (openList) => {
@@ -392,7 +392,7 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
     hintAt = Date.now();
     const h = document.createElement('div');
     h.className = 'termhint';
-    h.innerHTML = '터미널에는 화면 한 장 분량만 남습니다 (Windows 콘솔 특성). 이전 대화는 <button class="linkbtn" data-htab="chat">"대화 기록" 패널 함께 열기</button>';
+    h.innerHTML = '터미널에는 화면 한 장 분량만 남습니다 (Windows 콘솔 특성). 이전 대화는 <button class="linkbtn" data-htab="chat">"채팅 창" 패널 함께 열기</button>';
     h.querySelectorAll('[data-htab]').forEach((b) => (b.onclick = () => (onHintTab ? onHintTab(b.dataset.htab) : select(state.sel, b.dataset.htab, true))));
     wrapEl.appendChild(h);
     setTimeout(() => h.remove(), 7000);
@@ -597,16 +597,16 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
     fitTin();
     tin.focus();
   };
-  const onTermFiles = (files, items) => {
+  const onTermFiles = (files, items, entries) => {
     if (dockCollapsed) return false;
-    tAttCtl.addFiles(files, items);
+    tAttCtl.addFiles(files, items, entries);
     return true;
   };
   attachFileInput(fullEl, insert, t?.cwd, {
     onFiles: onTermFiles,
-    onPaths: (paths) => {
+    onPaths: (paths, entries) => {
       if (dockCollapsed) return false;
-      tAttCtl.addPaths(paths);
+      tAttCtl.addPaths(paths, entries);
     },
     shouldPassCtrlV: (e, dt, files) => {
       const shifted = pasteWithShift;
@@ -754,7 +754,7 @@ function viewTerm() {
   const back = state.sel.project || pj
     ? `<button id="btnBackProject" class="ghost btn-sm session-back" aria-label="${projectName}" data-proj-id="${esc(state.sel.project || pj.id)}">${ICO.chevLeft}<span>${projectName}</span></button>`
     : '';
-  setSessionBar(`${back}<h2 title="더블클릭하여 명칭 변경" style="cursor:pointer">${ag ? agentIcon(ag) : ''}<span title="${title}">${title}</span></h2>
+  setSessionBar(`${back}<h2 title="더블클릭하여 명칭 변경" style="cursor:pointer">${ag ? agentIcon(ag) : ''}<span data-session-title title="${title}">${title}</span></h2>
     <span id="termLiveBadge" class="term-live-pill ${pillCls}">${pillText}</span>
     <div class="session-meta">${sessionOriginButton(t?.branch)}${branchTagHTML(t?.branch)}${t?.account ? `<span class="badge c">${esc(t.account.label.replace(/@.*/, ''))}</span>` : ''}${(t?.model || t?.effort) ? `<span class="badge" title="선택된 모델 · 추론 성능">${esc([t.model, t.effort].filter(Boolean).join(' · '))}</span>` : ''}</div>`,
     dockTopSegHTML({ openSet: new Set(initialPanels), isContentTab, hasTerm: true, hasChat: true, showFiles: true, curTab: state.tab }),
@@ -893,7 +893,7 @@ function viewTerm() {
     openPanels: initialPanels,
     panelsMeta: {
       term: { title: '터미널', icon: ICO.terminal, onShow: () => setTimeout(() => termCtl?.resize(), 30) },
-      chat: { title: '대화 기록', icon: ICO.chat, onShow: ensureChatMounted },
+      chat: { title: '채팅 창', icon: ICO.chat, onShow: ensureChatMounted },
       windows: { title: '창', icon: ICO.monitor, onShow: () => { winCtl?.renderWindows(); winCtl?.refreshWindows(true); } },
     },
     onOpenChange: (openList) => {
