@@ -620,11 +620,14 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
   let lastTermSentText = '';
   let lastTermSentAt = 0;
   const submit = async () => {
-    if (!dockCollapsed && tAttCtl.isLoading()) return toast('첨부 파일을 준비하는 중입니다…');
     const submitBtn = $('#tsend', fullEl);
     if (termSubmitting || submitBtn.disabled) return;
-    const attPaths = !dockCollapsed ? tAttCtl.takePaths() : [];
+    if (slash.dispatch()) return;
+    slash.close();
     const typed = tin.value;
+    const nativeCommand = slash.native(typed.trim());
+    if (!nativeCommand && !dockCollapsed && tAttCtl.isLoading()) return toast('첨부 파일을 준비하는 중입니다…');
+    const attPaths = !nativeCommand && !dockCollapsed ? tAttCtl.takePaths() : [];
     const v = [...attPaths, typed].filter(Boolean).join(' ');
     const now = Date.now();
     if (!v) {
@@ -649,7 +652,7 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
     }
     submitBtn.disabled = true;
     try {
-      const r = await api('/api/term/send', { method: 'POST', body: { id: termId, text: v, submit: true, fromTerminalInput: true, clearDraft: true } });
+      const r = await api('/api/term/send', { method: 'POST', body: { id: termId, text: nativeCommand ? v.trim() : v, submit: true, fromTerminalInput: true, clearDraft: true, nativeSlash: !!nativeCommand } });
       if (!r.ok) throw new Error(r.error);
     } catch (err) {
       lastTermSentAt = 0;
@@ -661,11 +664,25 @@ function mountManagedTermScreen(hostEl, { t, gen, chatHost = null, onHintTab = n
       termSubmitting = false;
       submitBtn.disabled = false;
     }
-    if (chatHost && v.trim()) {
+    if (nativeCommand?.tui && !IS_MOBILE) xterm?.focus();
+    if (chatHost && v.trim() && !nativeCommand) {
       chatHost._liveChatHint = { termId: String(termId), pendingText: v.trim(), sentAt: Date.now(), until: Date.now() + 30000 };
       chatHost._triggerPoll?.();
     }
   };
+  const slash = bindSlashPicker(tin, () => {
+    const term = state.terms.find(item => String(item.id) === String(termId)) || t;
+    return {
+      term, sid: resolveTermSessionId(term), cwd: term?.cwd || '', agent: term?.agent, accountId: term?.account?.id,
+      openChatAction: (action, args) => {
+        if (!chatHost?.getClientRects().length) {
+          if (onHintTab) onHintTab();
+          else $('#bar [data-dock-toggle="chat"]')?.click();
+        }
+        openSlashChatAction(action, args, $('#view .chat-comp-host'), $('#view .chat-scroll'));
+      },
+    };
+  }, submit);
   $('#tsend', fullEl).onclick = submit;
   $('#tArt', fullEl).onclick = () => pickArtifact((abs) => insert(quotePath(abs)));
   if (typeof window.bindEnterSubmit === 'function') window.bindEnterSubmit(tin, submit);

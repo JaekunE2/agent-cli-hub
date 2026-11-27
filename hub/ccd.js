@@ -45,6 +45,8 @@ const HELP = `ccd — Agent CLI Hub CLI  (server ${BASE})
                                    lightweight hub apps (UI + session-callable tools & data integration)
   schedule ls | add --name N --project P (--every M | --cron E [--tz TZ]) --prompt "..." [--cli codex|claude|agy] [--account ID] [--version V] [--task ID] [--model M] | rm <id|name> | pause <id|name> | resume <id|name> | run <id|name> | runs <id|name>
                                    manage scheduled CLI runs (add/remove/run/pause/resume by id or name)
+  calendar ls [--date YYYY-MM-DD] | add "title" --date YYYY-MM-DD [--time HH:MM] [--end HH:MM] [--note TEXT] | task "title" --date YYYY-MM-DD [--tags tag1,tag2]
+                                   list Hub calendar items, add an event, or add a todo.md task
   gpu [ls]                         GPUs (memory/util/procs) + lease queue
   gpu plan --mem 12G --est 90m     when a job of that size would start / finish on each GPU
   gpu run [--mem 20G | --exclusive] [--gpu 0] [--label L] [--est 90m] [--ram 40G] -- <command>
@@ -74,7 +76,7 @@ for (let i = 0; i < argv.length; i++) {
   if (a === '-n') flags.n = Number(argv[++i]);
   else if (a.startsWith('--')) {
     const k = a.slice(2);
-    if (['to', 'cwd', 'resume', 'title', 'role', 'at', 'timeout', 'account', 'direction', 'venue', 'gpu', 'mem', 'ram', 'label', 'est', 'modules', 'model', 'session', 'sync', 'fetch', 'sync-exclude', 'file', 'system', 'url', 'image', 'env', 'cd', 'to', 'in', 'msg', 'rename', 'max', 'runtime', 'drive', 'stage', 'node', 'server', 'exclude', 'via', 'root', 'steps', 'name', 'project', 'version', 'task', 'every', 'cron', 'tz', 'prompt', 'overlap', 'misfire', 'effort', 'ref', 'limit', 'action', 'dir', 'q', 'older-than', 'cli'].includes(k)) flags[k] = argv[++i];
+    if (['to', 'cwd', 'resume', 'title', 'role', 'at', 'timeout', 'account', 'direction', 'venue', 'gpu', 'mem', 'ram', 'label', 'est', 'modules', 'model', 'session', 'sync', 'fetch', 'sync-exclude', 'file', 'system', 'url', 'image', 'env', 'cd', 'to', 'in', 'msg', 'rename', 'max', 'runtime', 'drive', 'stage', 'node', 'server', 'exclude', 'via', 'root', 'steps', 'name', 'project', 'version', 'task', 'every', 'cron', 'tz', 'prompt', 'overlap', 'misfire', 'effort', 'ref', 'limit', 'action', 'dir', 'q', 'older-than', 'cli', 'date', 'time', 'end', 'note', 'tags'].includes(k)) flags[k] = argv[++i];
     else flags[k] = true;
   } else pos.push(a);
 }
@@ -915,6 +917,35 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
     die(`unknown schedule subcommand: ${sub}`);
   },
   schedules() { return cmds.schedule(); },
+  async calendar() {
+    const sub = pos[1] || 'ls';
+    const date = flags.date;
+    if (date !== undefined) {
+      const parsed = new Date(date + 'T00:00:00Z');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(+parsed) || parsed.toISOString().slice(0, 10) !== date) {
+        die('Enter --date as YYYY-MM-DD.');
+      }
+    }
+    if (sub === 'ls') {
+      const result = await api('/api/calendar');
+      if (result.error) die(result.error);
+      const items = (result.items || []).filter(item => !date || item.date === date);
+      if (flags.json) console.log(JSON.stringify(items));
+      else for (const item of items) console.log([item.date, item.time, item.title].filter(Boolean).join('  '));
+      return;
+    }
+    if (!['add', 'task'].includes(sub)) die('Use ccd calendar ls, add, or task.');
+    const title = (flags.title || pos.slice(2).join(' ')).trim();
+    if (!title || !date || /[\r\n]/.test(title)) die('A single-line title and --date are required.');
+    const { time, end, note } = flags;
+    if ([time, end].some(clock => clock && !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(clock))) die('Enter --time and --end as HH:MM.');
+    const tags = (flags.tags || '').split(/[,\s]+/).map(tag => tag.replace(/^#/, '')).filter(Boolean);
+    if (tags.some(tag => !/^[\p{L}\p{N}_-]+$/u.test(tag))) die('Use letters, digits, underscores, or hyphens in tags.');
+    const r = sub === 'task' ? await api('/api/calendar/task/add', { title, date, tags })
+      : await api('/api/calendar/event', { event: { title, date, time, end, note } });
+    if (!r.ok) die(r.error || 'Calendar registration failed.');
+    console.log(flags.json ? JSON.stringify(r) : `${date}  ${title}`);
+  },
 };
 
 (async () => {

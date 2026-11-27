@@ -284,7 +284,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
           <button type="button" class="ghost icon-btn btn-sm" data-sc-close aria-label="사이드 채팅 닫기">${ICO.close}</button>
         </div>
       </div>
-      <blockquote class="sidechat-quote">${esc(quote)}</blockquote>
+      <blockquote class="sidechat-quote" ${quote ? '' : 'hidden'}>${esc(quote)}</blockquote>
       <div class="sidechat-msgs">${msgsHtml}${sideChatState.busy ? '<div class="ums" style="margin:4px 0">응답 생성 중…</div>' : ''}</div>
       <div class="sidechat-bar">
         <input type="text" data-sc-in placeholder="선택한 내용에 대해 질문…" ${sideChatState.busy ? 'disabled' : ''}>
@@ -393,6 +393,12 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
     sideFab.hidden = true;
     try { window.getSelection()?.removeAllRanges(); } catch {}
     renderSideChat();
+  };
+  container._openSideChat = (question = '') => {
+    sideChatState.open = true;
+    renderSideChat();
+    const field = $('[data-sc-in]', sidePop);
+    if (question && field && !field.disabled) field.value = question;
   };
   if (sideChatState.open) renderSideChat();
 

@@ -23,8 +23,11 @@ const { nativeFolderKey } = require('./workspace-execution');
 const { unsupported } = require('./workspace-launch');
 const { WorkspaceError } = require('./workspace-paths');
 const { createFolderListSummaries, local, workspaceFailure } = require('./routes-workspace-folders');
+const { discoverSlashCommands } = require('./slash-discovery');
 
 const OV_TTL = 2500;
+const isNativeSlash = b => b.nativeSlash === true && typeof b.text === 'string'
+  && /^\/[\p{L}\p{N}_.:-]+(?: +[^\r\n\t]*)?$/u.test(b.text);
 
 /** Create transcript, overview, search, console/terminal interaction, and launch routes. */
 function createSessionRoutes(hub, workspaceContexts, logError) {
@@ -1053,6 +1056,24 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
   async function handleSessionRoutes(p, url, req, res, body, send, authed) {
     if (!authed(req, url)) { send(res, 401, { error: 'bad token' }); return true; }
 
+    if (p === '/api/slash-commands' && req.method === 'GET') {
+      const { agent, termId, sid } = Object.fromEntries(url.searchParams);
+      if (!['claude', 'codex', 'agy'].includes(agent)
+          || (termId && !/^\d+$/.test(termId)) || (sid && !validSessionId(sid))) {
+        send(res, 400, { error: 'Invalid CLI or session' });
+        return true;
+      }
+      const term = termId ? hub.terms.get(termId) : null;
+      const doc = sid && !projects.hidden().has(sid) ? index.get(sid) : null;
+      const env = hub.agentOf?.(term || {}) === agent ? term?.meta?.envFlags : null;
+      const configHome = agent === 'codex'
+        ? env?.CODEX_HOME || (doc?.agent === agent && inferCodexHomeFromFile?.(doc.file)) || process.env.CODEX_HOME
+        : agent === 'claude' ? env?.CLAUDE_CONFIG_DIR || process.env.CLAUDE_CONFIG_DIR : undefined;
+      const commands = await discoverSlashCommands({ agent, configHome, cwd: term?.cwd || doc?.cwd });
+      send(res, 200, { commands });
+      return true;
+    }
+
     if (p === '/api/overview') {
       const overview = await overviewSnapshot();
       const terms = await folderList(overview.terms, req, (item) => `term:${item.id}`);
@@ -1564,6 +1585,8 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
             if (outcome.handled) { send(res, 200, outcome.result); return true; }
           }
           if (textSubmission && isAgent) {
+            const nativeSlash = isNativeSlash(b);
+            if (nativeSlash && initial.busy) throw new Error('CLI가 대기 상태일 때 명령어를 실행하세요.');
             const last = consoleLastSubmission.get(pid);
             if (b.resendIfMissing && last?.text === b.text && last.title === initial.title) {
               send(res, 200, { ok: true, alreadyRecognized: true });
@@ -1574,7 +1597,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
               text: b.text, read, guard, waitFor: hub.waitFor, sleep: hub.sleep,
               write: (data) => data === PTY_KEYS.enter || b.immediate && [PTY_KEYS.tab, PTY_KEYS['alt+m']].includes(data)
                 ? writeKey(data) : write(data),
-              delay: hub.consoleSubmitDelay(b.text), pasteMarker: cli,
+              delay: hub.consoleSubmitDelay(b.text), pasteMarker: cli, nativeSlash,
               queueKey: ({ busy, screen }) => b.immediate && cli === 'codex' && busy && /tab to (?:queue|steer)/i.test(screen) ? PTY_KEYS.tab : '',
               flushQueue: b.immediate && cli === 'agy' ? flushNewAgyQueue : undefined,
               started: (view, baseline) => !baseline.busy && view.busy && view.screen !== baseline.screen,
@@ -1714,8 +1737,9 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
         await hub.sleep(hub.SUBMIT_DELAY);
       }
       const agent = hub.agentOf?.(t) || (hub.isCodexTerm(t) ? 'codex' : hub.isAgyTerm?.(t) ? 'agy' : null);
+      const nativeSlash = isNativeSlash(b);
       const originalText = b.text;
-      if (agent === 'codex' && b.submit && typeof b.text === 'string') {
+      if (agent === 'codex' && b.submit && !nativeSlash && typeof b.text === 'string') {
         b.text = prepareProjectPrompt(baseDir, b.text, t.meta?.cmd, true);
       }
       const delivery = b.text !== originalText ? { submittedText: b.text } : {};
@@ -1754,7 +1778,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       }
       if (b.submit && typeof b.text === 'string' && b.text.trim() && !b.keys?.length && agent) {
         try {
-          await dispatchTerminalPrompt(hub, t, b.text, { cli: agent, immediate: b.immediate, resend: b.resendIfMissing, clearDraft: !!b.clearDraft });
+          await dispatchTerminalPrompt(hub, t, b.text, { cli: agent, nativeSlash, immediate: b.immediate, resend: b.resendIfMissing, clearDraft: !!b.clearDraft });
           send(res, 200, { ok: true, immediate: !!b.immediate, ...delivery });
         } catch (e) {
           if (e instanceof WorkspaceError) throw e;

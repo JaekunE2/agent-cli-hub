@@ -32,6 +32,7 @@ Every command starts the server if it is down. Run it with no arguments for the 
 | Autonomous research projects | `ccd research ls \| show <slug> \| msg <slug> <text> \| pause <slug> \| resume <slug>` |
 | Lightweight hub apps (run & read outputs) | `ccd app ls \| run <id> [--action A] [--wait] \| data <id> [--file latest] [--q K] \| files <id> \| import <dir> \| rm <id>` |
 | Scheduled CLI runs (add/remove/run/pause/resume) | `ccd schedule ls \| add --name N --project P (--every M \| --cron E) --prompt "..." [--cli codex\|claude\|agy] \| rm <id\|name> \| pause <id\|name> \| resume <id\|name> \| run <id\|name> \| runs <id\|name>` |
+| Calendar events and tasks | `ccd calendar ls [--date YYYY-MM-DD]` · `ccd calendar add "title" --date YYYY-MM-DD [--time HH:MM]` · `ccd calendar task "title" --date YYYY-MM-DD [--tags tag1,tag2]` |
 | GPU status and queue | `ccd gpu` · plan: `ccd gpu plan --mem 12G --est 90m` |
 | **Run a GPU job through the queue** | `ccd gpu run --mem 12G [--ram 40G] --est 90m --label <name> -- <command>` → waits its turn, runs with CUDA_VISIBLE_DEVICES set, releases when it ends (`--exclusive` = whole GPU) |
 | Register an output (video, PDF, figure) on your session's "Outputs" tab | `ccd artifact add <path> [--title T]` |

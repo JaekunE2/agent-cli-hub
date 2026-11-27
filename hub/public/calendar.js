@@ -250,17 +250,18 @@ function calEventDialog(ev) {
       const payload = { event: { id: ev.id, title, date, time, end, note: $('#ceN', d).value.trim() } };
       const r = await api('/api/calendar/event', { method: 'POST', body: payload }).catch((er) => ({ error: er.message }));
       if (r.error) return toast(r.error, 6000, 'danger');
-      d.close(); toast('저장했습니다'); await loadCalendar(); paintCalendar();
+      d.close(); toast('저장했습니다'); await loadCalendar();
+      if (state.sel.kind === 'calendar') paintCalendar();
     } finally { if (d.isConnected) okBtn.disabled = false; }
   };
   form.onsubmit = (e) => { e.preventDefault(); submit(); };
   okBtn.onclick = submit;
 }
 
-function calTaskDialog(date) {
+function calTaskDialog(date, { title = '', tags = '' } = {}) {
   const body = `<form id="calTaskForm" style="display:flex;flex-direction:column;gap:10px">
-    <label>할 일<br><input id="ctT" style="width:100%" placeholder="예: 서버 설치 전 랙 공간 확인" required></label>
-    <div class="row" style="gap:8px"><label>마감<br><input id="ctD" type="date" value="${esc(date)}" required></label><label style="flex:1">태그 (선택, 띄어쓰기로 구분)<br><input id="ctG" style="width:100%" placeholder="행정 서버"></label></div>
+    <label>할 일<br><input id="ctT" style="width:100%" value="${esc(title)}" placeholder="예: 서버 설치 전 랙 공간 확인" required></label>
+    <div class="row" style="gap:8px"><label>마감<br><input id="ctD" type="date" value="${esc(date)}" required></label><label style="flex:1">태그 (선택, 띄어쓰기로 구분)<br><input id="ctG" style="width:100%" value="${esc(tags)}" placeholder="행정 서버"></label></div>
     <div class="empty" style="padding:0">할 일 목록(todo.md)에 마감일과 함께 추가됩니다.</div></form>`;
   const d = openDrawer({ title: '＋ 할 일 (todo.md)', bodyHTML: body, footerHTML: '<button data-drw-close>취소</button><button class="primary" data-ok>추가</button>', width: 440 });
   d.classList.add('drw-compact');
@@ -274,7 +275,8 @@ function calTaskDialog(date) {
     try {
       const r = await api('/api/calendar/task/add', { method: 'POST', body: { title, date: $('#ctD', d).value, tags: $('#ctG', d).value.split(/\s+/).map((x) => x.replace(/^#/, '')).filter(Boolean) } }).catch((er) => ({ error: er.message }));
       if (r.error) return toast(r.error, 6000, 'danger');
-      d.close(); toast('todo.md에 추가했습니다'); await loadCalendar(); paintCalendar();
+      d.close(); toast('todo.md에 추가했습니다'); await loadCalendar();
+      if (state.sel.kind === 'calendar') paintCalendar();
     } finally { if (d.isConnected) okBtn.disabled = false; }
   };
   form.onsubmit = (e) => { e.preventDefault(); submit(); };

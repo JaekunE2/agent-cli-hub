@@ -181,7 +181,7 @@ function viewSearch() {
 }
 
 // ---------- Instant Command Palette ----------
-function openCommandPalette() {
+function openCommandPalette(initialQuery = '') {
   if ($('.cmdk-backdrop')) return;
   const trigger = document.activeElement;
   const wrap = document.createElement('div');
@@ -193,6 +193,7 @@ function openCommandPalette() {
   </div>`;
   document.body.appendChild(wrap);
   const inp = $('#cmdkIn', wrap), listEl = $('#cmdkList', wrap);
+  inp.value = typeof initialQuery === 'string' ? initialQuery : '';
   let items = [], idx = 0;
   const close = () => {
     document.removeEventListener('keydown', onKey, true);

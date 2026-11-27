@@ -69,19 +69,19 @@
     firstInput?.focus({ preventScroll: true });
   }
 
-  function showAppFormModal(existing = null) {
+  function showAppFormModal(existing = null, { cwd = '', importOnly = false, fromSlash = false } = {}) {
     const isEdit = Boolean(existing);
     const firstAct = existing?.actions?.[0] || { id: 'run', label: '실행', kind: 'command', cmd: '', prompt: '' };
     const html = `
       ${!isEdit ? `<div style="padding:10px 12px;border:1px dashed var(--line-strong);border-radius:10px;margin-bottom:14px;">
         <div style="font-weight:600;font-size:.88rem;margin-bottom:6px;">폴더에서 app.json 가져오기 (Import)</div>
         <div style="display:flex;gap:6px;">
-          <input id="impDir" class="btn-sm" style="flex:1;" placeholder="예: D:\\Gitsource\\...\\동향파악">
+          <input id="impDir" class="btn-sm" style="flex:1;" value="${esc(cwd)}" placeholder="예: D:\\Gitsource\\...\\동향파악">
           <button type="button" class="btn-sm" id="btnPickImpDir">폴더 선택</button>
           <button type="button" class="btn-sm" id="btnImportDir">가져오기</button>
         </div>
       </div>` : ''}
-      <form id="appForm" style="display:grid;gap:10px;font-size:.9rem;">
+      <form id="appForm" ${importOnly ? 'hidden' : ''} style="display:${importOnly ? 'none' : 'grid'};gap:10px;font-size:.9rem;">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
           <label>앱 ID <input name="id" required ${isEdit ? 'readonly' : ''} value="${esc(existing?.id || '')}" placeholder="my-app" class="btn-sm" style="width:100%;margin-top:4px;"></label>
           <label>이름 <input name="name" required value="${esc(existing?.name || '')}" placeholder="앱 이름" class="btn-sm" style="width:100%;margin-top:4px;"></label>
@@ -99,7 +99,7 @@
           </label>
           <label>작업 폴더 (cwd)
             <div style="display:flex;gap:6px;margin-top:4px;">
-              <input name="cwd" value="${esc(existing?.cwd || '')}" placeholder="D:\\path\\to\\app" class="btn-sm" style="flex:1;">
+              <input name="cwd" value="${esc(existing?.cwd || cwd)}" placeholder="D:\\path\\to\\app" class="btn-sm" style="flex:1;">
               <button type="button" class="btn-sm" id="btnPickAppCwd">폴더 선택</button>
             </div>
           </label>
@@ -126,7 +126,7 @@
         </div>
       </form>`;
 
-    openModal(isEdit ? `앱 설정: ${existing.name}` : '새 앱 추가', html, (wrap, close) => {
+    openModal(isEdit ? `앱 설정: ${existing.name}` : importOnly ? '앱 가져오기' : '새 앱 추가', html, (wrap, close) => {
       const form = wrap.querySelector('#appForm');
       const syncAppFields = () => {
         const tp = form.querySelector('[name=type]').value;
@@ -159,7 +159,7 @@
           const r = await api('/api/apps/import', { method: 'POST', body: { dir }, requireOk: true });
           close();
           toast(`${r.app.name} 앱을 가져왔습니다`);
-          viewApps(r.app.id);
+          if (!fromSlash || state.sel.kind === 'apps') viewApps(r.app.id);
         } catch (e) { toast(e.message, 5000, 'danger'); }
       });
 
@@ -194,7 +194,7 @@
           const r = await api(url, { method: isEdit ? 'PUT' : 'POST', body: payload });
           close();
           toast(isEdit ? '앱 설정을 저장했습니다' : '새 앱을 등록했습니다');
-          viewApps(r.app.id);
+          if (!fromSlash || state.sel.kind === 'apps') viewApps(r.app.id);
         } catch (er) { toast(er.message, 5000, 'danger'); }
       });
     });
@@ -755,6 +755,28 @@
       button.onclick = () => viewApps(apps[Number(button.dataset.appOpen)].id);
     });
   }
+
+  window.openAppSlash = async (args, cwd, isCurrent) => {
+    const [sub, id, actionId] = args.split(/\s+/);
+    if (!sub || /^(?:등록|add)$/i.test(sub)) return showAppFormModal(null, { cwd, fromSlash: true });
+    if (/^(?:가져오기|import)$/i.test(sub)) {
+      return showAppFormModal(null, { cwd: args.slice(sub.length).trim() || cwd, importOnly: true, fromSlash: true });
+    }
+    if (!/^(?:실행|run)$/i.test(sub)) throw new Error('/app add, /app import, /app run ID 중 하나를 사용하세요.');
+    if (!id) return select({ kind: 'apps' });
+    const apps = await fetchApps();
+    if (!isCurrent()) return;
+    const app = apps.find(item => item.id === id);
+    if (!app) throw new Error('등록된 앱을 찾을 수 없습니다.');
+    const action = actionId ? app.actions?.find(item => item.id === actionId) : app.actions?.[0];
+    if (!action) throw new Error('실행할 앱 작업을 찾을 수 없습니다.');
+    if (action.params?.length) return select({ kind: 'apps', id });
+    const { run } = await api(`/api/apps/${encodeURIComponent(id)}/run`, {
+      method: 'POST', body: { actionId: action.id, params: {} }, requireOk: true,
+    });
+    if (run.status === 'error') throw new Error(run.stderr || '앱을 실행할 수 없습니다.');
+    toast(`${app.name} 실행을 시작했습니다`);
+  };
 
   window.viewApps = async function viewApps(appId = '') {
     stopPoll();

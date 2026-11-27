@@ -906,6 +906,7 @@
   }
 
   async function viewVault() {
+    if (['skills', 'mcp'].includes(state.sel.tab)) vaultTab = state.sel.tab;
     const gen = viewGen;
     setBar('');
     $('#view').innerHTML = `<div class="sys-shell">${systemTopHTML('vault')}<div class="sys-body"><div class="page-wrap" id="vaultBody"><div class="empty">공통 자원 정보를 불러오는 중…</div></div></div></div>`;

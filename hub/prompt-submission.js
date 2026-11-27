@@ -32,7 +32,7 @@ const hasCodexPasteDraft = (screen, cursorLine) => PASTE_MARKER.test(composerTex
 const isPlaceholder = (text) => /^(?:Ask Codex to do anything|Ask anything|Type (?:your|a) message|Message Claude|Try\s+"[^"\n]+")(?:[.…]+)?$/i.test((text || '').trim());
 
 async function submitPrompt({ text, read, write, guard, waitFor, sleep, delay = 350,
-  started, paste = text, explicitDraft = false, clearDraft = false, queueKey, pasteMarker, flushQueue, previousDraft, onDraft, resend = false }) {
+  started, paste = text, explicitDraft = false, clearDraft = false, queueKey, pasteMarker, flushQueue, previousDraft, onDraft, resend = false, nativeSlash = false }) {
   if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text)) throw new Error('CLI 메시지에 제어 문자를 보낼 수 없습니다.');
   const expected = unwrap(text);
   const matched = (draft) => draft != null && unwrap(draft) === expected;
@@ -151,6 +151,17 @@ async function submitPrompt({ text, read, write, guard, waitFor, sleep, delay = 
     throw new Error('CLI 입력창에서 전송한 내용을 확인하지 못했습니다.');
   }
   onDraft?.(view.draft);
+  if (nativeSlash) {
+    // A command can open an interactive menu, so a second Enter could choose an option.
+    const before = view.screen;
+    await write('\r');
+    const accepted = await waitFor(async () => {
+      const next = await read();
+      return next.screen !== before && !sameDraft(composerText(next.screen, next.cursorLine));
+    }, 2500, 150);
+    if (!accepted) throw new Error(UNCONFIRMED);
+    return;
+  }
   let baseline = view;
   const since = Date.now();
   const key = queueKey?.(view) || '\r';

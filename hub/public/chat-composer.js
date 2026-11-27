@@ -544,10 +544,17 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
     };
     chatHost._triggerPoll?.();
   };
-  const sendToTerm = async (id, text, waitForReady = false, resendIfMissing = false) => {
-    const result = await api('/api/term/send', { method: 'POST', body: { id, text, submit: true, waitForReady, resendIfMissing, clearDraft: true } });
+  const sendToTerm = async (id, text, waitForReady = false, resendIfMissing = false, nativeCommand = null) => {
+    const result = await api('/api/term/send', { method: 'POST', body: { id, text, submit: true, waitForReady, resendIfMissing, clearDraft: true, nativeSlash: !!nativeCommand } });
     if (!result.ok) throw new Error(result.error || '터미널 입력을 확인하지 못했습니다.');
-    notifySent(id, text, result.submittedText);
+    if (!nativeCommand) notifySent(id, text, result.submittedText);
+    if (nativeCommand?.tui && barHost.isConnected) {
+      const term = findLiveTerm();
+      if (term) {
+        window.ACH_DOCK?.saveDockOpen('term', ['term', 'chat']);
+        openResumedTerm(term, { kind: term.agent, resume: resolveTermSessionId(term) }, 'split');
+      }
+    }
   };
 
   const launchWithConfig = async ({ openTerm = false, pendingText = '' } = {}) => {
@@ -682,9 +689,12 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
   let lastReplyAt = 0;
   const sendReply = async (retry = false) => {
     if (sendingReply || repBtn.disabled) return;
-    if (chatAttCtl.isLoading()) return toast('첨부 파일을 준비하는 중입니다…');
-    const attPaths = chatAttCtl.takePaths();
+    if (slash.dispatch()) return;
+    slash.close();
     const typed = repIn.value.trim();
+    const nativeCommand = slash.native(typed);
+    if (!nativeCommand && chatAttCtl.isLoading()) return toast('첨부 파일을 준비하는 중입니다…');
+    const attPaths = nativeCommand ? [] : chatAttCtl.takePaths();
     const bodyText = [...attPaths, typed].filter(Boolean).join(' ');
     if (!bodyText) return;
     if (!retry && bodyText === lastReplyText && Date.now() - lastReplyAt < 1500) {
@@ -692,7 +702,7 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       return;
     }
     let quotePrefix = '';
-    if (quotedMsg) {
+    if (quotedMsg && !nativeCommand) {
       const snippet = String(quotedMsg.text).trim().slice(0, 800);
       const lines = snippet.split('\n').slice(0, 12).map((l) => `> ${l}`);
       if (quotedMsg.text.length > 800 || quotedMsg.text.split('\n').length > 12) lines.push('> …');
@@ -708,6 +718,13 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
     const prevBtnTxt = repBtn.textContent;
     repBtn.textContent = '전송 중…';
     try {
+      const launchAndSend = async () => {
+        if (!nativeCommand) return launchWithConfig({ pendingText: text });
+        const term = await launchWithConfig();
+        if (!term?.id) throw new Error('터미널을 열 수 없습니다.');
+        await sendToTerm(term.id, text, true, false, nativeCommand);
+        return term;
+      };
       const existing = findLiveTerm();
       if (existing) {
         const cfg = getConfig();
@@ -720,11 +737,11 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
           || (cfg.account !== ltAcc && !(cfg.account === `__cli__:${ltAgent}` && !existing.account?.id))
         );
         if (changed) {
-          await launchWithConfig({ pendingText: text });
+          await launchAndSend();
           return;
         }
         try {
-          await sendToTerm(existing.id, text, false, retry);
+          await sendToTerm(existing.id, text, false, retry, nativeCommand);
           syncConn();
           return;
         } catch (sendErr) {
@@ -735,23 +752,24 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
           await refreshOverview();
           const fresh = findLiveTerm();
           if (fresh && String(fresh.id) !== String(existing.id)) {
-            await sendToTerm(fresh.id, text, false, retry);
+            await sendToTerm(fresh.id, text, false, retry, nativeCommand);
             syncConn();
             return;
           }
-          const reopened = await launchWithConfig({ pendingText: text });
+          const reopened = await launchAndSend();
           if (reopened) toast(`터미널 t:${reopened.id}을(를) 다시 연결해 메시지를 전송했습니다`);
           return;
         }
       }
       if (activeConsolePid) {
-        const r = await api('/api/console/send', { method: 'POST', body: { pid: activeConsolePid, text, submit: true, resendIfMissing: retry } });
+        const r = await api('/api/console/send', { method: 'POST', body: { pid: activeConsolePid, text, submit: true, resendIfMissing: retry, nativeSlash: !!nativeCommand } });
         if (!r.ok) throw new Error(r.error || '터미널 입력을 확인하지 못했습니다.');
         syncConn();
-        notifySent(null, text);
+        if (!nativeCommand) notifySent(null, text);
+        if (nativeCommand?.tui) toast('명령 결과는 연결된 CLI 창에서 확인하세요.');
         return;
       }
-      const t = await launchWithConfig({ pendingText: text });
+      const t = await launchAndSend();
       if (t) toast(`터미널 t:${t.id}을(를) 연결해 메시지를 전송했습니다`);
     } catch (er) {
       lastReplyAt = 0;
@@ -766,6 +784,17 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       }
     }
   };
+  const slash = bindSlashPicker(repIn, () => {
+    const term = findLiveTerm();
+    const cfg = getConfig();
+    return {
+      term, sid: resolveTermSessionId(term) || sid,
+      cwd: term?.cwd || cwd,
+      agent: userEditedSettings ? cfg.agent : term?.agent || cfg.agent,
+      accountId: userEditedSettings ? cfg.account : term?.account?.id || cfg.account,
+      openChatAction: (action, args) => openSlashChatAction(action, args, barHost, chatHost),
+    };
+  }, sendReply);
   repBtn.onclick = () => sendReply();
   if (typeof window.bindEnterSubmit === 'function') window.bindEnterSubmit(repIn, () => sendReply());
   else repIn.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendReply(); } };

@@ -1,4 +1,4 @@
-function openScheduleForm({ item, projects, capabilities, onSaved, onClose }) {
+function openScheduleForm({ item, projects, capabilities, defaults, onSaved = () => {}, onClose }) {
   const drawer = openDrawer({
     title: item ? '스케줄 편집' : '스케줄 만들기',
     width: 640,
@@ -8,7 +8,7 @@ function openScheduleForm({ item, projects, capabilities, onSaved, onClose }) {
       <label>이름 <input name="name" required maxlength="120" placeholder="예: 일일 서버 점검" value="${esc(item?.name || '')}"></label>
       ${scheduleTriggerFields()}
       ${scheduleTargetFields()}
-      <label>프롬프트 <textarea name="prompt" required maxlength="16000" rows="4" placeholder="주기적으로 실행할 작업 지시를 입력하세요">${esc(item?.prompt || '')}</textarea></label>
+      <label>프롬프트 <textarea name="prompt" required maxlength="16000" rows="4" placeholder="주기적으로 실행할 작업 지시를 입력하세요">${esc(item?.prompt ?? defaults?.prompt ?? '')}</textarea></label>
       <details class="sch-advanced">
         <summary>고급 옵션 (참조 폴더 · 동시 실행 · 제한 시간)</summary>
         <div class="sch-adv-body">
@@ -34,7 +34,7 @@ function openScheduleForm({ item, projects, capabilities, onSaved, onClose }) {
   fields.overlap.value = item?.overlap || 'skip';
   fields.misfire.value = item?.misfire || 'skip';
   const trigger = bindScheduleTrigger(form, item?.trigger);
-  const target = bindScheduleTarget(fields, projects, capabilities, item?.target);
+  const target = bindScheduleTarget(fields, projects, capabilities, item?.target ?? defaults?.target);
   const save = $('[data-schedule-save]', drawer);
   const error = $('[data-form-error]', drawer);
   save.onclick = () => form.requestSubmit();

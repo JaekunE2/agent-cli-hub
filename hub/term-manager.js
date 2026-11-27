@@ -94,7 +94,7 @@ async function waitForTerminalInput(hub, term) {
   if (!ready) throw new Error('CLI가 작업 입력을 받을 준비가 되지 않았습니다.');
 }
 
-async function dispatchTerminalPrompt(hub, term, text, { submitDraft = false, clearDraft = false, cli, immediate = false, resend = false } = {}) {
+async function dispatchTerminalPrompt(hub, term, text, { submitDraft = false, clearDraft = false, cli, immediate = false, resend = false, nativeSlash = false } = {}) {
   if (term._promptSubmission) throw new Error('터미널 입력을 전송 중입니다.');
   term._promptSubmission = true;
   try {
@@ -115,6 +115,7 @@ async function dispatchTerminalPrompt(hub, term, text, { submitDraft = false, cl
     };
     const priorTurn = sessionTurn();
     const initial = read();
+    if (nativeSlash && initial.busy) throw new Error('CLI가 대기 상태일 때 명령어를 실행하세요.');
     if (term.meta?.projectTask && sessionStartupBlock(initial.screen) === 'hooks-menu') {
       await dismissProjectHookMenu(hub, term, initial.screen);
       if (!await (hub.waitFor || waitFor)(() => sessionStartupBlock(read().screen) !== 'hooks-menu', 5000, 150)) {
@@ -134,15 +135,15 @@ async function dispatchTerminalPrompt(hub, term, text, { submitDraft = false, cl
     const previousDraft = pending?.text === text && pending.inputSeq === inputSeq ? pending.draft : undefined;
     term._pendingPromptDraft = undefined;
     await submitPrompt({
-      text, read, guard, explicitDraft: submitDraft, clearDraft, resend, waitFor: hub.waitFor || waitFor, sleep: hub.sleep || sleep,
+      text, read, guard, explicitDraft: submitDraft, clearDraft: clearDraft && !nativeSlash, resend, nativeSlash, waitFor: hub.waitFor || waitFor, sleep: hub.sleep || sleep,
       previousDraft, onDraft: (draft) => { term._pendingPromptDraft = { text, inputSeq, draft }; },
-      paste: cli === 'codex' || ((cli === 'agy' || cli === 'claude') && text.length > 80) || /[\n\t]/.test(text) ? `\x1b[200~${text}\x1b[201~` : text,
+      paste: !nativeSlash && (cli === 'codex' || ((cli === 'agy' || cli === 'claude') && text.length > 80) || /[\n\t]/.test(text)) ? `\x1b[200~${text}\x1b[201~` : text,
       pasteMarker: cli,
       write: async (data) => {
         guard(read());
         hub.termMonitor?.onInput(term, data);
         await writeProjectTerm(hub, term, data);
-        if (term.meta?.projectAutoClose && !term.meta.projectSubmitted && (data === '\r' || data === '\t')) {
+        if (!nativeSlash && term.meta?.projectAutoClose && !term.meta.projectSubmitted && (data === '\r' || data === '\t')) {
           term.meta.projectSubmitted = true;
           hub.ptyPost(term.id, '/meta', { id: term.id, meta: { projectSubmitted: true } });
         }
