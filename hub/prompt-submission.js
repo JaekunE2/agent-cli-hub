@@ -104,7 +104,7 @@ async function submitPrompt({ text, read, write, guard, waitFor, sleep, delay = 
             return !view.draft || isPlaceholder(view.draft);
           }, 900, 120);
         }
-        if (!cleared && !view.busy) {
+        if (!cleared && !view.busy && pasteMarker !== 'codex') {
           await write('\x03');
           cleared = await waitFor(async () => {
             view = await current();

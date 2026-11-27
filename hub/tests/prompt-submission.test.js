@@ -285,3 +285,24 @@ test('composerText still reads idle/pasted Codex prompt when ConPTY parks cursor
   ].join('\n');
   assert.equal(composerText(withMenu, 3), null);
 });
+
+test('Codex clearDraft never sends Ctrl+C (\\x03) which would exit an idle Codex process', async () => {
+  const { submitPrompt } = require('../prompt-submission');
+  const writes = [];
+  await assert.rejects(
+    () => submitPrompt({
+      text: 'new message',
+      pasteMarker: 'codex',
+      clearDraft: true,
+      read: () => ({ screen: '› leftover multiline\n  draft text', busy: false }),
+      guard() {},
+      waitFor: async (fn) => await fn(),
+      sleep: async () => {},
+      started: (view) => view.busy,
+      write: (data) => writes.push(data),
+    }),
+    /CLI 입력창에 제출되지 않은 다른 내용이 있습니다/
+  );
+  assert.equal(writes.includes('\x03'), false);
+  assert.deepEqual(writes, ['\x05\x15', '\x01\x0b']);
+});
