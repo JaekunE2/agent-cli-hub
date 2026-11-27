@@ -489,3 +489,38 @@ test('local registry: settings, hub plugin, update and uninstall', async (t) => 
   assert.equal(fs.existsSync(pdir), false);
   assert.equal(fs.existsSync(apps[0].cwd), false);
 });
+
+test('private registry entry: release and asset fetched with the user token, redirect target without it', async (t) => {
+  const repo = 'owner/private-app';
+  let zip, digest;
+  const seen = [];
+  process.env.CCD_GITHUB_TOKEN = 'tok-123';
+  const h = makeHarness({ storeFetch: async (input, opts = {}) => {
+    const url = String(input);
+    seen.push({ url, auth: opts.headers?.Authorization || '' });
+    if (url.includes('raw.githubusercontent.com')) return Response.json({ apps: [] });
+    if (url.endsWith('/releases/latest')) return Response.json({ tag_name: 'v2', assets: [{ name: 'private-app.zip', digest, size: zip.length, state: 'uploaded',
+      url: `https://api.github.com/repos/${repo}/releases/assets/7`, browser_download_url: `https://github.com/${repo}/releases/download/v2/private-app.zip` }] });
+    if (url === `https://api.github.com/repos/${repo}/releases/assets/7`) return new Response(null, { status: 302, headers: { location: 'https://objects.githubusercontent.com/x/private-app.zip' } });
+    if (url.startsWith('https://objects.githubusercontent.com/')) return new Response(zip);
+    return new Response('nope', { status: 404 });
+  } });
+  t.after(() => { delete process.env.CCD_GITHUB_TOKEN; h.mod.stop(); fs.rmSync(h.tmp, { recursive: true, force: true }); });
+  fs.writeFileSync(path.join(h.appDir, 'app.json'), JSON.stringify({ id: 'private-app', name: 'Private', type: 'command', actions: [{ cmd: 'echo hi' }] }));
+  const zipPath = path.join(h.tmp, 'p.zip');
+  execFileSync(process.env.CCD_PYTHON || 'python', ['-m', 'zipfile', '-c', zipPath, h.appDir], { windowsHide: true });
+  zip = fs.readFileSync(zipPath);
+  digest = 'sha256:' + createHash('sha256').update(zip).digest('hex');
+  const cat = path.join(h.tmp, 'private-catalog.json');
+  fs.writeFileSync(cat, JSON.stringify({ apps: [{ repo: `https://github.com/${repo}`, asset: 'private-app.zip', private: true, name: 'Private' }] }));
+  assert.equal((await h.call('POST', '/api/apps-store/source', { source: cat })).status, 200);
+  const entry = (await h.call('GET', '/api/apps-store')).payload.entries.find((e) => e.repo === repo);
+  assert.equal(entry.private, true);
+  const preview = (await h.call('POST', '/api/apps-store/package', { key: entry.key })).payload.package;
+  assert.equal(preview.version, 'v2');
+  assert.equal((await h.call('POST', '/api/apps-store/package', { key: entry.key, digest: preview.digest })).status, 200);
+  assert.ok(seen.some((s) => s.url.endsWith('/releases/latest') && s.auth === 'Bearer tok-123'));
+  assert.ok(seen.some((s) => s.url.endsWith('/releases/assets/7') && s.auth === 'Bearer tok-123'));
+  assert.ok(seen.filter((s) => s.url.startsWith('https://objects.githubusercontent.com/')).every((s) => !s.auth));
+  assert.equal(h.mod.loadStore().apps.length, 1);
+});

@@ -108,7 +108,7 @@ async function registryEntries(source, fetcher) {
       const repo = githubRepo(item.repo);
       const asset = str(item.asset, 200);
       const sha = /^[a-f\d]{64}$/i.test(item.sha256 || '') ? item.sha256.toLowerCase() : '';
-      out.push({ ...meta, key: repo + (asset ? ':' + asset : ''), repo, asset, sha256: sha, name: meta.name || repo,
+      out.push({ ...meta, key: repo + (asset ? ':' + asset : ''), repo, asset, sha256: sha, name: meta.name || repo, private: item.private === true,
         requires: item.requires && typeof item.requires === 'object' ? item.requires : null });
     } catch {}
   }

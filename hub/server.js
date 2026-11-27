@@ -502,7 +502,7 @@ Object.assign(hub, { readNotices, postNotice, OPERATOR_DIR, operatorTerm, ensure
 // ---------- HTTP & WebSocket ----------
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2' };
 const STATIC = {
-  '/styles.css': 'public/styles.css', '/components.css': 'public/components.css',
+  '/styles.css': 'public/styles.css', '/components.css': 'public/components.css', '/app-store.css': 'public/app-store.css',
   '/fonts/jetbrains-mono.woff2': 'public/fonts/jetbrains-mono.woff2',
   '/fonts/jetbrains-mono-italic.woff2': 'public/fonts/jetbrains-mono-italic.woff2',
   '/schedules.css': 'public/schedules.css', '/schedules-ui.js': 'public/schedules-ui.js',

@@ -50,9 +50,10 @@ async function readLimited(response, maxBytes) {
   return Buffer.concat(chunks, size);
 }
 
-async function latestPackage(fetcher, repo, assetName) {
+// token: only for a private repository the user can read (their own GitHub token); never sent anywhere but api.github.com
+async function latestPackage(fetcher, repo, assetName, token = '') {
   const response = await fetcher(API + repo + '/releases/latest', {
-    headers: HEADERS, redirect: 'error', signal: AbortSignal.timeout(10000),
+    headers: { ...HEADERS, ...(token ? { Authorization: `Bearer ${token}` } : {}) }, redirect: 'error', signal: AbortSignal.timeout(10000),
   });
   const release = JSON.parse(await readLimited(response, 1024 * 1024));
   const assets = (release.assets || []).filter(a => a.state === 'uploaded' && /\.zip$/i.test(a.name));
@@ -63,17 +64,21 @@ async function latestPackage(fetcher, repo, assetName) {
   if (!/^sha256:[a-f\d]{64}$/.test(asset.digest) || !Number.isSafeInteger(asset.size) || asset.size <= 0 || asset.size > ZIP_LIMIT) {
     throw new Error('ZIP의 SHA-256 또는 크기를 확인할 수 없습니다.');
   }
-  return { repo, version: release.tag_name, asset: asset.name, digest: asset.digest, download: asset.browser_download_url };
+  return { repo, version: release.tag_name, asset: asset.name, digest: asset.digest, download: asset.browser_download_url, apiAsset: asset.url };
 }
 
-async function downloadPackage(fetcher, pkg) {
-  let url = new URL(pkg.download);
-  if (url.origin !== 'https://github.com' || !url.pathname.toLowerCase().startsWith('/' + pkg.repo + '/releases/download/')) {
-    throw new Error('GitHub 릴리스 다운로드 주소가 올바르지 않습니다.');
-  }
+async function downloadPackage(fetcher, pkg, token = '') {
+  // a private release asset is fetched through the API with the token; the redirect target gets no token
+  let url = new URL(token ? pkg.apiAsset || '' : pkg.download, 'https://invalid.invalid');
+  const okStart = token
+    ? url.origin === 'https://api.github.com' && url.pathname.toLowerCase().startsWith('/repos/' + pkg.repo + '/releases/assets/')
+    : url.origin === 'https://github.com' && url.pathname.toLowerCase().startsWith('/' + pkg.repo + '/releases/download/');
+  if (!okStart) throw new Error('GitHub 릴리스 다운로드 주소가 올바르지 않습니다.');
   const signal = AbortSignal.timeout(35000);
   for (let count = 0; count < 4; count++) {
-    const response = await fetcher(url, { redirect: 'manual', signal });
+    const first = count === 0 && token;
+    const response = await fetcher(url, { redirect: 'manual', signal,
+      ...(first ? { headers: { ...HEADERS, Accept: 'application/octet-stream', Authorization: `Bearer ${token}` } } : {}) });
     if (![301, 302, 303, 307, 308].includes(response.status)) {
       const zip = await readLimited(response, ZIP_LIMIT);
       if ('sha256:' + createHash('sha256').update(zip).digest('hex') !== pkg.digest) {

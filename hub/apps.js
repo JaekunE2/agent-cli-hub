@@ -109,7 +109,7 @@ function applyTemplate(str, vars) {
 
 module.exports = function appsModule(deps = {}) {
   const dataFile = deps.dataFile || path.join(__dirname, 'data', 'apps.json');
-  const appStore = createAppStore({ dataFile, fetcher: deps.storeFetch, python: deps.python });
+  const appStore = createAppStore({ dataFile, fetcher: deps.storeFetch, python: deps.python, secretsDir: deps.secretsDir || path.join(__dirname, 'secrets') });
   const runsFile = deps.runsFile || path.join(__dirname, 'data', 'app-runs.json');
   const secretsDir = deps.secretsDir || path.join(__dirname, 'secrets');
   const hubDir = deps.hubDir || __dirname;

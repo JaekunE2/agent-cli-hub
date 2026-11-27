@@ -11,7 +11,17 @@ const exec = promisify(execFile);
 const SHARED = 'https://raw.githubusercontent.com/JaekunE2/agent-cli-hub/dev_side/hub/app-catalog.json';
 const bundled = require('./app-catalog.json');
 
-module.exports = function createAppStore({ dataFile, fetcher = fetch, python = process.env.CCD_PYTHON || 'python' }) {
+module.exports = function createAppStore({ dataFile, fetcher = fetch, python = process.env.CCD_PYTHON || 'python', secretsDir = '' }) {
+  // the user's own GitHub token, only for private app repositories: env, a secrets file, or the gh CLI login
+  let tokenCache = null;
+  async function githubToken() {
+    if (tokenCache !== null) return tokenCache;
+    let t = process.env.CCD_GITHUB_TOKEN || process.env.GITHUB_TOKEN || '';
+    if (!t && secretsDir) t = await fs.readFile(path.join(secretsDir, 'github-token.txt'), 'utf8').then((x) => x.trim()).catch(() => '');
+    if (!t) t = await exec('gh', ['auth', 'token'], { windowsHide: true, timeout: 5000 }).then((r) => r.stdout.trim()).catch(() => '');
+    tokenCache = t;
+    return t;
+  }
   const root = path.join(path.dirname(dataFile), 'store-apps');
   let shared = bundled;
   let refreshAt = 0;
@@ -68,10 +78,12 @@ module.exports = function createAppStore({ dataFile, fetcher = fetch, python = p
   }
 
   async function withPackage(entry, expected, callback) {
-    const pkg = entry.local ? await localPackage(entry) : await latestPackage(fetcher, entry.repo, entry.asset);
+    const token = entry.private && !entry.local ? await githubToken() : '';
+    if (entry.private && !entry.local && !token) throw new Error('비공개 저장소입니다. GitHub 토큰(CCD_GITHUB_TOKEN, secrets/github-token.txt 또는 gh auth login)이 필요합니다.');
+    const pkg = entry.local ? await localPackage(entry) : await latestPackage(fetcher, entry.repo, entry.asset, token);
     if (entry.sha256 && pkg.digest !== 'sha256:' + entry.sha256) throw new Error('릴리스 ZIP의 SHA-256이 레지스트리에 등록된 값과 다릅니다.');
     if (expected && expected !== pkg.digest) throw new Error('릴리스가 변경되었습니다. 설치 내용을 다시 확인하세요.');
-    const bytes = entry.local ? null : await downloadPackage(fetcher, pkg);
+    const bytes = entry.local ? null : await downloadPackage(fetcher, pkg, token);
     await fs.mkdir(root, { recursive: true });
     const stage = await fs.mkdtemp(path.join(root, 'package-'));
     let keep = false;
