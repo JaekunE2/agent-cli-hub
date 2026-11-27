@@ -391,6 +391,14 @@ function sideLiveStateTag(st, dormant = false) {
   return '<span class="srow-tag srow-status waiting">대기</span>';
 }
 
+function sideAttentionReason(term) {
+  if (term.exited !== null) return '';
+  if (term.startupBlock === 'login') return '로그인 필요';
+  if (['folder-trust', 'permission', 'confirmation'].includes(term.startupBlock)) return '승인 또는 확인 필요';
+  if (term.needsInput) return '입력 필요';
+  return '';
+}
+
 function renderSide() {
   const liveBySid = new Map((state.live || []).filter((x) => x.sessionId).map((x) => [x.sessionId, x]));
   if (isSideDragging) { pendingSideRender = true; return; }
@@ -399,6 +407,7 @@ function renderSide() {
   const prevTop = side.scrollTop;
   const prevHistoryTop = $('.side-history', side)?.scrollTop || 0;
   const focusedNav = side.contains(document.activeElement) && document.activeElement.closest('.snav-item')?.dataset.key;
+  const focusedAttention = side.contains(document.activeElement) && document.activeElement.closest('[data-side-attention]')?.dataset;
   const focusedControl = side.contains(document.activeElement) && document.activeElement.closest('.srow-open, .folder-badge');
   const focusedSession = focusedControl?.closest?.('[data-key]')?.dataset.key;
   const folded = sideFolded();
@@ -520,7 +529,25 @@ function renderSide() {
       </span>
     </div>`;
   }).join('') || `<div class="srow-empty">${fTerms.length ? '필터 일치 항목 없음' : 'Project 없음'}</div>`);
-  let h = `${navigation}<div class="ssec">
+  const attention = (state.terms || []).filter(term => !isEphemeralTerm(term)).flatMap(term => {
+    const reason = sideAttentionReason(term);
+    return reason ? [{ key: `term:${term.id}`, title: termLabel(term), reason, tab: 'split' }] : [];
+  });
+  for (const [key, record] of typeof chatSendRecovery === 'undefined' ? [] : chatSendRecovery) {
+    if (!record.error || key === 'console:null') continue;
+    const term = (state.terms || []).find(t => `term:${t.id}` === key);
+    const recent = !key.includes(':') && recentSession(key);
+    const consoleItem = (state.consoles || []).find(c => `console:${c.id}` === key);
+    if (!term && !recent && !consoleItem) continue;
+    attention.push({ key: recent ? `recent:${key}` : key,
+      title: term ? termLabel(term) : recent ? sessionLabel(recent) : consoleLabel(consoleItem),
+      reason: record.uncertain ? '전달 여부 확인 필요' : '전송 실패', tab: 'chat' });
+  }
+  const needsAttention = attention.length ? `<section class="ssec side-attention"><div class="ssec-hd">
+    <span class="ssec-title">확인 필요 <span class="badge lim">${attention.length}</span></span></div>
+    ${attention.map(item => `<button type="button" class="ghost srow-main srow-open" data-side-attention="${esc(item.key)}" data-attention-tab="${item.tab}">
+      <span class="srow-t">${esc(item.title)}</span><span class="srow-tag busy">${esc(item.reason)}</span></button>`).join('')}</section>` : '';
+  let h = `${navigation}${needsAttention}<div class="ssec">
     <div class="ssec-hd">
       ${foldBtnHTML('projects', pjFolded, 'Project')}
       <span class="ssec-title" data-key="projects">Project <span class="srow-meta">${projects.length || ''}</span>${pjFolded && pjBusyN ? `<span class="srow-tag busy">실행 ${pjBusyN}</span>` : ''}</span>
@@ -616,7 +643,7 @@ function renderSide() {
         : (!t.agent ? '<span class="srow-tag">셸</span>' : '');
       const brTip = branchTooltip(t.branch);
       const tags = [
-        sideLiveStateTag(st, meta.dormant),
+        sideAttentionReason(t) ? `<span class="srow-tag busy">${esc(sideAttentionReason(t))}</span>` : sideLiveStateTag(st, meta.dormant),
         unread && st !== 'busy' ? '<span class="srow-tag done">완료</span>' : '',
         branchTagHTML(t.branch, true),
         subKindTag,
@@ -817,6 +844,9 @@ function renderSide() {
   if (historyList) historyList.scrollTop = prevHistoryTop;
   side.scrollTop = prevTop;
   if (focusedNav) [...side.querySelectorAll('.snav-item')].find((nav) => nav.dataset.key === focusedNav)?.focus({ preventScroll: true });
+  if (focusedAttention) [...side.querySelectorAll('[data-side-attention]')]
+    .find((row) => row.dataset.sideAttention === focusedAttention.sideAttention && row.dataset.attentionTab === focusedAttention.attentionTab)
+    ?.focus({ preventScroll: true });
   if (focusedSession) [...side.querySelectorAll('.side-history [data-key]')].find((row) => row.dataset.key === focusedSession)
     ?.querySelector(focusedControl.matches('.folder-badge') ? '.folder-badge' : '.srow-open')?.focus({ preventScroll: true });
 
@@ -962,6 +992,12 @@ $('#side')?.addEventListener('click', async (e) => {
     return;
   }
   const it = e.target.closest('[data-key]');
+  const attentionItem = e.target.closest('[data-side-attention]');
+  if (attentionItem) {
+    const key = attentionItem.dataset.sideAttention;
+    const split = key.indexOf(':');
+    return select({ kind: key.slice(0, split), id: key.slice(split + 1) }, attentionItem.dataset.attentionTab);
+  }
   if (!it) return;
   const k = it.dataset.key;
   if (k === 'home') return select({ kind: 'home' });

@@ -298,12 +298,40 @@ function viewTranscript() {
 
 const chatLaunchPrefs = new Map();
 
+const chatSendRecovery = new Map();
+let pendingReviewDraft;
+
+function stageReviewInChat(text, attachment, target = null) {
+  const sel = state.sel;
+  if (!['term', 'recent', 'console'].includes(sel.kind)) return false;
+  if (target && (sel.kind !== target.kind || String(sel.id) !== String(target.id))) return false;
+  const activeComposer = $('.chat-comp-host', $('#view'));
+  if (activeComposer?.getClientRects().length && activeComposer._stageChatDraft) {
+    activeComposer._stageChatDraft(text, attachment);
+    return true;
+  }
+  pendingReviewDraft = { kind: sel.kind, id: String(sel.id), text, attachment };
+  window.ACH_DOCK?.saveDockOpen(sel.kind === 'recent' ? 'recent' : 'term', ['chat']);
+  select({ ...sel }, 'chat');
+  return true;
+}
+
+async function sendAreaReviewInChat(text, target) {
+  const { kind, id } = state.sel;
+  const composer = $('.chat-comp-host', $('#view'));
+  if (!target || target.kind !== kind || String(target.id) !== String(id) || !composer?._sendAreaReview) {
+    throw new Error('산출물을 연결할 세션을 열어 주세요.');
+  }
+  await composer._sendAreaReview(text);
+}
+
 function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null, consolePid = null, agent = 'claude', cwd = '', liveDesktop = false, compact = false }) {
   if (!barHost) return;
   let activeTermId = termId ? String(termId) : null;
   let activeConsolePid = consolePid ? Number(consolePid) : null;
   const baseAgent = (agent === 'codex' || agent === 'agy') ? agent : 'claude';
   const prefKey = sid || (activeTermId ? `term:${activeTermId}` : '');
+  const recoveryKey = activeTermId ? `term:${activeTermId}` : prefKey || `console:${activeConsolePid}`;
 
   const findLiveTerm = () => {
     if (activeTermId) {
@@ -326,7 +354,9 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
   barHost.innerHTML = `<div class="chat-reply-bar${compact ? ' compact' : ''}">
     <div class="chat-conn-bar">
       <span class="chat-conn-pill" data-chat-conn></span>
-      <button type="button" class="ghost btn-sm chat-me-toggle" data-chat-settings aria-expanded="false">${ICO.settings} 실행 설정</button>
+      <button type="button" class="ghost btn-sm" data-chat-selection title="선택한 텍스트 첨부" aria-label="선택한 텍스트 첨부">${ICO.clip}<span>선택한 텍스트 첨부</span></button>
+      ${navigator.mediaDevices?.getDisplayMedia ? `<button type="button" class="ghost btn-sm" data-chat-screen title="화면 영역" aria-label="화면 영역">${ICO.monitor}<span>화면 영역</span></button>` : ''}
+      <button type="button" class="ghost btn-sm chat-me-toggle" data-chat-settings aria-expanded="false" title="실행 설정" aria-label="실행 설정">${ICO.settings}<span>실행 설정</span></button>
     </div>
     <div class="chat-me-bar" data-chat-me hidden>
       <select data-chat-acc title="사용할 계정 · CLI 선택" aria-label="계정 및 CLI">
@@ -338,6 +368,11 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       <button type="button" class="btn-sm primary" data-chat-apply hidden>변경 적용</button>
     </div>
     <div class="att-strip" data-chat-atts hidden></div>
+    <div class="chat-quote-bar" data-chat-send-error hidden>
+      <span role="status" data-chat-send-note></span>
+      <button type="button" class="btn-sm" data-chat-retry>다시 전송</button>
+      <button type="button" class="ghost btn-sm" data-chat-dismiss>닫기</button>
+    </div>
     <div class="chat-quote-bar" data-chat-quote hidden>
       <span class="chat-quote-lbl" data-chat-quote-txt></span>
       <button type="button" class="ghost icon-btn btn-sm" data-chat-quote-clear aria-label="참조 해제" title="참조 해제">${ICO.close}</button>
@@ -354,6 +389,8 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
   const applyBtn = $('[data-chat-apply]', barHost);
   const repIn = $('textarea', barHost);
   const repBtn = $('.chat-reply-in button.primary', barHost);
+  const sendError = $('[data-chat-send-error]', barHost);
+  const sendNote = $('[data-chat-send-note]', barHost);
   const settingsBtn = $('[data-chat-settings]', barHost);
   const settingsBar = $('[data-chat-me]', barHost);
   settingsBtn.onclick = () => {
@@ -521,6 +558,7 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
     } else {
       connEl.innerHTML = `<span class="ums" style="margin:0">연결된 터미널 없음 · 입력 시 세션을 이어 열어 전송합니다</span>`;
     }
+    connEl.title = connEl.textContent.trim();
     syncApplyBtn();
   };
   syncConn();
@@ -546,7 +584,7 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
   };
   const sendToTerm = async (id, text, waitForReady = false, resendIfMissing = false, nativeCommand = null) => {
     const result = await api('/api/term/send', { method: 'POST', body: { id, text, submit: true, waitForReady, resendIfMissing, clearDraft: true, nativeSlash: !!nativeCommand } });
-    if (!result.ok) throw new Error(result.error || '터미널 입력을 확인하지 못했습니다.');
+    if (!result.ok) throw Object.assign(new Error(result.error || '터미널 입력을 확인하지 못했습니다.'), { delivery: result.delivery });
     if (!nativeCommand) notifySent(id, text, result.submittedText);
     if (nativeCommand?.tui && barHost.isConnected) {
       const term = findLiveTerm();
@@ -662,6 +700,35 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
   };
 
   const chatAttCtl = createAttachmentStrip($('[data-chat-atts]', barHost), cwd);
+  const addReview = (text, attachment) => {
+    const paths = Array.isArray(attachment) ? attachment : attachment ? [attachment] : [];
+    const attached = new Set(chatAttCtl.snapshot().map(item => item.path));
+    chatAttCtl.addPaths([...new Set(paths)].filter(p => !attached.has(p)));
+    if (text) repIn.value = [repIn.value, text].filter(Boolean).join('\n\n');
+    fitRep();
+    repIn.focus();
+  };
+  barHost._stageChatDraft = addReview;
+  $('[data-chat-screen]', barHost)?.addEventListener('click', async () => {
+    try {
+      await openScreenReview((text, attachment) => {
+        if (barHost.isConnected) addReview(text, attachment);
+      });
+    } catch (error) { if (error.name !== 'NotAllowedError') toast(error.message, 6000, 'danger'); }
+  });
+  const selectionButton = $('[data-chat-selection]', barHost);
+  let selectedText = '';
+  const getSelectedText = () => {
+    const range = window.getSelection();
+    return range?.anchorNode && $('#view')?.contains(range.anchorNode) ? range.toString().trim().slice(0, 4000) : '';
+  };
+  selectionButton.onpointerdown = () => { selectedText = getSelectedText(); };
+  selectionButton.onclick = () => {
+    const selection = selectedText || getSelectedText();
+    selectedText = '';
+    if (!selection) return toast('보낼 로그나 텍스트를 먼저 선택하세요.');
+    addReview(selection.split('\n').map(line => '> ' + line).join('\n'), '');
+  };
   const quoteBar = $('[data-chat-quote]', barHost);
   const quoteTxtEl = $('[data-chat-quote-txt]', barHost);
   let quotedMsg = null;
@@ -685,35 +752,81 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
   bindFilePick(barHost, null, cwd, { onFiles: (fl, it) => chatAttCtl.addFiles(fl, it) });
 
   let sendingReply = false;
-  let lastReplyText = '';
-  let lastReplyAt = 0;
-  const sendReply = async (retry = false) => {
-    if (sendingReply || repBtn.disabled) return;
-    if (slash?.dispatch()) return;
-    slash?.close();
-    const typed = repIn.value.trim();
-    const nativeCommand = slash?.native(typed);
-    if (!nativeCommand && chatAttCtl.isLoading()) return toast('첨부 파일을 준비하는 중입니다…');
-    const attPaths = nativeCommand ? [] : chatAttCtl.takePaths();
-    const bodyText = [...attPaths, typed].filter(Boolean).join(' ');
-    if (!bodyText) return;
-    if (!retry && bodyText === lastReplyText && Date.now() - lastReplyAt < 1500) {
-      repIn.value = ''; fitRep();
+  const showSendError = () => {
+    const record = chatSendRecovery.get(recoveryKey);
+    sendError.hidden = !record?.error;
+    sendNote.textContent = record?.error ? (record.uncertain ? `전달 여부 확인 필요 · ${record.error}` : record.error) : '';
+    $('[data-chat-retry]', barHost).disabled = Boolean(record?.sending);
+  };
+  const recovered = chatSendRecovery.get(recoveryKey);
+  function restoreSendDraft(record) {
+    if (record.areaReview || repIn.value || chatAttCtl.hasItems()) return;
+    repIn.value = record.typed;
+    chatAttCtl.addPaths(record.attachments);
+    setQuotedMsg(record.quote);
+    fitRep();
+    showSendError();
+  }
+  if (recovered && !recovered.sending) restoreSendDraft(recovered);
+  if (pendingReviewDraft?.kind === state.sel.kind && pendingReviewDraft.id === String(state.sel.id)) {
+    const draft = pendingReviewDraft;
+    pendingReviewDraft = null;
+    addReview(draft.text, draft.attachment);
+  }
+  barHost._restoreFailedSend = (key, record) => {
+    if (key === recoveryKey) { restoreSendDraft(record); showSendError(); }
+  };
+  $('[data-chat-dismiss]', barHost).onclick = () => {
+    if (chatSendRecovery.get(recoveryKey)?.sending) return;
+    chatSendRecovery.delete(recoveryKey);
+    showSendError();
+    renderSide();
+  };
+  $('[data-chat-retry]', barHost).onclick = () => sendReply(true);
+  let resolvingArtifact = false;
+  const sendReply = async (retry = false, areaReview = '') => {
+    const previous = chatSendRecovery.get(recoveryKey);
+    if (sendingReply || resolvingArtifact || repBtn.disabled || previous?.sending) {
+      if (areaReview) throw new Error('메시지를 전송하는 중입니다.');
       return;
     }
+    if (areaReview && previous?.error) throw new Error('이전 전송 오류를 먼저 확인해 주세요.');
+    if (retry && previous?.areaReview) areaReview = previous.typed;
+    if (!areaReview && previous?.areaReview) return toast('이전 전송 오류를 먼저 확인해 주세요.');
+    if (previous?.uncertain && !confirm('CLI가 이미 받았을 수 있습니다. 대화를 확인한 뒤 다시 전송할까요?')) return;
+    if (!areaReview && slash?.dispatch()) return;
+    if (!areaReview) slash?.close();
+    const typed = areaReview || repIn.value.trim();
+    const nativeCommand = areaReview ? null : slash?.native(typed);
+    if (!areaReview && !nativeCommand && chatAttCtl.isLoading()) return toast('첨부 파일을 준비하는 중입니다…');
+    if (!areaReview && typed && !nativeCommand && !previous?.error && !chatAttCtl.hasItems() && !quotedMsg) {
+      const term = findLiveTerm();
+      resolvingArtifact = true;
+      try {
+        const paths = await inferChatArtifacts(typed, { chatHost, sid: resolveTermSessionId(term) || sid, termId: term?.id || activeTermId });
+        if (!barHost.isConnected || repIn.value.trim() !== typed) return;
+        if (!chatAttCtl.hasItems() && !quotedMsg) chatAttCtl.addPaths(paths);
+      } catch {
+        if (!barHost.isConnected || repIn.value.trim() !== typed) return;
+      } finally { resolvingArtifact = false; }
+      if (chatAttCtl.isLoading()) return toast('첨부 파일을 준비하는 중입니다…');
+    }
+    const attachments = areaReview || nativeCommand ? [] : chatAttCtl.snapshot();
+    const bodyText = [...attachments.map(item => quotePath(item.path)), typed].filter(Boolean).join(' ');
+    if (!bodyText) return;
+    const quote = areaReview || nativeCommand ? null : quotedMsg;
     let quotePrefix = '';
-    if (quotedMsg && !nativeCommand) {
+    if (quote) {
       const snippet = String(quotedMsg.text).trim().slice(0, 800);
       const lines = snippet.split('\n').slice(0, 12).map((l) => `> ${l}`);
       if (quotedMsg.text.length > 800 || quotedMsg.text.split('\n').length > 12) lines.push('> …');
       quotePrefix = `> [참조 #${quotedMsg.index} · ${quotedMsg.author}]\n${lines.join('\n')}\n\n`;
-      setQuotedMsg(null);
     }
     const text = `${quotePrefix}${bodyText}`;
     sendingReply = true;
-    lastReplyText = bodyText;
-    lastReplyAt = Date.now();
-    repIn.value = ''; fitRep();
+    const record = { typed, attachments, quote, areaReview: Boolean(areaReview), sending: true };
+    chatSendRecovery.set(recoveryKey, record);
+    repIn.readOnly = true;
     repBtn.disabled = true;
     const prevBtnTxt = repBtn.textContent;
     repBtn.textContent = '전송 중…';
@@ -772,18 +885,31 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       const t = await launchAndSend();
       if (t) toast(`터미널 t:${t.id}을(를) 연결해 메시지를 전송했습니다`);
     } catch (er) {
-      lastReplyAt = 0;
-      repIn.value = [text, repIn.value].filter(Boolean).join('\n');
-      fitRep();
-      toast(er.message, 6000, 'danger', { label: '다시 전송', onClick: () => { if (barHost.isConnected) sendReply(true); } });
+      record.error = er.message;
+      record.uncertain = er.delivery !== 'not-sent';
     } finally {
       sendingReply = false;
+      record.sending = false;
+      if (record.error && !barHost.isConnected) $('.chat-comp-host', $('#view'))?._restoreFailedSend?.(recoveryKey, record);
+      if (!record.error) {
+        chatSendRecovery.delete(recoveryKey);
+        if (!areaReview) {
+          if (repIn.value.trim() === typed) repIn.value = '';
+          chatAttCtl.discard(attachments);
+          if (quote && quotedMsg === quote) setQuotedMsg(null);
+          fitRep();
+        }
+      }
+      showSendError();
+      renderSide();
       if (repBtn.isConnected) {
+        repIn.readOnly = false;
         repBtn.disabled = false;
         repBtn.textContent = prevBtnTxt || '대화 전송';
       }
     }
   };
+  barHost._sendAreaReview = text => sendReply(false, text);
   const slash = typeof bindSlashPicker === 'function' ? bindSlashPicker(repIn, () => {
     const term = findLiveTerm();
     const cfg = getConfig();

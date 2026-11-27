@@ -500,6 +500,7 @@ function createTermManager(hub) {
     ...(isCodexTerm(t) ? { status: codexStatus(t) } : isAgyTerm(t) ? { status: agyStatus(t) } : /claude(\.exe)?$/i.test(t.meta?.cmd || '') ? { status: claudeStatus(t) } : {}),
     ...(isAgyTerm(t) ? { sessionId: agySessionOf(t) } : {}),
     ...(t.exited === null ? { startupBlock: sessionStartupBlock(stripAnsi(readTerm(t, 40).join('\n'))) } : {}),
+    needsInput: t.exited === null && Boolean(t._pendingPrompt),
     ...(t.meta?.projectTask ? {
       dispatchPending: !!t._projectDispatchPending,
       inputDraft: t.exited === null && isCodexTerm(t) && hasTermInputDraft(t),

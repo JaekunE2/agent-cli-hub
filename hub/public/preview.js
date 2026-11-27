@@ -181,7 +181,7 @@
       bodyEl.innerHTML = `<div class="pv-center"><img src="${url}" style="max-width:100%;max-height:100%;object-fit:contain"></div>`;
     } else if (it.kind === 'html' && mode !== 'source') {
       const frameUrl = window.isTauriHost?.() ? `${url}${url.includes('?') ? '&' : '?'}hub_ext=1` : url;
-      bodyEl.innerHTML = `<iframe class="pv-frame" src="${frameUrl}" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms"></iframe>`;
+      bodyEl.innerHTML = `<div class="artifact-html-surface"><iframe class="pv-frame" src="${frameUrl}" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms"></iframe></div>`;
     } else if (it.kind === 'pdf') {
       bodyEl.innerHTML = `<iframe class="pv-frame" src="${url}"></iframe>`;
     } else if (/^(pptx?|ppsx?|odp|docx?|odt|rtf)$/i.test(it.ext || '')) {
@@ -325,19 +325,37 @@
           <button type="button" data-pv-mode="source">소스</button>
         </div>
         <div class="row" style="gap:3px;flex:none;margin-left:auto">
+          <button type="button" class="btn-sm" data-pv-ask hidden>이 결과에 질문</button>
+          <button type="button" class="btn-sm" data-pv-area hidden>영역 코멘트</button>
           <button type="button" class="ghost icon-btn btn-sm" data-pv-copy title="내용 복사" aria-label="복사">${UI_ICO.copy}</button>
           <button type="button" class="ghost icon-btn btn-sm" data-pv-ext title="새 탭에서 열기" aria-label="새 탭">${UI_ICO.external}</button>
           <button type="button" class="ghost icon-btn btn-sm" data-pv-refresh title="목록 새로고침" aria-label="새로고침">${UI_ICO.refresh}</button>
           <button type="button" class="ghost icon-btn btn-sm" data-pv-close title="사이드 패널 닫기" aria-label="닫기">${UI_ICO.close}</button>
         </div>
       </div>
+      <div class="pv-review" data-pv-review hidden></div>
       <div class="pv-body" data-pv-body></div>
     </div>`;
 
     const panelsEl = $('[data-pv-panels]', rootEl);
     const pickEl = $('[data-pv-pick]', rootEl);
     const modesEl = $('[data-pv-modes]', rootEl);
+    const askEl = $('[data-pv-ask]', rootEl);
+    const areaEl = $('[data-pv-area]', rootEl);
+    const askTarget = artifactChatTarget();
     const bodyEl = $('[data-pv-body]', rootEl);
+    const reviewSlot = $('[data-pv-review]', rootEl);
+    let areaReview = null;
+
+    const stopPaneAreaReview = () => {
+      if (areaReview) {
+        areaReview.dispose?.();
+        areaReview = null;
+      }
+      reviewSlot.replaceChildren();
+      reviewSlot.hidden = true;
+      areaEl.disabled = false;
+    };
 
     const syncBarSideButtons = () => {
       document.querySelectorAll('[data-pv-side]').forEach((btn) => {
@@ -351,6 +369,7 @@
       const next = !!show;
       if (isPaneVisible === next) { syncBarSideButtons(); return; }
       isPaneVisible = next;
+      if (!next) stopPaneAreaReview();
       rootEl.hidden = !next;
       if (resizerEl) resizerEl.hidden = !next;
       splitEl?.classList.toggle('has-pv', next);
@@ -450,6 +469,9 @@
       const inPreview = paneKind === 'preview';
       pickEl.hidden = !inPreview;
       if (!inPreview) {
+        stopPaneAreaReview();
+        askEl.hidden = true;
+        areaEl.hidden = true;
         modesEl.hidden = true;
         const sig = `${paneKind}|${sideProjectId}|${getSessionId?.() || ''}`;
         if (forcePaint || lastRenderedSig !== sig) renderSpecialPanel();
@@ -457,6 +479,7 @@
       }
       const list = allItems();
       const cur = findItem(selectedId);
+      askEl.hidden = !(askTarget && cur?.source === 'artifact');
       if (cur && cur.id !== selectedId) selectedId = cur.id;
 
       const pickSig = list.map((it) => `${it.id}:${it.title}`).join('\n');
@@ -475,9 +498,11 @@
       );
       modesEl.hidden = !canSource;
       if (!canSource) viewMode = 'preview';
+      areaEl.hidden = !(askTarget && viewMode === 'preview' && canReviewArtifactArea(cur?.artifact));
       modesEl.querySelectorAll('[data-pv-mode]').forEach((b) => b.classList.toggle('on', b.dataset.pvMode === viewMode));
 
       if (!cur) {
+        stopPaneAreaReview();
         if (lastRenderedSig !== 'empty' || forcePaint) {
           lastRenderedSig = 'empty';
           bodyEl.innerHTML = `<div class="empty" style="padding:24px;text-align:center;line-height:1.6">대화 중 생성된 HTML · Markdown · Mermaid 플로우차트의 미리보기 버튼이나 파일 링크를 누르면 이 창에서 바로 확인할 수 있습니다.</div>`;
@@ -486,6 +511,7 @@
       }
       const nextSig = itemRenderSig(cur, viewMode);
       if (!forcePaint && nextSig === lastRenderedSig) return;
+      stopPaneAreaReview();
       const sameItem = lastRenderedSig.startsWith(`${cur.source === 'code' ? 'code' : 'art'}|${cur.id}|`);
       lastRenderedSig = nextSig;
       renderItemBody(bodyEl, cur, viewMode, getSessionId?.() || '', sameItem);
@@ -628,6 +654,35 @@
       viewMode = b.dataset.pvMode;
       syncControlsAndPaint();
     };
+    askEl.onclick = () => {
+      const cur = findItem(selectedId);
+      if (cur?.source === 'artifact') askArtifactQuestion([cur.artifact], askTarget);
+    };
+    areaEl.onclick = () => {
+      const item = findItem(selectedId)?.artifact;
+      const initial = $('img, iframe', bodyEl);
+      if (!initial || areaReview || !canReviewArtifactArea(item)) return;
+      const review = {};
+      const isActive = () => areaReview === review && rootEl.isConnected;
+      areaReview = review;
+      areaEl.disabled = true;
+      try {
+        review.dispose = startArtifactRegionReview({
+          initial, slot: reviewSlot, item, isActive,
+          async onSubmit(message) {
+            await sendAreaReviewInChat(`${quotePath(item.abs || item.path)}\n${message}`, askTarget);
+            if (isActive()) stopPaneAreaReview();
+          },
+          onStop() { stopPaneAreaReview(); areaEl.focus(); },
+        });
+        reviewSlot.hidden = false;
+      } catch (error) {
+        if (!isActive()) return;
+        stopPaneAreaReview();
+        reviewSlot.hidden = false;
+        reviewSlot.textContent = error.message;
+      }
+    };
     $('[data-pv-copy]', rootEl).onclick = () => {
       const cur = findItem(selectedId);
       if (!cur) return;
@@ -672,6 +727,11 @@
       refresh,
       isOpen: () => isPaneVisible,
       currentPanel: () => paneKind,
+      activeArtifact: (sid) => {
+        if (!sid || !isPaneVisible || paneKind !== 'preview' || !rootEl.isConnected) return null;
+        const item = findItem(selectedId);
+        return item?.source === 'artifact' && item.sid === sid ? item.artifact : null;
+      },
     };
   }
 
