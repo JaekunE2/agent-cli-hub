@@ -48,6 +48,7 @@ fn main() {
         })
         .on_webview_event(bridge::on_drag_drop)
         .on_window_event(|window, event| {
+            bridge::on_window_drag_drop(window, event);
             if window.label() == "main" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();

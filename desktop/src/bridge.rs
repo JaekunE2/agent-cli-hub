@@ -1,6 +1,6 @@
 use serde_json::json;
 use std::path::PathBuf;
-use tauri::{ipc::CapabilityBuilder, DragDropEvent, Manager, WebviewEvent};
+use tauri::{ipc::CapabilityBuilder, DragDropEvent, Manager, WebviewEvent, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
 
 pub fn grant(app: &tauri::App, port: u16) -> tauri::Result<()> {
@@ -55,16 +55,21 @@ pub async fn pick_folder(
     .map_err(|error| format!("Could not open the folder picker: {error}"))?
 }
 
-pub fn on_drag_drop(webview: &tauri::Webview, event: &WebviewEvent) {
-    let WebviewEvent::DragDrop(DragDropEvent::Drop { paths, position }) = event else {
+fn deliver_drag_drop(
+    label: &str,
+    url: tauri::Result<tauri::Url>,
+    eval: impl FnOnce(String) -> tauri::Result<()>,
+    event: &DragDropEvent,
+) {
+    let DragDropEvent::Drop { paths, position } = event else {
         return;
     };
-    let (Ok(url), Ok(port)) = (webview.url(), crate::hub::port()) else {
+    let (Ok(url), Ok(port)) = (url, crate::hub::port()) else {
         return;
     };
     let origin = format!("http://127.0.0.1:{port}");
     let origin = origin.trim_end_matches(":80");
-    if webview.label() != "main"
+    if label != "main"
         || url.origin().ascii_serialization() != origin
         || url.path() != "/"
     {
@@ -92,7 +97,22 @@ pub fn on_drag_drop(webview: &tauri::Webview, event: &WebviewEvent) {
         "if (location.origin === {} && location.pathname === '/') window.dispatchEvent(new CustomEvent('hub-native-drop', {{ detail: {drop} }}));",
         json!(origin)
     );
-    if let Err(error) = webview.eval(script) {
+    if let Err(error) = eval(script) {
         eprintln!("Could not deliver the native file drop: {error}");
+    }
+}
+
+pub fn on_drag_drop(webview: &tauri::Webview, event: &WebviewEvent) {
+    if let WebviewEvent::DragDrop(drop_event) = event {
+        deliver_drag_drop(webview.label(), webview.url(), |s| webview.eval(s), drop_event);
+    }
+}
+
+pub fn on_window_drag_drop(window: &tauri::Window, event: &WindowEvent) {
+    let WindowEvent::DragDrop(drop_event) = event else {
+        return;
+    };
+    if let Some(webview) = window.app_handle().get_webview_window(window.label()) {
+        deliver_drag_drop(webview.label(), webview.url(), |s| webview.eval(s), drop_event);
     }
 }
