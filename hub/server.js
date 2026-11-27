@@ -522,7 +522,7 @@ const STATIC = {
   '/slash-picker.js': 'public/slash-picker.js', '/slash-picker.css': 'public/slash-picker.css',
   '/chat-ui.js': 'public/chat-ui.js', '/usage-ui.js': 'public/usage-ui.js',
   '/switch-gpu-ui.js': 'public/switch-gpu-ui.js', '/research-ui.js': 'public/research-ui.js',
-  '/dock.js': 'public/dock.js', '/preview.js': 'public/preview.js', '/vault.js': 'public/vault.js', '/apps-ui.js': 'public/apps-ui.js',
+  '/dock.js': 'public/dock.js', '/preview.js': 'public/preview.js', '/vault.js': 'public/vault.js', '/apps-ui.js': 'public/apps-ui.js', '/app-store-ui.js': 'public/app-store-ui.js',
   '/projects.js': 'public/projects.js', '/project-forms.js': 'public/project-forms.js', '/project-plan-form.js': 'public/project-plan-form.js',
   '/project-board.js': 'public/project-board.js', '/project-task-form.js': 'public/project-task-form.js', '/project-flow.js': 'public/project-flow.js',
   '/project-harness-ui.js': 'public/project-harness-ui.js', '/project-refs-ui.js': 'public/project-refs-ui.js', '/project-floorplan.js': 'public/project-floorplan.js', '/project-git.js': 'public/project-git.js', '/project-terminals.js': 'public/project-terminals.js', '/projects.css': 'public/projects.css',

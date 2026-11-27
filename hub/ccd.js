@@ -46,6 +46,8 @@ const HELP = `ccd — Agent CLI Hub CLI  (server ${BASE})
                                    autonomous research projects (director sessions driven by research-harness)
   app ls | run <id> [--action A] [--wait] | data <id> [--file latest] [--q K] | files <id> | import <dir> | rm <id> [--purge-outputs] | data-rm <id> [--file F | --older-than N]
                                    lightweight hub apps (UI + session-callable tools & data integration)
+  apps ls [--all] | search <text> | info <app> | install <app|repo URL|folder> [--set KEY=VALUE ...] | update <app> | remove <app> [--force] | open <app> [--browser] | sources | source add|rm <x>
+                                   App Store: add-on apps for this hub from registries and app repositories
   schedule ls | add --name N --project P (--every M | --cron E [--tz TZ]) --prompt "..." [--cli codex|claude|agy] [--account ID] [--version V] [--task ID] [--model M] | rm <id|name> | pause <id|name> | resume <id|name> | run <id|name> | runs <id|name>
                                    manage scheduled CLI runs (add/remove/run/pause/resume by id or name)
   calendar ls [--date YYYY-MM-DD] | add "title" --date YYYY-MM-DD [--time HH:MM] [--end HH:MM] [--note TEXT] | task "title" --date YYYY-MM-DD [--tags tag1,tag2]
@@ -79,7 +81,7 @@ for (let i = 0; i < argv.length; i++) {
   if (a === '-n') flags.n = Number(argv[++i]);
   else if (a.startsWith('--')) {
     const k = a.slice(2);
-    if (['to', 'cwd', 'resume', 'title', 'role', 'at', 'timeout', 'account', 'direction', 'venue', 'gpu', 'mem', 'ram', 'label', 'est', 'modules', 'model', 'session', 'sync', 'fetch', 'sync-exclude', 'file', 'system', 'url', 'image', 'env', 'cd', 'to', 'in', 'msg', 'rename', 'max', 'runtime', 'drive', 'stage', 'node', 'server', 'exclude', 'via', 'root', 'steps', 'name', 'project', 'version', 'task', 'every', 'cron', 'tz', 'prompt', 'overlap', 'misfire', 'effort', 'ref', 'limit', 'action', 'dir', 'q', 'older-than', 'cli', 'date', 'time', 'end', 'note', 'tags'].includes(k) || PLUGIN_MANIFEST.valueFlags.includes(k)) flags[k] = argv[++i];
+    if (['to', 'cwd', 'resume', 'title', 'role', 'at', 'timeout', 'account', 'direction', 'venue', 'gpu', 'mem', 'ram', 'label', 'est', 'modules', 'model', 'session', 'sync', 'fetch', 'sync-exclude', 'file', 'system', 'url', 'image', 'env', 'cd', 'to', 'in', 'msg', 'rename', 'max', 'runtime', 'drive', 'stage', 'node', 'server', 'exclude', 'via', 'root', 'steps', 'name', 'project', 'version', 'task', 'every', 'cron', 'tz', 'prompt', 'overlap', 'misfire', 'effort', 'ref', 'limit', 'action', 'dir', 'q', 'older-than', 'cli', 'date', 'time', 'end', 'note', 'tags', 'set'].includes(k) || PLUGIN_MANIFEST.valueFlags.includes(k)) flags[k] = argv[++i];
     else flags[k] = true;
   } else pos.push(a);
 }
@@ -838,6 +840,105 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
       return console.log(JSON.stringify(d));
     }
     die(`unknown app subcommand: ${sub}`);
+  },
+
+  // ccd apps: the App Store from the terminal (same API as the store view; apps are add-ons for this hub)
+  //   ls [--all] | search <text> | info <app> | install <app|repo URL|folder> [--set KEY=VALUE ...] | update <app>
+  //   | remove <app> [--force] | open <app> | sources | source add|rm <owner|repo|registry URL|folder>
+  async apps() {
+    const sub = pos[1] || 'ls';
+    const sets = {};
+    process.argv.forEach((a, i) => { if (a === '--set' && process.argv[i + 1]) { const kv = process.argv[i + 1]; const k = kv.indexOf('='); if (k > 0) sets[kv.slice(0, k)] = kv.slice(k + 1); } });
+    const store = async () => { const d = await api('/api/apps-store'); if (d.error) die(d.error); return d; };
+    const installed = async () => ((await api('/api/apps')).apps || []).filter((a) => a.storeSource);
+    const norm = (s) => String(s || '').toLowerCase();
+    const pick = (list, q, keyOf) => {
+      const n = norm(q);
+      const hits = list.filter((x) => keyOf(x).some((k) => norm(k) === n));
+      const loose = hits.length ? hits : list.filter((x) => keyOf(x).some((k) => norm(k).includes(n)));
+      if (loose.length === 1) return loose[0];
+      if (!loose.length) return null;
+      die(`"${q}" matches ${loose.length}: ${loose.map((x) => keyOf(x)[0]).join(', ')}`);
+    };
+    const entryKeys = (e) => [e.name, e.key, e.repo, e.installedId];
+    const preview = async (key) => { const d = await api('/api/apps-store/package', { key }); if (d.error) die(d.error); return d.package; };
+    const line = (e) => `${e.compatible === false ? '✗' : e.installed ? '●' : '○'} ${e.name.padEnd(24)} ${(e.category || '').padEnd(10)} ${e.installed ? `installed ${e.installed}` : e.version || ''}  ${e.repo}${e.unmet?.length ? `  [${e.unmet.join(', ')}]` : ''}`;
+    if (sub === 'ls') {
+      const mine = await installed();
+      if (flags.json) return console.log(JSON.stringify(mine));
+      for (const a of mine) console.log(`${a.id}  ${a.name}  ${a.storeSource.version}  [${a.status}]  ${a.storeSource.repo}${a.pluginState ? `  plugin ${a.pluginState.id}${a.pluginState.installed ? '' : ' (missing)'}` : ''}`);
+      if (!mine.length) console.log('no store apps installed (ccd apps search, ccd apps install <app>)');
+      if (flags.all) { console.log(''); for (const e of (await store()).entries) console.log(line(e)); }
+      return;
+    }
+    if (sub === 'search') {
+      const q = norm(pos.slice(2).join(' '));
+      const d = await store();
+      const hits = d.entries.filter((e) => [e.name, e.tagline, e.description, e.category, e.author, ...(e.tags || [])].some((x) => norm(x).includes(q)));
+      if (flags.json) return console.log(JSON.stringify(hits));
+      for (const e of hits) console.log(line(e));
+      if (d.unavailable?.length) console.log(`(could not read: ${d.unavailable.join(', ')})`);
+      return;
+    }
+    if (sub === 'sources') { const d = await store(); for (const s of d.sources) console.log(s.owner || s.repo || s.url || s.path); return; }
+    if (sub === 'source') {
+      const what = pos[2], value = pos.slice(3).join(' ');
+      if (!['add', 'rm'].includes(what) || !value) die('usage: ccd apps source add|rm <owner | owner/repo | registry URL | folder>');
+      const d = await api('/api/apps-store/source', { source: value }, what === 'add' ? 'POST' : 'DELETE');
+      if (d.error) die(d.error);
+      return console.log(`${what === 'add' ? 'added' : 'removed'} ${value}`);
+    }
+    const q = pos.slice(2).join(' ') || die(`usage: ccd apps ${sub} <app>`);
+    if (sub === 'info') {
+      const e = pick((await store()).entries, q, entryKeys) || die(`no store app "${q}"`);
+      const p = await preview(e.key);
+      if (flags.json) return console.log(JSON.stringify({ entry: e, package: p }));
+      console.log(`${p.name} ${p.version}${p.author ? ` by ${p.author}` : ''}\n  source  ${p.repo}${p.commit ? `  commit ${p.commit.slice(0, 12)}${p.dirty ? ' (uncommitted changes)' : ''}` : ''}\n  sha256  ${p.digest.slice(7)}`);
+      if (p.unmet?.length) console.log(`  CANNOT INSTALL: ${p.unmet.join(', ')}`);
+      console.log(`  ${p.description}`);
+      const i = p.installs || {};
+      if (i.scripts?.length) console.log(`  scripts: ${i.scripts.join(', ')}`);
+      for (const c of i.commands || []) console.log(`  action  ${c.label}: ${c.cmd}`);
+      if (i.plugin) console.log(`  hub plugin ${i.plugin.id}: ${[...i.plugin.routes, ...i.plugin.provides.map((x) => `provides ${x}`)].join('; ')}`);
+      for (const s of p.settings || []) console.log(`  setting ${s.key}${s.required ? ' (required)' : ''} = ${s.default || ''}   ${s.label}`);
+      return;
+    }
+    if (sub === 'install' || sub === 'update') {
+      let d = await store();
+      let e = pick(d.entries, q, entryKeys);
+      if (!e && sub === 'install' && /^(https:\/\/|[A-Za-z]:[\\/]|file:\/\/|[\w.-]+\/[\w.-]+$)/.test(q)) {
+        const added = await api('/api/apps-store/source', { source: q });   // a repo / registry / folder: add it as a source first
+        if (added.error) die(added.error);
+        d = await store();
+        e = pick(d.entries, q, entryKeys) || (d.entries.length === 1 ? d.entries[0] : null);
+      }
+      if (!e) die(`no store app "${q}" (ccd apps search)`);
+      if (sub === 'update' && !e.installedId) die(`${e.name} is not installed`);
+      if (sub === 'install' && e.installedId) die(`${e.name} is already installed (${e.installedId}); use ccd apps update`);
+      const p = await preview(e.key);
+      if (p.unmet?.length) die(`cannot install ${p.name}: ${p.unmet.join(', ')}`);
+      if (sub === 'update' && p.installedDigest === p.digest) return console.log(`${p.name} is up to date (${p.version})`);
+      const missing = (p.settings || []).filter((s) => s.required && !s.default && !(s.key in sets) && !(p.currentSettings && p.currentSettings[s.key]));
+      if (missing.length) die(`required settings: ${missing.map((s) => `--set ${s.key}=<${s.label}>`).join(' ')}`);
+      console.log(`${sub === 'update' ? 'updating' : 'installing'} ${p.name} ${p.version} from ${p.repo}${p.commit ? ` @ ${p.commit.slice(0, 12)}` : ''}`);
+      const r = await api('/api/apps-store/package', { key: e.key, digest: p.digest, settings: { ...(p.currentSettings || {}), ...sets }, update: sub === 'update' });
+      if (r.error) die(r.error);
+      console.log(`${r.package.id} ${r.package.version}${r.package.setupRun ? ' — setup.ps1 running (ccd app ls / the Apps view)' : ''}${r.package.restartRequired ? '\nits hub plugin loads after a hub restart: ccd restart' : ''}${r.package.keepFailed?.length ? `\nnot carried over: ${r.package.keepFailed.join(', ')}` : ''}`);
+      return;
+    }
+    const a = pick(await installed(), q, (x) => [x.name, x.id, x.storeSource.repo]) || die(`no installed store app "${q}" (ccd apps ls)`);
+    if (sub === 'remove') {
+      const r = await api(`/api/apps/${encodeURIComponent(a.id)}${flags.force ? '?force=1' : ''}`, null, 'DELETE');
+      if (r.error) die(`${r.error}${r.output ? `\n${r.output}` : ''}`);
+      return console.log(`removed ${a.name}${r.removedPlugin ? ` and its hub plugin ${r.removedPlugin} (restart the hub)` : ''}`);
+    }
+    if (sub === 'open') {
+      const proxied = a.type === 'url' ? `${BASE}/app-${a.id}/${token()}/` : null;
+      console.log(proxied || `${BASE}/?t=${token()}&open=apps:${encodeURIComponent(a.id)}`);
+      if (flags.browser) spawn(process.platform === 'win32' ? 'explorer.exe' : 'xdg-open', [proxied || `${BASE}/?t=${token()}&open=apps:${encodeURIComponent(a.id)}`], { detached: true, stdio: 'ignore' }).unref();
+      return;
+    }
+    die('usage: ccd apps ls [--all] | search <text> | info <app> | install <app|repo|folder> [--set K=V ...] | update <app> | remove <app> [--force] | open <app> | sources | source add|rm <x>');
   },
 
   async schedule() {

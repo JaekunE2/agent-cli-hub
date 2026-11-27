@@ -20,7 +20,9 @@
 //     start?(), stop?(),                                   background work; check api.instance for side instances
 //     hooks?: { name(...args) }                            named extension points the core calls (docs/PLUGINS.md lists them)
 //   })
-//   api = { id, dir, hub, config, instance, baseDir, dataDir, secretsDir, log }
+//   api = { id, dir, hub, config, settings, instance, baseDir, dataDir, secretsDir, log }
+//   settings = <plugin dir>/settings.json: values the user gave when the plugin came with an App Store app
+//   plugin.json "provides": { "researchHarness": "${HARNESS_DIR}" } → hub-wide values, ${KEY} from settings.json
 //
 //   cli.js: module.exports = (ctx) => ({ commands?: { name: async () => {} }, hooks?: { name(...args) } })
 //   ctx = everything ccd.js shares (api, die, flags, pos, rest, DIR, BASE, token, usageDir, readTarget, …)
@@ -52,6 +54,19 @@ function discover() {
 }
 
 function config(baseDir) { return readJson(path.join(baseDir, 'config.json')) || {}; }
+function settings(dir) { return readJson(path.join(dir, 'settings.json')) || {}; }
+
+/** a hub-wide value some plugin provides (plugin.json "provides"), e.g. provided('researchHarness') → a folder */
+function provided(key) {
+  for (const m of discover()) {
+    const v = m.provides && m.provides[key];
+    if (typeof v !== 'string' || !v) continue;
+    const st = settings(m.dir);
+    const out = v.replace(/\$\{([A-Z][A-Z0-9_]*)\}/g, (_, k) => (st[k] === undefined ? '' : String(st[k])));
+    if (out.trim()) return path.resolve(m.dir, out.trim());
+  }
+  return null;
+}
 
 // ---------- hub side ----------
 function createServerHost(hub) {
@@ -64,7 +79,7 @@ function createServerHost(hub) {
         const factory = require(path.join(man.dir, man.server));
         const dataDir = path.join(hub.baseDir, 'data', 'plugins', man.id);
         entry.mod = factory({
-          id: man.id, dir: man.dir, hub, config: hub.config, instance: hub.instance || { main: true }, baseDir: hub.baseDir, dataDir, secretsDir,
+          id: man.id, dir: man.dir, hub, config: hub.config, settings: settings(man.dir), instance: hub.instance || { main: true }, baseDir: hub.baseDir, dataDir, secretsDir,
           log: (...a) => console.log(`[${man.id}]`, ...a),
         }) || {};
       } catch (e) { entry.error = e.message; console.error(`[plugin ${man.id}]`, e.message); }
@@ -138,7 +153,7 @@ function loadCli(ctx) {
   for (const m of discover()) {
     if (!m.cli) continue;
     let mod;
-    try { mod = require(path.join(m.dir, m.cli))({ ...ctx, plugin: { id: m.id, dir: m.dir }, config: config(ctx.DIR), hook: (name) => hooks[name]?.[0] }) || {}; }
+    try { mod = require(path.join(m.dir, m.cli))({ ...ctx, plugin: { id: m.id, dir: m.dir }, config: config(ctx.DIR), settings: settings(m.dir), hook: (name) => hooks[name]?.[0] }) || {}; }
     catch (e) { console.error(`[plugin ${m.id}] cli: ${e.message}`); continue; }
     Object.assign(commands, mod.commands || {});
     for (const [k, fn] of Object.entries(mod.hooks || {})) (hooks[k] ||= []).push(fn);
@@ -146,4 +161,4 @@ function loadCli(ctx) {
   return { commands, hooks };
 }
 
-module.exports = { discover, createServerHost, cliManifest, loadCli };
+module.exports = { discover, createServerHost, cliManifest, loadCli, provided };

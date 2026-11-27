@@ -559,7 +559,8 @@
       b.onclick = () => { activeTab = b.dataset.apptab; renderAppBody(app); };
     });
     body.querySelector('#btnExportApp').onclick = () => showExportModal(app);
-    body.querySelector('#btnEditApp').onclick = () => showAppFormModal(app);
+    body.querySelector('#btnEditApp').onclick = () => (app.storeSource && app.settings?.length
+      ? showAppSettings(app, () => viewApps(app.id)) : showAppFormModal(app));
     body.querySelector('#btnDelApp').onclick = () => showDeleteModal(app);
     body.querySelector('#btnCancelRun')?.addEventListener('click', async () => {
       await api(`/api/apps/${encodeURIComponent(app.id)}/cancel`, { method: 'POST' });
@@ -600,8 +601,10 @@
   }
 
   async function renderViewTab(app, box) {
-    if (app.type === 'url' && app.entryUrl) {
-      box.innerHTML = `<iframe src="${esc(app.entryUrl)}" style="width:100%;height:72vh;border:1px solid var(--line-strong);border-radius:12px;background:#fff;"></iframe>`;
+    if (app.type === 'url' && (app.viewUrl || app.entryUrl)) {
+      // store web apps go through the hub (/app-<id>/<token>/, web-apps plugin): same URL and token as the hub, phone included
+      const src = app.storeSource && state.webApps ? `/app-${encodeURIComponent(app.id)}/${encodeURIComponent(TOKEN)}/` : (app.viewUrl || app.entryUrl);
+      box.innerHTML = `<iframe src="${esc(src)}" style="width:100%;height:72vh;border:1px solid var(--line-strong);border-radius:12px;background:#fff;"></iframe>`;
       return;
     }
     const { views = [] } = await api(`/api/apps/${encodeURIComponent(app.id)}/files`).catch(() => ({ views: [] }));
@@ -786,26 +789,71 @@
     toast(`${app.name} 실행을 시작했습니다`);
   };
 
-  function showStorePackage(entry, onInstalled) {
+  // install-time settings of a store app (app.json "settings"): one input per setting
+  function settingsFields(list, values = {}) {
+    if (!Array.isArray(list) || !list.length) return '';
+    return `<fieldset class="ast-settings"><legend>설치 설정</legend>${list.map((s) => {
+      const v = values[s.key] ?? s.default ?? '';
+      const id = `set_${s.key}`;
+      const input = s.type === 'bool'
+        ? `<select id="${id}" data-setting="${esc(s.key)}"><option value="0" ${v === '1' ? '' : 'selected'}>아니요</option><option value="1" ${v === '1' ? 'selected' : ''}>예</option></select>`
+        : `<input id="${id}" data-setting="${esc(s.key)}" type="${s.type === 'secret' ? 'password' : s.type === 'number' ? 'number' : 'text'}" value="${esc(v)}" ${s.required ? 'required' : ''} autocomplete="off" spellcheck="false">`;
+      return `<label for="${id}"><span>${esc(s.label)}${s.required ? ' <b aria-hidden="true">*</b>' : ''}</span>${input}
+        ${s.description ? `<small>${esc(s.description)}</small>` : ''}</label>`;
+    }).join('')}<p class="ums">값은 이 허브의 앱 설정에만 저장되고 패키지나 저장소로 나가지 않습니다.</p></fieldset>`;
+  }
+  function readSettingsFields(root) {
+    const out = {};
+    root.querySelectorAll('[data-setting]').forEach((el) => { out[el.dataset.setting] = el.value; });
+    return out;
+  }
+  function showAppSettings(app, onSaved) {
+    openModal(`설정: ${app.name}`, `<form>${settingsFields(app.settings, app.env || {})}
+      <div class="row" style="justify-content:flex-end;gap:8px"><button type="button" data-close>취소</button><button class="primary">저장</button></div>
+      <p role="alert"></p></form>`, (wrap, close) => {
+      const form = $('form', wrap);
+      form.onsubmit = async (e) => {
+        e.preventDefault();
+        try {
+          const r = await api(`/api/apps/${encodeURIComponent(app.id)}`, { method: 'PUT', body: { settingValues: readSettingsFields(form) }, requireOk: true });
+          close();
+          toast(r.restartRequired ? '저장했습니다. 플러그인 설정은 허브를 다시 시작하면 적용됩니다.' : '설정을 저장했습니다', 5000);
+          onSaved?.(r.app);
+        } catch (er) { $('p[role="alert"]', form).textContent = er.message; }
+      };
+    });
+  }
+  window.appStoreHelpers = { settingsFields, readSettingsFields, showAppSettings, openModal, statusBadge: (s) => statusBadge(s),
+    install: (...a) => showStorePackage(...a), sources: () => showAppStore() };
+
+  function showStorePackage(entry, onInstalled, { update = false } = {}) {
     openModal('설치 내용 확인', '<p>릴리스 ZIP 확인 중…</p>', async (dialog, close) => {
       const body = $('.m-body', dialog);
       const endpoint = '/api/apps-store/package';
       try {
         const { package: pkg } = await api(endpoint, { method: 'POST', body: { key: entry.key }, requireOk: true });
         if (!dialog.isConnected) return;
-        body.innerHTML = `<p><b>${esc(pkg.name)}</b> · ${esc(pkg.version)}<br>${esc(pkg.repo)}</p>
+        body.innerHTML = `<p><b>${esc(pkg.name)}</b> · ${esc(pkg.version)}${pkg.author ? ` · ${esc(pkg.author)}` : ''}
+          ${pkg.verified ? '<span class="badge">레지스트리 검증됨</span>' : ''}<br>
+          <span class="ums">출처</span> <code>${esc(pkg.repo)}</code>
+          ${pkg.commit ? `<br><span class="ums">커밋</span> <code>${esc(pkg.commit.slice(0, 12))}</code>${pkg.dirty ? ' <span class="badge">커밋되지 않은 변경 포함</span>' : ''}` : ''}
+          <br><span class="ums">SHA-256</span> <code style="font-size:.75em">${esc(pkg.digest.slice(7, 23))}…</code></p>
           <p>${esc(pkg.description)}</p>
           ${pkg.url ? `<p>${esc(pkg.url)}</p>` : ''}
           ${pkg.actions.map(a => `<details><summary>${esc(a.label)}</summary><pre class="mdpre">${esc([a.cmd, a.prompt].filter(Boolean).join('\n'))}</pre></details>`).join('')}
-          <p class="ums">${pkg.hasSetup ? '설치 시 초기 환경 구성(<code>setup.ps1</code>)이 자동으로 실행됩니다.' : '설치 후 사용자가 실행을 선택하면 앱 명령이 이 PC에서 실행됩니다.'}</p>
-          <p role="alert"></p><button type="button" class="primary" data-store-install>설치</button>`;
+          ${pkg.hubPlugin ? `<p class="ums">허브 플러그인 <code>${esc(pkg.hubPlugin)}</code>을 함께 설치합니다 (허브를 다시 시작하면 켜집니다).</p>` : ''}
+          ${settingsFields(pkg.settings, pkg.currentSettings || {})}
+          <p class="ums">${pkg.hasSetup ? '설치를 누르면 초기 환경 구성(<code>setup.ps1</code>)이 앱 폴더 안에서 실행됩니다.' : '설치 후 사용자가 실행을 선택하면 앱 명령이 이 PC의 앱 폴더에서 실행됩니다.'}</p>
+          <p role="alert"></p><button type="button" class="primary" data-store-install>${update ? '업데이트' : '설치'}</button>`;
         const install = $('[data-store-install]', body);
         install.onclick = async () => {
           install.disabled = true;
           install.textContent = pkg.hasSetup ? '설치 및 환경 구성 시작 중…' : '설치 중…';
           try {
-            const res = await api(endpoint, { method: 'POST', body: { key: entry.key, digest: pkg.digest }, requireOk: true });
+            const res = await api(endpoint, { method: 'POST', body: { key: entry.key, digest: pkg.digest, settings: readSettingsFields(body), update }, requireOk: true });
             close();
+            if (typeof onInstalled === 'function' && onInstalled.length) return onInstalled(res.package);
+            if (res.package?.restartRequired) toast(`${pkg.name}: 허브 플러그인을 설치했습니다. 허브를 다시 시작하면 켜집니다.`, 7000);
             if (res.package?.setupRun) {
               toast(`${pkg.name} 설치 완료 — 초기 환경 구성을 진행 중입니다…`, 5000);
               document.querySelectorAll('.modal-bg').forEach((m) => m.remove());
@@ -816,7 +864,7 @@
           } catch (error) {
             $('p[role="alert"]', body).textContent = error.message;
             install.disabled = false;
-            install.textContent = '설치';
+            install.textContent = update ? '업데이트' : '설치';
           }
         };
       } catch (error) { body.textContent = error.message; }
@@ -826,7 +874,7 @@
   function showAppStore() {
     openModal('앱 스토어', `<div class="row" style="flex-wrap:wrap">
       <input type="search" data-store-search aria-label="스토어 검색" placeholder="앱 또는 저장소 검색">
-      <button type="button" data-store-add>GitHub 소스 추가</button>
+      <button type="button" data-store-add>스토어 소스 추가</button>
       <a class="btnlike btn-sm" href="https://github.com/JaekunE2/agent-cli-hub/blob/dev_side/hub/app-catalog.json" target="_blank" rel="noopener">공용 카탈로그</a>
       </div><p class="ums" data-store-status role="status"></p>
       <details><summary>등록한 소스</summary><div data-store-sources></div></details>
@@ -836,6 +884,7 @@
       const sources = $('[data-store-sources]', dialog);
       const status = $('[data-store-status]', dialog);
       let entries = [];
+      let submitUrls = [];
       const paint = () => {
         const filter = search.value.trim().toLowerCase();
         const matches = entries.filter(item => [item.name, item.repo, item.description].some(value => value.toLowerCase().includes(filter)));
@@ -851,9 +900,10 @@
           const result = await api('/api/apps-store', { requireOk: true });
           entries = result.entries || [];
           status.textContent = (result.unavailable || []).length
-            ? 'GitHub 목록 확인 실패: ' + result.unavailable.join(', ') : '';
+            ? '스토어 소스 확인 실패: ' + result.unavailable.join(', ') : '';
+          submitUrls = result.submitUrls || [];
           sources.innerHTML = (result.sources || []).map(item => {
-            const source = esc(item.owner || item.repo);
+            const source = esc(item.owner || item.repo || item.path);
             return `<div class="row"><span>${source}</span><button type="button" class="ghost btn-sm" data-store-remove="${source}">제거</button></div>`;
           }).join('');
           paint();
@@ -874,9 +924,9 @@
           await refresh();
         } catch (error) { status.textContent = error.message; button.disabled = false; }
       };
-      $('[data-store-add]', dialog).onclick = () => openModal('GitHub 소스 추가', `<form class="row" style="flex-wrap:wrap">
-        <label>사용자·조직 또는 저장소 주소 <input name="source" placeholder="https://github.com/owner" required></label>
-        <p class="ums"><code>agent-cli-hub-app</code> 토픽이 붙은 공개 저장소를 찾습니다.</p>
+      $('[data-store-add]', dialog).onclick = () => openModal('스토어 소스 추가',`<form class="row" style="flex-wrap:wrap">
+        <label>사용자·조직, 저장소 주소 또는 로컬 폴더 <input name="source" placeholder="https://github.com/owner, D:\apps, file:///D:/apps" required></label>
+        <p class="ums"><code>agent-cli-hub-app</code> 토픽이 붙은 공개 저장소를 찾습니다. 로컬 폴더는 <code>catalog.json</code>(또는 <code>app.json</code>)을 읽습니다.</p>
         <button class="primary">추가</button><p role="alert"></p></form>`, (wrap, close) => {
         const form = $('form', wrap);
         form.onsubmit = async (event) => {
@@ -884,9 +934,18 @@
           const submit = $('button', form);
           submit.disabled = true;
           try {
-            await api('/api/apps-store/source', { method: 'POST', body: { source: form.elements.source.value }, requireOk: true });
+            const value = form.elements.source.value.trim();
+            await api('/api/apps-store/source', { method: 'POST', body: { source: value }, requireOk: true });
             close();
             refresh();
+            // a single app repo: offer to submit it to the public registry (a prefilled GitHub issue)
+            const repo = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/?$/i.exec(value)?.[1];
+            if (repo && submitUrls.length) {
+              const link = `${submitUrls[0]}${submitUrls[0].includes('?') ? '&' : '?'}repo=${encodeURIComponent('https://github.com/' + repo)}`;
+              openModal('공용 레지스트리에 등록', `<p>${esc(repo)}을(를) 이 허브의 스토어 소스에 추가했습니다.</p>
+                <p>다른 사람의 허브에도 보이게 하려면 공용 레지스트리에 등록 요청을 보내세요. GitHub 이슈 양식이 열리고, 검증 후 카탈로그에 추가됩니다.</p>
+                <a class="btnlike primary" href="${esc(link)}" target="_blank" rel="noopener">공용 레지스트리에 제출</a>`);
+            }
           } catch (error) {
             $('p[role="alert"]', form).textContent = error.message;
             submit.disabled = false;
@@ -917,7 +976,7 @@
     $('#view').innerHTML = '<div id="appsBody" style="padding:12px 16px 40px;">불러오는 중…</div>';
     const body = $('#appsBody');
     $('#btnNewApp').onclick = () => showAppFormModal();
-    $('#btnAppStore').onclick = showAppStore;
+    $('#btnAppStore').onclick = () => (window.viewAppStore ? window.viewAppStore() : showAppStore());
     $('#btnAppList')?.addEventListener('click', () => viewApps());
 
     try { await fetchApps(); }

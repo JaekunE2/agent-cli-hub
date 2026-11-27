@@ -22,7 +22,21 @@ module.exports = function webAppsPlugin(api) {
   const CFG_APPS = Array.isArray(CONFIG.webApps) ? CONFIG.webApps : Array.isArray(CONFIG.apps) ? CONFIG.apps.filter((a) => a && a.id && (a.url || a.page)) : [];
   // a bridge named like a file of this plugin is read from here (older configs said public/llm-web-bridge.js)
   const bridgeFile = (b) => { const own = path.join(api.dir, path.basename(String(b))); return fs.existsSync(own) ? own : path.resolve(baseDir, String(b)); };
-  const WEBAPPS = CFG_APPS;
+  // App Store web apps (type "url") are served the same way, under the hub's URL and token, so they work wherever
+  // the hub does (phone, relay). Re-read on each request: installing or uninstalling one needs no restart.
+  const storeApps = () => {
+    let reg = {};
+    try { reg = JSON.parse(fs.readFileSync(path.join(baseDir, 'data', 'apps.json'), 'utf8')); } catch {}
+    return (reg.apps || []).filter((a) => a.storeSource && a.type === 'url' && a.entryUrl).map((a) => {
+      const vals = { APP_DIR: a.cwd || '', HUB_DIR: baseDir };
+      for (const st of a.settings || []) vals[st.key] = a.env && a.env[st.key] !== undefined ? a.env[st.key] : st.default;
+      const url = String(a.entryUrl).replace(/\{\{([A-Za-z0-9_]+)\}\}/g, (m, k) => (vals[k] !== undefined ? String(vals[k]) : ''));
+      return { id: a.id, label: a.name, icon: '🧩', sub: a.description, url, storeApp: true,
+        hint: `${a.name}이(가) 꺼져 있습니다 — Apps에서 시작하세요` };
+    }).filter((a) => /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//.test(a.url));
+  };
+  const started = new Map();
+  const allApps = () => [...CFG_APPS, ...storeApps().map((a) => ({ ...a, startedAt: started.get(a.id) || 0 }))];
   // ---------- local web apps ----------
   function proxyApp(req, res, send, ap, base, pathAndQuery) {
     const target = new URL(ap.url);
@@ -46,6 +60,14 @@ module.exports = function webAppsPlugin(api) {
       });
     });
     up.on('error', (e) => {
+      // a store app that is down: the hub starts it through its own "start" action (main hub only)
+      if (e.code === 'ECONNREFUSED' && ap.storeApp && api.instance?.startServices !== false && Date.now() - (started.get(ap.id) || 0) > 60000) {
+        started.set(ap.id, Date.now());
+        const rq = http.request({ hostname: '127.0.0.1', port: PORT, path: `/api/apps/${encodeURIComponent(ap.id)}/run`, method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-token': TOKEN } }, (r) => r.resume());
+        rq.on('error', () => {}); rq.end(JSON.stringify({ actionId: 'start' }));
+        console.log(`[app] ${ap.id} down → starting through its start action`);
+      }
       if (e.code === 'ECONNREFUSED' && ap.start && Date.now() - (ap.startedAt || 0) > 30000) {
         ap.startedAt = Date.now();
         try { startScript(ap.start); } catch {}
@@ -57,9 +79,9 @@ module.exports = function webAppsPlugin(api) {
   }
 
   function handlePage(p, url, req, res, send) {
-    const am = /^\/app-([a-z0-9]+)\/([A-Za-z0-9]+)(\/.*)?$/.exec(p);
+    const am = /^\/app-([a-z0-9-]+)\/([A-Za-z0-9]+)(\/.*)?$/.exec(p);
     if (am) {
-      const ap = WEBAPPS.find((x) => x.id === am[1]);
+      const ap = allApps().find((x) => x.id === am[1]);
       if (!ap) { send(res, 404, { error: 'unknown app' }); return true; }
       if (am[2] !== TOKEN || !sameOrigin(req)) { send(res, 401, { error: 'bad token' }); return true; }
       if (!am[3]) { res.writeHead(302, { location: `${p}/${url.search}` }); res.end(); return true; }
@@ -78,12 +100,12 @@ module.exports = function webAppsPlugin(api) {
     return false;
   }
   async function handleApi(p, url, req, res, body, send) {
-    if (p === '/api/webapps') { send(res, 200, { apps: WEBAPPS.map(({ id, label, icon, sub }) => ({ id, label, icon, sub })) }); return true; }
+    if (p === '/api/webapps') { send(res, 200, { apps: allApps().map(({ id, label, icon, sub, storeApp }) => ({ id, label, icon, sub, storeApp: !!storeApp })) }); return true; }
     return false;
   }
   return {
-    enabled: WEBAPPS.length > 0,
+    enabled: true,
     handlePage, handleApi,
-    overview: () => ({ webApps: WEBAPPS.length > 0 }),
+    overview: () => ({ webApps: allApps().length > 0 }),
   };
 };

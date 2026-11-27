@@ -34,6 +34,29 @@ A plugin folder has a `plugin.json` and any of:
 Plugins must respect `api.instance` (see `instance.js`): a side instance (any port other than 7777, e.g. a
 test copy next to the live hub) must not start background work, write shared files or launch anything.
 
+## Apps from the App Store, and plugins they carry
+
+**Apps** (Apps view, `/api/apps`, upstream's App Store) are things the user installs and runs: a folder with `app.json`,
+actions, settings. **Plugins** extend the hub itself. The two meet in one generic way: an app's `app.json` may name a
+`hubPlugin` folder inside its package. On install the store copies it to `hub/local/plugins/<plugin id>/` (marked
+with `.store-app` = the owning app id, never overwriting a folder it does not own) and writes `settings.json` next to
+it from the app's install settings; uninstalling the app removes it. Plugins load at hub start, so the store asks
+for a restart.
+
+- `api.settings` (server) / `ctx.settings` (cli) = that `settings.json` (empty for plugins shipped in the repo).
+- `plugin.json` `"provides": { "researchHarness": "${HARNESS_DIR}" }` declares a hub-wide value from the settings;
+  `require('./plugins').provided(key)` reads it (`harness.js` uses it after env `CCD_HARNESS` and config `researchHarness`).
+- `plugin.json` `"routes": [...]` is documentation shown on the store page ("what this app adds").
+
+Store sources (`hub/app-store-local.js`): a GitHub owner or repo (upstream), a **registry** catalog URL
+(`https://…/catalog.json`), or a local catalog file / folder (`D:\apps\catalog.json`, `file:///…`, a folder with
+`app.json`) for testing unpublished apps. Registry entries point at each author's repository; GitHub ones install
+from the latest release ZIP (checked against GitHub's SHA-256 and the registry's `sha256`), local ones are copied and
+hashed. App settings (`app.json` `settings`) are filled in at install time, stored in the hub's app registry only,
+and passed to the app's commands as environment variables together with `HUB_DIR`, `HUB_APP_ID`, `HUB_APP_DIR`;
+`entryUrl` may use `{{SETTING}}`. Lifecycle scripts: `setup.ps1` (install / update), `stop.ps1` (before an update),
+`uninstall.ps1` (before removal). The store view (`public/app-store-ui.js`) has Browse / app page / My apps / Register.
+
 ## Hooks the core calls
 
 | hook | where | contract |
