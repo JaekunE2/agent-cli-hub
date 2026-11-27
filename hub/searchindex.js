@@ -322,12 +322,13 @@ class SearchIndex {
   }
 
   // Parse bytes [doc.offset, size) of one file, appending complete lines only.
-  async updateFile(file) {
+  async updateFile(file, { codexAnswers = false } = {}) {
     const codex = isCodexFile(file);
     const agy = !codex && isAgyFile(file);
     const id = codex ? codexIdOf(file) : agy ? agyIdOf(file) : path.basename(file, '.jsonl');
     let st; try { st = await fs.promises.stat(file); } catch { return; }
     let doc = this.docs.get(id);
+    if (codex && codexAnswers && doc && !doc.codexAnswers) doc = null;
     const bestMtime = (d, stMs) => {
       for (let i = d.msgs.length - 1; i >= 0; i--) {
         const ts = Date.parse(d.msgs[i]?.ts || '');
@@ -350,7 +351,7 @@ class SearchIndex {
       return;
     }
     if (!doc || doc.file !== file || st.size < doc.offset) {
-      doc = { id, file, offset: 0, mtime: 0, cwd: null, title: null, firstPrompt: null, auto: null, msgs: [], tokens: emptyTokens(), _tokMap: {}, agent: codex ? 'codex' : agy ? 'agy' : 'claude' };
+      doc = { id, file, offset: 0, mtime: 0, cwd: null, title: null, firstPrompt: null, auto: null, msgs: [], tokens: emptyTokens(), _tokMap: {}, agent: codex ? 'codex' : agy ? 'agy' : 'claude', ...(codex ? { codexAnswers: true } : {}) };
       this.docs.set(id, doc);
     }
     if (!doc.tokens) doc.tokens = emptyTokens();
@@ -373,6 +374,16 @@ class SearchIndex {
         const isAnswerOut = head.includes('"function_call_output"') && lineBuf.length < 32768 && lineBuf.includes('answers');
         if (!isAnswerOut && head.includes('"type":"response_item"') && /"type":"(reasoning|function_call_output|custom_tool_call_output)"/.test(head)) return;
         let e; try { e = JSON.parse(lineBuf.toString('utf8')); } catch { return; }
+        const p = e.payload || {};
+        if ((e.type === 'turn_context' || p.type === 'task_started') && p.turn_id && p.turn_id !== doc._codexTurn) {
+          doc._codexTurn = p.turn_id;
+          doc._codexAnswer = null;
+          doc._codexFinal = false;
+        }
+        if (e.type === 'event_msg' && p.type === 'task_complete' && p.turn_id && p.turn_id === doc._codexTurn && doc._codexAnswer != null) {
+          doc.msgs[doc._codexAnswer].codexTurnId = p.turn_id;
+          doc._codexAnswer = null;
+        }
         const r = codexLine(e);
         if (r.cwd && !doc.cwd) doc.cwd = r.cwd;
         if (r.turnCtx) {
@@ -395,7 +406,13 @@ class SearchIndex {
           const clean = cleanPromptTitle(r.msg.text);
           if (clean && !codexNoise(clean)) doc.firstPrompt = clean;
         }
+        const next = doc.msgs.length;
         pushMsg(r.msg);
+        if (doc.msgs.length > next && r.msg.role === 'assistant' && p.type === 'message' &&
+            (p.phase === 'final_answer' || (!p.phase && !doc._codexFinal))) {
+          doc._codexAnswer = next;
+          doc._codexFinal = p.phase === 'final_answer';
+        }
       };
       const handleAgy = (lineBuf) => {
         // Detect subagent child conversations: step 0 is a SYSTEM_MESSAGE with sender=<parent-id> and no USER_INPUT

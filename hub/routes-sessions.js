@@ -18,6 +18,7 @@ const { parentSession, transcriptFile } = require('./subagent-files');
 const { sessionStartupBlock, waitForTerminalInput, dismissProjectHookMenu, dispatchTerminalPrompt, submissionBlockMessage, terminalConfirmationMessage, HOOK_MENU_MESSAGE, DUMB_TERMINAL_MESSAGE } = require('./term-manager');
 const { hasAgyCliConversation } = require('./agy-session');
 const { collectSessionTraces } = require('./session-traces');
+const { readTurnTokens } = require('./codex-token-ledger');
 const { createWorkspaceSessions } = require('./workspace-sessions');
 const { nativeFolderKey } = require('./workspace-execution');
 const { unsupported } = require('./workspace-launch');
@@ -1350,8 +1351,16 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
         else if (Date.now() - hub.getLastIndexAt() > 1500) await hub.refreshIndex();
         d = index.get(id);
       }
-      if (d) await index.updateFile(d.file);
+      if (d) await index.updateFile(d.file, { codexAnswers: true });
       const out = transcriptFromIndex(id, at, limit) || transcript(id);
+      if (out?.agent === 'codex' && out.messages?.length) {
+        const turns = out.messages.map(m => m.codexTurnId).filter(Boolean);
+        const usage = await readTurnTokens(turns).catch(() => ({}));
+        for (const m of out.messages) {
+          if (usage[m.codexTurnId]) m.codexUsage = usage[m.codexTurnId];
+        }
+        out.usageRev = out.messages.map(m => m.codexUsage?.map(row => row.events + ':' + row.account).join(',') || '').join(';');
+      }
       if (out && !out.lineage && id) out.lineage = conversationBranches.lineageFor(id, (sid) => sessionDisplayTitle(sid, index.get(sid)));
       if (out && !out.error && (d?.agent === 'agy' || out.agent === 'agy') && id && !hasAgyCliConversation(id)) out.ideOnly = true;
       send(res, 200, out);

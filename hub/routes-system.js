@@ -107,6 +107,12 @@ function createSystemRoutes(hub) {
       send(res, 200, await hub.aiUsage(url.searchParams.has('force')));
       return true;
     }
+    if (p === '/api/codex/tokens' && req.method === 'GET') {
+      send(res, 200, await hub.readCodexTokens({
+        account: url.searchParams.get('account'), week: url.searchParams.has('week'),
+      }));
+      return true;
+    }
     if (p === '/api/usage/accounts') {
       try {
         if (req.method === 'GET') {

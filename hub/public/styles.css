@@ -559,6 +559,12 @@ body.side-collapsed .side-float-btn { display: inline-flex; }
 .tr-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tr-badges { display: inline-flex; gap: 4px; flex: none; }
 .tr-hook-box { border: 1px solid var(--line); border-radius: var(--radius-md); padding: 10px 12px; background: var(--panel); display: flex; flex-direction: column; gap: 8px; font-size: 12px; }
+.msg-token-usage { margin-block-start: .4rem; color: var(--muted); font-size: .75rem; font-variant-numeric: tabular-nums; }
+.msg-token-usage summary { width: fit-content; cursor: pointer; }
+.msg-token-usage summary b { margin-inline-start: .45rem; }
+.msg-token-usage > div { display: flex; flex-wrap: wrap; gap: .15rem .7rem; overflow-wrap: anywhere; }
+.codex-token-detail { border-block-start: 1px solid var(--line); margin-block-start: .5rem; padding-block-start: .5rem; font-variant-numeric: tabular-nums; }
+.codex-token-detail > summary { cursor: pointer; color: var(--muted); }
 .tr-code { margin: 0; padding: 8px; border-radius: var(--radius-sm); background: var(--bg); border: 1px solid var(--line); font-size: 11px; overflow-x: auto; }
 .chat-me-bar [data-chat-effort] { flex: 0 1 135px; min-width: 105px; }
 .chat-me-bar [data-chat-apply] { height: 28px; min-height: 28px; padding: 0 10px; font-size: 12px; flex: none; }

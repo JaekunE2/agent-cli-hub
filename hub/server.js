@@ -20,6 +20,7 @@ const { spawn } = require('child_process');
 const { WebSocketServer } = require('ws');
 const { SearchIndex } = require('./searchindex');
 const CA = require('./codex-accounts');
+const codexTokenLedger = require('./codex-token-ledger');
 const codexRecoveryArgs = require('./terminal-recovery');
 const { PTY_KEYS } = require('./immediate-send');
 const { readSession: readAgySession, agyStatusFromScreen, stripAnsi } = require('./agy-session');
@@ -364,6 +365,7 @@ function resolveScheduleTarget({ projectId, version, taskId, cwd, sessionId = ''
 Object.assign(hub, {
   ...projectRoutes,
   ...sessionRoutes,
+  readCodexTokens: codexTokenLedger.readTokens,
   procTable, artifactsMod, gpuQ: () => gpuQ, research: () => research, calendarMod: () => calendarMod, driveMod: () => driveMod, appsMod: () => appsMod,
 });
 const systemRoutes = createSystemRoutes(hub);
@@ -373,6 +375,10 @@ if (research && watchdogOn) research.start();
 if (watchdogOn) {
   calendarMod.start();
   hub.ensureTrayMonitor();
+  const tokenLedgerError = err => logServerError('codex-token-ledger', err);
+  codexTokenLedger.watchCodexTokens({
+    usageDir: hub.USAGE_DIR, getUsage: () => hub.aiUsage(true), onError: tokenLedgerError,
+  }).catch(tokenLedgerError);
   setTimeout(() => { if (hub.agyQuota.ageMs() >= 180_000) hub.agyQuota.refresh({ force: true }).catch(() => {}); }, 3000).unref();
   setInterval(() => { if (hub.agyQuota.ageMs() >= 4 * 60_000) hub.agyQuota.refresh({ force: true }).catch(() => {}); }, 5 * 60_000).unref();
 }

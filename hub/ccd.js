@@ -34,6 +34,7 @@ const HELP = `ccd — Agent CLI Hub CLI  (server ${BASE})
   switch <session|target> [--account auto|ID] [--no-continue] [--no-skip-permissions] [--interrupt] [--force]
                                    stop that session and resume it on another of your accounts (Claude, or Codex for a codex terminal)
   codex [ls | add | rm <email|id>] your ChatGPT logins for the Codex CLI (add = device-code login in this console)
+  codex tokens [account] [--week] [--json]   locally recorded Codex CLI tokens by account, model and effort
   gpt "prompt" [--file a,b] [--image x.png] [--model M] [--cd DIR] [--account EMAIL]
                                    ask GPT through the Codex CLI (read-only) — second opinions / cross-review; stdin is appended
   notice "text" [--to all|t:1,t:2] [--board-only]   post a hub notice: saved on the board and typed into running Claude/Codex hub terminals
@@ -292,6 +293,31 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
       for (const a of r) console.log(`  ${a.usable ? '✓' : a.limited ? '✗ limit' : '?'}`.padEnd(10) + `${(a.email || a.label).padEnd(34)} 5h ${a.fiveH ?? '-'}  wk ${a.weekly ?? '-'}${a.main ? '  (이 PC 기본 로그인 ~/.codex)' : `  ${a.home}`}${a.error ? `  ! ${a.error}` : ''}`);
       return console.log('\nadd another: ccd codex add   (device code: log in on any browser/phone with the other account)');
     }
+    if (sub === 'tokens') {
+      const ledger = require('./codex-token-ledger');
+      const options = { account: flags.account || pos[2], week: !!flags.week };
+      if (flags.watch) {
+        const stop = await ledger.watchCodexTokens({ usageDir: usageDir(), getUsage: () => api('/api/usage?force=1') });
+        if (stop) console.log('Watching Codex CLI turn completions.');
+        return;
+      }
+      const report = await ledger.readTokens(options);
+      if (flags.json) return console.log(JSON.stringify(report));
+      if (!report.groups.length) return console.log('저장된 Codex CLI 토큰 기록이 없습니다.');
+      console.log(`Codex CLI · 이 PC · ${options.week ? '현재 주간' : '저장된 전체'} · ${report.collectedAt}`);
+      const n = value => value.toLocaleString('en-US');
+      for (const g of report.groups) {
+        console.log(`${g.account || '계정 미확인'} | ${g.model || '?'} / ${g.effort || '?'} | 합계 ${n(g.total_tokens)} | 캐시 입력 ${n(g.cached_input_tokens)} | 비캐시 입력 ${n(g.uncached_input_tokens)} | 출력 ${n(g.output_tokens)} (추론 ${n(g.reasoning_output_tokens)})`);
+      }
+      for (const o of report.observations) {
+        console.log(`${o.account} | 계정 사용률 변화 · 관측 | ${n(o.from)}% → ${n(o.to)}% (+${Number(o.changePoints.toFixed(1))}%p)`);
+      }
+      for (const e of report.estimates || []) {
+        if (e.percent == null) continue;
+        console.log(`${e.account} | CLI 환산 추정 ${e.percent.toFixed(1)}% | $${e.costUsd.toFixed(2)} / $${e.basisUsd.toFixed(2)} (${e.plan} ${'기본 가정'})`);
+      }
+      return;
+    }
     if (sub === 'add') {
       console.log('새 ChatGPT 계정으로 Codex 로그인 — 아래에 나오는 주소를 아무 브라우저(폰 가능)에서 열고 코드를 넣은 뒤, 추가할 계정으로 로그인하세요.\n');
       let r;
@@ -316,7 +342,7 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
       console.log(`removed ${a.email || a.label} from the list (login folder kept: ${a.home})`);
       return;
     }
-    die('usage: ccd codex [ls | add | rm <email|id>]');
+    die('usage: ccd codex [ls | add | rm <email|id> | tokens [account] [--week] [--json]]');
   },
   async notice() {
     const text = pos.slice(1).join(' ').trim();
@@ -952,6 +978,7 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
   const c = pos[0];
   if (!c || c === 'help' || flags.help) return console.log(HELP);
   if (!cmds[c]) die(`unknown command ${c}\n\n${HELP}`);
-  if (c !== 'url') await ensureUp(c === 'up' || c === 'restart');
+  const savedCodexTokens = c === 'codex' && pos[1] === 'tokens' && !flags.watch;
+  if (c !== 'url' && !savedCodexTokens) await ensureUp(c === 'up' || c === 'restart');
   await cmds[c]();
 })().catch((e) => die(String(e.stack || e)));

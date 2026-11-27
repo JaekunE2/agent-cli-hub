@@ -6,6 +6,37 @@ const CAL_KIND = {
   task: { cls: 'ck-task', label: '할 일' }, milestone: { cls: 'ck-ms', label: '마일스톤' },
   event: { cls: 'ck-ev', label: '일정' }, gcal: { cls: 'ck-g', label: '구글' }, mscal: { cls: 'ck-ms365', label: 'Teams' },
 };
+// Korean national public holidays from the official almanacs and later government notices.
+// https://astro.kasi.re.kr/kor/life/post/almanac
+// https://www.law.go.kr/lsInfoP.do?lsId=014112
+const CAL_KR_FIXED = {
+  '01-01': '신정', '03-01': '삼일절', '05-05': '어린이날', '06-06': '현충일',
+  '08-15': '광복절', '10-03': '개천절', '10-09': '한글날', '12-25': '성탄절',
+};
+const CAL_KR_HOLIDAYS = {
+  2025: {
+    '01-27': '임시공휴일', '01-28': '설날 연휴', '01-29': '설날', '01-30': '설날 연휴',
+    '03-03': '대체공휴일', '05-05': '어린이날 · 부처님 오신 날', '05-06': '대체공휴일',
+    '06-03': '대통령선거일', '10-05': '추석 연휴', '10-06': '추석', '10-07': '추석 연휴', '10-08': '대체공휴일',
+  },
+  2026: {
+    '02-16': '설날 연휴', '02-17': '설날', '02-18': '설날 연휴', '03-02': '대체공휴일',
+    '05-01': '노동절', '05-24': '부처님 오신 날', '05-25': '대체공휴일', '06-03': '전국동시지방선거',
+    '07-17': '제헌절', '08-17': '대체공휴일', '09-24': '추석 연휴', '09-25': '추석',
+    '09-26': '추석 연휴', '10-05': '대체공휴일',
+  },
+  2027: {
+    '02-06': '설날 연휴', '02-07': '설날', '02-08': '설날 연휴', '02-09': '대체공휴일',
+    '05-01': '노동절', '05-03': '대체공휴일', '05-13': '부처님 오신 날',
+    '07-17': '제헌절', '07-19': '대체공휴일', '08-16': '대체공휴일',
+    '09-14': '추석 연휴', '09-15': '추석', '09-16': '추석 연휴',
+    '10-04': '대체공휴일', '10-11': '대체공휴일', '12-27': '대체공휴일',
+  },
+};
+function calHolidayName(date) {
+  const year = CAL_KR_HOLIDAYS[date.slice(0, 4)], monthDay = date.slice(5);
+  return year ? year[monthDay] || CAL_KR_FIXED[monthDay] || '' : '';
+}
 const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const todayStr = () => ymd(new Date());
 const calDayLabel = (s) => { const d = new Date(s + 'T00:00:00'); return d.toLocaleDateString((document.documentElement.lang === 'en' ? 'en-US' : 'ko-KR'), { month: 'long', day: 'numeric', weekday: 'short' }); };
@@ -50,6 +81,7 @@ function paintCalendar() {
     <button class="ghost icon-btn btn-sm" data-cal="more" aria-label="캘린더 연동 메뉴" aria-haspopup="menu" aria-expanded="false" title="${esc(calMoreTitle)}">${ico.more || '⋯'}</button>`;
   const t = todayStr();
   const selected = CAL.day || t;
+  const selectedHoliday = calHolidayName(selected);
   const upcomingOpen = previousAgenda?.dataset.day === selected ? previousAgenda.open : null;
   const items = d.items || [], byDate = new Map();
   const overN = items.filter((x) => x.kind === 'task' && !x.done && x.date < t).length;
@@ -71,11 +103,13 @@ function paintCalendar() {
   for (let i = 0; i < 42; i++) {
     const day = new Date(start); day.setDate(start.getDate() + i);
     const ds = ymd(day), list = byDate.get(ds) || [];
+    const holiday = calHolidayName(ds);
+    const weekend = day.getDay() === 6 ? ' cal-sat' : day.getDay() === 0 ? ' cal-sun' : '';
     const more = list.length > 4 ? `<div class="cmore" data-cday="${ds}">+${list.length - 4}개</div>` : '';
-    cells += `<div class="cday${day.getMonth() !== mo ? ' out' : ''}${ds === t ? ' today' : ''}${ds === selected ? ' selected' : ''}${[0, 6].includes(day.getDay()) ? ' wk' : ''}" data-cday="${ds}">
-      <button type="button" class="cnum" data-cal-day="${ds}" aria-label="${esc(calDayLabel(ds))}" aria-pressed="${ds === selected}">${day.getDate()}</button>${list.slice(0, 4).map(chip).join('')}${more}</div>`;
+    cells += `<div class="cday${day.getMonth() !== mo ? ' out' : ''}${ds === t ? ' today' : ''}${ds === selected ? ' selected' : ''}${weekend}${holiday ? ' cal-holiday' : ''}" data-cday="${ds}">
+      <div class="cal-date"><button type="button" class="cnum" data-cal-day="${ds}" aria-label="${esc(holiday ? `${calDayLabel(ds)} · ${holiday}` : calDayLabel(ds))}" aria-pressed="${ds === selected}">${day.getDate()}</button>${holiday ? `<span class="cal-holiday-name" title="${esc(holiday)}">${esc(holiday)}</span>` : ''}</div>${list.slice(0, 4).map(chip).join('')}${more}</div>`;
   }
-  const head = ['월', '화', '수', '목', '금', '토', '일'].map((x) => `<div class="chead">${x}</div>`).join('');
+  const head = ['월', '화', '수', '목', '금', '토', '일'].map((x, i) => `<div class="chead${i === 5 ? ' cal-sat' : i === 6 ? ' cal-sun' : ''}">${x}</div>`).join('');
 
   // agenda: today, overdue tasks, next 14 days
   const open = items.filter((x) => !(x.kind === 'task' && x.done));
@@ -95,7 +129,7 @@ function paintCalendar() {
         <span class="ck-legend"><span class="cdot ck-ev"></span>일정 <span class="cdot ck-task"></span>할 일 <span class="cdot ck-ms"></span>마일스톤 <span class="cdot ck-ms365"></span>Teams <span class="cdot ck-g"></span>구글</span>
         <span>${extSummary}</span>
       </div></div>
-    <div class="calside">${overBlock}<section class="cag cal-selected" aria-live="polite"><h2>${esc(calDayLabel(selected))}</h2>${selectedItems.map((it) => row(it, true)).join('') || '<div class="empty">등록된 일정이 없습니다</div>'}</section>
+    <div class="calside">${overBlock}<section class="cag cal-selected" aria-live="polite"><h2>${esc(calDayLabel(selected))}</h2>${selectedHoliday ? `<div class="cal-holiday cal-holiday-name">${esc(selectedHoliday)}</div>` : ''}${selectedItems.map((it) => row(it, true)).join('') || '<div class="empty">등록된 일정이 없습니다</div>'}</section>
       <details class="cal-upcoming" data-day="${esc(selected)}"${(upcomingOpen ?? !selectedItems.length) ? ' open' : ''}><summary>다가오는 일정</summary>${agenda}</details></div></div></div></div>`;
 }
 

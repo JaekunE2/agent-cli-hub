@@ -316,12 +316,76 @@ function openAgyDetailDrawer(cardId = 'agy') {
   bindActions();
   if (!state.agyQuota?.groups?.length && !state.agyRefreshing) $('#drwAgyRef', d)?.click();
 }
+const codexCount = value => Number(value || 0).toLocaleString(uiLocale());
+const codexShortCount = value => Number(value || 0).toLocaleString(uiLocale(), {
+  notation: 'compact', maximumFractionDigits: 1,
+});
+const codexAccountKey = a => String(a.email || a.id || '').toLowerCase();
+const isCodexTokenAccount = a => a.type === 'codex' || a.provider === 'ChatGPT' ||
+  a.meters?.some(m => /^Codex /i.test(m.name));
+const codexSum = (groups, key) => groups.reduce((sum, row) => sum + (row[key] || 0), 0);
+const codexModelEffort = row => [row.model, row.effort].filter(Boolean).join(' · ') || '모델 정보 없음';
+const codexIoSummary = groups => `비캐시 입력 ${codexShortCount(codexSum(groups, 'uncached_input_tokens'))} · 출력 ${codexShortCount(codexSum(groups, 'output_tokens'))}`;
+
+function codexAnswerTokensHTML(groups, turn, open) {
+  const heading = codexModelEffort(groups[0]) + (groups.length > 1 ? ` +${groups.length - 1}` : '');
+  return `<details class="msg-token-usage" data-token-turn="${esc(turn)}"${open ? ' open' : ''}><summary aria-label="이번 답변의 Codex CLI 토큰">
+    <span>${esc(heading)}</span> <b>${esc(codexIoSummary(groups))}</b></summary>
+    ${groups.map(row => `<div>
+      <span>${esc(row.account || '계정 미확인')}${groups.length > 1 ? ` · ${esc(codexModelEffort(row))}` : ''}</span>
+      <span>비캐시 ${codexCount(row.uncached_input_tokens)} · 캐시 ${codexCount(row.cached_input_tokens)}</span>
+      <span>출력 ${codexCount(row.output_tokens)} (추론 ${codexCount(row.reasoning_output_tokens)})</span>
+    </div>`).join('')}</details>`;
+}
+
+async function refreshCodexTokenCards() {
+  try { state.codexTokenGroups = (await api('/api/codex/tokens?week', { requireOk: true })).groups || []; }
+  catch { state.codexTokenGroups = []; }
+  if (state.sel.kind === 'usage') paintUsage();
+}
+
+function codexTokenCardHTML(account) {
+  const groups = (state.codexTokenGroups || []).filter(row => row.account === codexAccountKey(account));
+  return groups.length ? `<div class="ums">이 PC CLI · ${esc(codexIoSummary(groups))}</div>` : '';
+}
+
+async function loadCodexTokenDetail(host, account) {
+  try {
+    const query = new URLSearchParams({ account: codexAccountKey(account), week: '' });
+    const { groups = [], observations = [], estimates = [] } = await api(`/api/codex/tokens?${query}`, { requireOk: true });
+    if (!host.isConnected) return;
+    const obs = observations.sort((a, b) => b.toAt - a.toAt)[0];
+    const point = value => Number(value).toLocaleString(uiLocale(), { maximumFractionDigits: 1 });
+    const usd = value => Number(value).toLocaleString(uiLocale(), { style: 'currency', currency: 'USD' });
+    const estimate = estimates.find(row => row.account === codexAccountKey(account));
+    host.innerHTML = groups.length ? `
+      ${estimate?.percent != null ? `<div class="drw-kv" title="표준 단가 환산액을 기준액으로 나눈 추정치입니다.">
+        <span>이 PC CLI 환산</span><b>추정 ${point(estimate.percent)}%</b></div>
+      <div class="ums">${usd(estimate.costUsd)} / ${usd(estimate.basisUsd)} · ${esc(estimate.plan || '')} ${'기본 가정'}</div>` : ''}
+      <div class="drw-kv"><span>비캐시 입력</span><b>${codexCount(codexSum(groups, 'uncached_input_tokens'))}</b></div>
+      <div class="drw-kv"><span>출력</span><b>${codexCount(codexSum(groups, 'output_tokens'))}</b></div>
+      <details class="codex-token-detail"><summary>캐시·모델별 내역</summary>
+        <div class="drw-kv"><span>캐시 읽기</span><b>${codexCount(codexSum(groups, 'cached_input_tokens'))}</b></div>
+        <div class="drw-kv"><span>전체 처리 토큰 (캐시 포함)</span><b>${codexCount(codexSum(groups, 'total_tokens'))}</b></div>
+        ${groups.map(row => `<div class="codex-token-detail">
+        <b>${esc(codexModelEffort(row))}</b>
+        <div class="ums">비캐시 입력 ${codexCount(row.uncached_input_tokens)} · 캐시 ${codexCount(row.cached_input_tokens)}</div>
+        <div class="ums">출력 ${codexCount(row.output_tokens)} · 추론 ${codexCount(row.reasoning_output_tokens)}</div>
+      </div>`).join('')}
+        ${obs ? `<div class="ums" title="CLI 로그에 남은 첫·마지막 계정 사용률입니다. 같은 시간대의 다른 기기 사용도 포함합니다.">계정 사용률 관측 ${point(obs.from)}% → ${point(obs.to)}% (+${point(obs.changePoints)}%p)</div>` : ''}
+      </details>` : '<div class="ums">이번 주에 저장된 이 계정의 CLI 기록이 없습니다.</div>';
+  } catch {
+    if (host.isConnected) host.textContent = '저장된 CLI 토큰을 불러올 수 없습니다.';
+  }
+}
+
 function openUsageDetailDrawer(a) {
   if (!a) return;
+  const codex = isCodexTokenAccount(a);
   const meterRow = (m) => {
     const used = m.usedPercent != null ? Math.round(Number(m.usedPercent)) : null;
     const rem = used != null ? Math.max(0, 100 - used) : null;
-    return `<div class="um"><div class="umt"><span>${esc(m.name)}</span>${used != null ? `<span class="up ${level(used)}"><b>${rem}% 남음</b> <span style="font-weight:400;color:var(--muted)">(${used}% 사용)</span></span>` : ''}</div>
+    return `<div class="um"><div class="umt"><span>${esc(m.name)}${codex && /주간|weekly/i.test(m.name) ? ' · 계정 전체' : ''}</span>${used != null ? `<span class="up ${level(used)}"><b>${rem}% 남음</b> <span style="font-weight:400;color:var(--muted)">(${used}% 사용)</span></span>` : ''}</div>
     ${used != null ? remainingBar(used, rem) : ''}<div class="ums">${[m.resetsAt ? shortResetAt(m.resetsAt) : '', m.detail ? esc(m.detail) : ''].filter(Boolean).join(' · ')}</div></div>`;
   };
   const footNotes = [
@@ -332,8 +396,10 @@ function openUsageDetailDrawer(a) {
     <div class="row" style="gap:8px">${agentIcon(usageKindOf(a) === 'other' ? 'bot' : usageKindOf(a), a.live ? 'idle' : '')}<b>${esc(a.label)}</b>${a.plan ? `<span class="badge">${esc(a.plan)}</span>` : ''}</div>
     ${!a.ok ? `<div class="err" style="padding:0">${esc(a.error || '조회 실패')}</div>` : ''}
     ${(a.meters || []).length ? `<div class="ugrp">${a.meters.map(meterRow).join('')}</div>` : '<div class="empty" style="padding:0">표시할 상세 미터가 없습니다.</div>'}
+    ${codex ? '<section class="ugrp"><div class="ugrp-title">이번 주 · 이 PC의 CLI 토큰</div><div data-codex-token-detail aria-live="polite">불러오는 중…</div></section>' : ''}
     ${footNotes.length ? `<div class="ugrp">${footNotes.map((t) => `<div class="ums">${t}</div>`).join('')}</div>` : ''}`;
-  openDrawer({ title: `${a.label} · 상세`, bodyHTML: body, footerHTML: '<button data-drw-close>닫기</button>', width: 460 });
+  const drawer = openDrawer({ title: `${a.label} · 상세`, bodyHTML: body, footerHTML: '<button data-drw-close>닫기</button>', width: 460 });
+  if (codex) void loadCodexTokenDetail(drawer.querySelector('[data-codex-token-detail]'), a);
 }
 function usageKindOf(a) {
   const tag = `${a.type || ''} ${a.provider || ''}`;
@@ -362,7 +428,7 @@ function viewUsage() {
     const rb = e.target.closest('#uRefresh');
     if (rb) {
       rb.disabled = true; rb.textContent = '조회 중…';
-      await refreshUsage(true);
+      await Promise.all([refreshUsage(true), refreshCodexTokenCards()]);
       return;
     }
     const f = e.target.closest('[data-ufilt]');
@@ -381,6 +447,7 @@ function viewUsage() {
     }
   };
   paintUsage();
+  void refreshCodexTokenCards();
 }
 function paintUsage() {
   const u = state.usage;
@@ -502,6 +569,7 @@ function paintUsage() {
         <div class="ucard-hero"><span class="ucard-big ${worst != null ? level(worst) : ''}"${rem == null ? ' style="font-size:18px;font-weight:650;color:var(--muted)"' : ''}>${rem != null ? `${rem}%` : a.ok ? '유효' : '—'}</span><span class="ums" style="margin:0">${rem != null ? '남음' : a.ok ? '인증 상태' : '조회 실패'}</span></div>
         <div style="margin-top:8px">${worst != null ? remainingBar(worst, rem) : ''}</div>
       </div>`}
+      ${isCodexTokenAccount(a) ? codexTokenCardHTML(a) : ''}
       <div class="ucard-foot"><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(resetHint)}</span><span class="ico">${ICO.chevRight}</span></div>
     </div>` };
   });

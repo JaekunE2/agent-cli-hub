@@ -694,7 +694,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
     if (d.hidden) { msgsHost.textContent = d.error; return; }
     const parentSig = d.lineage?.parent ? `${d.lineage.parent.parentSessionId}:${d.lineage.parent.atIndex}` : '';
     const childSig = (d.lineage?.children || []).map((c) => `${c.id || ''}:${c.childSessionId || ''}:${c.atIndex}`).join(',');
-    const sig = `${d.size || 0}:${d.total || 0}:${d.base || 0}:${d.rev || 0}:${d.title || ''}:${parentSig}:${childSig}`;
+    const sig = `${d.size || 0}:${d.total || 0}:${d.base || 0}:${d.rev || 0}:${d.title || ''}:${parentSig}:${childSig}:${d.usageRev || ''}`;
     if (d.error && !d.messages?.length) {
       if (lastMessages.length) {
         const working = await updateLiveBubble(lastMessages);
@@ -748,6 +748,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
       const more = jump && b + d.messages.length < (d.total || 0)
         ? `<div class="row" style="justify-content:center;margin:10px"><button class="btn-latest">최신 대화로 이동</button></div>` : '';
       const openToolIds = new Set([...msgsHost.querySelectorAll('details.toolgrp[open]')].map((el) => el.dataset.tgKey).filter(Boolean));
+      const openTokenIds = new Set([...msgsHost.querySelectorAll('.msg-token-usage[open]')].map(el => el.dataset.tokenTurn));
       const parts = [];
       let toolBuf = [];
       const branchChipsHTML = (gi) => {
@@ -806,7 +807,9 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
           parts.push(`<div class="msg user${tgt ? ' target' : ''}" data-mi="${k}">${branchOriginNote}<div class="msg-bubble"><div class="msg-body">${bodyHtml}</div></div><div class="msg-meta">${editedBadge}<span class="msg-acts">${quoteBtn}${editBtn}${forkBtn}${copyBtn}</span>${when ? `<span>${esc(when)}</span>` : ''}</div>${branchChipsHTML(gi)}</div>`);
         } else {
           const bodyHtml = !terms.length ? md(rawTxt) : `<div class="msg-body" style="white-space:pre-wrap">${linkUrls(linkPaths(hl(rawTxt, terms)))}</div>`;
-          parts.push(`<div class="msg assistant${tgt ? ' target' : ''}" data-mi="${k}"><div class="msg-av">${agentIcon(ag || 'claude')}</div><div class="msg-col"><div class="msg-hd"><span class="w-role">${esc(who)}</span>${when ? `<span class="w-ts">${esc(when)}</span>` : ''}${editedBadge}<span style="flex:1"></span><span class="msg-acts">${quoteBtn}${forkBtn}${copyBtn}</span></div><div class="msg-bubble">${bodyHtml}</div>${branchChipsHTML(gi)}</div></div>`);
+          const turn = m.codexTurnId || String(gi);
+          const usage = m.codexUsage?.length ? codexAnswerTokensHTML(m.codexUsage, turn, openTokenIds.has(turn)) : '';
+          parts.push(`<div class="msg assistant${tgt ? ' target' : ''}" data-mi="${k}"><div class="msg-av">${agentIcon(ag || 'claude')}</div><div class="msg-col"><div class="msg-hd"><span class="w-role">${esc(who)}</span>${when ? `<span class="w-ts">${esc(when)}</span>` : ''}${editedBadge}<span style="flex:1"></span><span class="msg-acts">${quoteBtn}${forkBtn}${copyBtn}</span></div><div class="msg-bubble">${bodyHtml}</div>${usage}${branchChipsHTML(gi)}</div></div>`);
         }
       });
       flushTools();
