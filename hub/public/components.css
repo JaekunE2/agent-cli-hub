@@ -497,10 +497,7 @@ textarea { font: inherit; color: inherit; background: var(--panel); border: 1px 
 .msg.assistant.msg-live .msg-bubble { border-color: color-mix(in srgb, var(--accent) 34%, var(--line)); background: color-mix(in srgb, var(--accent) 4%, var(--panel)); }
 .chat-working-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--panel2)); border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent); }
 .typing-dots { display: inline-flex; align-items: center; gap: 3px; height: 12px; }
-.typing-dots i { display: block; width: 4px; height: 4px; border-radius: 50%; background: currentColor; animation: chat-dot-bounce 1.2s infinite ease-in-out; }
-.typing-dots i:nth-child(2) { animation-delay: .16s; }
-.typing-dots i:nth-child(3) { animation-delay: .32s; }
-@keyframes chat-dot-bounce { 0%, 80%, 100% { transform: translateY(0); opacity: .38; } 40% { transform: translateY(-3px); opacity: 1; } }
+.typing-dots i { display: block; width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
 .chat-typing-row { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
 .chat-live-pre { margin: 0; font-family: var(--mono); font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; min-height: 54px; max-height: 200px; overflow-y: auto; color: var(--text); background: color-mix(in srgb, var(--panel2) 70%, var(--bg)); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 9px 11px; }
 .filechip { display: inline-flex; align-items: center; gap: 3px; font-family: var(--mono); font-size: 12px; padding: 0 6px; border-radius: var(--radius-xs); background: color-mix(in srgb, var(--accent) 11%, var(--panel2)); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent); text-decoration: none; line-height: 1.5; vertical-align: baseline; max-width: 100%; overflow-wrap: anywhere; }
@@ -679,7 +676,9 @@ body.remote .desk { display: none; }
   .session-views::-webkit-scrollbar { display: none; }
   .session-views .seg { flex: none; flex-wrap: nowrap; }
   .session-views .seg button { min-height: 26px; height: 26px; padding: 0 8px; font-size: 12px; }
-  .sys-top { padding: 0 12px; }
+  .sys-top { padding: 0 12px; gap: 4px; }
+  .sys-top .tablist { flex-wrap: wrap; width: 100%; overflow: visible; }
+  .sys-top .tablist button { min-height: 34px; height: 34px; padding-inline: 8px; }
   .page-wrap { padding: 14px 12px 36px; gap: 16px; }
   .page-hd h1 { font-size: 18px; }
   .h-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
@@ -749,7 +748,7 @@ body.remote .desk { display: none; }
   }
   .work-feedback-arrived { animation: hub-feedback-in 120ms ease-out; }
   .srow.srow-done-arrived { animation: hub-session-complete 260ms ease-out; }
-  :is(.more-menu, .ts-subagent-list),
+  :is(.more-menu, .ts-subagent-list) { animation: hub-feedback-in 120ms ease-out; }
   :is(dialog.dlg[open], .dlg:not(dialog)) > .box { animation: hub-surface-in 150ms ease-out; }
 }
 @keyframes hub-region-selected {
@@ -763,7 +762,8 @@ body.remote .desk { display: none; }
   from { transform: translateY(4px); opacity: .75; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .srv-pop, .typing-dots i { animation: none; }
+  .srv-pop { animation: none; }
+  #view, .chat-scroll { scroll-behavior: auto; }
   :is(input, select, textarea, button, .btnlike, .snav-item, .srow, .seg button, .tabs button, .ssec-fold svg),
   .tablist button::after { transition: none !important; }
   button:active:not(:disabled) { transform: none; }

@@ -1007,7 +1007,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
       v.addEventListener('scroll', syncChatBottom, { passive: true });
       floatWrap.querySelector('button').onclick = () => {
         if (hasMore) return jumpLatest();
-        v.scrollTo({ top: v.scrollHeight, behavior: 'smooth' });
+        v.scrollTo({ top: v.scrollHeight, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
         setTimeout(syncChatBottom, 220);
       };
       requestAnimationFrame(syncChatBottom);

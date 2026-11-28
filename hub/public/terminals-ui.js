@@ -127,7 +127,7 @@ function mountConsoleScreen(hostEl, { pid, gen, s, chatHost = null }) {
   };
   const scrollConBottom = () => {
     if (!scrEl) return;
-    scrEl.scrollTo({ top: scrEl.scrollHeight, behavior: 'smooth' });
+    scrEl.scrollTo({ top: scrEl.scrollHeight, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
     setTimeout(syncConBottom, 180);
   };
   if (scrEl) scrEl.addEventListener('scroll', syncConBottom, { passive: true });

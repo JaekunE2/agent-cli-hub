@@ -41,7 +41,7 @@
 .ast-cat-banner p { margin: 2px 0 0; color: var(--muted); }
 [data-h] { --ast-cat-bg: linear-gradient(120deg, hsl(var(--h) 80% 60% / .26), hsl(calc(var(--h) + 45) 75% 55% / .10) 60%, transparent), var(--panel); }
 
-/* ---- hero banner: crossfade + slide, progress dots drive the timer ---- */
+/* ---- hero banner ---- */
 .ast-hero { position: relative; height: 280px; margin-bottom: var(--sp-8); border-radius: var(--radius-xl); overflow: hidden; background: var(--panel2); box-shadow: var(--shadow-low); touch-action: pan-y; }
 .ast-slide { position: absolute; inset: 0; display: flex; align-items: flex-end; opacity: 0; visibility: hidden; transform: translateX(28px);
   transition: opacity var(--ast-slow) var(--ast-ease), transform var(--ast-slow) var(--ast-ease), visibility 0s linear var(--ast-slow); background: var(--ast-cat-bg, var(--panel)); }
@@ -50,21 +50,14 @@
 .ast-slide-art { position: absolute; top: 18px; right: -40px; bottom: -30px; width: 62%; border-radius: var(--radius-lg); overflow: hidden; transform: rotate(-3deg); box-shadow: var(--shadow-high);
   -webkit-mask-image: linear-gradient(90deg, transparent, #000 30%); mask-image: linear-gradient(90deg, transparent, #000 30%); }
 .ast-slide-art img { width: 100%; height: 100%; object-fit: cover; object-position: left top; }
-.ast-slide.is-active .ast-slide-art { animation: ast-kenburns 8s ease-out both; }
-@keyframes ast-kenburns { from { transform: rotate(-3deg) scale(1.06); } to { transform: rotate(-3deg) scale(1); } }
 .ast-slide-text { position: relative; z-index: 1; display: flex; gap: var(--sp-5); align-items: center; padding: var(--sp-8); max-width: 620px; }
 .ast-slide-text h3 { margin: 2px 0 6px; font-size: 1.7rem; line-height: 1.15; }
 .ast-slide-text p { margin: 0 0 var(--sp-4); color: var(--muted); }
 .ast-kicker { font-size: .75rem; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); font-weight: 600; }
-.ast-dots { position: absolute; right: var(--sp-6); bottom: var(--sp-4); z-index: 2; display: flex; gap: 6px; }
-.ast-dot { position: relative; width: 8px; height: 8px; padding: 0; border: 0; border-radius: var(--radius-full); background: color-mix(in srgb, var(--text) 22%, transparent); cursor: pointer; overflow: hidden;
-  transition: width var(--ast-mid) var(--ast-ease), background-color var(--ast-fast) ease; }
-.ast-dot.is-active { width: 34px; }
-.ast .ast-dot { height: 8px; min-height: 0; min-width: 0; line-height: 0; flex: none; box-shadow: none; }   /* the hub sizes buttons; dots stay dots */
-.ast-dot span { position: absolute; inset: 0; background: var(--accent); transform: scaleX(0); transform-origin: 0 0; }
-.ast-dot.is-active span { animation: ast-progress 6s linear forwards; }
-.ast-hero:hover .ast-dot span, .ast-hero:focus-within .ast-dot span, .ast-hero.is-paused .ast-dot span { animation-play-state: paused; }
-@keyframes ast-progress { to { transform: scaleX(1); } }
+.ast-dots { position: absolute; right: var(--sp-6); bottom: var(--sp-2); z-index: 2; display: flex; gap: 4px; }
+.ast .ast-dot { width: 24px; height: 24px; min-height: 24px; flex: none; padding: 0; border: 0; background: transparent; box-shadow: none; }
+.ast-dot::after { content: ''; width: 8px; height: 8px; border-radius: var(--radius-full); background: var(--muted); }
+.ast-dot.is-active::after { width: 18px; background: var(--accent); }
 
 /* ---- rows: snap scrolling, arrows fade in on hover ---- */
 .ast-row { margin-bottom: var(--sp-8); }
@@ -113,7 +106,7 @@
 /* ---- skeletons ---- */
 .ast-skel { position: relative; overflow: hidden; background: var(--panel2); border-radius: var(--radius-md); }
 .ast-skel::after, .ast-icon:not(.ast-icon-ph):has(img:not(.is-loaded))::before { content: ""; position: absolute; inset: 0; z-index: 1;
-  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--panel) 70%, transparent), transparent); transform: translateX(-100%); animation: ast-shimmer 1.3s ease-in-out infinite; }
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--panel) 70%, transparent), transparent); transform: translateX(-100%); animation: ast-shimmer 1.3s ease-in-out 2; }
 @keyframes ast-shimmer { to { transform: translateX(100%); } }
 .ast-skel-hero { height: 280px; border-radius: var(--radius-xl); margin-bottom: var(--sp-8); }
 .ast-skel-line { height: 12px; margin: 6px 0; }
@@ -148,10 +141,9 @@
 .ast-get[data-state="installing"] .ring { opacity: 1; transform: none; }
 .ast-get[data-state="installing"] .ring circle { animation: ast-spin 900ms linear infinite; }
 .ast-get[data-state="open"] { background: var(--panel); color: var(--accent); box-shadow: inset 0 0 0 1.5px var(--accent); }
-.ast-get[data-state="error"] { background: var(--danger); animation: ast-shake 420ms var(--ast-ease); }
+.ast-get[data-state="error"] { background: color-mix(in srgb, var(--danger) 8%, var(--panel)); color: var(--text); box-shadow: inset 0 0 0 1px var(--danger); }
 .ast-get[data-state="blocked"] { background: var(--panel2); color: var(--muted); cursor: not-allowed; box-shadow: none; }
 @keyframes ast-spin { to { transform: rotate(360deg); } }
-@keyframes ast-shake { 20%, 60% { transform: translateX(-6px); } 40%, 80% { transform: translateX(6px); } }
 .ast-get-sub { font-size: .75rem; color: var(--muted); text-align: center; }
 .ast-shots-wrap { margin-bottom: var(--sp-6); }
 .ast-shots { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(280px, 48%); gap: var(--sp-3); overflow-x: auto; scroll-snap-type: x mandatory; scroll-behavior: smooth; padding: 2px 2px 8px; scrollbar-width: none; }
@@ -248,7 +240,7 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .ast *, .ast *::before, .ast *::after, .ast-lightbox, .ast-tabs * { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; scroll-behavior: auto !important; }
-  .ast-dot.is-active span { animation: none; transform: scaleX(1); }
   .ast-skel::after, .ast-icon::before { animation: none !important; }
+  .ast-get:hover, .ast-get:active { transform: none; }
   ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
 }

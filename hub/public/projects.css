@@ -253,12 +253,11 @@
 .pj-plan-stage { display: inline-flex; align-items: center; gap: 7px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pj-plan-time { font-size: 11.5px; color: var(--muted); flex: none; font-variant-numeric: tabular-nums; }
 .pj-plan-bar { height: 6px; border-radius: 999px; background: var(--panel2); overflow: hidden; }
-.pj-plan-bar i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 68%, #fff), var(--accent)); background-size: 200% 100%; transition: width .35s ease; animation: pj-prog-move 1.8s linear infinite; }
+.pj-plan-bar i { display: block; height: 100%; border-radius: 999px; background: var(--accent); transition: width .2s ease-out; }
 .pj-plan-prog.done .pj-plan-bar i { background: var(--ok); animation: none; }
 .pj-plan-log { font-size: 11.5px; color: var(--muted); font-family: var(--mono); display: flex; flex-direction: column; gap: 2px; max-height: 76px; overflow-y: auto; border-top: 1px dashed var(--line); padding-top: 6px; }
 .pj-plan-log div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-@keyframes pj-prog-move { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
-@media (prefers-reduced-motion: reduce) { .pj-plan-bar i { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .pj-plan-bar i { transition: none; } }
 
 /* Per-CLI Model & Reasoning Effort Grid + Sub-Development Tree */
 .pj-me-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }

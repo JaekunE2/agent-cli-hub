@@ -174,6 +174,7 @@
     if (left < 8) left = Math.max(8, rect.left);
     if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
     if (top + mh > window.innerHeight - 8) top = Math.max(8, rect.top - mh - 4);
+    top = Math.max(8, Math.min(top, window.innerHeight - mh - 8));
     menu.style.left = `${Math.round(left)}px`;
     menu.style.top = `${Math.round(top)}px`;
     anchorEl.setAttribute('aria-expanded', 'true');

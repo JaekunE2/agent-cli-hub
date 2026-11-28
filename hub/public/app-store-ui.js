@@ -10,7 +10,6 @@
   let data = null;          // { entries, sources, submitUrls, unavailable, hubVersion }
   let route = { page: 'home' };
   let query = '', cat = '';
-  let heroCleanup = null;
 
   // ---------- small pieces ----------
   const SVG = {
@@ -141,7 +140,6 @@
   window.viewAppStore = async function viewAppStore(next, keep, from) {
     if (next) route = next;
     else if (!keep) route = { page: 'home' };
-    if (heroCleanup) { heroCleanup(); heroCleanup = null; }
     if (state.sel?.kind !== 'apps') select({ kind: 'apps' });
     bar();
     const v = $('#view');
@@ -196,7 +194,6 @@
       const q = query.trim().toLowerCase();
       const hits = all.filter((e) => (!cat || e.category === cat)
         && (!q || [e.name, e.tagline, e.description, e.author, e.repo, ...(e.tags || [])].some((x) => String(x || '').toLowerCase().includes(q))));
-      if (heroCleanup) { heroCleanup(); heroCleanup = null; }
       if (!all.length) {
         body.innerHTML = `<div class="ast-empty">${art('empty')}<p>표시할 앱이 없습니다. 레지스트리나 앱 저장소를 소스로 추가하세요.</p><button type="button" class="primary" id="astAddSrc">소스 추가</button></div>`;
         $('#astAddSrc', body).onclick = () => H().sources();
@@ -215,12 +212,12 @@
               <div class="ast-slide-text">${icon(e, 'lg')}<div><span class="ast-kicker">추천</span><h3>${esc(e.name)}</h3><p>${esc(e.tagline || e.description)}</p>
                 <button type="button" class="primary" data-open="${esc(e.key)}" ${i ? 'tabindex="-1"' : ''}>자세히 보기</button></div></div>
             </article>`).join('')}
-            ${featured.length > 1 ? `<div class="ast-dots" role="tablist">${featured.map((e, i) => `<button type="button" class="ast-dot${i ? '' : ' is-active'}" data-slide="${i}" role="tab" aria-label="${esc(e.name)}" aria-selected="${!i}"><span></span></button>`).join('')}</div>` : ''}
+            ${featured.length > 1 ? `<div class="ast-dots" role="tablist">${featured.map((e, i) => `<button type="button" class="ast-dot${i ? '' : ' is-active'}" data-slide="${i}" role="tab" aria-label="${esc(e.name)}" aria-selected="${!i}"></button>`).join('')}</div>` : ''}
           </section>` : ''}
           ${row('새로 등록된 앱', [...all].sort(byDate).slice(0, 12), 'astNew')}
           ${row('많이 설치된 앱', popular.slice(0, 12), 'astPop')}
           ${cats.map((c, i) => row(c, all.filter((e) => e.category === c), `astCat${i}`, hue(c))).join('')}`;
-        heroCleanup = startHero(body);
+        bindHero(body);
       }
       settleImages(body);
       wireRails(body);
@@ -242,7 +239,7 @@
   }
 
   /** featured banner: the active dot's progress animation is the timer (hover / focus pause it); swipe on touch */
-  function startHero(root) {
+  function bindHero(root) {
     const hero = root.querySelector('.ast-hero');
     if (!hero) return null;
     const slides = [...hero.querySelectorAll('.ast-slide')], dots = [...hero.querySelectorAll('.ast-dot')];
@@ -260,15 +257,10 @@
       slides[i].querySelectorAll('button').forEach((b) => b.removeAttribute('tabindex'));
       dots.forEach((d, k) => { d.classList.toggle('is-active', k === i); d.setAttribute('aria-selected', String(k === i)); });
     };
-    const onEnd = (ev) => { if (ev.animationName === 'ast-progress') show(i + 1); };
-    hero.addEventListener('animationend', onEnd);
     dots.forEach((d) => { d.onclick = () => show(Number(d.dataset.slide)); });
     let x0 = null;
     hero.addEventListener('pointerdown', (e) => { if (e.pointerType !== 'mouse') x0 = e.clientX; });
     hero.addEventListener('pointerup', (e) => { if (x0 === null) return; const dx = e.clientX - x0; x0 = null; if (Math.abs(dx) > 40) show(i + (dx < 0 ? 1 : -1)); });
-    const vis = () => hero.classList.toggle('is-paused', document.hidden);
-    document.addEventListener('visibilitychange', vis);
-    return () => { hero.removeEventListener('animationend', onEnd); document.removeEventListener('visibilitychange', vis); };
   }
 
   // ---------- app page ----------

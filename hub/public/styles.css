@@ -197,7 +197,7 @@ input[type="checkbox"], input[type="radio"] { min-height: 0; padding: 0; accent-
 .brand-mark.st-down { background: var(--danger); border-color: var(--danger); }
 .brand-led { position: absolute; right: -3px; bottom: -3px; width: 9px; height: 9px; border-radius: 50%; background: var(--ok); border: 2px solid var(--side-bg); transition: background .2s; }
 .brand-led.warn { background: var(--warn); }
-.brand-led.down { background: var(--danger); animation: busy-pulse 1.5s ease-in-out infinite; }
+.brand-led.down { background: var(--danger); }
 .brand-txt { display: flex; flex-direction: column; min-width: 0; line-height: 1.18; gap: 2px; }
 .brand-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; font-weight: 700; letter-spacing: -0.02em; }
 .brand-sub { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 550; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -240,7 +240,6 @@ input[type="checkbox"], input[type="radio"] { min-height: 0; padding: 0; accent-
 .srow.sel { background: var(--sel); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 22%, transparent); }
 .srow.just-done { background: color-mix(in srgb, var(--ok) 11%, transparent); border-color: color-mix(in srgb, var(--ok) 36%, transparent); }
 .srow.just-done:hover { background: color-mix(in srgb, var(--ok) 17%, transparent); }
-.dot.busy { animation: busy-pulse 2s ease-in-out infinite; }
 .ts-right { margin-inline-start: auto; }
 .ts-subagent-control { position: relative; margin-inline-start: auto; }
 .ts-pill.busy { color: var(--warn); }
@@ -264,9 +263,8 @@ input[type="checkbox"], input[type="radio"] { min-height: 0; padding: 0; accent-
 .term-live-pill.exited { color: var(--muted); background: color-mix(in srgb, var(--text) 5%, transparent); opacity: .82; }
 #termwrap::after { content: ''; position: absolute; inset: 0; pointer-events: none; opacity: 0; border-top: 2px solid var(--ok); transition: opacity .4s ease; }
 #termwrap.term-done-flash::after { animation: term-shimmer .32s ease-out forwards; }
-@keyframes busy-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
 @keyframes term-shimmer { 0% { opacity: 0; } 18% { opacity: 1; } 100% { opacity: 0; } }
-@media (prefers-reduced-motion: reduce) { .dot.busy, #termwrap.term-done-flash::after { animation: none !important; } }
+@media (prefers-reduced-motion: reduce) { #termwrap.term-done-flash::after { animation: none !important; } }
 .srow-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .side-history { display: flex; flex-direction: column; gap: 2px; }
 .srow-open { align-items: stretch; min-height: 0; padding: 0; border: 0; border-radius: var(--radius-sm); text-align: left; }
@@ -450,17 +448,19 @@ body.side-collapsed .side-float-btn { display: inline-flex; }
 .list-row-acts { display: flex; align-items: center; gap: 5px; flex: none; }
 
 /* Astryx MoreMenu Popover */
-.more-menu { position: fixed; z-index: 70; min-width: 188px; max-width: 276px; background: var(--popover); border: 1px solid var(--line-strong); border-radius: var(--radius-lg); padding: 4px; box-shadow: var(--shadow-med); display: flex; flex-direction: column; gap: 1px; }
-.mm-item { width: 100%; justify-content: flex-start; min-height: 32px; height: auto; padding: 6px 10px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text); font-size: 13px; gap: 8px; text-align: left; box-shadow: none; }
+.more-menu { position: fixed; z-index: 70; min-width: min(188px, calc(100vw - 16px)); max-width: min(276px, calc(100vw - 16px)); max-height: calc(100dvh - 16px); overflow: auto; background: var(--popover); border: 1px solid var(--line-strong); border-radius: var(--radius-lg); padding: 4px; box-shadow: var(--shadow-med); display: flex; flex-direction: column; gap: 1px; }
+.mm-item { flex: none; width: 100%; justify-content: flex-start; min-height: 32px; height: auto; padding: 6px 10px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text); font-size: 13px; gap: 8px; text-align: left; box-shadow: none; }
 .mm-item:hover { background: var(--panel2); border-color: transparent; }
+.mm-item span { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 .mm-item.danger { color: var(--danger); }
 .mm-item.danger:hover { background: color-mix(in srgb, var(--danger) 12%, transparent); }
-.mm-div { height: 1px; background: var(--line); margin: 4px 6px; }
+.mm-div { flex: 0 0 1px; background: var(--line); margin: 4px 6px; }
 
 /* Floating Toast Overlay */
 .toast-host { position: fixed; right: 18px; bottom: 72px; z-index: 65; display: flex; flex-direction: column; gap: 6px; pointer-events: none; max-width: min(400px, calc(100vw - 32px)); }
 .toast-item { pointer-events: auto; background: var(--popover); color: var(--text); border: 1px solid var(--line-strong); padding: 10px 14px; border-radius: var(--radius-md); font-size: 13px; box-shadow: var(--shadow-med); animation: toast-in .16s ease-out; line-height: 1.4; display: flex; align-items: center; gap: 10px; }
-.toast-item.danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+.toast-item { overflow-wrap: anywhere; }
+.toast-item.danger { background: color-mix(in srgb, var(--danger) 8%, var(--popover)); color: var(--text); border-color: var(--danger); }
 .toast-act { min-height: 24px; height: 24px; padding: 0 9px; font-size: 11.5px; font-weight: 600; border-radius: var(--radius-sm); background: var(--panel2); color: inherit; border: 1px solid var(--line-strong); flex: none; }
 .toast-act:hover { background: var(--sel); border-color: var(--accent); }
 .toast-item.danger .toast-act { background: rgba(255, 255, 255, 0.2); color: #fff; border-color: rgba(255, 255, 255, 0.48); }
