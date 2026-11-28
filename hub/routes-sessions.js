@@ -1763,23 +1763,23 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
     }
     if (p === '/api/term/send' && req.method === 'POST') {
       const b = await body(req); const t = hub.terms.get(String(b.id));
-      if (!t || t.exited !== null) { send(res, 404, { ok: false, error: 'no such running terminal' }); return true; }
+      if (!t || t.exited !== null) { send(res, 404, { ok: false, error: 'no such running terminal', delivery: 'not-sent' }); return true; }
       await hub.workspaceExecution?.guardTerm(t);
       if ((t._promptSubmission || t._projectDispatchPending) && (b.text || b.immediate || b.submit)) {
-        send(res, 409, { ok: false, error: '터미널 입력을 전송 중입니다.' }); return true;
+        send(res, 409, { ok: false, error: '터미널 입력을 전송 중입니다.', delivery: 'not-sent' }); return true;
       }
       if (b.waitForReady === true && b.submit && typeof b.text === 'string' && b.text.trim()) {
         try { await waitForTerminalInput(hub, t); }
         catch (error) {
           if (error instanceof WorkspaceError) throw error;
-          send(res, 409, { ok: false, error: error.message }); return true;
+          send(res, 409, { ok: false, error: error.message, delivery: 'not-sent' }); return true;
         }
       }
       if (b.submit || b.immediate || b.text) {
         const screen = hub.readTerm(t, 12).join('\n');
         const confirmation = terminalConfirmationMessage(sessionStartupBlock(stripAnsi?.(screen) || screen));
         if (confirmation) {
-          send(res, 409, { ok: false, error: confirmation }); return true;
+          send(res, 409, { ok: false, error: confirmation, delivery: 'not-sent' }); return true;
         }
       }
       if (b.keys?.length) {

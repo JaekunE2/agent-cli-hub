@@ -7,21 +7,59 @@ const path = require('path');
 
 const os = require('os');
 
-const EXT = 'mp4|webm|mov|mkv|avi|m4v|mp3|wav|m4a|pdf|png|jpe?g|gif|webp|bmp|svg|html?|md|txt|log|csv|tsv|json|jsonl|ya?ml|tex|bib|py|ipynb|js|mjs|cjs|ts|tsx|jsx|css|scss|sql|sh|ps1|bat|cmd|c|cpp|h|hpp|rs|go|java|toml|ini|xml|vue|svelte|ply|glb|gltf|obj|stl|exr|docx|xlsx|pptx|hwp|zip|7z';
+const IMAGE_EXT = 'png|apng|jpe?g|gif|webp|avif|bmp|ico|svg';
+const EXT = `mp4|webm|mov|mkv|avi|m4v|mp3|wav|m4a|pdf|${IMAGE_EXT}|html?|md|txt|log|csv|tsv|json|jsonl|ya?ml|tex|bib|py|ipynb|js|mjs|cjs|ts|tsx|jsx|css|scss|sql|sh|ps1|bat|cmd|c|cpp|h|hpp|rs|go|java|toml|ini|xml|vue|svelte|ply|glb|gltf|obj|stl|exr|docx|xlsx|pptx|hwp|zip|7z`;
 const KIND = [
   [/\.(mp4|webm|mov|mkv|avi|m4v)$/i, 'video'], [/\.(mp3|wav|m4a)$/i, 'audio'], [/\.pdf$/i, 'pdf'],
-  [/\.(png|jpe?g|gif|webp|bmp|svg)$/i, 'image'], [/\.html?$/i, 'html'], [/\.md$/i, 'markdown'],
+  [new RegExp(`\\.(${IMAGE_EXT})$`, 'i'), 'image'], [/\.html?$/i, 'html'], [/\.md$/i, 'markdown'],
   [/\.(txt|log|csv|tsv|json|jsonl|ya?ml|tex|bib|py)$/i, 'text'],
 ];
 const MIME = {
   mp4: 'video/mp4', m4v: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', mkv: 'video/x-matroska', avi: 'video/x-msvideo',
   mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4', pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
-  gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml', html: 'text/html; charset=utf-8', htm: 'text/html; charset=utf-8',
+  gif: 'image/gif', webp: 'image/webp', apng: 'image/apng', avif: 'image/avif', bmp: 'image/bmp', ico: 'image/x-icon', svg: 'image/svg+xml',
+  html: 'text/html; charset=utf-8', htm: 'text/html; charset=utf-8',
   md: 'text/plain; charset=utf-8', txt: 'text/plain; charset=utf-8', log: 'text/plain; charset=utf-8', csv: 'text/plain; charset=utf-8',
   tsv: 'text/plain; charset=utf-8', json: 'application/json; charset=utf-8', jsonl: 'text/plain; charset=utf-8', yaml: 'text/plain; charset=utf-8',
   yml: 'text/plain; charset=utf-8', tex: 'text/plain; charset=utf-8', bib: 'text/plain; charset=utf-8', py: 'text/plain; charset=utf-8',
 };
 const kindOf = (p) => (KIND.find(([re]) => re.test(p)) || [null, 'file'])[1];
+const REVIEW_ELEMENT_BRIDGE = `<script data-hub-review-element>
+if (parent !== window) {
+  let target, pending = 0;
+  const report = () => {
+    pending = 0;
+    if (!target) return;
+    const { element, request, selector } = target;
+    const rect = element?.isConnected ? element.getBoundingClientRect() : null;
+    const bounds = rect ? [rect.x, rect.y, rect.width, rect.height] : null;
+    parent.postMessage({ type: 'hub-review-element', request, selector, bounds }, '*');
+  };
+  const schedule = () => { if (target && !pending) pending = setTimeout(report, 16); };
+  const observer = new ResizeObserver(schedule);
+  addEventListener('scroll', schedule, { capture: true, passive: true });
+  addEventListener('resize', schedule);
+  addEventListener('message', event => {
+    const { type, request, x, y } = event.data || {};
+    if (event.source !== parent || !Number.isSafeInteger(request)) return;
+    if (type === 'hub-review-element-clear' && request === target?.request) {
+      target = null;
+      observer.disconnect();
+      return;
+    }
+    if (type !== 'hub-review-element-request' || !Number.isFinite(x) || !Number.isFinite(y)
+        || x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) return;
+    const element = document.elementFromPoint(x, y);
+    const id = element?.id || '';
+    const selector = /^[A-Za-z][A-Za-z0-9_-]{0,47}$/.test(id) && document.querySelectorAll('#' + id).length === 1 ? '#' + id : '';
+    target = { element, request, selector };
+    observer.disconnect();
+    if (element) observer.observe(element);
+    if (pending) clearTimeout(pending);
+    report();
+  });
+}
+</script>`;
 
 // ---- Office preview: PowerPoint/Word → PDF (LibreOffice headless, own profile so a user's open
 // LibreOffice/PowerPoint is never touched), cached by path+size+mtime in preview-cache/ (G:) ----
@@ -71,8 +109,13 @@ function serve(req, res, file) {
   const headers = { 'content-type': MIME[ext] || 'application/octet-stream', 'accept-ranges': 'bytes', 'cache-control': 'no-store',
     // ?dl=1 → attachment: browsers and app WebViews save it instead of showing it
     'content-disposition': `${MIME[ext] && !/[?&]dl=1(&|$)/.test(req.url || '') ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(path.basename(file))}` };
+  headers.etag = `"${st.size}-${st.mtimeMs}-${st.ctimeMs}"`;
   // active content gets an opaque origin: it cannot read the dashboard's storage or call its API
   if (/^(html?|svg)$/.test(ext)) headers['content-security-policy'] = 'sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms';
+  if (req.method === 'HEAD') {
+    res.writeHead(200, { ...headers, 'content-length': st.size });
+    return res.end();
+  }
   const m = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
   if (m && (m[1] || m[2])) {
     let start = m[1] ? Number(m[1]) : st.size - Number(m[2]);
@@ -86,9 +129,10 @@ function serve(req, res, file) {
   const isDl = /[?&]dl=1(&|$)/.test(req.url || '');
   if (/^html?$/.test(ext) && !isDl && st.size <= 10 * 1024 * 1024) {
     try {
-      const bridge = '<script data-hub-link-bridge>(function(){if(window.parent===window)return;var tauri=/[?&]hub_ext=1(&|$)/.test(location.search);function send(u){try{window.parent.postMessage({type:"hub-open-external",url:u},"*");}catch(_){}}document.addEventListener("click",function(e){var a=e.target&&e.target.closest?e.target.closest("a[href]"):null;if(!a||a.hasAttribute("download"))return;var raw=(a.getAttribute("href")||"").trim();if(!raw||raw.charAt(0)==="#"||/^javascript:/i.test(raw))return;var u=a.href;if(!/^https?:\\/\\//i.test(u))return;if(tauri){e.preventDefault();send(u);return;}if(!a.target||a.target==="_self"){a.target="_blank";a.rel="noopener noreferrer";}},true);if(tauri){var oo=window.open;window.open=function(u){if(typeof u==="string"&&/^https?:\\/\\//i.test(u)){send(u);return null;}return oo?oo.apply(window,arguments):null;};}})();</script>';
+      const bridge = '<script data-hub-link-bridge>(function(){if(window.parent===window)return;var tauri=/[?&]hub_ext=1(&|$)/.test(location.search);function reportScroll(){parent.postMessage({type:"hub-review-scroll",x:scrollX,y:scrollY},"*");}addEventListener("message",function(e){if(e.source===parent&&e.data&&e.data.type==="hub-review-scroll-request")reportScroll();});addEventListener("scroll",reportScroll,{passive:true});function send(u){try{window.parent.postMessage({type:"hub-open-external",url:u},"*");}catch(_){}}document.addEventListener("click",function(e){var a=e.target&&e.target.closest?e.target.closest("a[href]"):null;if(!a||a.hasAttribute("download"))return;var raw=(a.getAttribute("href")||"").trim();if(!raw||raw.charAt(0)==="#"||/^javascript:/i.test(raw))return;var u=a.href;if(!/^https?:\\/\\//i.test(u))return;if(tauri){e.preventDefault();send(u);return;}if(!a.target||a.target==="_self"){a.target="_blank";a.rel="noopener noreferrer";}},true);if(tauri){var oo=window.open;window.open=function(u){if(typeof u==="string"&&/^https?:\\/\\//i.test(u)){send(u);return null;}return oo?oo.apply(window,arguments):null;};}})();</script>';
       const html = fs.readFileSync(file, 'utf8');
-      const injected = /<\/body>/i.test(html) ? html.replace(/<\/body>/i, `${bridge}</body>`) : `${html}\n${bridge}`;
+      const bridges = bridge + REVIEW_ELEMENT_BRIDGE;
+      const injected = /<\/body>/i.test(html) ? html.replace(/<\/body>/i, () => `${bridges}</body>`) : `${html}\n${bridges}`;
       const buf = Buffer.from(injected, 'utf8');
       res.writeHead(200, { ...headers, 'content-length': buf.length });
       return res.end(buf);

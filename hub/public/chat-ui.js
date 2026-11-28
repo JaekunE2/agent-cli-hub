@@ -773,6 +773,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
         toolBuf = [];
       };
       let lastDay = '';
+      const resultMessages = [];
       d.messages.forEach((m, k) => {
         const isMetaNote = m.role === 'assistant' && /^⚙ \[(?:설정|터미널)/.test(m.text);
         const tool = m.role === 'assistant' && m.text.startsWith('⚙') && !isMetaNote;
@@ -806,6 +807,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
           const bodyHtml = linkUrls(linkPaths(hl(rawTxt, terms)));
           parts.push(`<div class="msg user${tgt ? ' target' : ''}" data-mi="${k}">${branchOriginNote}<div class="msg-bubble"><div class="msg-body">${bodyHtml}</div></div><div class="msg-meta">${editedBadge}<span class="msg-acts">${quoteBtn}${editBtn}${forkBtn}${copyBtn}</span>${when ? `<span>${esc(when)}</span>` : ''}</div>${branchChipsHTML(gi)}</div>`);
         } else {
+          if (!isMetaNote && /[\p{L}\p{N}_-]\.[a-z0-9]{1,12}\b/iu.test(rawTxt)) resultMessages.push([k, rawTxt]);
           const bodyHtml = !terms.length ? md(rawTxt) : `<div class="msg-body" style="white-space:pre-wrap">${linkUrls(linkPaths(hl(rawTxt, terms)))}</div>`;
           const turn = m.codexTurnId || String(gi);
           const usage = m.codexUsage?.length ? codexAnswerTokensHTML(m.codexUsage, turn, openTokenIds.has(turn)) : '';
@@ -819,6 +821,10 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
         ? `<div class="row" style="justify-content:center;gap:8px;margin-bottom:8px"><span class="ums" style="margin:0">… 이전 메시지 ${b}개 생략${!jump && msgLimit >= 2000 ? ' (최대 2,000건 표시됨)' : ''}</span>${!jump && msgLimit < 2000 ? `<button type="button" class="btn-sm" data-load-older="1">이전 메시지 더 보기</button>` : ''}</div>`
         : '';
       msgsHost.innerHTML = lineageBanner + olderBanner + (parts.join('') || '<div class="empty">메시지 없음</div>') + more;
+      const resultBubbles = resultMessages.map(([index, output]) => [
+        $(`.msg.assistant[data-mi="${index}"] .msg-bubble`, msgsHost), output,
+      ]);
+      if (typeof showChatArtifactPreviews === 'function') void showChatArtifactPreviews(resultBubbles, curSid, tCur?.id, jump ? null : v);
       const loadOlderBtn = $('[data-load-older]', msgsHost);
       if (loadOlderBtn) {
         loadOlderBtn.onclick = async () => {

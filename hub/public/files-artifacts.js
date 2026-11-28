@@ -6,7 +6,7 @@ const IS_MOBILE = matchMedia('(max-width: 760px), (pointer: coarse)').matches;
 // opened from another device (Tailscale): hide buttons that act on this PC's desktop (open folder, ...)
 const IS_REMOTE = !['127.0.0.1', 'localhost', '::1', '[::1]'].includes(location.hostname);
 if (IS_REMOTE) document.body.classList.add('remote');
-const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|bmp|svg)$/i;
+const IMAGE_EXT_RE = /\.(?:png|apng|jpe?g|gif|webp|avif|bmp|ico|svg)$/i;
 function createAttachmentStrip(stripEl, cwd) {
   let items = [];
   let seq = 0;
@@ -188,6 +188,13 @@ function createAttachmentStrip(stripEl, cwd) {
     },
     hasItems: () => items.length > 0,
     isLoading: () => items.some((x) => x.loading),
+    snapshot: () => items.filter(x => x.path).map(({ id, path, isDir }) => ({ id, path, isDir })),
+    discard: (snapshot) => {
+      const ids = new Set(snapshot.map(item => item.id));
+      for (const item of items) if (ids.has(item.id) && item.thumbUrl) URL.revokeObjectURL(item.thumbUrl);
+      items = items.filter(item => !ids.has(item.id));
+      paint();
+    },
     takePaths: () => {
       const out = items.filter((x) => x.path).map((x) => quotePath(x.path));
       for (const it of items) { if (it.thumbUrl) try { URL.revokeObjectURL(it.thumbUrl); } catch {} }
@@ -418,7 +425,7 @@ const rRawUrl = (slug, rel) => `/api/research/raw?slug=${encodeURIComponent(slug
 const fmtSize = (n) => (n > 1e9 ? `${(n / 1e9).toFixed(1)}GB` : n > 1e6 ? `${(n / 1e6).toFixed(1)}MB` : `${Math.max(1, Math.round(n / 1024))}KB`);
 // wrap Windows / git-bash paths with a viewable extension (already HTML-escaped text) as compact clickable file chips
 function linkPaths(html) {
-  const extPattern = 'mp4|webm|mov|mkv|pdf|png|jpe?g|gif|webp|svg|html?|md|txt|log|csv|json|ya?ml|tex|py|js|ts|tsx|jsx|css|ply|glb|obj|docx|xlsx|pptx';
+  const extPattern = 'mp4|webm|mov|mkv|pdf|png|apng|jpe?g|gif|webp|avif|bmp|ico|svg|html?|md|txt|log|csv|json|ya?ml|tex|py|js|ts|tsx|jsx|css|ply|glb|obj|docx|xlsx|pptx';
   const mkChip = (raw) => {
     const clean = String(raw || '').replace(/&quot;/g, '');
     const file = clean.split(/[\\/]/).pop() || clean;
@@ -436,9 +443,11 @@ document.addEventListener('click', async (e) => {
   if (!a) return;
   e.preventDefault();
   const sid = currentSessionId();
+  const gen = viewGen;
   if (!sid) return toast('세션을 알 수 없습니다');
   const want = a.dataset.apath.replace(/&amp;/g, '&').replace(/^\/([a-z])\//i, (x, d) => `${d.toUpperCase()}:\\`).replace(/\//g, '\\').toLowerCase();
   const { items = [] } = await api(`/api/artifacts?session=${encodeURIComponent(sid)}`);
+  if (gen !== viewGen) return;
   const it = items.find((x) => x.path.toLowerCase() === want || x.path.toLowerCase().endsWith(want));
   if (it) {
     if (window.ACH_PREVIEW?.hasActive() && ['html', 'markdown', 'image', 'pdf', 'text', 'video', 'audio'].includes(it.kind)) {
@@ -459,26 +468,209 @@ function currentSessionId() {
   return null;
 }
 
+function artifactChatTarget() {
+  const { kind, id } = state.sel;
+  return id != null && ['term', 'recent', 'console'].includes(kind) ? { kind, id } : null;
+}
+
+function askArtifactQuestion(items, target = artifactChatTarget()) {
+  const paths = items.map(item => item?.abs || item?.path).filter(Boolean);
+  if (target && paths.length && stageReviewInChat('', paths, target)) return true;
+  toast('산출물을 연결할 세션을 열어 주세요.');
+  return false;
+}
+
+function canReviewArtifactArea(item) {
+  return item?.kind === 'image' || item?.kind === 'html';
+}
+
+async function inferChatArtifacts(text, { chatHost, sid, termId } = {}) {
+  const preview = window.ACH_PREVIEW?.getActiveController()?.activeArtifact?.(sid);
+  const refersToResult = /(?:이|그|저|방금|직전|위의?)\s*(?:만든\s*)?(?:결과|산출물|파일|데이터|보고서|리포트|출력(?:물)?|표|그래프)(?:은|는|이|가|을|를|도|만|의|에서|에|으로|로|와|과|랑)?(?![\p{L}\p{N}_])|(?:이|그)거\s*(?:뭐야|뭔지|설명|요약|확인|분석|비교)|\b(?:this|that|the latest|the previous)\s+(?:result|output|artifact|file|data|report|chart)s?\b/iu;
+  const aboutPreview = /^(?:설명해\s*줘|요약해\s*줘|분석해\s*줘|비교해\s*줘|확인해\s*줘|(?:이게\s*)?뭐야|(?:explain|summarize|analyse|analyze|compare)(?: it)?)[.!?\s]*$/i;
+  if (!refersToResult.test(text) && !(preview && aboutPreview.test(text))) return [];
+  if (preview?.path) return [preview.path];
+  if ((!sid && !termId) || chatHost?.querySelector('.msg.user.msg-pending')) return [];
+  const last = [...(chatHost?.querySelectorAll('.msg.user[data-mi], .msg.assistant[data-mi]') || [])].at(-1);
+  if (!last?.classList.contains('assistant')) return [];
+  const bubble = $('.msg-bubble', last);
+  if (bubble?._chatArtifactPaths) return bubble._chatArtifactPaths;
+  const output = bubble?.textContent?.trim();
+  if (!output) return [];
+
+  const items = await loadChatArtifactItems(sid, termId);
+  return matchChatArtifacts(output, items).map(item => item.path);
+}
+
+async function loadChatArtifactItems(sid, termId) {
+  const { items = [] } = await api(`/api/artifacts?session=${encodeURIComponent(sid || '')}${termId ? `&term=${encodeURIComponent(termId)}` : ''}`, {
+    signal: AbortSignal.timeout(1800),
+  });
+  return items;
+}
+
+function matchChatArtifacts(output, items) {
+  const normalize = value => String(value || '').replace(/\\/g, '/').toLowerCase();
+  const text = normalize(output);
+  const mentions = (value, basename) => {
+    const name = normalize(value);
+    if (!name) return false;
+    const index = text.indexOf(name);
+    if (index < 0 || (basename && /[\p{L}\p{N}_.\/\-]/u.test(text[index - 1] || ''))) return false;
+    return !/^(?:[a-z0-9_/\-]|\.[a-z0-9])/i.test(text.slice(index + name.length));
+  };
+  const names = new Map();
+  for (const { name } of items) {
+    if (!name) continue;
+    const key = normalize(name);
+    names.set(key, (names.get(key) || 0) + 1);
+  }
+  return items.filter(item => item.path && (mentions(item.path, false)
+    || (names.get(normalize(item.name)) === 1 && mentions(item.name, true))));
+}
+
+async function showChatArtifactPreviews(rows, sid, termId, scroller) {
+  if (!rows.length || (!sid && !termId)) return;
+  const items = await loadChatArtifactItems(sid, termId).catch(() => []);
+  const stick = scroller?.isConnected && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80;
+  let added = false;
+  for (const [bubble, output] of rows) {
+    if (!bubble?.isConnected) continue;
+    const matches = matchChatArtifacts(output, items);
+    if (!matches.length) continue;
+    bubble._chatArtifactPaths = [...new Set(matches.map(item => item.path))];
+    const group = document.createElement('div');
+    group.className = 'chat-result-previews';
+    for (const item of matches.slice(0, 2)) {
+      const url = artUrl(sid, item.path, termId);
+      group.append(createChatArtifactCard(sid, item, url));
+    }
+    if (matches.length > 2) {
+      const count = document.createElement('span');
+      count.className = 'muted';
+      count.textContent = `+${matches.length - 2}`;
+      group.append(count);
+    }
+    bubble.after(group);
+    added = true;
+  }
+  if (added && stick) scroller.scrollTop = scroller.scrollHeight;
+}
+
+function createChatArtifactCard(sid, item, url) {
+  const card = document.createElement('details');
+  card.className = 'chat-result-card';
+  const image = item.kind === 'image';
+  const target = artifactChatTarget();
+  card.innerHTML = `<summary class="chat-result-preview" title="${esc(item.path)}">
+    ${image ? `<img loading="lazy" src="${esc(url)}" alt="">` : (ART_ICON[item.kind] || ART_ICON.file)}
+    <span><b>${esc(item.title || item.name)}</b><small>${esc(item.ext || 'FILE')} · ${fmtSize(item.size)}</small></span>
+  </summary><div class="chat-result-body">
+    <div class="chat-result-content"></div>
+    <div class="chat-result-actions">
+      ${target ? '<button type="button" class="ghost btn-sm" data-result-ask>이 결과에 질문</button>' : ''}
+      <button type="button" class="ghost icon-btn btn-sm chat-result-expand" aria-label="확대해서 열기" title="확대해서 열기">
+        <span aria-hidden="true"></span>
+      </button>
+    </div>
+  </div>`;
+  const thumbnail = card.querySelector('summary img');
+  thumbnail?.addEventListener('error', () => {
+    thumbnail.insertAdjacentHTML('afterend', ART_ICON.image);
+    thumbnail.remove();
+  }, { once: true });
+  card.querySelector('[data-result-ask]')?.addEventListener('click', () => askArtifactQuestion([item], target));
+  card.querySelector('.chat-result-expand').onclick = () => {
+    const inline = window.ACH_PREVIEW;
+    if (sid && inline?.hasActive() && ['html', 'markdown', 'image', 'pdf', 'text', 'video', 'audio'].includes(item.kind)) {
+      inline.openArtifact(sid, item);
+    } else openArtifact(sid, item, url, target);
+  };
+  const content = card.querySelector('.chat-result-content');
+  let loaded = false;
+  card.addEventListener('toggle', async () => {
+    if (!card.open || loaded) return;
+    loaded = true;
+    if (image) {
+      const preview = document.createElement('img');
+      preview.alt = item.title || item.name;
+      preview.addEventListener('error', () => {
+        loaded = false;
+        content.textContent = '파일 미리보기를 불러오지 못했습니다.';
+      }, { once: true });
+      preview.src = url;
+      content.replaceChildren(preview);
+    } else if (item.kind === 'text' || item.kind === 'markdown') {
+      content.textContent = '불러오는 중…';
+      try {
+        const snippet = await readChatArtifactSnippet(url);
+        const pre = document.createElement('pre');
+        pre.className = 'mdpre';
+        pre.textContent = snippet || '빈 파일';
+        content.replaceChildren(pre);
+      } catch {
+        loaded = false;
+        content.textContent = '파일 미리보기를 불러오지 못했습니다.';
+      }
+    } else {
+      content.textContent = '확대 버튼으로 파일을 열 수 있습니다.';
+    }
+  });
+  return card;
+}
+
+async function readChatArtifactSnippet(url) {
+  const response = await fetch(url, { headers: { Range: 'bytes=0-2047' }, signal: AbortSignal.timeout(5000) });
+  if (response.status === 416 && response.headers.get('content-range') === 'bytes */0') return '';
+  const size = Number(response.headers.get('content-length') || Infinity);
+  if (!response.ok || (response.status !== 206 && size > 2048)) {
+    await response.body?.cancel();
+    throw new Error('Artifact preview unavailable');
+  }
+  const lines = (await response.text()).trimEnd().split(/\r?\n/);
+  const snippet = lines.slice(0, 5).map(line => line.length > 160 ? `${line.slice(0, 160)}…` : line).join('\n');
+  return snippet + (lines.length > 5 || size >= 2048 ? '\n…' : '');
+}
+
+function currentReviewTerminal() {
+  const sid = currentSessionId();
+  return state.terms.find(t => t.exited === null && (state.sel.kind === 'term'
+    ? String(t.id) === String(state.sel.id) : sid && t.sessionId === sid));
+}
+
 // research outputs are listed relative to the project folder
 const rAbs = (dir, rel) => `${String(dir || '').replace(/[\\/]+$/, '')}\\${String(rel).replace(/\//g, '\\')}`;
 
 // A PC file (session output, research output) → a running dashboard terminal: the path goes into its
 // input (with a message: sent). Sessions open the path themselves — nothing is copied.
-function sendPathDialog(abs, drawerOptions = {}) {
+function sendPathDialog(abs, { message = '', attachment = '', onSent, ...drawerOptions } = {}) {
   const targets = state.terms.filter((t) => t.exited === null).map((t) => ({ id: t.id, label: termLabel(t) }));
-  const cur = state.sel.kind === 'term' ? String(state.sel.id) : null;
+  const active = currentReviewTerminal();
+  const cur = active ? String(active.id) : null;
   const body = `
     <div class="mono" style="word-break:break-all">${esc(abs)}</div>
     <label>보낼 세션<br>${targets.length ? `<select id="spT" style="width:100%">${targets.map((t) => `<option value="${esc(t.id)}" ${String(t.id) === cur ? 'selected' : ''}>t:${esc(t.id)} ${esc(t.label)}</option>`).join('')}</select>` : '<div class="empty">열려 있는 대시보드 터미널이 없습니다</div>'}</label>
     <label>함께 보낼 말 (비우면 경로만 입력칸에 넣고 전송하지 않음)<br><textarea id="spM" rows="3" style="width:100%" placeholder="예: 이 결과 보고 다음 실험 계획 세워줘"></textarea></label>`;
   const d = openDrawer({ title: '세션에 보내기', bodyHTML: body, footerHTML: `<button data-drw-close>취소</button><button class="primary" id="spOk" ${targets.length ? '' : 'disabled'}>보내기</button>`, width: 440, ...drawerOptions });
+  $('#spM', d).value = message;
+  let uncertain = false;
   $('#spOk', d).onclick = async () => {
-    $('#spOk', d).disabled = true;
+    if (uncertain && !confirm('CLI가 이미 받았을 수 있습니다. 대화를 확인한 뒤 다시 전송할까요?')) return;
+    const button = $('#spOk', d);
+    button.disabled = true;
     const msg = $('#spM', d).value.trim();
-    const text = (msg ? msg + ' ' : '') + quotePath(abs) + (msg ? '' : ' ');
-    const r = await api('/api/term/send', { method: 'POST', body: { id: $('#spT', d).value, text, submit: !!msg } });
-    d.close();
-    toast(r.error ? r.error : msg ? '세션에 보냈습니다' : '경로를 세션 입력칸에 넣었습니다');
+    const text = [msg, quotePath(abs), attachment ? quotePath(attachment) : ''].filter(Boolean).join('\n') + (msg ? '' : ' ');
+    try {
+      const r = await api('/api/term/send', { method: 'POST', body: { id: $('#spT', d).value, text, submit: !!msg } });
+      if (!r.ok) throw Object.assign(new Error(r.error || '터미널 입력을 확인하지 못했습니다.'), { delivery: r.delivery });
+      d.close();
+      onSent?.();
+      toast(msg ? '세션에 보냈습니다' : '경로를 세션 입력칸에 넣었습니다');
+    } catch (error) {
+      uncertain = error.delivery !== 'not-sent';
+      toast(uncertain ? `전달 여부 확인 필요 · ${error.message}` : error.message, 6000, 'danger');
+      button.disabled = false;
+    }
   };
 }
 
@@ -563,11 +755,16 @@ async function renderArtifacts(sid, gen, termId = '', host = $('#view')) {
   let query = '';
   let showCards = false;
   let autoExpanded = false;
+  let selecting = false;
+  const selected = new Set();
+  const target = artifactChatTarget();
   const paint = async () => {
     const r = await api(`/api/artifacts?session=${encodeURIComponent(sid || '')}${termId ? `&term=${encodeURIComponent(termId)}` : ''}`).catch((e) => ({ error: e.message }));
     if (gen !== viewGen || !host.isConnected) return;
     if (r.error) { host.innerHTML = `<div class="err">${esc(r.error)}</div>`; return; }
     const all = r.items || [];
+    const available = new Set(all.map(item => item.path));
+    for (const file of selected) if (!available.has(file)) selected.delete(file);
     const mainCount = all.filter((x) => x.main).length;
     if (!autoExpanded && !artShowAll && mainCount === 0 && all.length > 0) {
       autoExpanded = true;
@@ -577,6 +774,7 @@ async function renderArtifacts(sid, gen, termId = '', host = $('#view')) {
     const card = ([it, i]) => {
       const location = String(it.path || '').split(/[\\/]/).slice(0, -1).filter(Boolean).slice(-2).join('/');
       return `<div class="acard" data-ai="${i}">
+        ${target ? `<input class="artifact-select" type="checkbox" data-art-choose aria-label="질문에 첨부할 파일 선택" title="${esc(it.title || it.name)}"${selecting ? '' : ' hidden'}${selected.has(it.path) ? ' checked' : ''}>` : ''}
         <button class="artifact-open" type="button">
         <span class="athumb">${it.kind === 'image' ? `<img loading="lazy" src="${artUrl(sid, it.path, termId)}" alt="">` : `<span>${ART_ICON[it.kind] || ART_ICON.file}</span>`}</span>
         <span class="ameta"><b title="${esc(it.path)}">${esc(it.title || it.name)}</b>
@@ -592,12 +790,57 @@ async function renderArtifacts(sid, gen, termId = '', host = $('#view')) {
         <span class="sp"></span>
         <input id="artSearch" class="btn-sm" type="search" aria-label="파일명 · 폴더 · 형식 검색" placeholder="파일명 · 폴더 · 형식" value="${esc(query)}">
         <button class="btn-sm" type="button" id="artLayout" aria-pressed="${showCards}">카드 보기</button>
+        ${target && all.length ? `<button type="button" class="btn-sm" data-art-select aria-pressed="${selecting}">결과 선택</button>
+          <button type="button" class="btn-sm" data-art-all${selecting ? '' : ' hidden'}>표시된 결과 모두 선택</button>
+          <button type="button" class="primary btn-sm" data-art-ask${selecting ? '' : ' hidden'}>선택한 결과에 질문 <span data-art-count></span></button>` : ''}
         ${artOrderSel()}
         <button id="artAdd" class="btn-sm">${ICO.plus} 산출물 지정</button>
       </div>
       <div class="rwrap session-artifacts${showCards ? '' : ' artifact-list'}">
       ${items.length ? artTimeline(items.map((it, i) => [it, i]), card) : `<div class="h-empty-card" style="margin-top:8px"><b>아직 등록된 산출물이 없습니다</b><span class="ums" style="margin:0;max-width:460px">대화에 나온 파일 경로가 자동으로 모이며, 직접 파일을 지정하거나 코드 구조 탭에서 보고서(FLOORPLAN.md)를 저장할 수 있습니다.</span><button type="button" class="primary btn-sm" id="artEmptyAdd" style="margin-top:6px">${ICO.plus} 산출물 지정</button></div>`}</div>`;
     bindArtOrder(paint);
+    const selectResults = $('[data-art-select]', host);
+    const askSelected = $('[data-art-ask]', host);
+    const selectAll = $('[data-art-all]', host);
+    const syncSelection = () => {
+      if (!askSelected) return;
+      selectResults.setAttribute('aria-pressed', String(selecting));
+      askSelected.hidden = !selecting;
+      selectAll.hidden = !selecting;
+      askSelected.disabled = !selected.size;
+      $('[data-art-count]', askSelected).textContent = `(${selected.size})`;
+      host.querySelectorAll('[data-art-choose]').forEach((box) => {
+        box.hidden = !selecting;
+        box.checked = selected.has(items[Number(box.closest('[data-ai]').dataset.ai)].path);
+      });
+    };
+    if (selectResults) {
+      selectResults.onclick = () => {
+        selecting = !selecting;
+        if (!selecting) selected.clear();
+        syncSelection();
+      };
+      askSelected.onclick = () => {
+        if (askArtifactQuestion(all.filter(item => selected.has(item.path)), target)) {
+          selecting = false;
+          selected.clear();
+          syncSelection();
+        }
+      };
+      selectAll.onclick = () => {
+        host.querySelectorAll('[data-ai]:not([hidden])').forEach(row => selected.add(items[Number(row.dataset.ai)].path));
+        syncSelection();
+      };
+      host.querySelectorAll('[data-art-choose]').forEach((box) => {
+        box.onchange = () => {
+          const file = items[Number(box.closest('[data-ai]').dataset.ai)].path;
+          if (box.checked) selected.add(file);
+          else selected.delete(file);
+          syncSelection();
+        };
+      });
+      syncSelection();
+    }
     const filterRows = () => {
       const keywords = termsOf(query);
       const rows = [...host.querySelectorAll('[data-ai]')];
@@ -624,10 +867,11 @@ async function renderArtifacts(sid, gen, termId = '', host = $('#view')) {
     const emptyAdd = $('#artEmptyAdd', host);
     if (emptyAdd) emptyAdd.onclick = () => addArtifactDialog(sid, paint);
     host.querySelectorAll('[data-ai]').forEach((el) => (el.onclick = (e) => {
-      if (e.target.closest('[data-ahide]') || e.target.closest('[data-adrive]')) return;
+      if (e.target.closest('[data-ahide], [data-adrive], [data-art-choose]')) return;
       const sb = e.target.closest('[data-asend]');
       if (sb) return sendPathDialog(items[Number(sb.dataset.asend)].path);
-      openArtifact(sid, items[Number(el.dataset.ai)], artUrl(sid, items[Number(el.dataset.ai)].path, termId));
+      const item = items[Number(el.dataset.ai)];
+      openArtifact(sid, item, artUrl(sid, item.path, termId), target);
     }));
     host.querySelectorAll('[data-adrive]').forEach((b) => (b.onclick = async (e) => {
       e.stopPropagation();
@@ -763,14 +1007,19 @@ function addArtifactDialog(sid, done) {
     finally { button.disabled = false; }
   };
 }
-async function openArtifact(sid, it, url = artUrl(sid, it.path)) {
+async function openArtifact(sid, it, url = artUrl(sid, it.path), target = sid ? artifactChatTarget() : null) {
+  const reviewable = canReviewArtifactArea(it);
   const d = document.createElement('dialog');
   d.className = 'dlg artifact-preview';
   d.setAttribute('aria-labelledby', 'avTitle');
   d.innerHTML = `<span class="sr-only" tabindex="0" data-av-edge="start"></span>
     <div class="box wide aview"><div class="row avhead artifact-preview-head"><b id="avTitle" title="${esc(it.path)}">${ART_ICON[it.kind] || ''} ${esc(it.title || it.name)}</b>
-      <a class="btnlike btn-sm" href="${url}" target="_blank" rel="noopener">${ICO.external} 새 탭</a><a class="btnlike btn-sm" href="${url}&dl=1" download="${esc(it.name)}">다운로드</a><button type="button" class="btn-sm" id="avDrive" title="Google Drive에 업로드">${ICO.upload} Drive</button><button class="primary btn-sm" id="avSend" title="이 파일 경로를 세션에 보내기">${ICO.arrowUpRight} 세션에</button><button class="ghost icon-btn btn-sm" id="avClose" autofocus aria-label="닫기">${ICO.close}</button></div>
+      <a class="btnlike btn-sm" href="${url}" target="_blank" rel="noopener">${ICO.external} 새 탭</a><a class="btnlike btn-sm" href="${url}&dl=1" download="${esc(it.name)}">다운로드</a><button type="button" class="btn-sm" id="avDrive" title="Google Drive에 업로드">${ICO.upload} Drive</button><button class="primary btn-sm" id="avSend" title="이 파일 경로를 세션에 보내기">${ICO.arrowUpRight} 세션에</button>
+      ${target ? '<button type="button" class="btn-sm" data-av-ask>이 결과에 질문</button>' : ''}
+      ${reviewable ? '<button type="button" class="btn-sm" data-av-review>영역 코멘트</button><button type="button" class="btn-sm" data-av-refresh>새로고침</button>' : ''}
+      ${it.kind === 'html' && navigator.mediaDevices?.getDisplayMedia ? '<button type="button" class="btn-sm" data-av-capture>실제 화면 코멘트</button>' : ''}<button class="ghost icon-btn btn-sm" id="avClose" autofocus aria-label="닫기">${ICO.close}</button></div>
     <div class="ums mono" style="word-break:break-all">${esc(it.path)} · ${fmtSize(it.size)}</div>
+    <div data-av-review-slot></div>
     <div id="avBody" class="avbody" tabindex="0" role="region" aria-label="미리보기 내용">불러오는 중…</div></div>
     <span class="sr-only" tabindex="0" data-av-edge="end"></span>`;
   const box = $('.aview', d);
@@ -789,6 +1038,10 @@ async function openArtifact(sid, it, url = artUrl(sid, it.path)) {
   d.onclose = () => d.remove();
   d.onclick = (e) => {
     if (e.target === d || e.target.closest('#avClose')) d.close();
+    if (e.target.closest('[data-av-ask]')) {
+      d.close();
+      askArtifactQuestion([it], target);
+    }
     if (e.target.closest('#avDrive')) {
       const drvBtn = e.target.closest('#avDrive');
       uploadArtifactToDrive(it, {
@@ -813,7 +1066,8 @@ async function openArtifact(sid, it, url = artUrl(sid, it.path)) {
   else if (it.kind === 'image') body.innerHTML = `<img src="${url}" style="max-width:100%;max-height:74vh;object-fit:contain">`;
   else if (it.kind === 'pdf' || it.kind === 'html') {
     const frameUrl = it.kind === 'html' && window.isTauriHost?.() ? `${url}${url.includes('?') ? '&' : '?'}hub_ext=1` : url;
-    body.innerHTML = `<iframe src="${frameUrl}" style="width:100%;height:74vh;border:0;background:#fff"${it.kind === 'html' ? ' sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms"' : ''}></iframe>`;
+    const frame = `<iframe src="${frameUrl}" style="width:100%;height:74vh;border:0;background:#fff"${it.kind === 'html' ? ' sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms"' : ''}></iframe>`;
+    body.innerHTML = it.kind === 'html' ? `<div class="artifact-html-surface">${frame}</div>` : frame;
   }
   // PowerPoint / Word: the server renders a PDF (LibreOffice, cached) — first open takes a few seconds
   else if (/^(pptx?|ppsx?|odp|docx?|odt|rtf)$/i.test(it.ext || '')) {
@@ -843,4 +1097,512 @@ async function openArtifact(sid, it, url = artUrl(sid, it.path)) {
     }
     else { let t = txt; if (it.ext === 'json') { try { t = JSON.stringify(JSON.parse(txt), null, 2); } catch {} } body.innerHTML = `<pre class="mdpre">${esc(t)}</pre>`; }
   } else body.innerHTML = `<div class="empty">이 형식(${esc(it.ext)})은 브라우저에서 미리 볼 수 없습니다. 다운로드해서 여세요.</div>`;
+  if (reviewable) bindArtifactReview(d, body, url, it);
+}
+
+function positionReviewMark(mark, { x, y, w, h }) {
+  Object.assign(mark.style, { left: x * 100 + '%', top: y * 100 + '%', width: w * 100 + '%', height: h * 100 + '%' });
+}
+
+function reviewRegion(media, status, { host, onSelectingChange = () => {}, onCommit, onTap } = {}) {
+  const stage = host || document.createElement('div');
+  stage.classList.add('review-stage');
+  if (!host) {
+    media.replaceWith(stage);
+    stage.append(media);
+  }
+  const overlay = document.createElement('div');
+  const mark = document.createElement('div');
+  overlay.className = 'review-overlay';
+  mark.className = 'review-mark';
+  overlay.hidden = true;
+  mark.hidden = true;
+  stage.append(mark, overlay);
+  let start, area;
+  const setSelecting = selecting => {
+    overlay.hidden = !selecting;
+    onSelectingChange(selecting);
+  };
+  const point = (e) => {
+    const bounds = stage.getBoundingClientRect();
+    const clamp = (n) => Math.max(0, Math.min(1, n));
+    return { x: clamp((e.clientX - bounds.left) / bounds.width), y: clamp((e.clientY - bounds.top) / bounds.height) };
+  };
+  const paint = (end) => {
+    area = { x: Math.min(start.x, end.x), y: Math.min(start.y, end.y), w: Math.abs(end.x - start.x), h: Math.abs(end.y - start.y) };
+    mark.hidden = false;
+    positionReviewMark(mark, area);
+  };
+  const clear = () => { area = null; start = null; mark.hidden = true; };
+  const commit = () => {
+    if (onCommit) {
+      onCommit(area);
+      clear();
+    } else setSelecting(false);
+    status.textContent = '영역 선택됨';
+  };
+  overlay.onpointerdown = (e) => {
+    if (e.button !== 0 || !e.isPrimary) return;
+    overlay.setPointerCapture(e.pointerId);
+    start = { ...point(e), clientX: e.clientX, clientY: e.clientY };
+  };
+  overlay.onpointermove = (e) => { if (start && overlay.hasPointerCapture(e.pointerId)) paint(point(e)); };
+  overlay.onpointerup = (e) => {
+    if (!start || !overlay.hasPointerCapture(e.pointerId)) return;
+    const tapped = Math.hypot(e.clientX - start.clientX, e.clientY - start.clientY) <= 5;
+    paint(point(e));
+    start = null;
+    if ((onTap && tapped) || area.w < .004 || area.h < .004) {
+      clear();
+      status.textContent = '드래그해서 영역을 선택하세요.';
+      if (tapped) onTap?.(e.clientX, e.clientY);
+    } else commit();
+  };
+  overlay.onpointercancel = clear;
+  return {
+    begin() { clear(); setSelecting(true); status.textContent = '드래그해서 영역을 선택하세요.'; stage.scrollIntoView({ block: 'nearest' }); },
+    pause() { clear(); setSelecting(false); status.textContent = '원하는 위치로 스크롤한 뒤 영역 선택을 누르세요.'; },
+    full() { start = { x: 0, y: 0 }; paint({ x: 1, y: 1 }); start = null; commit(); },
+    dispose() {
+      if (host) {
+        mark.remove();
+        overlay.remove();
+        host.classList.remove('review-stage');
+      } else stage.replaceWith(media);
+    },
+    clear,
+    get selecting() { return !overlay.hidden; },
+    get area() { return area; },
+  };
+}
+
+async function uploadReviewCrop(image, area) {
+  await image.decode();
+  const sx = Math.floor(area.x * image.naturalWidth), sy = Math.floor(area.y * image.naturalHeight);
+  const w = Math.max(1, Math.round(area.w * image.naturalWidth)), h = Math.max(1, Math.round(area.h * image.naturalHeight));
+  const scale = Math.min(1, 1600 / Math.max(w, h));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(w * scale));
+  canvas.height = Math.max(1, Math.round(h * scale));
+  canvas.getContext('2d').drawImage(image, sx, sy, w, h, 0, 0, canvas.width, canvas.height);
+  const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+  if (!blob) throw new Error('선택 영역 이미지를 만들 수 없습니다.');
+  const r = await fetch('/api/upload?name=review-area.png', { method: 'POST', headers: { 'x-token': TOKEN }, body: blob });
+  const data = await r.json();
+  if (!r.ok || !data.path) throw new Error(data.error || '선택 영역 이미지를 첨부하지 못했습니다.');
+  return data.path;
+}
+
+function reviewControls(slot, onSubmit, onCancel) {
+  slot.innerHTML = `<form class="review-controls">
+    <div class="row"><button type="button" class="btn-sm" data-review-drag>영역 선택</button>
+      <button type="button" class="ghost btn-sm" data-review-full>전체 영역</button>
+      <span class="ums" role="status"></span></div>
+    <textarea rows="2" required maxlength="3000" aria-label="수정 코멘트" placeholder="이 영역에서 바꿀 내용을 입력하세요"></textarea>
+    <button class="primary btn-sm">수정 요청</button><button type="button" class="ghost btn-sm" data-review-cancel>취소</button>
+  </form>`;
+  const form = $('form', slot), status = $('[role=status]', form), comment = $('textarea', form);
+  const drag = $('[data-review-drag]', form);
+  $('[data-review-cancel]', form).onclick = onCancel;
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const button = $('button.primary', form);
+    button.disabled = true;
+    try { await onSubmit(comment.value.trim(), status); }
+    catch (error) { status.textContent = error.message; }
+    finally { button.disabled = false; }
+  };
+  return {
+    status,
+    setSelecting(selecting) { drag.textContent = selecting ? '위치 이동' : '영역 선택'; },
+    connect(picker, allowMove = false) {
+      drag.onclick = () => allowMove && picker.selecting ? picker.pause() : picker.begin();
+      $('[data-review-full]', form).onclick = () => picker.full();
+    },
+  };
+}
+
+function bindReviewElementPick(media, slot, picker, status, signal) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'ghost btn-sm';
+  button.textContent = '요소 지정';
+  button.setAttribute('aria-pressed', 'false');
+  $('[data-review-full]', slot).after(button);
+
+  const chip = document.createElement('button');
+  chip.type = 'button';
+  chip.className = 'ghost btn-sm review-element-chip';
+  chip.hidden = true;
+  $('textarea', slot).before(chip);
+  const outline = document.createElement('div');
+  outline.className = 'review-element-outline';
+  outline.setAttribute('aria-hidden', 'true');
+  outline.hidden = true;
+  media.after(outline);
+  let armed = false, target = null;
+  const clearTarget = () => {
+    if (target) media.contentWindow?.postMessage({ type: 'hub-review-element-clear', request: target.request }, '*');
+    target = null;
+    outline.hidden = true;
+  };
+  const disarm = () => {
+    armed = false;
+    button.setAttribute('aria-pressed', 'false');
+  };
+  const render = () => {
+    chip.hidden = !target;
+    if (!target) return;
+    const label = target.selector ? `요소: ${target.selector}` : `지정 위치: ${target.position}`;
+    chip.textContent = `${label} ×`;
+    chip.title = label;
+    chip.setAttribute('aria-label', target.selector ? '요소 정보 제거' : '지정 위치 제거');
+  };
+  button.onclick = () => {
+    const next = !armed;
+    picker.begin();
+    if (next) {
+      armed = true;
+      button.setAttribute('aria-pressed', 'true');
+      status.textContent = '수정할 요소를 누르세요.';
+    } else disarm();
+  };
+  chip.onclick = () => {
+    if (target?.selector) {
+      target.selector = '';
+    } else clearTarget();
+    render();
+    if (!target) button.focus();
+  };
+  window.addEventListener('message', event => {
+    const { type, request, selector, bounds } = event.data || {};
+    if (event.source !== media.contentWindow || type !== 'hub-review-element' || !target
+      || !Number.isSafeInteger(request) || target.request !== request) return;
+    if (!target.resolved) {
+      target.resolved = true;
+      if (typeof selector === 'string' && /^#[A-Za-z][A-Za-z0-9_-]{0,47}$/.test(selector)) target.selector = selector;
+      render();
+    }
+    outline.hidden = true;
+    if (!Array.isArray(bounds) || bounds.length !== 4 || !bounds.every(Number.isFinite)) return;
+    const [x, y, w, h] = bounds;
+    const left = Math.max(x, 0), top = Math.max(y, 0);
+    const width = Math.min(x + w, media.clientWidth) - left;
+    const height = Math.min(y + h, media.clientHeight) - top;
+    if (width <= 0 || height <= 0) return;
+    Object.assign(outline.style, { left: left + 'px', top: top + 'px', width: width + 'px', height: height + 'px' });
+    outline.hidden = false;
+  }, { signal });
+  media.addEventListener('load', () => { clearTarget(); render(); }, { signal });
+  signal.addEventListener('abort', () => { clearTarget(); outline.remove(); }, { once: true });
+
+  return {
+    disarm,
+    pick(clientX, clientY) {
+      if (!armed) return false;
+      disarm();
+      const rect = media.getBoundingClientRect();
+      const x = clientX - rect.left, y = clientY - rect.top;
+      if (x < 0 || y < 0 || x >= rect.width || y >= rect.height) return true;
+      const request = crypto.getRandomValues(new Uint32Array(1))[0];
+      const position = [x / rect.width, y / rect.height].map(value => (value * 100).toFixed(1)).join(', ');
+      clearTarget();
+      target = { position, request, selector: '' };
+      render();
+      media.contentWindow?.postMessage({ type: 'hub-review-element-request', request, x, y }, '*');
+      return true;
+    },
+    get context() {
+      if (!target) return '';
+      if (target.selector) return `HTML 요소: ${target.selector}`;
+      return `HTML 클릭 좌표 (왼쪽%, 위%): ${target.position}`;
+    },
+  };
+}
+
+function startArtifactRegionReview({ initial: media, slot, item, isActive, onSubmit, onStop }) {
+  const isHtml = item.kind === 'html';
+  const host = isHtml ? media.parentElement : null;
+  host?.style.setProperty('--review-frame-height', `${host.getBoundingClientRect().height}px`);
+  const listener = new AbortController();
+  const dispose = () => {
+    if (listener.signal.aborted) return;
+    listener.abort();
+    markers.remove();
+    picker.dispose();
+    host?.style.removeProperty('--review-frame-height');
+  };
+  const stop = () => {
+    dispose();
+    onStop();
+  };
+  const regions = new Map();
+  let nextRegion = 1, elementPick;
+  const tools = reviewControls(slot, async (comment, status) => {
+    const elementContext = elementPick?.context;
+    if ((!regions.size && !elementContext) || !comment) throw new Error('영역과 코멘트를 입력하세요.');
+    if (!isActive()) return;
+    const context = [elementContext, ...[...regions].map(([number, region]) => `#${number}\n${region.context}`)].filter(Boolean).join('\n\n');
+    const message = `아래 산출물의 선택 영역을 코멘트에 따라 수정하고 같은 파일을 업데이트해 주세요.\n${context}\n코멘트: ${comment}`;
+    await onSubmit(message, stop);
+    status.textContent = '';
+  }, stop);
+  const list = document.createElement('div');
+  list.className = 'row review-regions';
+  list.hidden = true;
+  $('textarea', slot).before(list);
+  const markers = document.createElement('div');
+  markers.className = 'review-markers';
+  let selected = null, scroll = null;
+  const selectRegion = number => {
+    selected = number;
+    for (const [id, region] of regions) {
+      region.mark.toggleAttribute('data-selected', id === number);
+      region.remove.hidden = id !== number;
+    }
+  };
+  const selectAt = (x, y) => {
+    const hit = [...regions].reverse().find(([, { mark }]) => {
+      const rect = mark.getBoundingClientRect();
+      return !mark.hidden && x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+    });
+    selectRegion(hit?.[0] ?? null);
+  };
+  const updateMarkers = () => {
+    for (const { mark, area, documentRect } of regions.values()) {
+      if (!documentRect) positionReviewMark(mark, area);
+      else {
+        const { width, height } = media.getBoundingClientRect();
+        if (!width || !height) continue;
+        const visibleArea = {
+          x: (documentRect.x - scroll.x) / width,
+          y: (documentRect.y - scroll.y) / height,
+          w: documentRect.w / width,
+          h: documentRect.h / height,
+        };
+        mark.hidden = visibleArea.x >= 1 || visibleArea.y >= 1
+          || visibleArea.x + visibleArea.w <= 0 || visibleArea.y + visibleArea.h <= 0;
+        positionReviewMark(mark, visibleArea);
+      }
+    }
+  };
+  const addRegion = area => {
+    const coords = [area.x, area.y, area.w, area.h].map(value => (value * 100).toFixed(1)).join(', ');
+    let context = `선택 영역 (왼쪽%, 위%, 너비%, 높이%): ${coords}`;
+    let documentRect;
+    if (isHtml) {
+      const { width, height } = media.getBoundingClientRect();
+      const x = area.x * width, y = area.y * height;
+      context += `\nHTML 뷰포트: ${Math.round(width)}×${Math.round(height)}`;
+      if (scroll) {
+        documentRect = { x: x + scroll.x, y: y + scroll.y, w: area.w * width, h: area.h * height };
+        context += `\n문서 좌표 (왼쪽, 위, 너비, 높이): ${[documentRect.x, documentRect.y, documentRect.w, documentRect.h].map(Math.round).join(', ')}`;
+      }
+    } else if (media.naturalWidth && media.naturalHeight) {
+      const left = Math.floor(area.x * media.naturalWidth), top = Math.floor(area.y * media.naturalHeight);
+      const width = Math.max(1, Math.round(area.w * media.naturalWidth));
+      const height = Math.max(1, Math.round(area.h * media.naturalHeight));
+      context += `\n원본 이미지 픽셀 (왼쪽, 위, 너비, 높이): ${left}, ${top}, ${width}, ${height}`;
+    }
+    const number = nextRegion++;
+    const mark = document.createElement('div');
+    mark.className = 'review-mark';
+    mark.textContent = number;
+    const removeOnMark = document.createElement('button');
+    removeOnMark.type = 'button';
+    removeOnMark.className = 'review-mark-remove';
+    removeOnMark.textContent = '×';
+    removeOnMark.title = '영역 제거';
+    removeOnMark.setAttribute('aria-label', '영역 제거');
+    removeOnMark.hidden = true;
+    mark.append(removeOnMark);
+    markers.append(mark);
+    regions.set(number, { area, documentRect, context, mark, remove: removeOnMark });
+    selectRegion(null);
+    mark.onclick = () => selectRegion(number);
+    updateMarkers();
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'ghost btn-sm';
+    remove.textContent = `#${number} ×`;
+    remove.title = '영역 제거';
+    const removeRegion = () => {
+      const next = remove.nextElementSibling || remove.previousElementSibling || $('[data-review-drag]', slot);
+      regions.delete(number);
+      if (selected === number) selectRegion(null);
+      mark.remove();
+      remove.remove();
+      list.hidden = !regions.size;
+      next.focus();
+    };
+    remove.onclick = removeRegion;
+    removeOnMark.onclick = event => { event.stopPropagation(); removeRegion(); };
+    list.hidden = false;
+    list.append(remove);
+  };
+  const picker = reviewRegion(media, tools.status, {
+    host,
+    onSelectingChange(selecting) {
+      if (!selecting) elementPick?.disarm();
+      if (isHtml) tools.setSelecting(selecting);
+    },
+    onCommit(area) { elementPick?.disarm(); addRegion(area); },
+    onTap(x, y) { if (!elementPick?.pick(x, y)) selectAt(x, y); },
+  });
+  media.after(markers);
+  tools.connect(picker, isHtml);
+  if (isHtml) {
+    elementPick = bindReviewElementPick(media, slot, picker, tools.status, listener.signal);
+    const options = { signal: listener.signal };
+    const requestScroll = () => media.contentWindow?.postMessage({ type: 'hub-review-scroll-request' }, '*');
+    window.addEventListener('message', event => {
+      const { type, x, y } = event.data || {};
+      if (event.source !== media.contentWindow || type !== 'hub-review-scroll' || !Number.isFinite(x) || !Number.isFinite(y)) return;
+      scroll = { x, y };
+      updateMarkers();
+    }, options);
+    media.addEventListener('load', requestScroll, options);
+    requestScroll();
+  }
+  picker.begin();
+  return dispose;
+}
+
+function bindArtifactReview(dialog, body, url, item) {
+  const slot = $('[data-av-review-slot]', dialog);
+  const trigger = $('[data-av-review]', dialog);
+  const refreshButton = $('[data-av-refresh]', dialog);
+  const capture = $('[data-av-capture]', dialog);
+  const initial = $('img,iframe', body);
+  const originalUrl = initial.src;
+  let active = false, revision = '', watching = false, refreshTimer, disposeReview, uncertain = false;
+  const file = quotePath(item.abs || item.path);
+  const sendReview = async (message, attachment, onSent) => {
+    const term = currentReviewTerminal();
+    if (term?.agent) {
+      if (uncertain && !confirm('CLI가 이미 받았을 수 있습니다. 대화를 확인한 뒤 다시 전송할까요?')) return;
+      const text = [message, file, attachment ? quotePath(attachment) : ''].filter(Boolean).join('\n');
+      try {
+        const result = await api('/api/term/send', { method: 'POST', body: { id: term.id, text, submit: true } });
+        if (!result.ok) throw Object.assign(new Error(result.error || '터미널 입력을 확인하지 못했습니다.'), { delivery: result.delivery });
+      } catch (error) {
+        uncertain = error.delivery !== 'not-sent';
+        throw new Error(uncertain ? `전달 여부 확인 필요 · ${error.message}` : error.message);
+      }
+      uncertain = false;
+      onSent();
+      toast('세션에 보냈습니다');
+      return;
+    }
+    if (typeof stageReviewInChat === 'function' && stageReviewInChat(`${message}\n${file}`, attachment)) {
+      dialog.close();
+      return;
+    }
+    const box = $('.aview', dialog);
+    sendPathDialog(item.abs || item.path, {
+      parent: dialog, focus: true, attachment, message, onSent,
+      onClose: () => { box.inert = false; ($('textarea', slot) || capture || trigger).focus(); },
+    });
+    box.inert = true;
+    dialog.append($('[data-av-edge=end]', dialog));
+  };
+  if (capture) capture.onclick = async () => {
+    try {
+      await openScreenReview(async (comment, attachment) => {
+        if (!dialog.open) return;
+        await sendReview(`첨부한 화면 영역의 코멘트를 반영해 이 HTML 산출물 파일을 업데이트해 주세요.\n코멘트: ${comment}`, attachment, checkRevision);
+      });
+    } catch (error) { if (error.name !== 'NotAllowedError') toast(error.message, 6000, 'danger'); }
+  };
+  const refresh = () => {
+    const updated = new URL(originalUrl);
+    updated.searchParams.set('v', String(Date.now()));
+    initial.src = updated.href;
+  };
+  refreshButton.onclick = refresh;
+  dialog.addEventListener('close', () => {
+    clearInterval(refreshTimer);
+    disposeReview?.();
+  }, { once: true });
+  async function checkRevision() {
+    if (watching || !dialog.open || active || document.hidden) return;
+    watching = true;
+    try {
+      const r = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+      const etag = r.ok ? r.headers.get('etag') : null;
+      if (etag && revision && etag !== revision) refresh();
+      if (etag) revision = etag;
+    } catch {} finally { watching = false; }
+  }
+  void checkRevision();
+  refreshTimer = setInterval(checkRevision, 5000);
+
+  trigger.onclick = () => {
+    if (active) return;
+    active = true;
+    trigger.disabled = true;
+    refreshButton.disabled = true;
+    if (capture) capture.disabled = true;
+    const stopReview = () => {
+      active = false;
+      disposeReview = null;
+      slot.replaceChildren();
+      trigger.disabled = false;
+      refreshButton.disabled = false;
+      if (capture) capture.disabled = false;
+      trigger.focus();
+      void checkRevision();
+    };
+    try {
+      disposeReview = startArtifactRegionReview({
+        initial, slot, item, isActive: () => dialog.open && active,
+        onSubmit: (message, stop) => sendReview(message, '', stop), onStop: stopReview,
+      });
+    } catch (error) {
+      stopReview();
+      slot.textContent = error.message;
+    }
+  };
+}
+
+async function openScreenReview(onReady) {
+  const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false, preferCurrentTab: true });
+  const video = document.createElement('video');
+  video.muted = true;
+  video.srcObject = stream;
+  let blob;
+  try {
+    await video.play();
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext('2d').drawImage(video, 0, 0);
+    blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+  } finally {
+    stream.getTracks().forEach(track => track.stop());
+    video.srcObject = null;
+  }
+  if (!blob) throw new Error('화면을 캡처하지 못했습니다.');
+  const url = URL.createObjectURL(blob);
+  const dialog = document.createElement('dialog');
+  dialog.className = 'dlg artifact-preview';
+  dialog.setAttribute('aria-label', '화면 영역 코멘트');
+  dialog.innerHTML = '<div class="box wide aview"><div data-screen-controls></div><div class="avbody"><img alt="선택한 공유 화면" class="review-screenshot"></div></div>';
+  const image = $('img', dialog);
+  image.src = url;
+  document.body.append(dialog);
+  dialog.onclose = () => { URL.revokeObjectURL(url); dialog.remove(); };
+  dialog.showModal();
+  let picker;
+  const controls = reviewControls($('[data-screen-controls]', dialog), async (comment) => {
+    if (!picker.area || !comment) throw new Error('영역과 코멘트를 입력하세요.');
+    const attachment = await uploadReviewCrop(image, picker.area);
+    if (!dialog.open) return;
+    await onReady(comment, attachment);
+    dialog.close();
+  }, () => dialog.close());
+  picker = reviewRegion(image, controls.status);
+  controls.connect(picker);
+  $('[data-review-drag]', dialog).focus();
 }
