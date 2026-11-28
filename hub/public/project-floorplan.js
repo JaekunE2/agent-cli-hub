@@ -480,6 +480,7 @@
         </div>
         <div class="row" style="gap:6px;flex-wrap:wrap">
           <button type="button" class="btn-sm" id="fmPreviewMd" title="아키텍처 & 품질 보고서 전문 미리보기 · 산출물 저장">${ico.file || ''} 보고서 보기</button>
+          ${p?.id && !previewCwd ? '<button type="button" class="btn-sm" id="fmShareDiagram">공유용 다이어그램 만들기</button>' : ''}
           <details class="fm-exports"><summary>보고서 내보내기</summary><div class="row">
             ${allowSave ? `<button type="button" class="btn-sm" id="fmSaveArtifact" title="FLOORPLAN.md" ${savingReport ? 'disabled' : ''}>${ico.plus || ''} ${saveLabel}</button>` : ''}
             <button type="button" class="btn-sm" id="fmCopyMd" title="실무자 공유용 마크다운 아키텍처 보고서 복사">${ico.copy || ''} 복사</button>
@@ -849,6 +850,25 @@
         return;
       }
       if (e.target.closest('#fmRescan')) return renderFloorplanInto({ host, p, cwd, gen, previewCwd, termCtx });
+      const share = e.target.closest('#fmShareDiagram');
+      if (share && !share.disabled) {
+        share.disabled = true;
+        try {
+          const query = new URLSearchParams({ id: p.id, ...(version ? { version: version.number } : {}) });
+          const sessionId = termCtx?.sessionId || currentSessionId() || '';
+          const termId = termCtx?.termId || (state.sel.kind === 'term' ? state.sel.id : '');
+          const { artifact } = await api('/api/projects/floorplan/diagram?' + query, {
+            method: 'POST', requireOk: true, body: { sessionId, termId, locale: document.documentElement.lang },
+          });
+          if (gen !== viewGen || !host.contains(share)) return;
+          await openArtifact(sessionId, artifact, floorplanDiagramUrl(artifact.id));
+        } catch (error) {
+          toast(error.message, 5000, 'danger');
+        } finally {
+          share.disabled = false;
+        }
+        return;
+      }
       if (e.target.closest('#fmBackProjDir')) return renderFloorplanInto({ host, p, cwd, gen, previewCwd: '', termCtx });
       if (e.target.closest('#fmPickDir')) {
         if (typeof openFolderPickerDialog === 'function') {

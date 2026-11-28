@@ -1049,15 +1049,58 @@ function addArtifactDialog(sid, done) {
     finally { button.disabled = false; }
   };
 }
+function floorplanDiagramUrl(id, format = 'html') {
+  return '/api/projects/floorplan/diagram?' + new URLSearchParams({ id, format, t: TOKEN });
+}
+
+function bindFloorplanDiagramSource(dialog, diagramId) {
+  const frame = $('iframe', dialog);
+  const box = $('.aview', dialog);
+  const listener = new AbortController();
+  let busy = false;
+  dialog.addEventListener('close', () => listener.abort(), { once: true });
+  window.addEventListener('message', async event => {
+    const { type, node } = event.data || {};
+    if (event.source !== frame?.contentWindow || type !== 'hub-diagram-source' ||
+        typeof node !== 'string' || !/^node-[0-9a-f]{16}$/.test(node) || busy) return;
+    busy = true;
+    try {
+      const params = new URLSearchParams({ id: diagramId, format: 'source', node });
+      const source = await api('/api/projects/floorplan/diagram?' + params, { requireOk: true });
+      if (!dialog.open) return;
+      const snippet = source.lines.map((line, i) => {
+        const n = source.first + i;
+        const row = `${n}  ${esc(line)}`;
+        return n === source.line ? `<mark>${row}</mark>` : row;
+      }).join('\n');
+      openDrawer({
+        title: `${source.path}:${source.line}`, parent: dialog, focus: true, width: 760,
+        bodyHTML: snippet ? `<pre class="mdpre"><code>${snippet}</code></pre>`
+          : '<p>이 파일의 코드 일부를 표시할 수 없습니다.</p>',
+        footerHTML: '<button type="button" data-drw-close>닫기</button>',
+        onClose: () => { box.inert = false; busy = false; frame.focus(); },
+      });
+      box.inert = true;
+      dialog.append($('[data-av-edge=end]', dialog));
+    } catch (error) {
+      busy = false;
+      toast(error.message, 5000, 'danger');
+    }
+  }, { signal: listener.signal });
+}
+
 async function openArtifact(sid, it, url = artUrl(sid, it.path), target = sid ? artifactChatTarget() : null) {
   const reviewable = canReviewArtifactArea(it);
+  const diagramId = it.kind === 'html' && /[\\/]floorplan-diagrams[\\/]([0-9a-f-]{36})[\\/]architecture\.html$/i.exec(it.path)?.[1];
   const d = document.createElement('dialog');
   d.className = 'dlg artifact-preview';
+  if (diagramId) d.classList.add('floorplan-diagram-preview');
   d.setAttribute('aria-labelledby', 'avTitle');
   d.innerHTML = `<span class="sr-only" tabindex="0" data-av-edge="start"></span>
     <div class="box wide aview"><div class="row avhead artifact-preview-head"><b id="avTitle" title="${esc(it.path)}">${ART_ICON[it.kind] || ''} ${esc(it.title || it.name)}</b>
       <a class="btnlike btn-sm" href="${url}" target="_blank" rel="noopener">${ICO.external} 새 탭</a><a class="btnlike btn-sm" href="${url}&dl=1" download="${esc(it.name)}">다운로드</a><button type="button" class="btn-sm" id="avDrive" title="Google Drive에 업로드">${ICO.upload} Drive</button><button class="primary btn-sm" id="avSend" title="이 파일 경로를 세션에 보내기">${ICO.arrowUpRight} 세션에</button>
       ${target ? '<button type="button" class="btn-sm" data-av-ask>이 결과에 질문</button>' : ''}
+      ${diagramId ? `<a class="btnlike btn-sm" href="${esc(floorplanDiagramUrl(diagramId, 'svg'))}&amp;dl=1" download="architecture.svg">SVG 다운로드</a>` : ''}
       ${reviewable ? '<button type="button" class="btn-sm" data-av-review>영역 코멘트</button><button type="button" class="btn-sm" data-av-refresh>새로고침</button>' : ''}
       ${it.kind === 'html' && navigator.mediaDevices?.getDisplayMedia ? '<button type="button" class="btn-sm" data-av-capture>실제 화면 코멘트</button>' : ''}<button class="ghost icon-btn btn-sm" id="avClose" autofocus aria-label="닫기">${ICO.close}</button></div>
     <div class="ums mono" style="word-break:break-all">${esc(it.path)} · ${fmtSize(it.size)}</div>
@@ -1140,6 +1183,7 @@ async function openArtifact(sid, it, url = artUrl(sid, it.path), target = sid ? 
     else { let t = txt; if (it.ext === 'json') { try { t = JSON.stringify(JSON.parse(txt), null, 2); } catch {} } body.innerHTML = `<pre class="mdpre">${esc(t)}</pre>`; }
   } else body.innerHTML = `<div class="empty">이 형식(${esc(it.ext)})은 브라우저에서 미리 볼 수 없습니다. 다운로드해서 여세요.</div>`;
   if (reviewable) bindArtifactReview(d, body, url, it);
+  if (diagramId) bindFloorplanDiagramSource(d, diagramId);
 }
 
 function positionReviewMark(mark, { x, y, w, h }) {

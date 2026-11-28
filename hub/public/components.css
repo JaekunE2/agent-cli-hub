@@ -758,6 +758,7 @@ body.remote .desk { display: none; }
   .srow.srow-done-arrived { animation: hub-session-complete 260ms ease-out; }
   :is(.more-menu, .ts-subagent-list) { animation: hub-feedback-in 120ms ease-out; }
   :is(dialog.dlg[open], .dlg:not(dialog)) > .box { animation: hub-surface-in 150ms ease-out; }
+  dialog.dlg.floorplan-diagram-preview[open] > .box { animation-name: hub-feedback-in; }
 }
 @keyframes hub-region-selected {
   from { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 45%, transparent); }

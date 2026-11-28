@@ -14,6 +14,8 @@ const { createFileRuns, fileRunPath } = require('./project-file-runs');
 const { VERSION_RE } = require('./project-validation');
 const { requiredMcpMessage } = require('./vault-cli-ops');
 const { inspectGit } = require('./git-inspector');
+const { diagramFile, saveDiagram, diagramSource } = require('./floorplan-diagram-store');
+const { serve: serveArtifact } = require('./artifacts');
 
 const projectAgents = ['codex', 'claude', 'agy', 'cursor'];
 
@@ -472,15 +474,34 @@ function createProjectRoutes(hub) {
       return true;
     }
 
-    if (p === '/api/projects/floorplan' && req.method === 'GET') {
+    const diagramRoute = p === '/api/projects/floorplan/diagram';
+    if (diagramRoute && req.method === 'GET') {
+      const id = url.searchParams.get('id') || '';
+      const format = url.searchParams.get('format') || 'html';
+      if (format === 'source') {
+        const evidence = await diagramSource(baseDir, id, url.searchParams.get('node') || '');
+        send(res, evidence ? 200 : 404, evidence || { error: '파일을 찾을 수 없습니다.' });
+      } else {
+        const file = diagramFile(baseDir, id, format);
+        if (file) await serveArtifact(req, res, file);
+        else send(res, 404, { error: '파일을 찾을 수 없습니다.' });
+      }
+      return true;
+    }
+
+    if ((p === '/api/projects/floorplan' && req.method === 'GET') || (diagramRoute && req.method === 'POST')) {
       const pid = url.searchParams.get('id') || '';
       const rawCwd = url.searchParams.get('cwd') || '';
       const proj = pid ? projects.list().find((x) => x.id === pid) : null;
+      if (diagramRoute && !proj) {
+        send(res, 404, { error: '프로젝트를 찾을 수 없습니다.' });
+        return true;
+      }
       let temporary;
       try {
         const version = findVersion(pid, url.searchParams.get('version'));
         const commit = version?.completedCommit || version?.baseCommit;
-        let targetDir = rawCwd || proj?.cwd || '';
+        let targetDir = (diagramRoute ? '' : rawCwd) || proj?.cwd || '';
         if (version) {
           targetDir = version.workspace || (version.snapshotId
             ? path.join(versionFolder(path.join(VERSION_DIR, 'snapshots'), pid, version.number), version.snapshotId) : '');
@@ -498,6 +519,37 @@ function createProjectRoutes(hub) {
         }
         if (!targetDir && !version) throw new Error('분석할 작업 폴더를 찾을 수 없습니다.');
         const floorplan = scanFloorplan(targetDir);
+        if (diagramRoute) {
+          if (!floorplan.exists || !floorplan.nodes?.length) throw new Error('다이어그램으로 만들 코드가 없습니다.');
+          const selection = await body(req);
+          let revision = commit || '';
+          let dirty = !!version && !temporary;
+          if (!temporary) {
+            const opts = { cwd: targetDir, timeout: 3000, windowsHide: true };
+            try {
+              const top = await gitVersion('git', ['rev-parse', '--show-toplevel'], opts);
+              // A non-Git project directory may live inside the ignored Hub repository.
+              if (await fs.promises.realpath(top.stdout.trim()) !== await fs.promises.realpath(targetDir)) {
+                throw new Error('Project directory is not the Git root');
+              }
+              const head = await gitVersion('git', ['rev-parse', 'HEAD'], opts);
+              revision = head.stdout.trim();
+              dirty = true;
+              const status = await gitVersion('git', ['status', '--porcelain', '--untracked-files=normal', '--', '.'], opts);
+              dirty = !!status.stdout.trim();
+            } catch {}
+          }
+          const artifact = await saveDiagram(baseDir, targetDir, floorplan, {
+            title: proj.name, commit: revision, dirty, locale: selection.locale, scannedAt: floorplan.scannedAt,
+          });
+          const term = hub.terms?.get(String(selection.termId || ''));
+          const session = String(selection.sessionId || '');
+          const key = session && (index.get(session) || term?.sessionId === session)
+            ? session : term ? `term:${term.id}` : '';
+          const pinned = key ? !!hub.artifactsMod.pinFile(key, artifact.path, '프로젝트 아키텍처 다이어그램') : false;
+          send(res, 200, { ok: true, artifact, pinned });
+          return true;
+        }
         if (temporary) floorplan.rootDir = `${proj.cwd} @ ${commit.slice(0, 12)}`;
         send(res, 200, { ok: true, floorplan });
       } catch (error) { send(res, 400, { error: error.message }); }
