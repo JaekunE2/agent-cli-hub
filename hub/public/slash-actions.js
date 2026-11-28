@@ -72,6 +72,7 @@ async function runHubSlash(entry, args, ctx, isCurrent) {
     case 'skills': return select({ kind: 'vault', tab: entry.name });
     case 'model': return ctx.openChatAction('settings', args);
     case 'sidechat': return ctx.openChatAction('sidechat', args);
+    case 'snippet': return openSlashSnippetsDrawer(args);
   }
 }
 
@@ -103,5 +104,68 @@ function openSlashNotice(text) {
       toast('공지 게시판에 등록했습니다.');
     } catch (error) { toast(error.message, 5000, 'danger'); }
     finally { button.disabled = false; }
+  };
+}
+
+async function openSlashSnippetsDrawer(prefillName = '') {
+  const drawer = openDrawer({
+    title: '사용자 / 프롬프트 스니펫',
+    width: 520,
+    focus: true,
+    bodyHTML: `<form data-sn-form style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px">
+      <div class="row" style="gap:8px">
+        <input name="name" maxlength="40" placeholder="명령어 (예: 테스트커밋)" value="${esc(String(prefillName || '').replace(/^\/+/, ''))}" style="flex:1" required>
+        <input name="title" maxlength="80" placeholder="짧은 설명 (선택)" style="flex:1">
+      </div>
+      <textarea name="prompt" rows="3" maxlength="8000" placeholder="불러올 프롬프트 내용을 입력하세요" required></textarea>
+      <div class="row" style="justify-content:flex-end">
+        <button type="submit" class="primary btn-sm">스니펫 저장</button>
+      </div>
+    </form>
+    <div data-sn-list style="display:flex;flex-direction:column;gap:6px"><div class="empty">불러오는 중…</div></div>`,
+  });
+  const form = $('[data-sn-form]', drawer);
+  const listEl = $('[data-sn-list]', drawer);
+  const renderList = (snippets = []) => {
+    if (!drawer.isConnected) return;
+    if (!snippets.length) {
+      listEl.innerHTML = '<div class="empty">저장된 스니펫이 없습니다. 위에서 자주 쓰는 프롬프트를 등록해 보세요.</div>';
+      return;
+    }
+    listEl.innerHTML = snippets.map((s) => `<div class="rcard" style="padding:8px 10px;display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
+      <div style="min-width:0;flex:1">
+        <div><b>/${esc(s.name)}</b>${s.title ? ` <span class="ums">${esc(s.title)}</span>` : ''}</div>
+        <div class="ums" style="margin:2px 0 0;white-space:pre-wrap;overflow-wrap:anywhere">${esc(s.prompt.slice(0, 180))}${s.prompt.length > 180 ? '…' : ''}</div>
+      </div>
+      <button type="button" class="danger ghost icon-btn btn-sm" data-sn-del="${esc(s.name)}" aria-label="삭제">${ICO.trash}</button>
+    </div>`).join('');
+  };
+  const reload = async () => {
+    const r = await api('/api/slash-snippets').catch(() => ({ snippets: [] }));
+    renderList(r.snippets || []);
+  };
+  await reload();
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(form);
+    try {
+      const r = await api('/api/slash-snippets', {
+        method: 'POST',
+        body: { name: fd.get('name'), title: fd.get('title'), prompt: fd.get('prompt') },
+        requireOk: true,
+      });
+      form.reset();
+      renderList(r.snippets || []);
+      toast('프롬프트 스니펫을 저장했습니다.');
+    } catch (err) { toast(err.message, 5000, 'danger'); }
+  };
+  listEl.onclick = async (e) => {
+    const del = e.target.closest('[data-sn-del]')?.dataset.snDel;
+    if (!del) return;
+    try {
+      const r = await api('/api/slash-snippets', { method: 'POST', body: { action: 'delete', name: del }, requireOk: true });
+      renderList(r.snippets || []);
+      toast('스니펫을 삭제했습니다.');
+    } catch (err) { toast(err.message, 5000, 'danger'); }
   };
 }

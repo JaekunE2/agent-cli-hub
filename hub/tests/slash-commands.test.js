@@ -83,3 +83,21 @@ test('Vault removal and target changes exclude remaining local skill copies from
   vault.syncToClis({ clis: ['codex'] });
   assert.equal((await discover())[0].command, '$test-skill');
 });
+
+test('custom slash snippets and /snippet Hub command work across CLIs and needs-input patterns detect approval prompts', async () => {
+  const { sessionStartupBlock } = require('../term-manager');
+  assert.equal(sessionStartupBlock('Allow once to edit file.js'), 'permission');
+  assert.equal(sessionStartupBlock('Continue with changes? [y/N]'), 'confirmation');
+
+  const source = await fs.readFile(path.join(__dirname, '../public/slash-commands.js'), 'utf8');
+  const context = vm.createContext({ document: { documentElement: { lang: 'ko' } } });
+  vm.runInContext(source, context);
+  vm.runInContext(`
+    this.snippetCmd = hubSlashEntry('스니펫')?.name;
+    this.enSnippetCmd = hubSlashEntry('snippet')?.name;
+    this.catalog = slashCatalog('claude', [{ command: '/테스트커밋', description: '테스트 후 커밋', snippet: 'npm test', customSnippet: true }]);
+  `, context);
+  assert.equal(context.snippetCmd, 'snippet');
+  assert.equal(context.enSnippetCmd, 'snippet');
+  assert.ok(context.catalog.some(item => item.command === '/테스트커밋' && item.snippet === 'npm test'));
+});

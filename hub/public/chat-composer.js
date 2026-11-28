@@ -361,6 +361,7 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
   barHost.innerHTML = `<div class="chat-reply-bar${compact ? ' compact' : ''}">
     <div class="chat-conn-bar">
       <span class="chat-conn-pill" data-chat-conn></span>
+      <button type="button" class="badge" data-chat-git hidden title="현재 작업 폴더 Git 변경 내역 보기" style="cursor:pointer"></button>
       <button type="button" class="ghost btn-sm" data-chat-selection title="선택한 텍스트 첨부" aria-label="선택한 텍스트 첨부">${ICO.clip}<span>선택한 텍스트 첨부</span></button>
       ${navigator.mediaDevices?.getDisplayMedia ? `<button type="button" class="ghost btn-sm" data-chat-screen title="화면 영역" aria-label="화면 영역">${ICO.monitor}<span>화면 영역</span></button>` : ''}
       <button type="button" class="ghost btn-sm chat-me-toggle" data-chat-settings aria-expanded="false" title="실행 설정" aria-label="실행 설정">${ICO.settings}<span>실행 설정</span></button>
@@ -392,6 +393,7 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
   </div>`;
 
   const connEl = $('[data-chat-conn]', barHost);
+  const gitBadgeBtn = $('[data-chat-git]', barHost);
   const accSel = $('[data-chat-acc]', barHost);
   const applyBtn = $('[data-chat-apply]', barHost);
   const repIn = $('textarea', barHost);
@@ -568,10 +570,52 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
     connEl.title = connEl.textContent.trim();
     syncApplyBtn();
   };
+  let lastGitPollAt = 0;
+  const syncGitBadge = async (force = false) => {
+    if (!gitBadgeBtn || !barHost.isConnected) return;
+    const lt = findLiveTerm();
+    const targetCwd = lt?.cwd || cwd || '';
+    if (!targetCwd) { gitBadgeBtn.hidden = true; return; }
+    const now = Date.now();
+    if (!force && now - lastGitPollAt < 8000) return;
+    lastGitPollAt = now;
+    try {
+      const r = await api(`/api/session/git-summary?cwd=${encodeURIComponent(targetCwd)}`);
+      if (!barHost.isConnected) return;
+      if (!r?.isGit || (!r.filesCount && !r.insertions && !r.deletions)) {
+        gitBadgeBtn.hidden = true;
+        return;
+      }
+      gitBadgeBtn.textContent = `변경 ${r.filesCount} · +${r.insertions} -${r.deletions}`;
+      gitBadgeBtn.hidden = false;
+    } catch {
+      if (barHost.isConnected) gitBadgeBtn.hidden = true;
+    }
+  };
+  if (gitBadgeBtn) {
+    gitBadgeBtn.onclick = async () => {
+      const lt = findLiveTerm();
+      const targetCwd = lt?.cwd || cwd || '';
+      if (!targetCwd) return;
+      try {
+        const r = await api(`/api/session/git-summary?cwd=${encodeURIComponent(targetCwd)}&diff=1`, { requireOk: true });
+        if (!r?.isGit) return toast('Git 저장소 정보를 확인할 수 없습니다.');
+        const filesHtml = (r.statusLines || []).map((l) => `<div><code>${esc(l)}</code></div>`).join('') || '<div class="empty">변경된 파일이 없습니다</div>';
+        const diffHtml = r.diffText ? `<pre class="mono" style="margin-top:10px;padding:10px;border-radius:8px;background:var(--screen);color:var(--screen-text);overflow:auto;max-height:55vh;font-size:12px;line-height:1.45">${esc(r.diffText)}</pre>` : '';
+        openDrawer({
+          title: `작업 폴더 변경 내역 (${r.filesCount}개)`,
+          width: 680,
+          bodyHTML: `<div style="display:flex;flex-direction:column;gap:6px">${filesHtml}${diffHtml}</div>`,
+        });
+      } catch (err) { toast(err.message || '변경 내역을 불러오지 못했습니다.', 4000, 'danger'); }
+    };
+    void syncGitBadge(true);
+  }
   syncConn();
   const connTimer = setInterval(() => {
     if (!barHost.isConnected) return clearInterval(connTimer);
     syncConn();
+    void syncGitBadge(false);
   }, 1500);
 
   const fitRep = () => { repIn.style.height = 'auto'; repIn.style.height = Math.min(140, Math.max(38, repIn.scrollHeight)) + 'px'; };

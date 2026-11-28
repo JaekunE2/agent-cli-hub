@@ -954,6 +954,61 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
     return { id: t.id };
   };
 
+  const SLASH_SNIPPETS_FILE = path.join(baseDir || __dirname, 'data', 'slash-snippets.json');
+  function readSlashSnippets() {
+    try {
+      const raw = JSON.parse(fs.readFileSync(SLASH_SNIPPETS_FILE, 'utf8'));
+      return Array.isArray(raw) ? raw.filter((s) => s && typeof s.name === 'string' && typeof s.prompt === 'string') : [];
+    } catch {
+      return [];
+    }
+  }
+  function writeSlashSnippets(list) {
+    fs.mkdirSync(path.dirname(SLASH_SNIPPETS_FILE), { recursive: true });
+    const tmp = `${SLASH_SNIPPETS_FILE}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(list, null, 2), 'utf8');
+    fs.renameSync(tmp, SLASH_SNIPPETS_FILE);
+  }
+
+  function readSessionGitSummary(cwd, wantDiff = false) {
+    if (!cwd || !fs.existsSync(cwd)) return { ok: true, isGit: false };
+    let repoRoot = '';
+    try {
+      repoRoot = execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', windowsHide: true, timeout: 2500 }).trim();
+    } catch {
+      return { ok: true, isGit: false };
+    }
+    try {
+      const statusOut = execFileSync('git', ['-C', repoRoot, 'status', '--porcelain'], { encoding: 'utf8', windowsHide: true, timeout: 3000 });
+      const statusLines = statusOut.split(/\r?\n/).filter(Boolean);
+      let insertions = 0, deletions = 0;
+      try {
+        const numstat = execFileSync('git', ['-C', repoRoot, 'diff', '--numstat', 'HEAD'], { encoding: 'utf8', windowsHide: true, timeout: 3000 });
+        for (const line of numstat.split(/\r?\n/)) {
+          const m = /^(\d+)\t(\d+)\t/.exec(line);
+          if (m) { insertions += Number(m[1]); deletions += Number(m[2]); }
+        }
+      } catch {}
+      let diffText = '';
+      if (wantDiff) {
+        try {
+          diffText = execFileSync('git', ['-C', repoRoot, 'diff', 'HEAD'], { encoding: 'utf8', windowsHide: true, timeout: 4000, maxBuffer: 512 * 1024 }).slice(0, 40000);
+        } catch {}
+      }
+      return {
+        ok: true,
+        isGit: true,
+        repoRoot,
+        filesCount: statusLines.length,
+        insertions,
+        deletions,
+        ...(wantDiff ? { statusLines: statusLines.slice(0, 80), diffText } : {}),
+      };
+    } catch {
+      return { ok: true, isGit: false };
+    }
+  }
+
   function createBranchCheckpointWorktree(cwd) {
     if (!cwd || !fs.existsSync(cwd)) throw new Error('작업 폴더를 찾을 수 없습니다.');
     let repoRoot = '';
@@ -1178,8 +1233,58 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
         ? env?.CODEX_HOME || (doc?.agent === agent && inferCodexHomeFromFile?.(doc.file)) || process.env.CODEX_HOME
         : agent === 'claude' ? env?.CLAUDE_CONFIG_DIR || process.env.CLAUDE_CONFIG_DIR : undefined;
       const excludedSkills = hub.unifiedVault?.slashSkillExclusions?.(agent);
-      const commands = await discoverSlashCommands({ agent, configHome, cwd: term?.cwd || doc?.cwd, excludedSkills });
-      send(res, 200, { commands });
+      const discovered = await discoverSlashCommands({ agent, configHome, cwd: term?.cwd || doc?.cwd, excludedSkills });
+      const snippets = readSlashSnippets().map((s) => ({
+        command: '/' + s.name,
+        description: s.title || s.prompt.slice(0, 60),
+        snippet: s.prompt,
+        takesArgs: false,
+        customSnippet: true,
+      }));
+      send(res, 200, { commands: [...discovered, ...snippets] });
+      return true;
+    }
+
+    if (p === '/api/slash-snippets') {
+      if (req.method === 'GET') {
+        send(res, 200, { ok: true, snippets: readSlashSnippets() });
+        return true;
+      }
+      if (req.method === 'POST') {
+        const b = await body(req);
+        const list = readSlashSnippets();
+        const rawName = String(b.name || '').trim().replace(/^\/+/, '');
+        if (!/^[\p{L}\p{N}_.-]{1,40}$/u.test(rawName)) {
+          send(res, 400, { ok: false, error: '스니펫 명령어 이름은 공백 없이 1~40자로 입력하세요.' });
+          return true;
+        }
+        const key = rawName.toLowerCase();
+        if (b.action === 'delete') {
+          const next = list.filter((s) => s.name.toLowerCase() !== key);
+          writeSlashSnippets(next);
+          send(res, 200, { ok: true, snippets: next });
+          return true;
+        }
+        const prompt = String(b.prompt || '').trim().slice(0, 8000);
+        const title = String(b.title || '').trim().slice(0, 80);
+        if (!prompt) {
+          send(res, 400, { ok: false, error: '스니펫 프롬프트 내용을 입력하세요.' });
+          return true;
+        }
+        const entry = { name: rawName, title, prompt, updatedAt: Date.now() };
+        const idx = list.findIndex((s) => s.name.toLowerCase() === key);
+        if (idx >= 0) list[idx] = entry;
+        else list.push(entry);
+        writeSlashSnippets(list);
+        send(res, 200, { ok: true, snippets: list });
+        return true;
+      }
+    }
+
+    if (p === '/api/session/git-summary' && req.method === 'GET') {
+      const targetCwd = String(url.searchParams.get('cwd') || '').trim();
+      const wantDiff = url.searchParams.get('diff') === '1';
+      send(res, 200, readSessionGitSummary(targetCwd, wantDiff));
       return true;
     }
 

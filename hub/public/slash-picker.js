@@ -82,7 +82,7 @@ function bindSlashPicker(input, getContext, submit, { showButton = true } = {}) 
       const heading = i === 0 || choices[i - 1].hub !== entry.hub
         ? `<div class="slash-group" aria-hidden="true">${entry.hub ? 'Hub' : esc(providerName(agent))}</div>` : '';
       return `${heading}<div role="option" id="${menu.id}-${i}" data-index="${i}" class="slash-option">
-        <strong>${esc(entry.command)}</strong><span>${esc(entry.description || '')}</span>${entry.tui ? '<small>TUI</small>' : ''}
+        <strong>${esc(entry.command)}</strong><span>${esc(entry.description || '')}</span>${entry.tui ? '<small>TUI</small>' : entry.customSnippet ? '<small>스니펫</small>' : ''}
       </div>`;
     }).join('');
     show(true);
@@ -110,10 +110,17 @@ function bindSlashPicker(input, getContext, submit, { showButton = true } = {}) 
     close();
     input.focus();
     if (token?.inline) {
+      const insertText = entry.snippet || entry.command;
       const space = /\s/.test(input.value.charAt(token.end)) ? '' : ' ';
-      input.setRangeText(entry.command + space, token.start, token.end, 'end');
+      input.setRangeText(insertText + space, token.start, token.end, 'end');
       input.dispatchEvent(new Event('input', { bubbles: true }));
       close();
+      return;
+    }
+    if (entry.snippet) {
+      input.value = entry.snippet;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      if (!complete) submit();
       return;
     }
     input.value = entry.command + (complete || entry.takesArgs ? ' ' : '');

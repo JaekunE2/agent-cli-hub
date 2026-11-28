@@ -16,6 +16,7 @@ const hubSlashCommands = [
   ['skills', 'Hub 스킬 관리'],
   ['model', '현재 세션 실행 설정', /effort/],
   ['sidechat', '사이드 채팅 열기', /사이드채팅|btw/],
+  ['snippet', '프롬프트 스니펫 관리', /스니펫|snippets/],
 ].map(([name, description, alternate]) => {
   // Aliases are input syntax and must survive UI translation.
   const aliases = [name, ...(alternate?.source.split('|') || [])];
