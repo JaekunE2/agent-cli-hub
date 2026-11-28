@@ -1,0 +1,43 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Agent CLI Hub",
+  "version": "1.3.0",
+  "identifier": "ai.surromind.agent-cli-hub",
+  "build": {
+    "frontendDist": "shell"
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": { "schemes": ["ai.surromind.agent-cli-hub"] }
+    }
+  },
+  "app": {
+    "security": {
+      "capabilities": [
+        {
+          "identifier": "launcher",
+          "windows": ["main"],
+          "permissions": ["allow-connect-hub"]
+        }
+      ]
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "Agent CLI Hub",
+        "decorations": false,
+        "width": 1200,
+        "height": 800,
+        "center": true
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "nsis"],
+    "icon": ["icons/icon.ico"],
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper" }
+    }
+  }
+}

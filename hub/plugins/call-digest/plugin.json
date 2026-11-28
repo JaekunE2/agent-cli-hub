@@ -1,0 +1,9 @@
+{
+  "id": "call-digest",
+  "name": "Call digest",
+  "description": "Phone call recordings -> transcripts (local faster-whisper or any command / ssh backend) -> daily summary (ccd llm / ccd gpt); config callDigest",
+  "server": "server.js",
+  "cli": "cli.js",
+  "scripts": ["ui.js"],
+  "help": ["  calls ls | show <date> | run <date> | transcript <date> <recording>   phone call digests (plugin call-digest)"]
+}

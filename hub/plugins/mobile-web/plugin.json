@@ -1,0 +1,9 @@
+{
+  "id": "mobile-web",
+  "name": "Mobile web app",
+  "description": "Installable hub on phones over HTTPS (tailscale serve): service worker, share target, remote URLs (config remoteUrls, homelink.url)",
+  "server": "server.js",
+  "scripts": ["ui.js"],
+  "assets": ["sw.js"],
+  "serviceWorker": "sw.js"
+}

@@ -14,9 +14,10 @@ const PORT = Number(process.env.CCD_PTY_PORT || 7779);
 const TOKEN = fs.readFileSync(path.join(__dirname, '.token'), 'utf8').trim();
 const BUF_MAX = 1_000_000;
 const terms = new Map(); // id -> { id, proc, buf, exited, cols, rows, meta }
+let stopping = false;
 const subscribers = new Set();
 const emit = (ev) => { const s = JSON.stringify(ev); for (const ws of subscribers) try { ws.send(s); } catch {} };
-const info = (t) => ({ id: t.id, exited: t.exited, cols: t.cols, rows: t.rows, meta: t.meta, startedAt: t.startedAt });
+const info = (t) => ({ id: t.id, pid: t.proc.pid, exited: t.exited, cols: t.cols, rows: t.rows, meta: t.meta, startedAt: t.startedAt });
 
 function spawnTerm({ id, cmd, args = [], cwd, env, cols = 120, rows = 32, meta = {} }) {
   if (terms.has(id)) throw new Error(`terminal ${id} exists`);
@@ -43,10 +44,11 @@ const server = http.createServer(async (req, res) => {
   if (!authed(req, url)) return send(res, 401, { error: 'bad token' });
   const p = url.pathname;
   try {
-    if (p === '/info') return send(res, 200, { pid: process.pid, startedAt, terms: [...terms.values()].map(info) });
+    if (p === '/info') return send(res, 200, { pid: process.pid, startedAt, snapshot: true, terms: [...terms.values()].map(info) });
     if (p === '/buf') { const t = terms.get(url.searchParams.get('id')); return t ? send(res, 200, { buf: t.buf }) : send(res, 404, { error: 'no such terminal' }); }
     if (req.method !== 'POST') return send(res, 404, { error: 'unknown' });
     const b = await body(req);
+    if (stopping) return send(res, 409, { error: 'PTY shutdown is already in progress.' });
     const t = b.id != null ? terms.get(String(b.id)) : null;
     if (p === '/spawn') return send(res, 200, info(spawnTerm({ ...b, id: String(b.id) })));
     if (p === '/write') { if (t && t.exited === null) t.proc.write(b.data); return send(res, 200, { ok: !!t }); }
@@ -57,7 +59,14 @@ const server = http.createServer(async (req, res) => {
     if (p === '/kill') { if (t && t.exited === null) try { t.proc.kill(); } catch {} return send(res, 200, { ok: !!t }); }
     if (p === '/forget') { if (t) { if (t.exited === null) try { t.proc.kill(); } catch {} terms.delete(t.id); emit({ type: 'forgot', id: t.id }); } return send(res, 200, { ok: true }); }
     if (p === '/meta') { if (t) t.meta = { ...t.meta, ...(b.meta || {}) }; return send(res, 200, { ok: !!t }); }
-    if (p === '/shutdown') {
+    if (p === '/shutdown' || p === '/shutdown-if-idle') {
+      if (p === '/shutdown-if-idle') {
+        if (b.expectedPid !== process.pid) return send(res, 409, { error: 'The verified PTY host changed.' });
+        if ([...terms.values()].some((term) => term.exited === null)) {
+          return send(res, 409, { error: 'Close the active Hub terminals before shutting down the PTY host.' });
+        }
+      }
+      stopping = true;
       send(res, 200, { ok: true, terms: terms.size });
       for (const x of terms.values()) if (x.exited === null) try { x.proc.kill(); } catch {}
       return setTimeout(() => process.exit(0), 300);
@@ -70,7 +79,15 @@ const wss = new WebSocketServer({ noServer: true });
 server.on('upgrade', (req, sock, head) => {
   const url = new URL(req.url, 'http://x');
   if (url.pathname !== '/events' || !authed(req, url)) return sock.destroy();
-  wss.handleUpgrade(req, sock, head, (ws) => { subscribers.add(ws); ws.on('close', () => subscribers.delete(ws)); });
+  wss.handleUpgrade(req, sock, head, (ws) => {
+    if (url.searchParams.get('snapshot') === '1') {
+      // Queue history and live events on the same socket so output cannot fall between them.
+      for (const term of terms.values()) ws.send(JSON.stringify({ type: 'snapshot', term: info(term), buf: term.buf.slice(-400_000) }));
+      ws.send(JSON.stringify({ type: 'snapshot-ready' }));
+    }
+    subscribers.add(ws);
+    ws.on('close', () => subscribers.delete(ws));
+  });
 });
 
 const startedAt = Date.now();

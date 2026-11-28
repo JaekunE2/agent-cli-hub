@@ -9,3 +9,4 @@ sh.CurrentDirectory = base & "\ai-usage"
 sh.Run """" & node & """ --no-warnings --use-system-ca """ & base & "\ai-usage\server.js""", 0, False
 sh.CurrentDirectory = base & "\hub"
 sh.Run """" & node & """ """ & base & "\hub\ccd.js"" up", 0, True
+sh.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File """ & base & "\tray.ps1""", 0, False

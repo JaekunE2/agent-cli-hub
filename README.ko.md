@@ -1,49 +1,96 @@
 # Agent CLI Hub (에이전트 CLI 관제)
 
-**Windows PC에서 돌아가는 AI 코딩 에이전트를 웹 페이지 하나로 관제합니다.** Claude Code, OpenAI Codex CLI, Cursor 에이전트, 일반 셸까지 모두 한곳에 모입니다.
-- 모든 세션 화면을 실시간으로 보고 바로 입력할 수 있습니다.
-- 지금까지 나눈 대화 전체를 검색합니다.
-- 여러 세션이 GPU를 대기열로 나눠 씁니다.
-- **관제 세션**이 PC 상태를 돌봅니다.
-- 휴대폰에서도 Tailscale로 접속할 수 있습니다.
+**Windows PC에서 실행되는 모든 AI 코딩 에이전트를 웹 페이지 하나로 관제합니다.** Antigravity CLI(AGY), Claude Code, OpenAI Codex CLI, Cursor 에이전트, PowerShell/cmd 셸까지 한곳에 모아 실시간 화면 제어, 프로젝트 단위 AI 작업 설계, 코드 아키텍처 분석, GPU 대기열 공유, Tailscale 모바일 접속을 제공합니다.
 
 [English](README.md) · **한국어**
 
-<sub>설치: `git clone https://github.com/JaekunE2/agent-cli-hub` 후 `start.bat` 실행. 에이전트에게 맡기는 방법은 [설치](#설치)를 보세요.</sub>
+<sub>설치: `git clone https://github.com/JaekunE2/agent-cli-hub` 후 `start.bat` 실행 (직접 실행은 [설치 및 실행](#설치-및-실행) 참고)</sub>
 
 ![둘러보기](docs/images/ko/tour.gif)
 
-> 스크린샷은 가상의 프로젝트와 대화로 만든 데모 환경에서 찍었습니다.
+> 안내: 스크린샷은 가상의 데모 데이터(`demo-web-store`, `demo-user` 등)로 치환한 환경에서 촬영했으며, 상단 `tour.gif`에서 개편된 UI 전환 흐름을 바로 확인할 수 있습니다.
 
 ---
 
-## 기능
+## 디자인 시스템 & 핵심 개편 사항 (`dev_side`)
+
+- **Crisp Minimal UI (라이트 · 다크 모드)**: `Astryx` 컴포넌트 규격, `impeccable` 웹 품질/WCAG AA 대비 검사, Linear/SHIUI 스타일의 헤어라인 중심 레이아웃을 적용했습니다.
+  - 사이드바(`--side-bg`) · 본문 캔버스(`--bg`) · 카드(`--panel`)의 3단 명도 분리와 1px 헤어라인 보더를 사용하고, 그림자는 팝오버·드로어·모달 등 실제 떠 있는 레이어에만 제한했습니다.
+  - 홈과 코드 구조 상단의 4개 지표를 **하나의 연결형 4열 헤어라인 지표 바**로 묶고, 좌측 사이드바 중복 배지를 걷어내 `실행 중` 상태와 작업 폴더가 즉시 눈에 들어옵니다.
+  - `24×24px` 이상 클릭 타겟 및 모바일(`390px` 등) 입력창 높이 보정으로 데스크톱·모바일 모두 쾌적하게 조작할 수 있습니다.
+- **통합 `Hub Core` 아이콘 & 실시간 상태 팝오버**: 웹 좌상단 브랜드 마크, 브라우저 탭 실시간 파비콘(`icon.svg`), Windows 트레이 아이콘(`tray.ps1`)을 동일한 **Hub Core** 심볼로 통일했습니다. 좌상단 `Agent CLI Hub` 버튼을 누르면 **허브(:7777) · PTY 호스트 · 사용량 서버(:4777) · AGY 쿼터** 상태를 즉시 확인하고 클릭 한 번으로 사용량 서버를 켤 수 있습니다.
+- **마지막 탭 기억 & 자동 UI 갱신**: 터미널/최근 대화의 `화면`, `화면 + 대화`, `대화 기록`, `산출물`, `코드 구조` 선택을 기억하며, 서버 업데이트 시 활성 터미널 입력을 끊지 않는 범위에서 `SERVER_BUILD_ID` 기반으로 새 UI를 자동 반영합니다.
+
+| 홈 대시보드 (라이트) | 다크 모드 & 허브 상태 팝오버 |
+|---|---|
+| ![홈 대시보드](docs/images/ko/14-home-dashboard.png) | ![다크 모드 상태 팝오버](docs/images/ko/22-home-dark.png) |
+
+---
+
+## 주요 기능
+
+### 🗂 Project 작업 설계 · 칸반 · 작업 흐름(DAG) · 서브 개발 · 토큰 합산
+
+- **AI 기반 작업 분해 (`작업 설계`)**: 사이드바 **Project → ＋ 새 Project**에서 작업 폴더(원격/로컬 폴더 탐색기 또는 Windows 탐색기 선택), 목표·완료 기준, 기본 CLI 및 계정, **CLI별 모델·추론 강도(reasoning effort)**를 설정하면 `설계·기획 / 개발·구현 / 테스트·검증 / 배포·문서` 작업 카드를 자동 생성합니다. (AGY · Claude Code · Codex 지원, YOLO 자동 승인 기본값 지원)
+- **칸반 보드 & 인터랙티브 작업 흐름 (`칸반 보드` / `작업 흐름`)**:
+  - 카드를 `대기 → 진행 → 검토 → 완료`로 드래그 이동하거나 단계 배지를 전환할 수 있습니다.
+  - **작업 흐름(DAG)**은 자동 계층 정렬(Sugiyama)과 **간선 단순화** 토글, 자유 드래그 배치(`localStorage` 저장), 확대/축소/화면 맞춤, 마우스 오버 시 선후행 체인 강조를 지원합니다.
+- **하위 서브태스크 & 태스크 내장 서브 개발 채팅 (`서브 개발`)**: 상위 작업을 더 잘게 쪼개고, 우측 상세 드로어 안의 내장 채팅창에서 해당 태스크 맥락으로 바로 추가 개발을 지시할 수 있습니다.
+- **멀티 CLI 누적 토큰 집계 (`hub/data/projects.json`)**: 태스크 실행 중 CLI를 바꿔도 토큰 사용량이 누적 보관되며, 모든 하위 서브태스크의 토큰이 최상위 부모 태스크 배지와 Project 토큰 상세 드로어로 자동 합산됩니다.
+- **안전한 Project 삭제**: Project 삭제 시 연결된 CLI 터미널을 종료하고 확인된 원본 대화만 정리하며, 작업 폴더의 소스 파일은 그대로 유지됩니다.
+
+| 작업 설계 | 칸반 보드 |
+|---|---|
+| ![작업 설계](docs/images/ko/15-project-design.png) | ![칸반 보드](docs/images/ko/16-project-board.png) |
+
+![작업 흐름 DAG](docs/images/ko/17-project-flow.png)
+
+### 스케줄
+
+1. 사이드바의 **스케줄**에서 **스케줄 만들기**를 누릅니다. 허브 주소에 `?open=schedules`로도 열 수 있습니다. 프로젝트, 버전, 필요하면 작업을 선택하고 프롬프트와 참조 폴더를 입력합니다. 현재 실행기 목록에는 기본 계정의 Codex가 표시됩니다.
+2. 1~10,080분 간격이나 5필드 Cron과 IANA 시간대를 지정합니다. 예를 들어 `0 9 * * 1-5`와 `Asia/Seoul`을 입력하면 평일 09:00입니다. 저장 전에 **다음 실행 미리보기**로 실행 시각을 확인합니다.
+3. 동시 실행 정책을 선택합니다. `skip`은 실행 중이거나 대기 중인 작업이 있으면 새 실행을 건너뛰고, `queue`는 스케줄당 한 건을 대기시킵니다. `replace`는 기존 대기 건을 교체하고 실행 중인 건의 취소를 요청합니다. 예정 시각이 60초 넘게 지나면 누락 실행(Misfire)으로 처리합니다. `skip`은 누락 구간을 건너뛴 것으로 기록하고, `run_once`는 실행 예정 시각이 지난 건 중 가장 최근 건을 한 번 실행합니다. 제한 시간은 30~3,600초입니다.
+4. 새 스케줄은 일시정지 상태로 저장됩니다. 목록에서 다음 실행 시각, 카운트다운, 최근 결과를 보고 **실행 이력**에서 예약·수동 실행의 상태, 시각, 제공된 출력·오류 요약을 확인합니다. 실행기를 사용할 수 있으면 **재개**로 다음 시각을 예약하고, 일시정지 상태에서도 **즉시 실행**을 누를 수 있습니다. **일시정지**는 대기 건을 취소합니다.
+
+현재 허브는 `RUNNER_UNAVAILABLE`을 보고합니다. 로컬에서는 생성, 편집, 미리보기를 사용할 수 있으며, 재개·즉시 실행·자동 실행에는 실행기 연결이 필요합니다. 인증된 원격 접속에서는 민감한 항목을 제외한 목록과 이력을 볼 수 있습니다.
+
+### 세션 폴더와 신뢰 설정
+
+1. 세션이나 터미널의 폴더 배지를 눌러 **세션 폴더**를 엽니다. 배지에는 주 폴더 이름, 참조 폴더 수, 신뢰 상태가 표시됩니다. 허브가 실행 중인 PC에서는 상세 창에서 전체 경로, 확인된 감지 폴더, 폴더별 신뢰 상태를 볼 수 있습니다.
+2. 편집할 수 있는 세션에서 **주 폴더**를 지정하고 **참조 추가**로 최대 16개의 참조 폴더를 더한 뒤 저장합니다. 데스크톱 앱에서 **폴더 선택**을 누르면 Windows 폴더 선택 창이 열립니다. 웹에서는 허브가 실행 중인 PC의 로컬 경로를 입력합니다.
+3. **설정 → 신뢰 폴더**에서 폴더를 등록하고 **하위 폴더도 신뢰** 여부를 선택합니다. 같은 화면에서 범위를 바꾸거나 신뢰를 해제할 수 있습니다. 세션 상세 창의 **이 폴더 신뢰**는 선택한 경로만 승인합니다.
+4. 저장한 폴더를 적용하려면 허브에서 세션을 새로 시작하거나 재개합니다. 관리 대상 세션은 미신뢰 폴더나 설정 변경 때문에 시작, 재개, 입력이 차단될 수 있습니다. 해당 폴더를 신뢰하고 새 실행에 설정을 적용한 뒤 계속합니다. 원격 접속에서는 폴더 요약을 볼 수 있습니다.
+
+### 🗺 코드 구조 (Floorplan) — 인터랙티브 계층 맵 & 아키텍처 보고서
+
+**Project · 터미널 · 외부 콘솔 · 최근 대화** 어디서나 **`코드 구조`** 탭으로 진입할 수 있으며, 상단 **폴더 선택** 버튼으로 임의 폴더의 구조도 즉시 분석할 수 있습니다.
+
+- **핵심 요약 · 모듈 목록**: `.gitignore`를 준수하는 무의존성 정적 스캐너([`hub/workspace-floorplan.js`](hub/workspace-floorplan.js))가 파일당 512KB까지 분석해 참조 수·API 엔드포인트·호출 관계를 기준으로 **최핵심 허브 순위**를 산정하고, 파일 클릭 시 영향 범위(Blast Radius) 상세 드로어를 엽니다.
+- **시스템 아키텍처 계층 맵 (`시스템 계층도`)**: 수십 개 파일의 선이 엉키지 않도록 계층별 핵심 허브만 선별해 `화면·UI → 서버·API → 코어 로직 → 데이터·저장`으로 배치합니다. 모듈을 클릭하거나 마우스를 올리면 **들어오는 호출(초록 점선)**과 **나가는 의존성(주황 실선)**만 선명하게 집중 표시하며, 검색·드래그 팬·줌/화면 맞춤을 지원합니다.
+- **보안 · 구조 점검**: 시크릿/토큰 노출 의심, `.env`의 `.gitignore` 누락, 인증 가드 없는 API 라우트, 비대 모듈 등을 자동 점수화하고 클릭 한 번으로 Project 수정 작업 추가 또는 터미널 수정 지시를 보냅니다.
+- **보고서 보기 & 산출물(`FLOORPLAN.md`) 저장**: 상단 **`보고서 보기`**에서 Mermaid 계층 다이어그램과 핵심 허브 Top 15 표가 포함된 마크다운 전문을 확인하고, **`산출물 저장`**으로 작업 폴더에 `FLOORPLAN.md`를 생성함과 동시에 해당 세션의 **산출물** 탭에 자동 등록할 수 있습니다. 코드가 아직 없는 빈 프로젝트는 태스크 기반 **설계 청사진(Blueprint)** 모드로 전환됩니다.
+
+| 코드 구조 핵심 요약 · 모듈 목록 | 시스템 계층 맵 (Blast Radius) |
+|---|---|
+| ![코드 구조 요약](docs/images/ko/18-floorplan-overview.png) | ![시스템 계층 맵](docs/images/ko/19-floorplan-map.png) |
+
+![코드 아키텍처 보고서 미리보기](docs/images/ko/20-floorplan-report.png)
+
+### 🤖 Antigravity CLI (AGY) · Claude Code · Codex · Cursor · 셸 통합
+
+- **AGY 대화 기록 & 한도 연동**: `~/.gemini/antigravity/brain`, `antigravity-cli/brain`, `antigravity-ide/brain`의 대화 기록을 읽고 대시보드에서 바로 이어하기(`화면 + 대화` 실시간 갱신)를 지원합니다. CLI별/등급별 5시간·주간 한도도 함께 추적합니다.
+- **터미널 스마트 붙여넣기 (`Ctrl+V` / `Ctrl+Shift+V`)**: Windows 브라우저에서 터미널 화면에 포커스를 둔 채 **`Ctrl+V`로 텍스트를 바로 붙여넣을 수 있으며**, 클립보드에 **이미지**가 있을 때는 로컬 터미널에 raw `^V`(`0x16`)를 그대로 전달해 `agy`/`claude`/`codex`의 네이티브 TUI 이미지 붙여넣기가 막힘없이 동작합니다. 파일 경로 업로드 붙여넣기는 `Ctrl+Shift+V`, 드래그&드롭, 원격 접속 시 자동 작동합니다.
+- **별도 PTY 호스트 & 중복 방지**: 모든 터미널은 `ptyhost.js`에서 실행되어 허브 서버 재시작 시에도 유지되며, 재개·계정 전환·복구 시 동일 세션 터미널이 중복 열리지 않도록 관리합니다.
 
 ### 🛰 관제 세션: 허브를 돌보는 에이전트
-허브가 켜지면 **관제 세션**이 하나 자동으로 열리고 사이드바 맨 위에 고정됩니다. 기본은 Claude Code이고, Codex로 바꿀 수 있습니다. 관제 세션은 운영 매뉴얼(`operator/CLAUDE.md` · `AGENTS.md`)에 따라 다음 일을 합니다.
-- **PC 파악:** GPU, 드라이버·CUDA, 디스크, 네트워크·Tailscale, 프록시, 도구 경로, 계정 상태를 파악합니다. 결과는 **`operator/ENVIRONMENT.md`**에 정리해 두고 계속 고칩니다. 다른 세션들은 이 파일을 읽습니다.
-- **질문 응답:** PC나 다른 세션에 대한 질문에 답합니다.
-- **정기 점검과 공지:** 기본 3시간마다, 쉬고 있을 때만 점검합니다. 디스크 부족, 예상 시간을 한참 넘긴 GPU 작업, 네트워크 변화, 사용 한도 임박처럼 알릴 일이 생기면 **공지**를 보냅니다.
-
-공지는 게시판(`ccd notices`)에 남고, 실행 중인 모든 Claude·Codex 허브 터미널에 입력됩니다. 작업 중인 에이전트는 지금 하던 턴을 마친 뒤 공지를 읽습니다.
-
-관제 세션은 작업을 종료하거나 계정을 바꾸지 않습니다. 설치나 시스템 설정을 바꿔야 할 때는 먼저 사용자에게 묻습니다.
+허브가 켜지면 **관제 세션**이 하나 자동으로 열려 사이드바 맨 위에 고정됩니다(기본 Claude Code, Codex 변경 가능). `operator/CLAUDE.md` · `AGENTS.md`에 따라 GPU·드라이버·디스크·네트워크·계정 상태를 **`operator/ENVIRONMENT.md`**에 기록하고, Idle 시간대에 정기 점검 공지(`ccd notices`)를 보냅니다. 사용자 작업을 임의로 종료하거나 계정을 자동 전환하지 않습니다.
 
 ![관제 세션](docs/images/ko/00-operator.png)
 
-### 🖥 모든 화면 모아보기
-허브 터미널을 카드로 모아 실시간으로 보여 줍니다. Python이 있으면 PC의 다른 콘솔 창도 함께 보입니다.
-- 카드를 누르면 크게 보면서 입력할 수 있습니다.
-  - 허브 터미널은 실제 터미널(xterm.js)로 입력합니다.
-  - 다른 창에는 키 입력을 주입합니다.
-- 파일을 끌어놓거나 붙여넣으면 그 경로가 입력됩니다.
+### 🖥 모든 화면 모아보기 & 분할 터미널
+허브 터미널과 외부 콘솔 창(Python 사용 시)을 실시간 카드로 모아보고, 클릭 시 `화면`, `화면 + 대화`(크기 조절 가능 분할 뷰), `대화 기록`(하단 메신저형 입력창), `산출물`, `코드 구조` 탭을 오가며 작업합니다.
 
 ![모아보기](docs/images/ko/01-overview.png)
-
-### 🤖 Claude Code · Codex · Cursor · 셸을 나란히
-**＋ 새로 열기**로 `claude`, `codex`, `cursor-agent`, PowerShell, cmd를 원하는 폴더에서 띄웁니다.
-- Codex 터미널에는 **Codex** 표시가 붙습니다. 화면을 읽어 *작업 중 / 대기* 상태를 실시간으로 보여 주고, 어떤 대화를 이어가는 중인지도 압니다.
-- 터미널은 별도 pty 호스트에서 돕니다. 그래서 허브 서버를 다시 시작해도 터미널은 꺼지지 않습니다.
 
 | Claude Code | Codex |
 |---|---|
@@ -51,154 +98,87 @@
 
 ![새 터미널](docs/images/ko/09-new-terminal.png)
 
-### 🔎 Claude Code와 Codex 대화 전체 검색
-`Ctrl+K`를 누르면 다음을 한꺼번에 검색합니다.
-- 모든 Claude Code 대화 기록(`~/.claude/projects`)
-- 모든 Codex 대화 기록(`~/.codex/sessions`)
-- 지금 열려 있는 화면의 글자
-
-검색 결과를 열면 앞뒤 대화를 읽을 수 있고, **대시보드에서 이어하기**로 그 대화를 원래 폴더에서 이어갈 수 있습니다(`claude --resume` / `codex resume`).
+### 🔎 AGY · Claude Code · Codex 대화 전체 검색 (`Ctrl+K`)
+`Ctrl+K`로 **AGY**, **Claude Code**(`~/.claude/projects`), **Codex**(`~/.codex/sessions`) 대화 기록과 현재 열린 화면 텍스트를 한꺼번에 검색하고 원래 폴더에서 바로 대화를 이어갈 수 있습니다.
 
 | 검색 | Codex 대화 |
 |---|---|
 | ![검색](docs/images/ko/04-search.png) | ![Codex 대화](docs/images/ko/05-codex-transcript.png) |
 
-### 📂 산출물: 세션이 만든 결과를 모아 미리보기
-세션마다 **산출물** 탭이 있습니다.
-- 대화에 나온 파일 경로를 자동으로 모아 날짜별로 정리합니다. 영상, PDF, 그림, 슬라이드, 문서, 데이터가 대상입니다.
-- 그 자리에서 미리 봅니다.
-  - 그림, 영상·음성 플레이어, PDF, Markdown·텍스트·CSV를 바로 엽니다.
-  - HTML은 격리된 화면(샌드박스)에서 엽니다.
-  - LibreOffice가 있으면 PowerPoint·Word를 PDF로 바꿔 보여 줍니다.
-- 다른 파일도 직접 넣을 수 있습니다. **＋ 산출물 지정** 버튼이나 `ccd artifact add <경로> --title "…"`을 쓰세요.
-- ↗ 버튼을 누르면 그 파일 경로를 다른 세션에 바로 보냅니다.
-- 자율 연구 프로젝트에도 같은 탭이 있습니다.
-- 그 세션에 등록된 파일만 열 수 있습니다.
+### 📂 산출물: 세션 결과 자동 수집 및 미리보기
+세션 대화에 등장한 영상·PDF·이미지·Markdown·CSV·샌드박스 HTML·LibreOffice 변환 문서를 날짜별로 모아 미리 봅니다. **＋ 산출물 지정** (`ccd artifact add`), `코드 구조` 보고서(`FLOORPLAN.md`) 자동 등록, ↗ 경로 멘션 전송을 지원합니다.
 
 | 산출물 탭 | 미리보기 |
 |---|---|
 | ![산출물](docs/images/ko/12-outputs.png) | ![미리보기](docs/images/ko/13-output-preview.png) |
 
-### 🎛 모든 세션이 함께 쓰는 GPU 대기열
-`ccd gpu run --mem 12G --est 90m -- python train.py`처럼 실행하면 다음 순서로 동작합니다.
-1. 차례가 올 때까지 기다립니다.
-2. `CUDA_VISIBLE_DEVICES`를 지정해 실행합니다.
-3. 작업이 끝나면 GPU를 자동으로 반납합니다.
+### 🎛 GPU 대기열 · 🔬 자율 연구 · 📅 캘린더 · 📊 AI 사용량
+- **GPU 대기열**: `ccd gpu run --mem 12G --est 90m -- python train.py`로 순서 대기, `CUDA_VISIBLE_DEVICES` 할당, 짧은 작업 끼워넣기(backfill), 과열 보호, 외부 GPU 프로세스 감지(비강제 종료)를 제공합니다.
+- **자율 연구 (선택)**: `research-harness/` 기반으로 아이디어 → 문헌 검증 → GPU 실험 → 논문 작성·리뷰 루프를 실행합니다.
+- **캘린더**: `todo.md` 마감(`@due(...) #태그`), 허브 일정, Google 캘린더 · Teams 일정을 월간 그리드와 예정 목록으로 관리합니다.
+- **AI 사용량 (4777)**: Claude 5시간·주간 한도, Codex(ChatGPT) 한도, **Antigravity 등급별 쿼터**, Cursor, OpenAI API 비용, Gemini 키를 표시하며 **⇄ 다른 계정으로** 수동 전환을 지원합니다.
 
-함께 들어 있는 기능:
-- GPU 메모리와 시스템 RAM 예약
-- 짧은 작업 끼워넣기(backfill)
-- 과열 보호
-- GPU별 대기 줄
-- 대기열 밖에서 시작한 GPU 작업도 찾아내 "현재 사용자"로 표시
+![AI 사용량 대시보드](docs/images/ko/21-system-usage.png)
 
-대기열 밖 프로세스는 절대 종료하지 않습니다.
+| GPU 대기열 | 캘린더 | 자율 연구 |
+|---|---|---|
+| ![GPU 대기열](docs/images/ko/06-gpu-queue.png) | ![캘린더](docs/images/ko/07-calendar.png) | ![자율 연구](docs/images/ko/08-research.png) |
 
-![GPU 대기열](docs/images/ko/06-gpu-queue.png)
+### 📱 휴대폰 접속(Tailscale) · 💬 텔레그램 릴레이 · 🧰 `ccd` CLI
+허브는 `127.0.0.1`과 Tailscale IP(`100.64.0.0/10`)에서만 응답합니다. 📱 QR 코드로 휴대폰에서 바로 접속할 수 있으며, 텔레그램 연동은 **[JaekunE2/claude-telegram-relay](https://github.com/JaekunE2/claude-telegram-relay)**를 참고하세요.
 
-### 🔬 자율 연구 (선택)
-연구 방향만 적으면 "디렉터" Claude 세션이 연구 전 과정을 진행합니다.
-- 진행 순서: 아이디어 → 학회 선정 → 문헌 조사 → 계획 → 실험 → 분석 → 논문 작성 → 리뷰
-  - 문헌 조사에서는 인용이 실제로 있는지 코드로 확인합니다.
-  - 실험은 GPU 대기열을 거칩니다.
-- 목표에 도달하거나 막혔을 때만 멈춥니다.
-- 중간에 메시지를 보내거나 일시정지할 수 있고, 파생 연구나 종합 논문으로 이어갈 수 있습니다.
-
-![자율 연구](docs/images/ko/08-research.png)
-
-### 📅 캘린더
-한곳에서 보는 일정:
-- `todo.md`의 마감(`- [ ] 할 일 @due(2026-11-05) #태그`). 에이전트도 같은 파일을 편집할 수 있습니다.
-- 허브 자체 일정
-- 구글 캘린더 연동(선택)
-
-![캘린더](docs/images/ko/07-calendar.png)
-
-### 📱 휴대폰에서 (Tailscale)
-허브는 `127.0.0.1`과 본인 Tailscale 주소에서만 접속을 받습니다. 사내·가정 LAN에는 열리지 않습니다.
-- 📱 버튼을 누르면 QR이 나옵니다. 같은 Tailscale 계정으로 로그인한 휴대폰에서 찍으면 됩니다.
-- 작은 화면에서는 휴대폰용 배치로 바뀝니다.
+```bash
+ccd ls                                   # 세션·창·터미널 목록
+ccd new codex --cwd C:\work\api          # 터미널 열기 (claude | codex | agy | cursor | powershell | cmd)
+ccd send t:4 "total.ts 테스트 작성해줘"     # 프롬프트 입력
+ccd wait t:4                             # 턴 종료 대기 후 화면 출력
+ccd search "flaky checkout" --agent codex
+ccd log 019a2c41 --at 12                 # 검색 결과 주변 대화 보기
+ccd gpu run --mem 8G --est 30m -- python eval.py
+ccd notice "GPU 0은 18시까지 장기 학습용"     # 모든 세션에 공지
+ccd gpt "이 diff 리뷰해줘" --file d.patch    # Codex CLI 2차 의견
+ccd restart                              # 허브 서버 안전 재시작 (터미널 유지)
+```
 
 | 다른 기기에서 열기 | 휴대폰 화면 |
 |---|---|
 | ![휴대폰 연결](docs/images/ko/10-phone.png) | <img src="docs/images/ko/11-phone-terminal.png" width="300"> |
 
-### 💬 텔레그램으로 세션과 대화: Claude Telegram Relay (별도 저장소)
-휴대폰 텔레그램에서 버튼으로 이 PC의 Claude Code 세션을 고르고 대화합니다. 사진을 보내고, 결과 파일(PDF·그림·영상)을 받습니다. 관제 없이 독립적으로 동작하는 별도 프로젝트입니다: **[JaekunE2/claude-telegram-relay](https://github.com/JaekunE2/claude-telegram-relay)**
-
-![텔레그램 릴레이](https://raw.githubusercontent.com/JaekunE2/claude-telegram-relay/main/docs/images/ko/relay-tour.png)
-
-### 📊 AI 사용량과 내 계정들
-함께 들어 있는 사용량 대시보드(4777 포트)가 다음을 보여 줍니다. 이 PC에 로그인된 계정은 자동으로 찾습니다.
-- Claude 5시간·주간 한도
-- Codex(ChatGPT) 한도
-- Cursor
-- OpenAI API 비용
-- Gemini 키 상태
-
-**본인의** Codex 로그인은 기기 코드 방식으로 더 추가할 수 있습니다(**＋ Codex 계정 추가**). 세션은 **⇄ 다른 계정으로** 버튼으로 본인의 다른 계정에서 이어갈 수 있습니다. 계정은 버튼을 누를 때만 바뀝니다.
-
-### 🧰 에이전트도 쓰는 CLI: `ccd`
-모든 기능을 명령으로 쓸 수 있어서, 에이전트끼리 서로 일을 나눠 맡길 수 있습니다.
-```
-ccd ls                                   # 세션·창·터미널 목록
-ccd new codex --cwd C:\work\api          # 터미널 열기 (claude | codex | cursor | powershell | cmd)
-ccd send t:4 "total.ts 테스트 작성해줘"     # 프롬프트 입력
-ccd wait t:4                             # 그 Claude/Codex 턴이 끝날 때까지 기다렸다가 화면 출력
-ccd search "flaky checkout" --agent codex
-ccd log 019a2c41 --at 12                 # 검색 결과 주변 대화 보기
-ccd gpu run --mem 8G --est 30m -- python eval.py
-ccd notice "GPU 0은 18시까지 장기 학습용"     # 모든 세션에 공지
-ccd gpt "이 diff 리뷰해줘" --file d.patch    # Codex CLI로 받는 2차 의견 (읽기 전용)
-```
-`start.bat`은 다음 두 가지를 설치합니다. 그래서 Claude Code와 Codex 세션 모두 허브, GPU 대기열, 공지 쓰는 법을 압니다.
-- Claude Code용 **`agent-cli-hub` 스킬**
-- 짧은 사용 안내: `~/.claude/CLAUDE.md`와 **`~/.codex/AGENTS.md`**에 추가
-
 ### 🌐 한국어 / English
-🌐 버튼이나 `hub/config.json`의 `"lang"`으로 바꿉니다. 서버와 CLI 메시지도 같은 언어로 나옵니다.
+좌하단 🌐 버튼이나 `hub/config.json`의 `"lang"` 설정으로 즉시 전환합니다.
 
 ---
 
 ## 필요한 것
 - Windows 10 / 11
-- [Node.js](https://nodejs.org) 20 이상 (`start.bat`이 winget으로 설치해 줄 수 있습니다)
-- 에이전트 CLI 하나 이상: [Claude Code](https://docs.claude.com/claude-code), [Codex CLI](https://github.com/openai/codex)(`npm i -g @openai/codex`), Cursor `cursor-agent`(선택)
-- 선택 사항:
-  - Python 3: 허브가 열지 않은 콘솔 창도 보고 입력하려면 필요합니다.
-  - [Tailscale](https://tailscale.com): 휴대폰이나 다른 PC에서 접속하려면 필요합니다.
-  - NVIDIA GPU: GPU 대기열을 쓰려면 필요합니다.
+- [Node.js](https://nodejs.org) 20 이상
+- 에이전트 CLI 하나 이상: [Claude Code](https://docs.claude.com/claude-code), [Codex CLI](https://github.com/openai/codex), Antigravity CLI(`agy`), Cursor `cursor-agent`
+- 선택 사항: Python 3(외부 콘솔 창 제어), [Tailscale](https://tailscale.com)(휴대폰/원격 접속), NVIDIA GPU(`nvidia-smi`)
 
-## 설치
-**1. 받아서 실행.**
-```
+## 설치 및 실행
+
+**방법 1: Windows 원클릭 실행**
+```powershell
 git clone https://github.com/JaekunE2/agent-cli-hub
 cd agent-cli-hub
 start.bat
 ```
-- git이 없으면 [ZIP 받기](https://github.com/JaekunE2/agent-cli-hub/archive/refs/heads/main.zip)로 받아 원하는 곳에 풀고 `start.bat`을 더블클릭하세요.
-- [Node.js](https://nodejs.org) 20 이상이 필요합니다. 없으면 `start.bat`이 `winget`으로 LTS 버전을 설치할지 묻습니다.
-- 처음 실행할 때 `npm install`을 합니다.
-- 업데이트는 `git pull`로 합니다. ZIP을 새로 받아 덮어써도 됩니다. 설정과 데이터는 받은 파일에 들어 있지 않아 그대로 남습니다.
 
-**2. 에이전트에게 맡기기.** Claude Code나 Codex에 아래 문장을 붙여 넣으세요.
-> https://github.com/JaekunE2/agent-cli-hub/blob/main/INSTALL_FOR_AGENTS.md 를 따라 이 PC에 Agent CLI Hub를 설치해줘. "(ask)" 표시된 단계는 나한테 먼저 물어봐.
+**방법 2: Node.js 직접 설치·실행 및 테스트**
+```powershell
+cd hub
+npm install
+npm start
+```
+자동화 단위 테스트 실행:
+```powershell
+cd hub
+npm test
+```
 
-**`start.bat`이 하는 일:**
-1. `agent-cli-hub` 스킬과 사용 안내를 설치합니다.
-2. 허브(7777)와 사용량 대시보드(4777)를 콘솔 창 없이 켭니다.
-3. 브라우저를 엽니다.
-
-주소에는 접속 토큰이 들어 있습니다. 같은 주소가 `hub\url.txt`에도 저장됩니다. 이 PC에서는 토큰 없이 `http://127.0.0.1:7777`로 열어도 됩니다.
-
-- 로그인할 때 자동 시작: `powershell -ExecutionPolicy Bypass -File install-autostart.ps1` (해제: `uninstall-autostart.ps1`)
-- 종료: `stop.bat` (허브 터미널도 함께 닫힙니다)
-- 제거: `uninstall.ps1`로 스킬, 안내, 자동 시작을 지운 뒤 폴더를 삭제합니다.
-
-## 휴대폰·다른 PC에서 접속
-1. PC에 Tailscale을 설치하고 로그인합니다.
-2. 휴대폰(또는 다른 PC)에도 같은 계정으로 Tailscale에 로그인합니다.
-3. 허브에서 📱 버튼을 누르고 QR을 찍습니다. 한 번 열면 그다음부터는 주소만으로 열립니다.
+`start.bat`은 스킬/안내 블록 설치 후 허브(`7777`), 사용량 서버(`4777`), Windows 시스템 트레이(`tray.ps1`)를 콘솔 창 없이 실행하고 브라우저를 엽니다. (이 PC에서는 토큰 없이 `http://127.0.0.1:7777` 접속 가능)
+- 로그인 시 자동 시작: `powershell -ExecutionPolicy Bypass -File install-autostart.ps1` (해제: `uninstall-autostart.ps1`)
+- 종료: `stop.bat` / 제거: `uninstall.ps1`
 
 ## 설정: `hub\config.json` (선택, 예시는 `hub\config.example.json`)
 | 키 | 의미 |
@@ -206,25 +186,26 @@ start.bat
 | `lang` | `"ko"` 또는 `"en"` (기본: Windows 표시 언어) |
 | `operator` | `{ "enabled": false }`: 관제 세션 끄기 · `"agent": "codex"`: Codex로 실행 · `"checkEveryMin": 0`: 정기 점검 끄기 |
 | `remote` | `"off"`: Tailscale 주소로 접속 받지 않기 |
-| `consoles` | `false`: 다른 콘솔 창 숨기기 (이때는 Python 필요 없음) |
-| `codex`, `cursorAgent`, `python` | PATH에 없을 때 지정하는 실행 파일 경로 |
+| `consoles` | `false`: 다른 콘솔 창 숨기기 (Python 불필요) |
+| `codex`, `cursorAgent`, `python` | PATH에 없을 때 실행 파일 경로 직접 지정 |
 | `calendar` | `todo`, `events`, `googleAccount`, `timeZone` |
 | `usageUrl`, `usageDir` | 사용량 대시보드 주소와 계정 파일 위치 |
 
 ## 보안
-- 토큰이 있으면 누구든 이 PC의 터미널을 조작할 수 있습니다. `hub\.token`, `hub\url.txt`, QR을 남에게 보여 주지 마세요.
-- 허브는 `127.0.0.1`과 Tailscale(100.64.0.0/10) 주소에서만 응답합니다. 다른 사이트에서 오는 요청은 거절합니다(DNS rebinding 방지).
-- 사용량 대시보드에 넣은 토큰과 키는 이 PC의 `ai-usage\accounts.json`에만 저장됩니다. 이 파일은 git에 올라가지 않습니다.
-- 본인 계정만 등록하세요. 남의 계정을 쓰는 것은 각 서비스 약관 위반입니다. 허브는 사용 한도를 피하려고 계정을 자동으로 바꾸지 않습니다.
+- 토큰이 있으면 이 PC의 터미널을 제어할 수 있으므로 `hub\.token`, `hub\url.txt`, QR 주소를 외부에 공유하지 마세요.
+- `127.0.0.1`과 Tailscale(`100.64.0.0/10`)에서만 응답하며 외부 Origin 요청을 차단합니다(DNS rebinding 방지).
+- 사용량 계정 토큰은 로컬 `ai-usage\accounts.json`(git-ignored)에만 저장되며, 계정 전환은 사용자가 누를 때만 실행됩니다.
 
 ## 폴더 구성
-```
-hub/               서버, CLI(ccd.js), 웹 화면, GPU 대기열, 검색 색인, 다국어
-ai-usage/          AI 사용량 대시보드 (4777)
-operator/          관제 세션 운영 매뉴얼(CLAUDE.md / AGENTS.md)과 ENVIRONMENT.md
-research-harness/  자율 연구: 훅, 프로젝트 템플릿, 도구
-skills/            agent-cli-hub 스킬 + paper-review/claims/numbers/code 스킬
-guidance/          start.bat이 ~/.claude/CLAUDE.md와 ~/.codex/AGENTS.md에 넣는 안내
+```text
+hub/               서버, CLI(ccd.js), 웹 UI, Project·Floorplan 엔진, GPU 대기열, 검색 색인, 다국어, 테스트
+ai-usage/          AI 사용량 · 쿼터 대시보드 서버 (4777)
+operator/          관제 세션 운영 매뉴얼과 ENVIRONMENT.md
+research-harness/  자율 연구 훅, 프로젝트 템플릿, 도구
+skills/            agent-cli-hub 스킬 + 연구/리뷰 스킬
+guidance/          ~/.claude/CLAUDE.md 및 ~/.codex/AGENTS.md에 추가되는 안내 블록
+.claude/           impeccable 웹 디자인 리뷰 · 안티패턴 진단 스킬
+tray.ps1           Windows 시스템 트레이 모니터 (Hub Core 상태 아이콘)
 ```
 
 ## 라이선스

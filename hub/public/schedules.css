@@ -1,0 +1,123 @@
+.schedules-page {
+  max-width: var(--page-max);
+  padding: var(--sp-5) var(--page-pad) var(--sp-8);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+.schedule-notice {
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--warn) 42%, var(--line));
+  background: color-mix(in srgb, var(--warn) 10%, var(--panel));
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.schedule-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.schedule-toolbar input[type="search"] {
+  min-width: 180px;
+  max-width: 280px;
+  flex: 1 1 180px;
+}
+.schedule-list, .schedule-runs { list-style: none; padding: 0; margin: 0; }
+.schedule-list { display: grid; gap: var(--sp-3); }
+.schedule-card {
+  padding: 16px 18px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xs);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  transition: border-color .15s, box-shadow .15s;
+}
+.schedule-card:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-low);
+}
+.schedule-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.schedule-card h3 { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: -0.015em; overflow-wrap: anywhere; }
+.schedule-target { margin: 0; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.schedule-card dl { margin: 0; display: flex; flex-wrap: wrap; gap: var(--sp-3) var(--sp-8); padding: 10px 12px; border-radius: var(--radius-md); background: color-mix(in srgb, var(--panel2) 38%, var(--bg)); border: 1px solid var(--line); }
+.schedule-card dt { color: var(--muted); font-size: 11.5px; font-weight: 600; }
+.schedule-card dd { margin: 3px 0 0; font-size: 13px; font-weight: 550; }
+.schedule-countdown { color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; margin-inline-start: var(--sp-2); font-size: 12px; }
+.schedule-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-full);
+  padding: 2px 9px;
+  font-size: 11.5px;
+  font-weight: 600;
+  background: var(--panel2);
+  color: var(--muted);
+}
+.schedule-badge.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); border-color: color-mix(in srgb, var(--ok) 30%, transparent); }
+.schedule-badge.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 13%, transparent); border-color: color-mix(in srgb, var(--warn) 32%, transparent); }
+.schedule-badge.danger { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); border-color: color-mix(in srgb, var(--danger) 30%, transparent); }
+[data-form-error], [data-run-error] { color: var(--danger); font-size: 12.5px; margin: 0; }
+[data-form-error]:empty, [data-run-error]:empty, [data-schedule-note]:empty, [data-schedule-error]:empty { display: none; }
+.schedule-actions { padding-top: 2px; }
+.schedule-actions button { min-height: var(--ctrl-h-sm); height: var(--ctrl-h-sm); font-size: 12.5px; }
+.schedule-actions .sch-del-btn { margin-inline-start: auto; }
+.sch-visual-builder {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--panel2) 38%, var(--bg));
+  border: 1px solid var(--line);
+}
+.sch-visual-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.sch-weekdays { display: flex; flex-wrap: wrap; gap: 4px; }
+.sch-day-chip {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 32px; height: 26px; padding: 0 7px; border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong); background: var(--panel); color: var(--muted);
+  font-size: 12px; font-weight: 600; cursor: pointer; user-select: none;
+}
+.sch-day-chip.on { border-color: var(--accent); background: var(--sel); color: var(--accent); }
+.sch-help { font-size: 11.5px; color: var(--muted); line-height: 1.45; margin: 0; font-weight: 400; }
+.sch-preview-list { margin: 4px 0 0; padding-left: 18px; font-size: 12px; color: var(--muted); display: grid; gap: 2px; font-variant-numeric: tabular-nums; }
+.schedule-form, .schedule-form fieldset, .schedule-form label { display: grid; gap: var(--sp-1); }
+.schedule-form { gap: var(--sp-3); font-size: 13px; }
+.schedule-form fieldset {
+  min-inline-size: 0;
+  margin: 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  gap: var(--sp-2);
+}
+.schedule-form legend { padding-inline: var(--sp-1); font-weight: 700; font-size: 12.5px; color: var(--text); }
+.schedule-form label { font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.schedule-form label :is(input, select, textarea) { font-weight: 400; color: var(--text); }
+.schedule-form label[hidden], .schedule-form [hidden] { display: none; }
+.schedule-form :is(input, select, textarea) { width: 100%; min-height: var(--ctrl-h-md); }
+.schedule-form textarea { resize: vertical; }
+.sch-grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-2) var(--sp-3); align-items: end; }
+.sch-grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-2) var(--sp-3); align-items: end; }
+.sch-cwd-row { display: flex; gap: 6px; align-items: center; }
+.sch-cwd-row input { flex: 1; min-width: 0; }
+.sch-preview-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); flex-wrap: wrap; }
+.sch-advanced { border: 1px solid var(--line); border-radius: var(--radius-md); padding: 8px 12px; background: color-mix(in srgb, var(--panel2) 25%, transparent); }
+.sch-advanced summary { cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--muted); user-select: none; }
+.sch-advanced[open] summary { margin-bottom: var(--sp-2); color: var(--text); }
+.sch-adv-body { display: grid; gap: var(--sp-2); }
+@media (max-width: 560px) { .sch-grid-2, .sch-grid-3 { grid-template-columns: minmax(0, 1fr); } }
+.schedule-runs li { border-top: 1px solid var(--line); padding: var(--sp-3) 0; }
+.schedule-runs pre { white-space: pre-wrap; overflow-wrap: anywhere; }

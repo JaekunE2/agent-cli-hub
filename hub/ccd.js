@@ -14,6 +14,8 @@ const tokenFile = path.join(DIR, '.token');
 // read lazily: on a fresh install the server creates .token only after `ccd up` starts it
 const token = () => process.env.CCD_TOKEN || (fs.existsSync(tokenFile) ? fs.readFileSync(tokenFile, 'utf8').trim() : '');
 const SELF_PID = Number(process.env.CLAUDE_PID || 0);
+// plugins (plugins.js): their value-taking flags and help lines, then their commands and hooks (see the end of this file)
+const PLUGIN_MANIFEST = require('./plugins').cliManifest();
 
 const HELP = `ccd — Agent CLI Hub CLI  (server ${BASE})
 
@@ -34,6 +36,7 @@ const HELP = `ccd — Agent CLI Hub CLI  (server ${BASE})
   switch <session|target> [--account auto|ID] [--no-continue] [--no-skip-permissions] [--interrupt] [--force]
                                    stop that session and resume it on another of your accounts (Claude, or Codex for a codex terminal)
   codex [ls | add | rm <email|id>] your ChatGPT logins for the Codex CLI (add = device-code login in this console)
+  codex tokens [account] [--week] [--json]   locally recorded Codex CLI tokens by account, model and effort
   gpt "prompt" [--file a,b] [--image x.png] [--model M] [--cd DIR] [--account EMAIL]
                                    ask GPT through the Codex CLI (read-only) — second opinions / cross-review; stdin is appended
   notice "text" [--to all|t:1,t:2] [--board-only]   post a hub notice: saved on the board and typed into running Claude/Codex hub terminals
@@ -41,6 +44,14 @@ const HELP = `ccd — Agent CLI Hub CLI  (server ${BASE})
   operator [status|start]          the operator session that looks after this hub (GPU, network, disks, accounts, notices)
   research ls | new <name> --direction "..." [--venue V] | show <slug> | msg <slug> <text> | pause <slug> | resume <slug>
                                    autonomous research projects (director sessions driven by research-harness)
+  app ls | run <id> [--action A] [--wait] | data <id> [--file latest] [--q K] | files <id> | import <dir> | rm <id> [--purge-outputs] | data-rm <id> [--file F | --older-than N]
+                                   lightweight hub apps (UI + session-callable tools & data integration)
+  apps ls [--all] | search <text> | info <app> | install <app|repo URL|folder> [--set KEY=VALUE ...] | update <app> | remove <app> [--force] [--purge-data] | open <app> [--browser] | sources | source add|rm <x>
+                                   App Store: add-on apps for this hub from registries and app repositories
+  schedule ls | add --name N --project P (--every M | --cron E [--tz TZ]) --prompt "..." [--cli codex|claude|agy] [--account ID] [--version V] [--task ID] [--model M] | rm <id|name> | pause <id|name> | resume <id|name> | run <id|name> | runs <id|name>
+                                   manage scheduled CLI runs (add/remove/run/pause/resume by id or name)
+  calendar ls [--date YYYY-MM-DD] | add "title" --date YYYY-MM-DD [--time HH:MM] [--end HH:MM] [--note TEXT] | task "title" --date YYYY-MM-DD [--tags tag1,tag2]
+                                   list Hub calendar items, add an event, or add a todo.md task
   gpu [ls]                         GPUs (memory/util/procs) + lease queue
   gpu plan --mem 12G --est 90m     when a job of that size would start / finish on each GPU
   gpu run [--mem 20G | --exclusive] [--gpu 0] [--label L] [--est 90m] [--ram 40G] -- <command>
@@ -70,13 +81,17 @@ for (let i = 0; i < argv.length; i++) {
   if (a === '-n') flags.n = Number(argv[++i]);
   else if (a.startsWith('--')) {
     const k = a.slice(2);
-    if (['to', 'cwd', 'resume', 'title', 'role', 'at', 'timeout', 'account', 'direction', 'venue', 'gpu', 'mem', 'ram', 'label', 'est', 'modules', 'model', 'session', 'sync', 'fetch', 'sync-exclude', 'file', 'system', 'url', 'image', 'env', 'cd', 'to', 'in', 'msg', 'rename', 'max', 'runtime', 'drive', 'stage', 'node', 'server', 'exclude', 'via', 'root', 'steps'].includes(k)) flags[k] = argv[++i];
+    if (['to', 'cwd', 'resume', 'title', 'role', 'at', 'timeout', 'account', 'direction', 'venue', 'gpu', 'mem', 'ram', 'label', 'est', 'modules', 'model', 'session', 'sync', 'fetch', 'sync-exclude', 'file', 'system', 'url', 'image', 'env', 'cd', 'to', 'in', 'msg', 'rename', 'max', 'runtime', 'drive', 'stage', 'node', 'server', 'exclude', 'via', 'root', 'steps', 'name', 'project', 'version', 'task', 'every', 'cron', 'tz', 'prompt', 'overlap', 'misfire', 'effort', 'ref', 'limit', 'action', 'dir', 'q', 'older-than', 'cli', 'date', 'time', 'end', 'note', 'tags', 'set'].includes(k) || PLUGIN_MANIFEST.valueFlags.includes(k)) flags[k] = argv[++i];
     else flags[k] = true;
   } else pos.push(a);
 }
 const die = (msg, code = 1) => { console.error(msg); process.exit(code); };
 // the AI usage dashboard's folder (accounts.json: Claude tokens, Codex logins …), same rule as server.js
-const usageDir = () => { let c = {}; try { c = JSON.parse(fs.readFileSync(path.join(DIR, 'config.json'), 'utf8')); } catch {} return process.env.CCD_USAGE_DIR || (c.usageDir && path.resolve(DIR, c.usageDir)) || path.join(require('os').homedir(), 'ai-usage-dashboard'); };
+const usageDir = () => {
+  let c = {}; try { c = JSON.parse(fs.readFileSync(path.join(DIR, 'config.json'), 'utf8')); } catch {}
+  const localDir = path.resolve(DIR, '..', 'ai-usage');
+  return process.env.CCD_USAGE_DIR || (c.usageDir && path.resolve(DIR, c.usageDir)) || (fs.existsSync(localDir) ? localDir : path.join(require('os').homedir(), 'ai-usage-dashboard'));
+};
 
 // ---------- http ----------
 // Network hiccups (server restarting, keep-alive socket closed under us) used to throw
@@ -84,13 +99,13 @@ const usageDir = () => { let c = {}; try { c = JSON.parse(fs.readFileSync(path.j
 // GETs always; POSTs only when the request certainly never reached the server.
 const RETRY_MS = () => (['run', 'wait'].includes(pos[1]) && pos[0] === 'gpu') || (pos[0] === 'gpu' && flags.wait) ? 300_000 : 20_000;
 const NOT_SENT = /ECONNREFUSED|ECONNRESET|UND_ERR_SOCKET|other side closed|EPIPE|ENOTFOUND/;
-async function api(p, body) {
+async function api(p, body, method) {
   const until = Date.now() + RETRY_MS();
   let r, delay = 500;
   for (;;) {
     try {
       r = await fetch(BASE + p, {
-        method: body ? 'POST' : 'GET',
+        method: method || (body ? 'POST' : 'GET'),
         headers: { 'x-token': token(), 'content-type': 'application/json' },
         body: body ? JSON.stringify(body) : undefined,
       });
@@ -282,6 +297,31 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
       for (const a of r) console.log(`  ${a.usable ? '✓' : a.limited ? '✗ limit' : '?'}`.padEnd(10) + `${(a.email || a.label).padEnd(34)} 5h ${a.fiveH ?? '-'}  wk ${a.weekly ?? '-'}${a.main ? '  (이 PC 기본 로그인 ~/.codex)' : `  ${a.home}`}${a.error ? `  ! ${a.error}` : ''}`);
       return console.log('\nadd another: ccd codex add   (device code: log in on any browser/phone with the other account)');
     }
+    if (sub === 'tokens') {
+      const ledger = require('./codex-token-ledger');
+      const options = { account: flags.account || pos[2], week: !!flags.week };
+      if (flags.watch) {
+        const stop = await ledger.watchCodexTokens({ usageDir: usageDir(), getUsage: () => api('/api/usage?force=1') });
+        if (stop) console.log('Watching Codex CLI turn completions.');
+        return;
+      }
+      const report = await ledger.readTokens(options);
+      if (flags.json) return console.log(JSON.stringify(report));
+      if (!report.groups.length) return console.log('저장된 Codex CLI 토큰 기록이 없습니다.');
+      console.log(`Codex CLI · 이 PC · ${options.week ? '현재 주간' : '저장된 전체'} · ${report.collectedAt}`);
+      const n = value => value.toLocaleString('en-US');
+      for (const g of report.groups) {
+        console.log(`${g.account || '계정 미확인'} | ${g.model || '?'} / ${g.effort || '?'} | 합계 ${n(g.total_tokens)} | 캐시 입력 ${n(g.cached_input_tokens)} | 비캐시 입력 ${n(g.uncached_input_tokens)} | 출력 ${n(g.output_tokens)} (추론 ${n(g.reasoning_output_tokens)})`);
+      }
+      for (const o of report.observations) {
+        console.log(`${o.account} | 계정 사용률 변화 · 관측 | ${n(o.from)}% → ${n(o.to)}% (+${Number(o.changePoints.toFixed(1))}%p)`);
+      }
+      for (const e of report.estimates || []) {
+        if (e.percent == null) continue;
+        console.log(`${e.account} | CLI 환산 추정 ${e.percent.toFixed(1)}% | $${e.costUsd.toFixed(2)} / $${e.basisUsd.toFixed(2)} (${e.plan} ${'기본 가정'})`);
+      }
+      return;
+    }
     if (sub === 'add') {
       console.log('새 ChatGPT 계정으로 Codex 로그인 — 아래에 나오는 주소를 아무 브라우저(폰 가능)에서 열고 코드를 넣은 뒤, 추가할 계정으로 로그인하세요.\n');
       let r;
@@ -306,7 +346,7 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
       console.log(`removed ${a.email || a.label} from the list (login folder kept: ${a.home})`);
       return;
     }
-    die('usage: ccd codex [ls | add | rm <email|id>]');
+    die('usage: ccd codex [ls | add | rm <email|id> | tokens [account] [--week] [--json]]');
   },
   async notice() {
     const text = pos.slice(1).join(' ').trim();
@@ -397,7 +437,7 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
       if (q.error) out.push(`! ${q.error}`);
       if (q.ram) out.push(`system RAM ${fmtMB(q.ram.totalMB - q.ram.freeMB)}/${fmtMB(q.ram.totalMB)} used (free ${fmtMB(q.ram.freeMB)}) · --ram reserved ${fmtMB(q.ram.reservedMB)}, not yet allocated ${fmtMB(q.ram.outstandingMB)}`);
       for (const v of q.servers || []) out.push(`server ${v.id.padEnd(6)} ${v.enabled ? 'ON ' : 'OFF'}  ${v.reachable == null ? 'checking…' : v.reachable ? 'reachable' : 'UNREACHABLE'}  ${v.name}`);
-      for (const g of q.gpus) out.push(`${g.enabled === false ? '[OFF] ' : ''}${g.key.padEnd(9)} ${g.name}  mem ${fmtMB(g.usedMB)}/${fmtMB(g.totalMB)} (free ~${fmtMB(Math.max(0, g.totalMB - g.usedMB))})  util ${g.util}%${Number.isFinite(g.tempC) ? `  ${g.tempC}°C${Number.isFinite(g.cpuC) ? ` (CPU ${g.cpuC}°C)` : ''}` : ''}${g.hot ? `  🔥HOT: 새 작업 보류 (${g.hotReason})` : ''}  leased ${fmtMB(g.leasedMB)}${g.exclusive ? ' EXCLUSIVE' : ''}${g.procs?.length ? '  procs: ' + g.procs.map((p) => `${p.name}(${p.pid})`).join(', ') : ''}`);
+      for (const g of q.gpus) out.push(`${g.enabled === false ? '[OFF] ' : ''}${g.key.padEnd(9)} ${g.name}  mem ${fmtMB(g.usedMB)}/${fmtMB(g.totalMB)} (free ~${fmtMB(Math.max(0, g.totalMB - g.usedMB))})  util ${g.util}%${Number.isFinite(g.tempC) ? `  ${g.tempC}°C${Number.isFinite(g.cpuC) ? ` (CPU ${g.cpuC}°C)` : ''}` : ''}${Number.isFinite(g.cpuPct) ? `  CPU ${g.cpuPct}% (${g.cpuCores}c, load ${g.cpuLoad})` : ''}${Number.isFinite(g.ramTotalMB) && !g.unified ? `  RAM ${fmtMB(g.ramUsedMB)}/${fmtMB(g.ramTotalMB)}` : ''}${g.hot ? `  🔥HOT: 새 작업 보류 (${g.hotReason})` : ''}  leased ${fmtMB(g.leasedMB)}${g.exclusive ? ' EXCLUSIVE' : ''}${g.procs?.length ? '  procs: ' + g.procs.map((p) => `${p.name}(${p.pid})`).join(', ') : ''}`);
       out.push(`ACTIVE (${q.active.length})`);
       for (const t of q.active) out.push(`  ${t.id}  ${t.gpu}  ${t.exclusive ? 'exclusive' : t.memMB == null ? 'mem ?' : fmtMB(t.memMB)}${t.ramMB ? ` ram ${fmtMB(t.ramMB)}${q.ramUse?.[t.id] != null ? ` (uses ${fmtMB(q.ramUse[t.id])})` : ''}` : ''}${t.adopted ? ' [auto]' : ''}${t.backfilled ? ' [backfill]' : ''}  ${t.label || ''}  by ${who(t)}  since ${new Date(t.grantedAt).toLocaleString()}${t.expectedEnd ? `  ETA ${new Date(t.expectedEnd).toLocaleTimeString()}${t.estSource === 'learned' ? ' (learned)' : ''}` : '  ETA ?'}`);
       out.push(`WAITING (${q.waiting.length}) — one line per GPU`);
@@ -473,6 +513,7 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
     }
     if (sub === 'run') {
       if (!rest.length) die('usage: ccd gpu run [--mem 20G | --exclusive] [--gpu 0] [--label L] -- <command ...>');
+      for (const h of PLUGIN.hooks.gpuRunCheck || []) await h(); // plugins may adjust placement or refuse the job
       const t = await request(true, process.pid);
       const g = t.status === 'granted' ? t : await waitGrant(t.id);
       console.error(`[gpu] ${g.id} granted on ${g.gpu} → CUDA_VISIBLE_DEVICES=${g.gpuIndex}`);
@@ -526,6 +567,8 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
         }, 2000);
         api('/api/gpu/heartbeat', { id: g.id, childPid: jobPid, log: logFile, detached: true }).catch(() => {});
       } else {
+        const remote = PLUGIN.hooks.gpuRunRemote?.[0]; // a plugin that runs jobs on a configured server
+        if (remote) return remote(g, host);
         die(`[gpu] ${g.gpu} is not a GPU on this PC`);
       }
       const hb = setInterval(() => api('/api/gpu/heartbeat', { id: g.id, childPid: child.pid }).catch(() => {}), 30000);
@@ -668,7 +711,7 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
   async new() {
     const kind = pos[1] || 'claude';
     if (!['claude', 'codex', 'cursor', 'powershell', 'cmd'].includes(kind)) die('kind must be claude, codex (GPT), cursor, powershell or cmd');
-    const t = await api('/api/term/new', { kind, cwd: flags.cwd || process.cwd(), resume: flags.resume, skipPermissions: !flags['no-skip-permissions'], title: flags.title, model: flags.model });
+    const t = await api('/api/term/new', { kind, cwd: flags.cwd || process.cwd(), resume: flags.resume, skipPermissions: !flags['no-skip-permissions'], title: flags.title, model: flags.model, parentTermId: flags.parent || process.env.ACH_HUB_PARENT_TERM });
     console.log(`t:${t.id}  ${t.title}  [${t.cwd}]`);
     if (kind === 'codex') {
       // codex is ready when its composer is up ("› …" / "send" hint) or it asks for a decision (trust, update, login)
@@ -739,12 +782,317 @@ wait for them to finish (or pause the research project first); --kill-gpu-jobs o
     console.log(`== ${id} ${d.title || ''} [${d.cwd || ''}] ${d.total ?? ''} msgs`);
     for (const m of msgs) console.log(`\n@${m.i} ${m.role === 'user' ? 'USER' : d.agent === 'codex' ? 'CODEX' : 'CLAUDE'}${m.ts ? ' ' + m.ts : ''}${m.i === at ? '  <==' : ''}\n${m.text}`);
   },
+
+  async app() {
+    const sub = pos[1] || 'ls';
+    if (sub === 'ls') {
+      const d = await api('/api/apps');
+      if (flags.json) return console.log(JSON.stringify(d));
+      if (!d.apps?.length) return console.log('no apps registered');
+      for (const a of d.apps) {
+        console.log(`${a.id}  [${a.status}]  ${a.name}  (${a.type})  views=${a.counts?.views || 0} data=${a.counts?.data || 0}  cwd=${a.cwd}`);
+      }
+      return;
+    }
+    if (sub === 'import') {
+      const dir = pos[2] || flags.dir || process.cwd();
+      const d = await api('/api/apps/import', { dir });
+      return console.log(`imported ${d.app.id} (${d.app.name})`);
+    }
+    const id = pos[2];
+    if (!id) die('app <run|data|files|rm|data-rm> requires <id>');
+    if (sub === 'files') {
+      const d = await api(`/api/apps/${encodeURIComponent(id)}/files`);
+      if (flags.json) return console.log(JSON.stringify(d));
+      console.log('Views:', (d.views || []).map((f) => f.path).join('\n') || '(none)');
+      console.log('Data:', (d.data || []).map((f) => f.path).join('\n') || '(none)');
+      return;
+    }
+    if (sub === 'data') {
+      const qs = new URLSearchParams({
+        file: flags.file || 'latest',
+        ...(flags.q ? { q: flags.q } : {}),
+        ...(flags.limit ? { limit: String(flags.limit) } : {}),
+      });
+      const d = await api(`/api/apps/${encodeURIComponent(id)}/data?${qs}`);
+      return console.log(JSON.stringify(d, null, 2));
+    }
+    if (sub === 'run') {
+      const d = await api(`/api/apps/${encodeURIComponent(id)}/run`, { actionId: flags.action || undefined });
+      if (!flags.wait) return console.log(JSON.stringify(d.run, null, 2));
+      for (let i = 0; i < 120; i++) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const runs = await api(`/api/apps/${encodeURIComponent(id)}/runs`);
+        const cur = (runs.runs || []).find((x) => x.runId === d.run.runId);
+        if (cur && cur.status !== 'running') return console.log(JSON.stringify(cur, null, 2));
+      }
+      die('app run timed out waiting');
+    }
+    if (sub === 'rm') {
+      const d = await api(`/api/apps/${encodeURIComponent(id)}?purgeOutputs=${flags['purge-outputs'] ? 'true' : 'false'}`, null, 'DELETE');
+      return console.log(JSON.stringify(d));
+    }
+    if (sub === 'data-rm') {
+      const qs = flags.file
+        ? `file=${encodeURIComponent(flags.file)}`
+        : `olderThanDays=${encodeURIComponent(flags['older-than'] || 30)}`;
+      const d = await api(`/api/apps/${encodeURIComponent(id)}/data?${qs}`, null, 'DELETE');
+      return console.log(JSON.stringify(d));
+    }
+    die(`unknown app subcommand: ${sub}`);
+  },
+
+  // ccd apps: the App Store from the terminal (same API as the store view; apps are add-ons for this hub)
+  //   ls [--all] | search <text> | info <app> | install <app|repo URL|folder> [--set KEY=VALUE ...] | update <app>
+  //   | remove <app> [--force] | open <app> | sources | source add|rm <owner|repo|registry URL|folder>
+  async apps() {
+    const sub = pos[1] || 'ls';
+    const sets = {};
+    process.argv.forEach((a, i) => { if (a === '--set' && process.argv[i + 1]) { const kv = process.argv[i + 1]; const k = kv.indexOf('='); if (k > 0) sets[kv.slice(0, k)] = kv.slice(k + 1); } });
+    const store = async () => { const d = await api('/api/apps-store'); if (d.error) die(d.error); return d; };
+    const installed = async () => ((await api('/api/apps')).apps || []).filter((a) => a.storeSource);
+    const norm = (s) => String(s || '').toLowerCase();
+    const pick = (list, q, keyOf) => {
+      const n = norm(q);
+      const hits = list.filter((x) => keyOf(x).some((k) => norm(k) === n));
+      const loose = hits.length ? hits : list.filter((x) => keyOf(x).some((k) => norm(k).includes(n)));
+      if (loose.length === 1) return loose[0];
+      if (!loose.length) return null;
+      die(`"${q}" matches ${loose.length}: ${loose.map((x) => keyOf(x)[0]).join(', ')}`);
+    };
+    const entryKeys = (e) => [e.name, e.key, e.repo, e.installedId];
+    const preview = async (key) => { const d = await api('/api/apps-store/package', { key }); if (d.error) die(d.error); return d.package; };
+    const line = (e) => `${e.compatible === false ? '✗' : e.installed ? '●' : '○'} ${e.name.padEnd(24)} ${(e.category || '').padEnd(10)} ${e.installed ? `installed ${e.installed}` : e.version || ''}  ${e.repo}${e.unmet?.length ? `  [${e.unmet.join(', ')}]` : ''}`;
+    if (sub === 'ls') {
+      const mine = await installed();
+      if (flags.json) return console.log(JSON.stringify(mine));
+      for (const a of mine) console.log(`${a.id}  ${a.name}  ${a.storeSource.version}  [${a.status}]  ${a.storeSource.repo}${a.pluginState ? `  plugin ${a.pluginState.id}${a.pluginState.installed ? '' : ' (missing)'}` : ''}`);
+      if (!mine.length) console.log('no store apps installed (ccd apps search, ccd apps install <app>)');
+      if (flags.all) { console.log(''); for (const e of (await store()).entries) console.log(line(e)); }
+      return;
+    }
+    if (sub === 'search') {
+      const q = norm(pos.slice(2).join(' '));
+      const d = await store();
+      const hits = d.entries.filter((e) => [e.name, e.tagline, e.description, e.category, e.author, ...(e.tags || [])].some((x) => norm(x).includes(q)));
+      if (flags.json) return console.log(JSON.stringify(hits));
+      for (const e of hits) console.log(line(e));
+      if (d.unavailable?.length) console.log(`(could not read: ${d.unavailable.join(', ')})`);
+      return;
+    }
+    if (sub === 'sources') { const d = await store(); for (const s of d.sources) console.log(s.owner || s.repo || s.url || s.path); return; }
+    if (sub === 'source') {
+      const what = pos[2], value = pos.slice(3).join(' ');
+      if (!['add', 'rm'].includes(what) || !value) die('usage: ccd apps source add|rm <owner | owner/repo | registry URL | folder>');
+      const d = await api('/api/apps-store/source', { source: value }, what === 'add' ? 'POST' : 'DELETE');
+      if (d.error) die(d.error);
+      return console.log(`${what === 'add' ? 'added' : 'removed'} ${value}`);
+    }
+    const q = pos.slice(2).join(' ') || die(`usage: ccd apps ${sub} <app>`);
+    if (sub === 'info') {
+      const e = pick((await store()).entries, q, entryKeys) || die(`no store app "${q}"`);
+      const p = await preview(e.key);
+      if (flags.json) return console.log(JSON.stringify({ entry: e, package: p }));
+      console.log(`${p.name} ${p.version}${p.author ? ` by ${p.author}` : ''}\n  source  ${p.repo}${p.commit ? `  commit ${p.commit.slice(0, 12)}${p.dirty ? ' (uncommitted changes)' : ''}` : ''}\n  sha256  ${p.digest.slice(7)}`);
+      if (p.unmet?.length) console.log(`  CANNOT INSTALL: ${p.unmet.join(', ')}`);
+      console.log(`  ${p.description}`);
+      const i = p.installs || {};
+      if (i.scripts?.length) console.log(`  scripts: ${i.scripts.join(', ')}`);
+      for (const c of i.commands || []) console.log(`  action  ${c.label}: ${c.cmd}`);
+      if (i.plugin) console.log(`  hub plugin ${i.plugin.id}: ${[...i.plugin.routes, ...i.plugin.provides.map((x) => `provides ${x}`)].join('; ')}`);
+      for (const s of p.settings || []) console.log(`  setting ${s.key}${s.required ? ' (required)' : ''} = ${s.default || ''}   ${s.label}`);
+      return;
+    }
+    if (sub === 'install' || sub === 'update') {
+      let d = await store();
+      let e = pick(d.entries, q, entryKeys);
+      if (!e && sub === 'install' && /^(https:\/\/|[A-Za-z]:[\\/]|file:\/\/|[\w.-]+\/[\w.-]+$)/.test(q)) {
+        const added = await api('/api/apps-store/source', { source: q });   // a repo / registry / folder: add it as a source first
+        if (added.error) die(added.error);
+        d = await store();
+        e = pick(d.entries, q, entryKeys) || (d.entries.length === 1 ? d.entries[0] : null);
+      }
+      if (!e) die(`no store app "${q}" (ccd apps search)`);
+      if (sub === 'update' && !e.installedId) die(`${e.name} is not installed`);
+      if (sub === 'install' && e.installedId) die(`${e.name} is already installed (${e.installedId}); use ccd apps update`);
+      const p = await preview(e.key);
+      if (p.unmet?.length) die(`cannot install ${p.name}: ${p.unmet.join(', ')}`);
+      if (sub === 'update' && p.installedDigest === p.digest) return console.log(`${p.name} is up to date (${p.version})`);
+      const missing = (p.settings || []).filter((s) => s.required && !s.default && !(s.key in sets) && !(p.currentSettings && p.currentSettings[s.key]));
+      if (missing.length) die(`required settings: ${missing.map((s) => `--set ${s.key}=<${s.label}>`).join(' ')}`);
+      console.log(`${sub === 'update' ? 'updating' : 'installing'} ${p.name} ${p.version} from ${p.repo}${p.commit ? ` @ ${p.commit.slice(0, 12)}` : ''}`);
+      const r = await api('/api/apps-store/package', { key: e.key, digest: p.digest, settings: { ...(p.currentSettings || {}), ...sets }, update: sub === 'update' });
+      if (r.error) die(r.error);
+      console.log(`${r.package.id} ${r.package.version}${r.package.setupRun ? ' — setup.ps1 running (ccd app ls / the Apps view)' : ''}${r.package.restartRequired ? '\nits hub plugin loads after a hub restart: ccd restart' : ''}${r.package.keepFailed?.length ? `\nnot carried over: ${r.package.keepFailed.join(', ')}` : ''}`);
+      return;
+    }
+    const a = pick(await installed(), q, (x) => [x.name, x.id, x.storeSource.repo]) || die(`no installed store app "${q}" (ccd apps ls)`);
+    if (sub === 'remove') {
+      const qs = new URLSearchParams({ ...(flags.force ? { force: '1' } : {}), ...(flags['purge-data'] ? { purgeData: '1' } : {}) }).toString();
+      const r = await api(`/api/apps/${encodeURIComponent(a.id)}${qs ? `?${qs}` : ''}`, null, 'DELETE');
+      if (r.error) die(`${r.error}${r.output ? `\n${r.output}` : ''}`);
+      return console.log(`removed ${a.name}${r.removedPlugin ? ` and its hub plugin ${r.removedPlugin} (restart the hub)` : ''}${r.purgedData ? '; its data folder too' : ''}`);
+    }
+    if (sub === 'open') {
+      const proxied = a.type === 'url' ? `${BASE}/app-${a.id}/${token()}/` : null;
+      console.log(proxied || `${BASE}/?t=${token()}&open=apps:${encodeURIComponent(a.id)}`);
+      if (flags.browser) spawn(process.platform === 'win32' ? 'explorer.exe' : 'xdg-open', [proxied || `${BASE}/?t=${token()}&open=apps:${encodeURIComponent(a.id)}`], { detached: true, stdio: 'ignore' }).unref();
+      return;
+    }
+    die('usage: ccd apps ls [--all] | search <text> | info <app> | install <app|repo|folder> [--set K=V ...] | update <app> | remove <app> [--force] | open <app> | sources | source add|rm <x>');
+  },
+
+  async schedule() {
+    const sub = pos[1] || 'ls';
+    const resolveSchedule = async (ref) => {
+      if (!ref) die('schedule requires <id|name>');
+      const d = await api('/api/schedules');
+      if (d.error) die(d.error);
+      const items = d.items || [];
+      const exact = items.find((x) => x.id === ref || x.name === ref);
+      if (exact) return exact;
+      const pref = items.filter((x) => x.id.startsWith(ref) || x.name.toLowerCase().includes(ref.toLowerCase()));
+      if (pref.length === 1) return pref[0];
+      if (pref.length > 1) die(`ambiguous schedule "${ref}": ${pref.map((x) => `${x.id} (${x.name})`).join(', ')}`);
+      die(`schedule not found: ${ref}`);
+    };
+    if (sub === 'ls') {
+      const d = await api('/api/schedules');
+      if (d.error) die(d.error);
+      if (flags.json) return console.log(JSON.stringify(d));
+      if (!d.items?.length) return console.log('no schedules');
+      for (const s of d.items) {
+        const trig = s.trigger?.kind === 'interval' ? `every ${s.trigger.everyMinutes}m` : `${s.trigger?.expression || ''} (${s.trigger?.timeZone || ''})`;
+        console.log(`${s.id}  [${s.state}]  rev:${s.revision}  ${s.name}  (${trig})  next=${s.nextRunAt || '-'}  target=${s.target?.cli || 'codex'}/${s.target?.projectId ? `${s.target.projectId}/${s.target.version}` : (s.target?.cwd || '-')}`);
+      }
+      return;
+    }
+    if (sub === 'add' || sub === 'create') {
+      const name = flags.name || pos[2];
+      const prompt = flags.prompt;
+      const projRef = flags.project;
+      if (!name || !prompt) die('usage: ccd schedule add --name "..." [--project <id|name> | --cwd DIR] (--every <min> | --cron "<expr>" [--tz IANA]) --prompt "..." [--cli codex|claude|agy] [--account ID] [--version V] [--task ID] [--model M] [--effort E] [--overlap skip|queue|replace] [--misfire skip|run_once] [--timeout 900]');
+      if (!flags.every && !flags.cron) die('schedule add requires --every <minutes> or --cron "<expr>"');
+      let target;
+      if (projRef) {
+        const pRes = await api('/api/projects');
+        const projList = Array.isArray(pRes) ? pRes : (pRes.projects || pRes.items || []);
+        const proj = projList.find((p) => p.id === projRef || p.name === projRef) || projList.find((p) => p.id.startsWith(projRef));
+        const projectId = proj ? proj.id : projRef;
+        const vers = Array.isArray(proj?.versions) ? proj.versions : [];
+        const lastVer = vers.at(-1);
+        const version = flags.version || proj?.currentVersion || (typeof lastVer === 'string' ? lastVer : lastVer?.number || lastVer?.id) || 'v1';
+        target = { projectId, version };
+      } else {
+        target = { cwd: flags.cwd || process.cwd() };
+      }
+      const trigger = flags.every
+        ? { kind: 'interval', everyMinutes: Number(flags.every) }
+        : { kind: 'cron', expression: flags.cron, timeZone: flags.tz || Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Seoul' };
+      Object.assign(target, {
+        ...(flags.cli ? { cli: flags.cli } : {}),
+        ...(flags.account ? { accountId: flags.account } : {}),
+        ...(flags.task ? { taskId: flags.task } : {}),
+        ...(flags.model ? { model: flags.model } : {}),
+        ...(flags.effort ? { effort: flags.effort } : {}),
+        ...(flags.ref ? { referenceDirs: String(flags.ref).split(',').map((s) => s.trim()).filter(Boolean) } : {}),
+      });
+      const body = {
+        name,
+        prompt,
+        trigger,
+        target,
+        ...(flags.overlap ? { overlap: flags.overlap } : {}),
+        ...(flags.misfire ? { misfire: flags.misfire } : {}),
+        ...(flags.timeout ? { timeoutSec: Number(flags.timeout) } : {}),
+      };
+      const r = await api('/api/schedules', body, 'POST');
+      if (r.error) die(`${r.error}${r.code ? ` (${r.code})` : ''}`);
+      if (flags.json) return console.log(JSON.stringify(r));
+      const it = r.item || r;
+      return console.log(`added ${it.id} (${it.name}) next=${it.nextRunAt || '-'}`);
+    }
+    if (sub === 'rm' || sub === 'del' || sub === 'delete' || sub === 'archive') {
+      const it = await resolveSchedule(pos[2]);
+      const r = await api(`/api/schedules/${encodeURIComponent(it.id)}`, { revision: it.revision }, 'DELETE');
+      if (r.error) die(`${r.error}${r.code ? ` (${r.code})` : ''}`);
+      if (flags.json) return console.log(JSON.stringify(r));
+      return console.log(`removed ${it.id} (${it.name})`);
+    }
+    if (sub === 'pause' || sub === 'resume') {
+      const it = await resolveSchedule(pos[2]);
+      const r = await api(`/api/schedules/${encodeURIComponent(it.id)}/${sub}`, { revision: it.revision }, 'POST');
+      if (r.error) die(`${r.error}${r.code ? ` (${r.code})` : ''}`);
+      if (flags.json) return console.log(JSON.stringify(r));
+      const out = r.item || r;
+      return console.log(`${sub}d ${out.id} (${out.name}) state=${out.state}`);
+    }
+    if (sub === 'run') {
+      const it = await resolveSchedule(pos[2]);
+      const requestId = require('crypto').randomUUID();
+      const r = await api(`/api/schedules/${encodeURIComponent(it.id)}/run`, { revision: it.revision, requestId }, 'POST');
+      if (r.error) die(`${r.error}${r.code ? ` (${r.code})` : ''}`);
+      if (flags.json) return console.log(JSON.stringify(r));
+      return console.log(`started run ${r.run?.id || ''} status=${r.run?.status || ''}`);
+    }
+    if (sub === 'runs') {
+      const it = await resolveSchedule(pos[2]);
+      const limit = Number(flags.n || flags.limit || 20);
+      const r = await api(`/api/schedules/${encodeURIComponent(it.id)}/runs?limit=${limit}`);
+      if (r.error) die(r.error);
+      if (flags.json) return console.log(JSON.stringify(r));
+      if (!r.items?.length) return console.log('no runs');
+      for (const run of r.items) {
+        console.log(`${run.id}  [${run.status}]  ${run.createdAt}  dur=${run.durationMs ?? '-'}ms  ${run.reason || ''}`);
+      }
+      return;
+    }
+    die(`unknown schedule subcommand: ${sub}`);
+  },
+  schedules() { return cmds.schedule(); },
+  async calendar() {
+    const sub = pos[1] || 'ls';
+    const date = flags.date;
+    if (date !== undefined) {
+      const parsed = new Date(date + 'T00:00:00Z');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(+parsed) || parsed.toISOString().slice(0, 10) !== date) {
+        die('Enter --date as YYYY-MM-DD.');
+      }
+    }
+    if (sub === 'ls') {
+      const result = await api('/api/calendar');
+      if (result.error) die(result.error);
+      const items = (result.items || []).filter(item => !date || item.date === date);
+      if (flags.json) console.log(JSON.stringify(items));
+      else for (const item of items) console.log([item.date, item.time, item.title].filter(Boolean).join('  '));
+      return;
+    }
+    if (!['add', 'task'].includes(sub)) die('Use ccd calendar ls, add, or task.');
+    const title = (flags.title || pos.slice(2).join(' ')).trim();
+    if (!title || !date || /[\r\n]/.test(title)) die('A single-line title and --date are required.');
+    const { time, end, note } = flags;
+    if ([time, end].some(clock => clock && !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(clock))) die('Enter --time and --end as HH:MM.');
+    const tags = (flags.tags || '').split(/[,\s]+/).map(tag => tag.replace(/^#/, '')).filter(Boolean);
+    if (tags.some(tag => !/^[\p{L}\p{N}_-]+$/u.test(tag))) die('Use letters, digits, underscores, or hyphens in tags.');
+    const r = sub === 'task' ? await api('/api/calendar/task/add', { title, date, tags })
+      : await api('/api/calendar/event', { event: { title, date, time, end, note } });
+    if (!r.ok) die(r.error || 'Calendar registration failed.');
+    console.log(flags.json ? JSON.stringify(r) : `${date}  ${title}`);
+  },
 };
+
+const PLUGIN = require('./plugins').loadCli({ api, die, flags, pos, rest, DIR, BASE, PORT, token, usageDir, readTarget, overview, resolve, sessionIdOf, ago, termLabel, SELF_PID, coreCommands: Object.keys(cmds) });
+if (PLUGIN.refused.length && flags.verbose) console.error(`plugins: ${PLUGIN.refused.join('; ')}`);
+Object.assign(cmds, PLUGIN.commands);
+const FULL_HELP = PLUGIN_MANIFEST.help.length ? HELP.replace('\n<target>:', `\n${PLUGIN_MANIFEST.help.join('\n')}\n\n<target>:`) : HELP;
 
 (async () => {
   const c = pos[0];
-  if (!c || c === 'help' || flags.help) return console.log(HELP);
-  if (!cmds[c]) die(`unknown command ${c}\n\n${HELP}`);
-  if (c !== 'url') await ensureUp(c === 'up' || c === 'restart');
+  if (!c || c === 'help' || flags.help) return console.log(FULL_HELP);
+  if (!cmds[c]) die(`unknown command ${c}
+
+${FULL_HELP}`);
+  const savedCodexTokens = c === 'codex' && pos[1] === 'tokens' && !flags.watch;
+  if (c !== 'url' && !savedCodexTokens) await ensureUp(c === 'up' || c === 'restart');
   await cmds[c]();
 })().catch((e) => die(String(e.stack || e)));

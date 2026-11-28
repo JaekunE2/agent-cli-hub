@@ -1,0 +1,100 @@
+'use strict';
+
+const SECRET = /\b(?:Bearer\s+[^\s"',;]+|(?:smds_|sk-|gh[pousr]_|github_pat_|xox[baprs]-|AIza)[\w-]+|eyJ[\w-]+\.[\w-]+\.[\w-]+)|\b(?:api[_ -]?key|token|password|secret)\b\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi;
+const ABSOLUTE_PATH = /(?:["'](?:[a-z]:[\\/]|\\\\|\/)[^"'\r\n]+["']|(?:\b[a-z]:[\\/]|\\\\)[^\s"'<>]+|(?<![\w:/])\/(?!\/)[^\s"'<>]+)/gi;
+
+function summarize(value, sensitive = []) {
+  let text = String(value ?? '');
+  for (const literal of new Set(sensitive.filter(value => typeof value === 'string' && value))) {
+    text = text.split(literal).join('[redacted]');
+  }
+  text = text.replace(SECRET, '[redacted]').replace(ABSOLUTE_PATH, '[path]')
+    .replace(/[\p{Cc}\s]+/gu, ' ').trim();
+  const bytes = Buffer.from(text);
+  if (bytes.length <= 4096) return text;
+  let end = 4096;
+  while ((bytes[end] & 0xc0) === 0x80) end--;
+  return bytes.subarray(0, end).toString('utf8');
+}
+
+function codexOutput() {
+  let pending = '';
+  let dropping = false;
+  const result = { completed: false, failed: false, sessionId: null, outputSummary: '', errorSummary: '' };
+  return {
+    result,
+    feed(chunk) {
+      const lines = chunk.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (pending.length + lines[i].length > 131_072) dropping = true;
+        if (!dropping) pending += lines[i];
+        if (i === lines.length - 1) break;
+        if (dropping) {
+          result.failed = true;
+          result.errorSummary = 'CLI event exceeded size limit';
+        } else if (pending.trim()) {
+          try {
+            const event = JSON.parse(pending);
+            if (event.type === 'thread.started' && /^[\w-]{1,128}$/.test(event.thread_id ?? '')) result.sessionId = event.thread_id;
+            if (event.type === 'turn.completed') result.completed = true;
+            if (event.type === 'turn.failed' || event.type === 'error' || event.item?.status === 'failed') {
+              result.failed = true;
+              result.errorSummary = event.error?.message || event.message || event.item?.error?.message || 'CLI reported failure';
+            }
+            if (event.type === 'item.completed' && event.item?.type === 'agent_message') result.outputSummary = event.item.text;
+          } catch {
+            result.failed = true;
+            result.errorSummary = 'Invalid CLI JSON event';
+          }
+        }
+        pending = '';
+        dropping = false;
+      }
+    },
+  };
+}
+
+function cliOutput() {
+  let raw = '';
+  const MAX = 131_072;
+  const result = { completed: false, failed: false, sessionId: null, outputSummary: '', errorSummary: '' };
+  return {
+    result,
+    feed(chunk) {
+      if (raw.length < MAX) raw += String(chunk || '').slice(0, MAX - raw.length);
+    },
+    finish(exitCode) {
+      const text = raw.trim();
+      if (!text) {
+        if (exitCode === 0) result.completed = true;
+        return;
+      }
+      const tryParse = (s) => { try { return JSON.parse(s); } catch { return null; } };
+      let parsed = tryParse(text);
+      if (!parsed) {
+        const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const obj = tryParse(lines[i]);
+          if (obj && typeof obj === 'object') { parsed = obj; break; }
+        }
+      }
+      if (parsed && typeof parsed === 'object') {
+        const sid = parsed.session_id || parsed.sessionId || parsed.conversation_id || parsed.conversationId || parsed.thread_id;
+        if (typeof sid === 'string' && /^[\w-]{1,128}$/.test(sid)) result.sessionId = sid;
+        if (parsed.is_error || parsed.error) {
+          result.failed = true;
+          result.errorSummary = String(parsed.error?.message || parsed.error || parsed.result || 'CLI reported failure');
+          return;
+        }
+        const msg = parsed.result ?? parsed.response ?? parsed.content ?? parsed.text ?? parsed.output ?? '';
+        result.outputSummary = typeof msg === 'string' ? msg : JSON.stringify(msg);
+        result.completed = exitCode === 0;
+        return;
+      }
+      result.outputSummary = text;
+      result.completed = exitCode === 0;
+    },
+  };
+}
+
+module.exports = { summarize, codexOutput, cliOutput };

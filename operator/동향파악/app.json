@@ -1,0 +1,39 @@
+{
+  "id": "trend-monitor",
+  "name": "AI 동향파악",
+  "description": "GeekNews, HN, GitHub, GitLab, HuggingFace, arXiv 일간 AI 기술 동향 수집 및 한국어 요약",
+  "usage": "1. ‘금일 동향 수집 실행’을 누릅니다.\n2. ‘한국어 요약 생성’을 누르면 최근 수집 데이터에서 주요 동향과 추천 항목을 요약합니다.\n3. 수집 및 요약 결과는 이 화면에서 확인할 수 있습니다.",
+  "purpose": "여러 기술 커뮤니티와 저장소에 흩어진 AI 소식을 한곳에 모아, 팔로업할 도구·논문을 빠르게 찾기 위해 만들었습니다.",
+  "type": "report",
+  "env": {
+    "PYTHONUTF8": "1"
+  },
+  "actions": [
+    {
+      "id": "scrape",
+      "label": "금일 동향 수집 실행",
+      "kind": "command",
+      "cmd": "powershell -NoProfile -ExecutionPolicy Bypass -File run.ps1 scraper.py",
+      "timeoutSec": 300
+    },
+    {
+      "id": "summarize",
+      "label": "한국어 요약 생성",
+      "kind": "command",
+      "cmd": "powershell -NoProfile -ExecutionPolicy Bypass -File run.ps1 summarize.py",
+      "timeoutSec": 300
+    }
+  ],
+  "outputs": {
+    "viewDir": "산출물",
+    "viewGlob": "*.html",
+    "dataDir": "data",
+    "dataGlob": "*.json"
+  },
+  "session": {
+    "autoMatchCwd": true,
+    "preferredAgent": "agy",
+    "autoPinArtifacts": true,
+    "notifyOnComplete": false
+  }
+}

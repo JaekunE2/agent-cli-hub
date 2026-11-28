@@ -6,6 +6,7 @@ hub/url.txt
 hub/config.json
 hub/data/
 hub/*.log
+.agy-review-*.log
 hub/*.out
 hub/.search-cache.json.gz
 hub/favorites.json
@@ -13,6 +14,9 @@ hub/gpu-queue*.json
 hub/gpu-logs/
 hub/terms-state.json
 hub/crash-state.json
+hub/agy-quota.json
+hub/account-prefs.json
+*.lnk
 hub/artifacts-store.json
 hub/restart-report.txt
 hub/uploads/
@@ -24,4 +28,25 @@ ai-usage/memos.json
 ai-usage/org-emails.json
 ai-usage/*.log
 research/
+projects/
 dist/
+hub/.branches.json
+hub/__pycache__/
+vault/
+
+# machine/organization-specific scripts, docs and job definitions (never committed)
+hub/local/
+hub/telegram-bridge-state.json
+hub/drivejobs*.json
+hub/drive-cache/
+hub/llm-tools/
+hub/mailcollect.log
+hub/terms-state*.json
+hub/url.txt
+hub/crash-recovery.log
+hub/delta-session.json
+hub/cwatch.pid
+hub/telegram-bridge.pid
+hub/llm-rules.md
+__pycache__/
+hub/terms-state*.json.tmp

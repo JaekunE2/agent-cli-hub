@@ -28,6 +28,19 @@ node "<dir>\hub\ccd.js" url    # the address to give the user
 ```
 `start.bat` also adds a short guidance block to `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` (between `agent-cli-hub` markers) and installs the `agent-cli-hub` skill — tell the user this happened.
 
+### Optional Windows desktop launcher (v1.3.0)
+
+1. Prepare the existing `hub` checkout and its dependencies as above. The launcher starts the hub using system Node.js with `--use-system-ca`. Use Node.js 24 on `PATH` and the Microsoft Edge WebView2 Runtime. The installers can download the WebView2 bootstrapper when the runtime is missing.
+2. Set `CCD_HUB_DIR` in the Windows user environment so Start menu launches can locate the existing `hub` directory. Replace the example path below with the absolute path to your `hub` directory.
+
+   ```powershell
+   [Environment]::SetEnvironmentVariable('CCD_HUB_DIR', 'D:\개발 도구\agent-cli-hub\hub', 'User')
+   ```
+
+3. Install one of the MSI or NSIS packages and launch **Agent CLI Hub** from the Start menu. The launcher uses the existing Hub and PTY host. Closing the window hides it in the tray. The existing `start.bat` and `install-autostart.ps1` still control the command-line setup and logon startup.
+
+To build both installers, run `cargo tauri build` from `desktop` on Windows. The x64 release executable is under `desktop/target/release`, with installers under `bundle/msi` and `bundle/nsis`. The packages contain the launcher and installer components. The existing checkout holds the Hub files and user data. [Tauri Windows Installer](https://v2.tauri.app/distribute/windows-installer/)
+
 ## 5. Optional, **(ask)** first
 - Start at logon: `powershell -ExecutionPolicy Bypass -File "<dir>\install-autostart.ps1"`
 - Phone access: install Tailscale on the PC and the phone with the same account, then the 📱 button in the hub shows a QR code.

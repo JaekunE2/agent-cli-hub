@@ -1,0 +1,214 @@
+const assert = require('node:assert/strict');
+const fs = require('fs'), os = require('os'), path = require('path');
+const { chromium } = require(process.env.HUB_PLAYWRIGHT || 'playwright');
+(async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-browser-test-'));
+  const store = require('../projects')(path.join(dir, 'projects.json'));
+  const fixture = await require('./browser-fixture')(store);
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  page.setDefaultTimeout(10000);
+  const errors = []; page.on('pageerror', e => errors.push(e.message));
+  const click = name => page.getByRole('button', { name, exact: true }).click();
+  const clickTab = name => page.getByRole('tab', { name, exact: true }).click();
+  const showChat = async () => {
+    const toggle = page.locator('#bar [data-dock-toggle=chat]');
+    if (await toggle.getAttribute('aria-pressed') === 'false') await toggle.click();
+    await page.getByText('History displayed', { exact: true }).waitFor();
+  };
+  const save = async () => { await click('저장'); await page.locator('dialog').waitFor({ state: 'detached' }); };
+  const renderedEdge = () => page.locator('.pj-edges > path[d^="M"]').first().waitFor({ state: 'attached' });
+  try {
+    await page.goto(fixture.url + '/#projects');
+    await click('작업 설계 시작');
+    await page.getByLabel('Project 이름').fill('Demo project');
+    await page.getByLabel('작업 폴더', { exact: true }).fill('D:\\demo');
+    await page.getByLabel('목표·완료 기준').fill('Design, implement and verify');
+    await page.getByLabel('Project 기본 CLI').selectOption('agy');
+    await page.getByLabel('필수 MCP 대체 CLI').selectOption('codex');
+    await page.locator('option[value="agy-a"]').waitFor({ state: 'attached' });
+    await page.getByLabel('CLI 계정').selectOption('agy-a');
+    await page.getByLabel('Project 기본 CLI').selectOption('codex');
+    await page.getByLabel('Project 기본 CLI').selectOption('agy');
+    assert.equal(await page.getByLabel('CLI 계정').inputValue(), 'agy-a');
+    await click('Project 생성');
+    await page.locator('dialog').waitFor({ state: 'detached' });
+    await renderedEdge();
+    assert.equal(await page.locator('.pj-task').count(), 3);
+    assert.equal(store.list()[0].account, 'agy-a');
+    assert.equal(store.list()[0].mcpFallbackAgent, 'codex');
+    await clickTab('작업 설계');
+    await page.locator('.pj-objective').getByText('Design, implement and verify', { exact: true }).waitFor();
+    assert.equal(await page.locator('[data-plan-task]').count(), 3);
+    await clickTab('칸반 보드');
+    await page.locator('.pj-task').first().waitFor();
+    assert.equal(await page.locator('.pj-task').count(), 3);
+    const designCard = () => page.locator('.pj-task').filter({ hasText: 'Design' });
+    const { id: projectId, tasks } = store.list()[0];
+    store.recordVaultRun(projectId, [tasks[0].id], 'review', 'claude', {
+      applied: ['skill:demo'], omitted: [{ id: 'rule:missing.md', reason: 'missing' }],
+    });
+    const checkVaultRun = async () => {
+      await designCard().click();
+      const history = page.locator('[data-vault-runs]');
+      await history.getByText(/자동 검토/).click();
+      await history.getByText('skill:demo', { exact: false }).waitFor();
+      await history.getByText('rule:missing.md · 자원 파일 없음').waitFor();
+      await page.keyboard.press('Escape');
+    };
+    await checkVaultRun();
+    await page.reload();
+    await clickTab('칸반 보드');
+    await checkVaultRun();
+    const designMenu = async () => {
+      await designCard().hover();
+      await designCard().getByRole('button', { name: 'Design 메뉴', exact: true }).click();
+    };
+    await designMenu();
+    await page.getByRole('menuitem', { name: '담당 CLI·모델 변경', exact: true }).click();
+    assert.deepEqual(await page.locator('dialog [name=agent] option').evaluateAll(options => options.map(o => o.value)), ['', 'claude', 'codex', 'agy', 'cursor']);
+    await page.locator('option[value="agy-b"]').waitFor({ state: 'attached' });
+    await page.getByLabel('CLI 계정').selectOption('agy-b');
+    await page.getByLabel('작업 지시·완료 기준').fill('Define scope'); await save();
+    await designMenu();
+    await page.getByRole('menuitem', { name: '진행(으)로 이동', exact: true }).click();
+    await page.locator('[data-drop=doing] [data-task]').waitFor();
+    await page.locator('[data-drop=doing] [data-task]').dragTo(page.locator('[data-drop=review]'));
+    await page.locator('[data-drop=review] [data-task]').waitFor();
+    await clickTab('작업 흐름');
+    await renderedEdge();
+    assert.equal(await page.locator('.pj-edges > path').count(), 2);
+    await page.evaluate(() => {
+      const ids = [...document.querySelectorAll('.flow-node')].map(node => node.dataset.task);
+      const positions = Object.fromEntries(ids.map(id => [id, { x: 35, y: 35 }]));
+      localStorage.setItem(flowPosKey(projectFlowKey({ id: state.sel.id, scope: { number: state.sel.version } })), JSON.stringify(positions));
+    });
+    if (process.env.HUB_SCREENSHOT) await page.screenshot({ path: process.env.HUB_SCREENSHOT, fullPage: true });
+    await page.reload(); await renderedEdge();
+    assert.equal(await page.locator('.pj-edges > path').count(), 2);
+    assert.equal(await page.locator('.flow-node').evaluateAll(nodes => {
+      const boxes = nodes.map(node => node.getBoundingClientRect());
+      return boxes.every((a, i) => boxes.slice(i + 1).every(b =>
+        a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top));
+    }), true);
+    await clickTab('칸반 보드');
+    const reviewResponse = page.waitForResponse((r) => r.url().endsWith('/api/projects/autopilot/complete'));
+    await designCard().getByRole('button', { name: '재검토', exact: true }).click();
+    assert.equal((await (await reviewResponse).json()).queued, true);
+    await designCard().dragTo(page.locator('[data-drop=planned]'));
+    await page.locator('[data-drop=planned] [data-task="draft-0"]').waitFor();
+    await designMenu();
+    const startResponse = page.waitForResponse((r) => r.url().endsWith('/api/projects/start') && r.request().method() === 'POST');
+    await page.getByRole('menuitem', { name: '작업 시작', exact: true }).click();
+    assert.equal((await (await startResponse).json()).id, '3');
+    assert.match(new URL(page.url()).hash, /^#projects:/);
+    await designMenu();
+    await page.getByRole('menuitem', { name: '터미널 열기', exact: true }).click();
+    await page.locator('#tin').waitFor({ state: 'attached' });
+    assert.match(new URL(page.url()).hash, /^#term:3:/);
+    await page.locator('#btnBackProject').click();
+    await designCard().getByText(/^실제 실행 CLI /).waitFor();
+    await designCard().getByText('선택 근거 프로젝트 기본값', { exact: true }).waitFor();
+    await page.reload();
+    await designCard().getByText('선택 근거 프로젝트 기본값', { exact: true }).waitFor();
+    await designCard().getByText('입력 대기', { exact: true }).waitFor();
+    const retryResponse = page.waitForResponse((r) => r.url().endsWith('/api/projects/start') && r.request().postDataJSON()?.retry === true);
+    await designCard().getByRole('button', { name: '작업 다시 진행', exact: true }).click();
+    assert.equal((await (await retryResponse).json()).id, '3');
+    await designCard().waitFor();
+    assert.equal(store.list()[0].tasks.find(t => t.title === 'Design').detail, 'Define scope');
+    assert.match(new URL(page.url()).hash, /^#projects:/);
+    await designMenu();
+    await page.getByRole('menuitem', { name: '터미널 열기', exact: true }).click();
+    await page.locator('#bar').getByText('AGY B', { exact: true }).waitFor();
+    await showChat();
+    assert.equal((await page.locator('#bar h2').innerText()).trim(), 'Design');
+    assert.equal(await page.locator('#btnAgyHistory').count(), 0);
+    await page.locator('#btnBackProject').click();
+    await clickTab('터미널 모아보기');
+    await page.locator('.mini .xterm').first().waitFor();
+    assert.deepEqual(await page.locator('#projectContent [data-term]').evaluateAll(cards => cards.map(c => c.dataset.term)), ['3']);
+    // Verify Dashboard Terminals status filter tabs (전체 / 실행 중 / 대기 / 종료됨)
+    await page.locator('#side [data-key="home"]').click();
+    await page.locator('button[data-hnav="terms"]').click();
+    await page.locator('[data-tview-filt="busy"]').waitFor();
+    await page.locator('[data-tview-filt="exited"]').click();
+    await page.getByText('선택한 상태의 터미널이 없습니다').waitFor();
+    await page.locator('[data-tview-filt=""]').click();
+    await page.locator('#side [data-key="projects"]').click();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await clickTab('칸반 보드');
+    await page.locator('[data-drop=doing] [data-task]').waitFor();
+    assert.equal(await page.locator('#view').evaluate(el => el.scrollWidth === el.clientWidth), true);
+    assert.equal(await page.locator('.pj-task').evaluateAll(cards => cards.every(card =>
+      [...card.querySelectorAll('button')].filter(btn => btn.offsetWidth).every(btn => {
+        const outer = card.getBoundingClientRect(), inner = btn.getBoundingClientRect();
+        return inner.left >= outer.left - 1 && inner.right <= outer.right + 1;
+      }))), true);
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.locator('#side [data-key^="recent:"] .srow-open').first().click();
+    const chatSend = page.waitForResponse((r) => r.url().endsWith('/api/term/send'));
+    await page.getByRole('textbox', { name: '대화 프롬프트' }).fill('message from history');
+    await page.getByRole('textbox', { name: '대화 프롬프트' }).press('Enter');
+    const sent = await chatSend;
+    assert.equal((await sent.json()).ok, true);
+    assert.equal(sent.request().postDataJSON().text, 'message from history');
+    assert.equal(sent.request().postDataJSON().waitForReady, true);
+    assert.match(new URL(page.url()).hash, /^#recent:/);
+    const liveSend = page.waitForResponse((r) => r.url().endsWith('/api/term/send'));
+    await page.getByRole('textbox', { name: '대화 프롬프트' }).fill('message to attached terminal');
+    await page.locator('.chat-reply-in button.primary').click();
+    assert.equal((await (await liveSend).json()).ok, true);
+    await page.route('**/api/term/send', route => route.fulfill({ json: { ok: false, error: 'Test transmission failure' } }), { times: 1 });
+    await page.getByRole('textbox', { name: '대화 프롬프트' }).fill('message to retry');
+    await page.getByRole('textbox', { name: '대화 프롬프트' }).press('Enter');
+    await page.getByText('Test transmission failure', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('textbox', { name: '대화 프롬프트' }).inputValue(), 'message to retry');
+    const chatRetry = page.waitForResponse((r) => r.url().endsWith('/api/term/send') && r.request().postDataJSON()?.resendIfMissing);
+    await page.getByRole('button', { name: '다시 전송', exact: true }).click();
+    assert.equal((await (await chatRetry).json()).ok, true);
+    assert.match(new URL(page.url()).hash, /^#recent:/);
+    const existing = store.save({ name: 'Existing Project', agent: 'agy', account: 'agy-a', cwd: 'D:\\demo', goal: 'Existing goal',
+      termIds: [], tasks: [{ id: 'old-card', title: 'Existing card', detail: '', stage: 'planned', termId: '', after: [] }] });
+    await page.goto(fixture.url + '/#projects:' + existing.id + ':flow');
+    await page.reload();
+    await click('Project 메뉴');
+    await page.getByRole('menuitem', { name: '작업 흐름 생성', exact: true }).click();
+    await page.getByRole('dialog').getByRole('button', { name: '작업 흐름 생성' }).click();
+    await page.locator('[data-plan-preview] li').first().waitFor();
+    await save();
+    await renderedEdge();
+    assert.equal(await page.locator('[data-task=old-card]').count(), 1);
+    assert.equal(await page.locator('.pj-task').count(), 4);
+    page.on('dialog', d => d.accept());
+    const recRow = page.locator('#side [data-key^="recent:"]').first();
+    await recRow.hover();
+    await recRow.locator('[data-hide-record]').click();
+    await page.locator('#side [data-hide-record]').first().waitFor({ state: 'detached' });
+    assert.equal(store.hidden().size, 1);
+    await page.getByRole('button', { name: 'Project 메뉴', exact: true }).click();
+    await page.getByRole('menuitem', { name: 'Project 삭제', exact: true }).click();
+    await page.locator('#projectPick option[value="' + existing.id + '"]').waitFor({ state: 'detached' });
+    assert.equal(store.list().some(p => p.id === existing.id), false);
+    const project = store.list()[0];
+    const [started, blocked] = project.tasks;
+    const saved = store.save(project, {
+      taskRun: { taskId: started.id, run: { agent: 'codex', source: 'project', termId: '3',
+        mcpFallback: { from: 'agy', reason: 'fixture (CLI 또는 스킬의 적용 대상에서 제외됨)' } } },
+      taskLaunchBlock: { taskId: blocked.id, block: { agent: 'agy', source: 'project', message: '필수 MCP 준비 실패 · fixture' } },
+    });
+    await page.goto(fixture.url + '/#projects:' + saved.id + ':board');
+    await page.reload();
+    const verifyMcpCards = async () => {
+      const card = page.locator(`[data-drop] [data-task="${started.id}"]`);
+      await card.getByText(/^실제 실행 CLI Codex/).waitFor();
+      await card.getByText(/MCP 대체 CLI.*Antigravity CLI.*Codex.*fixture/).waitFor();
+      await page.locator(`[data-drop] [data-task="${blocked.id}"]`).getByText(/필수 MCP 준비 실패.*fixture/).waitFor();
+    };
+    await verifyMcpCards();
+    await page.reload();
+    await verifyMcpCards();
+    assert.deepEqual(errors, []);
+    console.log('PASS: project cards, MCP fallback and blocking after reload, terminal tabs, AGY history');
+  } finally { await browser.close(); await fixture.close(); fs.rmSync(dir, { recursive: true }); }
+})().catch(e => { console.error(e); process.exitCode = 1; });

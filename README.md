@@ -1,36 +1,88 @@
 # Agent CLI Hub
 
-**One web page for every AI coding agent on your Windows PC** — Claude Code, OpenAI Codex CLI, Cursor's agent and plain shells. See every session's screen live, type into them, search everything they ever said, share the GPU between them through a queue, and let an *operator* session look after the machine. Works from your phone over Tailscale.
+**One unified control center for every AI coding agent on your Windows PC** — Antigravity CLI (AGY), Claude Code, OpenAI Codex CLI, Cursor Agent, and PowerShell/cmd shells in one fast web workspace. Plan projects with AI, track hierarchical token usage across CLIs, inspect codebase architecture interactively, share GPUs safely, and manage sessions from desktop or phone over Tailscale.
 
 **English** · [한국어](README.ko.md)
 
-<sub>Install: `git clone https://github.com/JaekunE2/agent-cli-hub` and run `start.bat` — or ask your AI agent to do it (see [Install](#install)).</sub>
+<sub>Install: `git clone https://github.com/JaekunE2/agent-cli-hub` and run `start.bat` — or ask your AI agent to install it (see [Install](#install)).</sub>
 
 ![Tour](docs/images/en/tour.gif)
 
-> Screenshots use a demo environment with made-up projects and conversations.
+> Screenshots use a sanitized demo workspace (`demo-web-store`, `demo-user`, and placeholder session titles); `tour.gif` shows the live transitions across the redesigned UI (`dev_side`).
+
+---
+
+## Highlights & Design System
+
+- **Crisp Minimal UI (Light & Dark Themes):** Built around `Astryx` control consistency, `impeccable` anti-slop/WCAG AA hygiene, and hairline-first elevation — clean sidebar/canvas surface separation, a unified 4-column hairline overview bar, flattened border-first cards without visual clutter, and `≥ 24×24px` touch targets.
+- **Unified `Hub Core` Identity & Live Health LED:** One consistent **Hub Core** symbol across the web brand button, dynamic status favicon, `icon.svg`, and Windows System Tray (`tray.ps1`). Click the top-left brand header to open the **Server & Integration Status Popover** (`:7777` Hub, PTY Host, `:4777` Usage Server, AGY Quota) and start services in one click.
+- **Sticky Workspace Tabs & Smart Cache-Busting:** Terminal and transcript views remember your last selected tab (`Screen`, `Screen + Chat`, `Transcript`, `Outputs`, `Floorplan`). Server restarts automatically refresh non-typing views via `SERVER_BUILD_ID` without interrupting active terminal input.
+
+| Home Dashboard (Light) | Dark Theme & Hub Status Popover |
+|---|---|
+| ![Home Dashboard](docs/images/en/14-home-dashboard.png) | ![Dark Mode & Status Popover](docs/images/en/22-home-dark.png) |
 
 ---
 
 ## Features
 
-### 🛰 Operator session — an agent that looks after the hub
-When the hub starts, it opens one **operator** session (Claude Code by default, or Codex) pinned at the top of the sidebar. Following its manual (`operator/CLAUDE.md` / `AGENTS.md`) it:
-- learns the PC — GPUs, driver/CUDA, disks, network and Tailscale, proxy, tool paths, accounts — and keeps **`operator/ENVIRONMENT.md`** up to date for every other session to read;
-- answers your questions about the machine and the other sessions;
-- runs a periodic check (every 3 h by default, only when idle) and posts **notices** when something matters: a disk filling up, a GPU held far past its estimate, the network changing, an account near its limit.
+### 🗂 Project Workspaces — Design · Kanban · DAG Flow · Sub-Dev Chat · Tokens
+Organize multi-step coding work under **Project** in the Linear-style sidebar:
+- **AI Plan Generation (`작업 설계`):** Choose a workspace folder (host browser or Windows Explorer picker), define goals and acceptance criteria, and auto-generate structured tasks (`plan`, `dev`, `test`, `ops` kinds) with per-CLI **model & reasoning effort** settings for **AGY**, **Claude Code**, and **Codex CLI**.
+- **Kanban & Draggable DAG Workflow (`칸반 보드` / `작업 흐름`):** Move tasks across `Planned → Doing → Review → Done` or visualize dependency chains on an auto-arranged Sugiyama DAG canvas with transitive edge reduction, free node drag-and-drop, zoom/fit controls, and dependency chain highlighting.
+- **Subtasks & Embedded Sub-Development Chat:** Split parent tasks into child subtasks and chat directly inside a task's Detail Drawer (`서브 개발`).
+- **Cumulative Multi-CLI Token Ledger:** Tracks input/output/cache tokens per session and CLI in `hub/data/projects.json`, preserving history when switching agents and rolling up every descendant subtask's tokens into top-level parent badges and the Project Token Drawer.
 
-Notices land on a board (`ccd notices`) and are typed into every running Claude/Codex hub terminal (a busy agent reads it after its turn). It never kills jobs, never switches accounts, and asks before installing or changing system settings.
+| Project Design & Tasks | Kanban Board |
+|---|---|
+| ![Project Design](docs/images/en/15-project-design.png) | ![Kanban Board](docs/images/en/16-project-board.png) |
+
+![Workflow DAG](docs/images/en/17-project-flow.png)
+
+### Schedules
+
+1. Open **Schedules** in the sidebar (or open the hub with `?open=schedules`) and choose **Create schedule**. Select a project, version, and optional task, then set the prompt and any reference folders. The current capability lists Codex with the default account.
+2. Choose an interval from 1 to 10,080 minutes, or enter a five-field Cron expression and an IANA time zone. For example, `0 9 * * 1-5` in `Asia/Seoul` means 09:00 on weekdays. Use **Preview next runs** to check the upcoming times before saving.
+3. Set the overlap policy. `skip` records a skipped run while a run is active or queued, `queue` allows one waiting run per schedule, and `replace` replaces the queued run and requests cancellation of the active one. A slot more than 60 seconds overdue counts as a misfire. `skip` records the missed range as skipped, and `run_once` catches up once at the latest due slot. Set a timeout between 30 and 3,600 seconds.
+4. New schedules are paused. The list shows the next execution time, countdown, and latest result. Open **Run history** to see scheduled and manual runs, their status, timing, and available output or error summaries. With a runner available, **Resume** schedules the next slot, **Run now** also works while paused, and **Pause** cancels waiting runs.
+
+The current hub reports `RUNNER_UNAVAILABLE`. You can create and edit schedules and preview execution times locally. Resume, Run now, and automatic execution require the runner. Authenticated remote access shows the list and history with sensitive details omitted.
+
+### Session folders and trust
+
+1. Select the folder badge on a session or terminal to open **Session folders**. The badge shows the primary folder name, reference count, and trust state. On this PC the panel shows full paths, known observed folders, and trust for individual paths.
+2. For an editable session, set **Primary folder**, add up to 16 reference folders with **Add reference**, and save. In the desktop app, **Browse Folder** opens the native picker. In the browser, enter a local path on the PC running the hub.
+3. Under **Settings → Trusted folders**, register a folder and explicitly choose whether to include descendants. You can change that scope or revoke trust there. **Trust this folder** in the session panel approves the selected path only.
+4. Start or resume through the hub to apply the saved folders. Managed sessions with untrusted folders or changed folder settings can be blocked from starting, resuming, or sending input until the applicable folders are trusted and a fresh launch applies the settings. Remote folder views show a summary.
+
+### 🗺 Floorplan — Interactive Code Architecture Map & Report (`코드 구조`)
+Available inside every **Project**, **Terminal**, **External Console**, and **Transcript** tab:
+- **Ranked Core Hub Summary (`핵심 요약 · 모듈 목록`):** Zero-dependency static scanner ([`hub/workspace-floorplan.js`](hub/workspace-floorplan.js)) respects `.gitignore`, scans JS/TS/Python/Go files, ranks true architectural hubs by incoming references & API endpoints, and opens a File Detail Drawer on click.
+- **Interactive Core Hub Architecture Map (`시스템 계층도`):** Displays curated core hubs per architectural layer (`UI → API → Core Logic → Data`) with subtle Bezier connections and **hover/click Blast Radius isolation** (highlighting incoming callers in green and outgoing dependencies in accent orange), search filter, pan, and zoom/fit.
+- **Security & Structure Audit (`보안 · 구조 점검`):** Flags exposed secrets, unguarded routes, `.env` gitignore gaps, and oversized modules with 1-click task creation or terminal fix-prompt injection.
+- **Deliverable Export & Artifact Pinning:** Preview formatted Markdown architecture reports (`보고서 보기`, including an auto-generated Mermaid diagram and Top 15 Core Hubs table), copy, download `.md`, or save **`FLOORPLAN.md`** directly into the project folder and pin it to the session's **Outputs** tab. Also supports scanning arbitrary local directories (`폴더 선택`) and shows a **Design Blueprint** view for empty folders.
+
+| Codebase Summary & Modules | Interactive Core Hub Map (Blast Radius) |
+|---|---|
+| ![Floorplan Summary](docs/images/en/18-floorplan-overview.png) | ![Floorplan Map](docs/images/en/19-floorplan-map.png) |
+
+![Architecture Report Drawer](docs/images/en/20-floorplan-report.png)
+
+### 🤖 Antigravity CLI (AGY), Claude Code, Codex CLI, Cursor & Shells
+- **Full AGY Support:** Discovers transcripts across `~/.gemini/antigravity/brain`, `antigravity-cli/brain`, and `antigravity-ide/brain`, detects live `busy / idle` screen state, monitors per-tier 5h/weekly AGY quotas, and resumes sessions seamlessly.
+- **Smart Clipboard Paste (`Ctrl+V` / `Ctrl+Shift+V`):** Inside a terminal screen on Windows, pressing `Ctrl+V` with text pastes directly into the prompt via `xterm.js`, while `Ctrl+V` with an image forwards raw `^V` (`0x16`) straight to the CLI so native TUI image attachment keeps working. Use `Ctrl+Shift+V`, drag-and-drop, or remote paste to upload files to `hub/uploads/` and insert quoted paths.
+- **Persistent PTY Host:** Terminals run inside a separate `ptyhost.js` daemon, surviving hub server restarts.
+- **Session Deduplication:** Prevents duplicate active terminals when resuming, recovering, or switching accounts.
+
+### 🛰 Operator Session — an agent that looks after the hub
+When the hub starts, an optional **operator** session (Claude Code by default, or Codex) stays pinned at the top of the sidebar. Following `operator/CLAUDE.md` / `AGENTS.md`, it documents hardware/network state in **`operator/ENVIRONMENT.md`**, answers environment questions, and posts idle-time health **notices** (`ccd notices`) for disk space, long-running GPU jobs, or low quotas without ever killing user jobs or switching accounts automatically.
 
 ![Operator](docs/images/en/00-operator.png)
 
-### 🖥 All screens at a glance
-Every hub terminal (and, with Python, every other console window on the PC) as a live card. Click one to enlarge it and type — a real terminal (xterm.js) for hub terminals, injected keys for other windows. Drop or paste a file to insert its path.
+### 🖥 All Screens at a Glance & Split Terminal View
+View every hub terminal (and optionally external PC console windows via Python) as live cards. Click any terminal to open full `Screen`, `Screen + Chat` split view with resizable divider, `Transcript` with inline prompt composer, `Outputs`, or `Floorplan`.
 
 ![Overview](docs/images/en/01-overview.png)
-
-### 🤖 Claude Code, Codex, Cursor agent and shells side by side
-`＋ New` opens `claude`, `codex`, `cursor-agent`, PowerShell or cmd in any folder. Codex terminals get a **Codex** badge and a live *working / idle* state read from the screen, and know which conversation they're in. Terminals live in a separate pty host, so restarting the hub server never kills them.
 
 | Claude Code | Codex |
 |---|---|
@@ -38,124 +90,124 @@ Every hub terminal (and, with Python, every other console window on the PC) as a
 
 ![New terminal](docs/images/en/09-new-terminal.png)
 
-### 🔎 Search every conversation — Claude Code *and* Codex
-`Ctrl+K` searches the full history of every Claude Code transcript (`~/.claude/projects`) and Codex rollout (`~/.codex/sessions`), plus the text on every open screen. Open a hit to read the conversation around it, then **continue it in the hub** — `claude --resume` or `codex resume` in the conversation's own folder.
+### 🔎 Search Every Conversation — AGY, Claude Code *and* Codex
+`Ctrl+K` (or the sidebar search page) searches full conversation histories across **AGY**, **Claude Code** (`~/.claude/projects`), and **Codex** (`~/.codex/sessions`) plus live open screens. Open any hit to inspect context and continue it directly in the hub (`--resume`).
 
 | Search | Codex conversation |
 |---|---|
 | ![Search](docs/images/en/04-search.png) | ![Codex transcript](docs/images/en/05-codex-transcript.png) |
 
-### 📂 Outputs — every result a session produced, previewed
-Each session has an **Outputs** tab. File paths mentioned in its conversation — videos, PDFs, figures, slides, documents, data — are collected automatically, grouped by day and previewed in place: images, video and audio players, PDFs, Markdown / text / CSV, HTML in a sandbox, and PowerPoint / Word converted to PDF when LibreOffice is installed. Pin anything else with **＋ Mark an output** or `ccd artifact add <path> --title "…"`, and send a file's path back into any session with one click (↗). Autonomous research projects have the same tab. Only files listed for a session can be opened.
+### 📂 Outputs — Every Result Previewed in Place
+Each session collects produced files (videos, PDFs, images, Markdown, CSV, sandboxed HTML, LibreOffice-converted slides/docs) by date inside the **Outputs** tab. Pin custom files with **＋ Mark an output** (`ccd artifact add`) or save `FLOORPLAN.md` directly from Code Architecture.
 
 | Outputs tab | Preview |
 |---|---|
 | ![Outputs](docs/images/en/12-outputs.png) | ![Preview](docs/images/en/13-output-preview.png) |
 
-### 🎛 GPU queue shared by all sessions
-`ccd gpu run --mem 12G --est 90m -- python train.py` waits its turn, runs with `CUDA_VISIBLE_DEVICES` set and releases the GPU when it ends. Memory and system-RAM reservations, backfilling of short jobs, heat guard, per-GPU lines, and GPU jobs started outside the queue are detected and shown as current users. Nothing outside the queue is ever killed.
+### 🎛 GPU Queue Shared by All Sessions
+`ccd gpu run --mem 12G --est 90m -- python train.py` waits cleanly, sets `CUDA_VISIBLE_DEVICES`, reserves memory/system RAM, supports short-job backfilling and heat guards, and surfaces non-queue external GPU jobs without ever terminating them.
 
 ![GPU queue](docs/images/en/06-gpu-queue.png)
 
-### 🔬 Autonomous research (optional)
-Give a direction and a "director" Claude session runs the whole loop — ideas → venue → literature (citations checked in code) → plan → experiments (through the GPU queue) → analysis → paper → review — stopping only when it reaches the goal or gets stuck. Talk to it, pause it, branch derived studies or a synthesis paper.
+### 🔬 Autonomous Research (Optional)
+Run structured multi-phase research loops (`ideas → venue → literature → plan → experiments → analysis → paper → review`) powered by `research-harness/` and the GPU queue.
 
 ![Research](docs/images/en/08-research.png)
 
-### 📅 Calendar
-Deadlines from a plain `todo.md` (`- [ ] task @due(2026-11-05) #tag`) that your agents can edit too, the hub's own events, and optional Google Calendar sync (hub items go to a dedicated "Agent CLI Hub" calendar; your primary calendar's events show up in the hub).
+### 📅 Calendar & Task Deadlines
+Combines `todo.md` due dates (`- [ ] task @due(2026-11-05) #tag`), hub events, and optional Google Calendar / Teams sync in a unified month + agenda view.
 
 ![Calendar](docs/images/en/07-calendar.png)
 
-### 📱 From your phone (Tailscale)
-The hub listens only on `127.0.0.1` and your Tailscale address — never the LAN. The 📱 button shows a QR code; scan it on a phone logged in to the same tailnet. The layout adapts to small screens.
+### 📱 Phone & Remote Access (Tailscale) + 💬 Telegram Relay
+The hub binds only `127.0.0.1` and your Tailscale IP (never public LAN). Scan the 📱 QR code from another device on your tailnet. For Telegram control without opening the dashboard, see **[JaekunE2/claude-telegram-relay](https://github.com/JaekunE2/claude-telegram-relay)**.
 
 | Open on another device | Phone |
 |---|---|
 | ![Phone dialog](docs/images/en/10-phone.png) | <img src="docs/images/en/11-phone-terminal.png" width="300"> |
 
-### 💬 Your sessions from Telegram: Claude Telegram Relay (separate repo)
-Pick a Claude Code session on this PC with buttons in Telegram, chat with it from your phone, send photos and get its output files (PDFs, figures, videos) back. It is a separate project that works on its own, with or without the hub: **[JaekunE2/claude-telegram-relay](https://github.com/JaekunE2/claude-telegram-relay)**
+### 📊 AI Usage & Account Switching
+The bundled usage dashboard (port `4777`) tracks Claude 5h/weekly limits, Codex (ChatGPT) quotas, **AGY per-tier quotas**, Cursor, OpenAI API spend, and Gemini keys. Add additional Codex logins via device-code auth and switch accounts intentionally via **⇄ Switch Account**.
 
-![Telegram relay](https://raw.githubusercontent.com/JaekunE2/claude-telegram-relay/main/docs/images/en/relay-tour.png)
+![AI Usage Dashboard](docs/images/en/21-system-usage.png)
 
-### 📊 AI usage and your accounts
-A bundled usage dashboard (port 4777) shows Claude 5-hour / weekly limits, Codex (ChatGPT) limits, Cursor, OpenAI API costs, Gemini key status — it detects this PC's logins automatically. Add more **of your own** Codex logins with a device-code login (`＋ Add a Codex account`). A session can continue on another of your accounts with the **⇄ other account** button. Switching only ever happens when you press it.
-
-### 🧰 Built for agents too: the `ccd` CLI
-Every feature is scriptable, so your agents can coordinate each other:
-```
+### 🧰 Built for Agents Too: the `ccd` CLI
+```bash
 ccd ls                                   # sessions, windows, terminals
-ccd new codex --cwd C:\work\api          # open a terminal (claude | codex | cursor | powershell | cmd)
-ccd send t:4 "write tests for total.ts"  # type a prompt
-ccd wait t:4                             # wait until that Claude/Codex turn ends, print the screen
+ccd new codex --cwd C:\work\api          # open a terminal (claude | codex | agy | cursor | powershell | cmd)
+ccd send t:4 "write tests for total.ts"  # send a prompt
+ccd wait t:4                             # wait for turn completion, print screen
 ccd search "flaky checkout" --agent codex
-ccd log 019a2c41 --at 12                 # read a transcript around a hit
+ccd log 019a2c41 --at 12                 # inspect transcript around a hit
 ccd gpu run --mem 8G --est 30m -- python eval.py
-ccd notice "GPU 0 reserved until 18:00"  # post a notice to every session
-ccd gpt "review this diff" --file d.patch   # second opinion through the Codex CLI (read-only)
+ccd notice "GPU 0 reserved until 18:00"  # broadcast notice to active terminals
+ccd gpt "review this diff" --file d.patch
+ccd restart                              # safely restart hub server (keeps PTY terminals alive)
 ```
-`start.bat` installs an **`agent-cli-hub` skill** for Claude Code and adds a short guidance block to `~/.claude/CLAUDE.md` **and `~/.codex/AGENTS.md`**, so both Claude Code and Codex sessions know how to use the hub, the GPU queue and the notices.
 
 ### 🌐 English / 한국어
-Switch with the 🌐 button (or `"lang"` in `hub/config.json`). Messages from the server and the CLI follow the same setting.
+Switch anytime with the bottom-left 🌐 button (or `"lang"` in `hub/config.json`).
 
 ---
 
 ## Requirements
 - Windows 10 / 11
-- [Node.js](https://nodejs.org) 20 or newer (`start.bat` can install it with winget)
-- At least one agent CLI: [Claude Code](https://docs.claude.com/claude-code) and/or [Codex CLI](https://github.com/openai/codex) (`npm i -g @openai/codex`), optionally Cursor's `cursor-agent`
-- Optional: Python 3 (to view and type into console windows the hub didn't open), [Tailscale](https://tailscale.com) (phone / other PCs), an NVIDIA GPU (queue)
+- [Node.js](https://nodejs.org) 20 or newer
+- At least one agent CLI: [Claude Code](https://docs.claude.com/claude-code), [Codex CLI](https://github.com/openai/codex), Antigravity CLI (`agy`), or Cursor `cursor-agent`
+- Optional: Python 3 (external console capture), [Tailscale](https://tailscale.com) (mobile/remote access), NVIDIA GPU (`nvidia-smi` for GPU queue)
 
-## Install
-**1. Download and run.**
-```
+## Install & Run
+
+**Option 1: One-click Windows launcher**
+```powershell
 git clone https://github.com/JaekunE2/agent-cli-hub
 cd agent-cli-hub
 start.bat
 ```
-No git? [Download ZIP](https://github.com/JaekunE2/agent-cli-hub/archive/refs/heads/main.zip), unzip it anywhere and double-click `start.bat`. It needs [Node.js](https://nodejs.org) 20+ — if Node.js is missing, `start.bat` offers to install the LTS version with `winget`. The first run does `npm install`. To update, `git pull` (or unzip a new ZIP over it; your settings and data are not in the download).
 
-**2. Let your AI agent install it.** Paste this into Claude Code or Codex:
-> Install Agent CLI Hub on this PC by following https://github.com/JaekunE2/agent-cli-hub/blob/main/INSTALL_FOR_AGENTS.md — ask me before anything it marks "(ask)".
+**Option 2: Direct Node.js install & commands**
+```powershell
+cd hub
+npm install
+npm start
+```
+To run the automated test suite:
+```powershell
+cd hub
+npm test
+```
 
-**What `start.bat` does:** installs the `agent-cli-hub` skill and the guidance blocks, starts the hub (7777) and the usage dashboard (4777) without console windows, and opens the browser. The address contains an access token (also in `hub\url.txt`); on this PC `http://127.0.0.1:7777` works without it.
-
-- Start at logon: `powershell -ExecutionPolicy Bypass -File install-autostart.ps1` (undo: `uninstall-autostart.ps1`)
-- Stop: `stop.bat` (closes the hub terminals too)
-- Remove the skill, guidance blocks and autostart: `uninstall.ps1`, then delete the folder
-
-## Phone and other PCs
-1. Install Tailscale on the PC and log in.
-2. Install Tailscale on the phone (or the other PC) with the same account.
-3. Click 📱 in the hub and scan the QR code. After the first visit the address alone works.
+`start.bat` installs the `agent-cli-hub` skill and guidance blocks, launches the Hub (`http://127.0.0.1:7777`), AI Usage server (`http://127.0.0.1:4777`), and Windows System Tray monitor (`tray.ps1`) without console windows.
+- Autostart at logon: `powershell -ExecutionPolicy Bypass -File install-autostart.ps1` (undo: `uninstall-autostart.ps1`)
+- Stop all services: `stop.bat`
+- Uninstall integration: `uninstall.ps1`
 
 ## Configuration — `hub\config.json` (optional; see `hub\config.example.json`)
 | Key | Meaning |
 |---|---|
-| `lang` | `"en"` or `"ko"` (default: the Windows display language) |
-| `operator` | `{ "enabled": false }` turns the operator off; `"agent": "codex"` uses Codex; `"checkEveryMin": 0` turns the periodic check off |
-| `remote` | `"off"` stops listening on the Tailscale address |
-| `consoles` | `false` hides other console windows (no Python needed then) |
-| `codex`, `cursorAgent`, `python` | paths when they're not on PATH |
+| `lang` | `"en"` or `"ko"` (default: Windows display language) |
+| `operator` | `{ "enabled": false }` disables operator; `"agent": "codex"` uses Codex; `"checkEveryMin": 0` disables periodic check |
+| `remote` | `"off"` disables listening on Tailscale IP |
+| `consoles` | `false` hides non-hub console windows (no Python needed) |
+| `codex`, `cursorAgent`, `python` | explicit executable paths when not on `PATH` |
 | `calendar` | `todo`, `events`, `googleAccount`, `timeZone` |
-| `usageUrl`, `usageDir` | where the usage dashboard runs / keeps its accounts |
+| `usageUrl`, `usageDir` | usage dashboard URL / data folder |
 
 ## Security
-- Anyone with the token can drive the terminals on this PC. Don't share `hub\.token`, `hub\url.txt` or the QR code.
-- The hub answers only on `127.0.0.1` and Tailscale (100.64.0.0/10) addresses; it refuses other origins (DNS-rebinding guard).
-- Tokens and keys you add in the usage dashboard stay in `ai-usage\accounts.json` on this PC (git-ignored).
-- Register only your own accounts. Using someone else's account breaks the providers' terms. The hub never rotates accounts by itself to get around usage limits.
+- Anyone holding the hub token can control terminals on this PC — keep `hub\.token`, `hub\url.txt`, and QR links private.
+- Binds strictly to `127.0.0.1` and Tailscale CGNAT (`100.64.0.0/10`) with origin / DNS-rebinding checks.
+- Usage tokens stay locally in `ai-usage\accounts.json` (git-ignored). Account switching happens only when explicitly triggered by the user.
 
-## Repository layout
-```
-hub/               server, CLI (ccd.js), web UI, GPU queue, search index, i18n
-ai-usage/          AI usage dashboard (port 4777)
-operator/          the operator session's manual (CLAUDE.md / AGENTS.md) and ENVIRONMENT.md
-research-harness/  autonomous research: hooks, project template, tools
-skills/            agent-cli-hub skill + paper-review/claims/numbers/code skills
-guidance/          the block start.bat puts into ~/.claude/CLAUDE.md and ~/.codex/AGENTS.md
+## Repository Layout
+```text
+hub/               server, CLI (ccd.js), web UI, Project & Floorplan engines, GPU queue, search index, i18n, tests
+ai-usage/          AI usage & quota server (port 4777)
+operator/          operator session instructions & ENVIRONMENT.md
+research-harness/  autonomous research hooks, templates, tools
+skills/            agent-cli-hub skill + research/review skills
+guidance/          CLI prompt blocks installed into ~/.claude/CLAUDE.md and ~/.codex/AGENTS.md
+.claude/           impeccable web design critique, audit & anti-pattern detection skills
+tray.ps1           Windows system tray monitor (Hub Core status icon)
 ```
 
 ## License
@@ -164,24 +216,15 @@ MIT
 ---
 
 <details>
-<summary><b>🇰🇷 한국어 소개 (펼치기)</b></summary>
+<summary><b>🇰🇷 한국어 소개 (요약 펼치기)</b></summary>
 
-**Agent CLI Hub**는 Windows PC에서 돌아가는 AI 코딩 에이전트(Claude Code, Codex CLI, Cursor 에이전트, 셸)를 웹 페이지 하나로 관제합니다.
+**Agent CLI Hub**는 Windows PC의 AI 코딩 에이전트(**Antigravity CLI · Claude Code · Codex CLI · Cursor · 셸**)를 웹 대시보드 하나로 통합 관제합니다.
 
-- 🛰 **관제 세션**: 허브가 켜질 때 자동으로 뜨는 에이전트입니다.
-  - GPU, 네트워크, 디스크, 계정 상태를 파악해 `operator/ENVIRONMENT.md`에 정리합니다.
-  - 질문에 답하고, 필요할 때 다른 세션들에 공지를 보냅니다(`ccd notice`).
-- 🖥 **모든 화면 모아보기**: 터미널마다 실시간 화면을 보고 바로 입력할 수 있습니다.
-- 🤖 **Claude Code · Codex · Cursor · 셸**: 원하는 폴더에서 바로 띄웁니다. Codex 터미널도 작업 중/대기 상태가 보입니다.
-- 🔎 **대화 전체 검색**: Claude Code와 Codex 대화 기록을 모두 검색하고, 그 대화를 원래 폴더에서 이어서 엽니다.
-- 📂 **산출물 미리보기**: 세션이 만든 영상, PDF, 그림, 문서를 자동으로 모아 그 자리에서 미리 봅니다.
-- 💬 **텔레그램 릴레이**: 휴대폰 텔레그램에서 버튼으로 세션을 고르고 대화합니다. 사진을 보내고, 결과 파일을 받습니다. 별도 저장소 [claude-telegram-relay](https://github.com/JaekunE2/claude-telegram-relay)이며 관제 없이도 동작합니다.
-- 🎛 **GPU 대기열**: 세션들이 GPU를 순서대로 나눠 씁니다. 대기열 밖 작업은 종료하지 않습니다.
-- 🔬 **자율 연구**, 📅 **캘린더**, 📊 **AI 사용량**도 들어 있습니다. 계정 전환은 사용자가 버튼을 누를 때만 일어납니다.
-- 📱 **휴대폰에서 접속**: Tailscale로 접속합니다. 화면의 QR을 찍으면 됩니다.
-- 🌐 한국어와 영어를 지원합니다(🌐 버튼).
+- 🎨 **Crisp Minimal UI & 통합 Hub Core 아이콘**: 라이트/다크 3단 표면 분리, 4열 헤어라인 지표 바, 제로 섀도우 정돈된 카드 위계, 웹·파비콘·Windows 트레이(`tray.ps1`)가 동일한 **Hub Core** 심볼과 실시간 상태 팝오버로 연동됩니다.
+- 🗂 **Project 작업 설계 · 칸반 · 작업 흐름(DAG) · 서브 개발 · 토큰 합산**: 목표 기반 AI 태스크 분해, 모델/추론 강도 선택, 드래그 가능한 DAG 의존성 맵, 태스크 내장 서브 개발 채팅, 하위 태스크 누적 토큰의 최상위 롤업 집계를 제공합니다.
+- 🗺 **코드 구조(Floorplan) & 보고서 산출물**: 임의 폴더 정적 분석, 핵심 허브 랭킹, **인터랙티브 계층 맵(Blast Radius 연결 강조)**, 보안/구조 점검, Mermaid 포함 마크다운 보고서 미리보기 및 `FLOORPLAN.md` 산출물 자동 핀 저장을 지원합니다.
+- 🤖 **AGY · Claude · Codex 통합 & 스마트 `Ctrl+V`**: AGY 대화/쿼터 연동, 터미널·최근 대화 마지막 탭 기억, 터미널 내 텍스트 `Ctrl+V` 붙여넣기 및 로컬 이미지 `^V` 네이티브 붙여넣기를 모두 지원합니다.
 
-**설치:** `git clone https://github.com/JaekunE2/agent-cli-hub` 후 `start.bat`을 실행하세요. 또는 에이전트에게 "https://github.com/JaekunE2/agent-cli-hub/blob/main/INSTALL_FOR_AGENTS.md 를 따라 설치해줘"라고 맡기면 됩니다.
-자세한 내용은 **[한국어 README](README.ko.md)**에 있습니다.
+자세한 내용은 **[한국어 README](README.ko.md)**를 참고하세요.
 
 </details>

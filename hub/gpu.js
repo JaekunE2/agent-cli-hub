@@ -8,7 +8,9 @@ const crypto = require('crypto');
 const { execFile } = require('child_process');
 const os = require('os');
 
-module.exports = function gpuQueue({ dir, file = 'gpu-queue.json', config = {}, pidAlive, describePid, procTable, consoleTitleOf }) {
+// readOnly: a side instance of the hub (another port, e.g. a test copy next to the live one) shows the GPUs
+// but never grants, adopts or launches anything, so it cannot compete with the live queue.
+module.exports = function gpuQueue({ dir, file = 'gpu-queue.json', config = {}, pidAlive, describePid, procTable, consoleTitleOf, readOnly = false }) {
   const FILE = path.join(dir, file);
   const cfg = {
     pollMs: 5000,
@@ -32,26 +34,108 @@ module.exports = function gpuQueue({ dir, file = 'gpu-queue.json', config = {}, 
   const save = () => { try { fs.writeFileSync(FILE + '.tmp', JSON.stringify(st, null, 1)); fs.renameSync(FILE + '.tmp', FILE); } catch {} };
 
   const run = (cmd, args, timeout = 8000) => new Promise((resolve) => {
-    execFile(cmd, args, { timeout, windowsHide: true }, (err, out) => resolve(err ? { err: err.message } : { out: String(out) }));
+    // keep exit code / signal / stderr in the error: "Command failed: <cmd>" alone hid why remote probes failed
+    execFile(cmd, args, { timeout, windowsHide: true }, (err, out, stderr) => resolve(err
+      ? { err: `${err.message.split('\n')[0].slice(0, 120)}\n${String(stderr || '').trim()}\n[code=${err.code ?? ''} signal=${err.signal ?? ''}${err.killed ? ' killed(timeout)' : ''}]` }
+      : { out: String(out) }));
   });
+  // remote servers keep the basic field set (an unsupported field makes nvidia-smi fail the whole query);
+  // the local card adds reserved memory, power, P-state and clocks for idle-noise filtering
   const QUERY = ['--query-gpu=index,uuid,name,memory.total,memory.used,utilization.gpu', '--format=csv,noheader,nounits'];
+  const QUERY_LOCAL = ['--query-gpu=index,uuid,name,memory.total,memory.used,utilization.gpu,memory.reserved,power.draw,power.limit,pstate,clocks.current.graphics,clocks.max.graphics', '--format=csv,noheader,nounits'];
   const THERMAL = ['--query-gpu=index,temperature.gpu,temperature.gpu.tlimit,clocks_event_reasons.hw_thermal_slowdown,clocks_event_reasons.sw_thermal_slowdown', '--format=csv,noheader,nounits'];
   const APPS = ['--query-compute-apps=pid,process_name,gpu_uuid', '--format=csv,noheader,nounits'];
-  function parse(host, gOut, aOut) {
-    const byUuid = new Map();
-    const list = gOut.trim().split(/\r?\n/).filter(Boolean).map((l) => {
-      const [index, uuid, name, total, used, util] = l.split(',').map((x) => x.trim());
-      const g = { key: `${host}:${index}`, host, index: Number(index), name, totalMB: Number(total), usedMB: Number(used), util: Number(util) || 0, procs: [] };
-      // Grace-class unified-memory boards (e.g. DGX Spark) share system memory: nvidia-smi says [N/A]
+  const PMON = ['pmon', '-c', '1'];
+  let pmonUnsupported = false; // WDDM cards often answer "not supported": stop asking after the first refusal
+  const ACTIVE_APP = /python|julia|matlab|colmap|^kit\.exe|isaac|blender|ffmpeg|ollama|llama|vllm|comfy|torch|train|unity|unreal|ue[45]editor|dfc|surro|onnx|triton|tensorrt/i;
+  const UI_NOISE_APP = /^(msedge|msedgewebview2|chrome|explorer|searchhost|shellexperiencehost|startmenuexperiencehost|textinputhost|applicationframehost|systemsettings|windowsterminal|antigravity|claude|chatgpt|ms-teams|teamviewer|emeditor|snippingtool|draw\.io|crossdeviceresume|shellhost|dwm|csrss)\.exe$/i;
+  const prevGpuUtil = new Map();
+  // CPU utilisation sampled every 2 s; the top two of the last six samples are dropped (process-spawn spikes)
+  let prevCpuTicks = null, cpuHistory = [];
+  const cpuState = { model: (os.cpus()[0]?.model || 'CPU').replace(/\s+/g, ' ').trim(), cores: os.cpus().length, util: 0 };
+  function sampleCpu() {
+    try {
+      let idle = 0, total = 0;
+      for (const c of os.cpus()) { for (const v of Object.values(c.times)) total += v; idle += c.times.idle; }
+      if (prevCpuTicks && total > prevCpuTicks.total) {
+        const dTotal = total - prevCpuTicks.total, dIdle = idle - prevCpuTicks.idle;
+        const raw = Math.max(0, Math.min(100, Math.round(((dTotal - dIdle) / dTotal) * 100)));
+        cpuHistory.push(raw);
+        if (cpuHistory.length > 6) cpuHistory.shift();
+        const sorted = [...cpuHistory].sort((a, b) => a - b);
+        const kept = sorted.length >= 4 ? sorted.slice(0, sorted.length - 2) : sorted;
+        const avg = Math.round(kept.reduce((x, y) => x + y, 0) / kept.length);
+        cpuState.util = cpuHistory.length <= 2 ? avg : Math.round(cpuState.util * 0.65 + avg * 0.35);
+      }
+      prevCpuTicks = { idle, total };
+    } catch {}
+    return cpuState;
+  }
+  sampleCpu();
+  function parse(host, gOut, aOut, pOut) {
+    const byUuid = new Map(), byIdx = new Map();
+    // only real GPU rows ("0, GPU-…, name, …"): a broken driver prints "Failed to initialize NVML: …" instead
+    const list = gOut.trim().split(/\r?\n/).filter((l) => /^\s*\d+\s*,/.test(l)).map((l) => {
+      const [index, uuid, name, total, used, util, reserved, pwrDraw, pwrLimit, pstate, clkCur, clkMax] = l.split(',').map((x) => x.trim());
+      const num = (x) => (x !== undefined && x !== '' && Number.isFinite(Number(x)) ? Number(x) : null);
+      const resMB = num(reserved) || 0;
+      const rawUtil = Number(util) || 0;
+      const curMHz = num(clkCur), maxMHz = num(clkMax);
+      const pwrW = num(pwrDraw) != null ? Math.round(num(pwrDraw)) : null;
+      const pwrLimW = num(pwrLimit) != null ? Math.round(num(pwrLimit)) : null;
+      const ps = pstate && /^P\d+$/i.test(pstate) ? pstate.toUpperCase() : null;
+      // memory.used excludes the driver-reserved block; count it as occupied (total = used + reserved + free)
+      const g = { key: `${host}:${index}`, host, index: Number(index), name, totalMB: Number(total), usedMB: Number(used) + resMB, util: rawUtil, procs: [] };
+      if (reserved !== undefined) Object.assign(g, { appUsedMB: Number(used), reservedMB: resMB, rawUtil, pstate: ps, clockMHz: curMHz, maxClockMHz: maxMHz, powerW: pwrW, powerLimitW: pwrLimW, activeProcs: [] });
+      g._lowP = !!ps && !/^P[012]$/.test(ps);
+      g._idlePower = pwrW != null && pwrLimW != null && pwrW <= Math.max(26, Math.round(pwrLimW * 0.16));
+      // GB10 / Grace-class boards (DGX Spark, ASUS GX10) share system memory: nvidia-smi says [N/A]
       if (!Number.isFinite(g.totalMB)) { g.unified = true; g.totalMB = 0; g.usedMB = 0; }
       byUuid.set(uuid, g);
+      byIdx.set(g.index, g);
       return g;
     });
+    const pidNames = new Map();
     for (const l of (aOut || '').trim().split(/\r?\n/).filter(Boolean)) {
-      const [pid, pname, uuid] = l.split(',').map((x) => x.trim());
+      const [pidStr, pname, uuid] = l.split(',').map((x) => x.trim());
+      const pid = Number(pidStr), baseName = path.basename(pname || '');
+      if (pid && baseName && !/^\[/.test(baseName)) pidNames.set(pid, baseName);
       const g = byUuid.get(uuid);
       // Windows lists every desktop app that touches the GPU; show only likely compute jobs
-      if (g && COMPUTE.test(path.basename(pname))) g.procs.push({ pid: Number(pid), name: path.basename(pname) });
+      if (g && COMPUTE.test(baseName)) g.procs.push({ pid, name: baseName });
+    }
+    // nvidia-smi pmon: per-process SM use, so idle desktop/WebView repaints are not mistaken for work
+    for (const l of (pOut || '').trim().split(/\r?\n/).filter((x) => x && !x.startsWith('#'))) {
+      const cols = l.trim().split(/\s+/);
+      if (cols.length < 9) continue;
+      const g = byIdx.get(Number(cols[0]));
+      const pid = Number(cols[1]), pType = cols[2];
+      if (!g || !g.activeProcs || !Number.isFinite(pid)) continue;
+      const name = pidNames.get(pid) || cols.slice(8).join(' ');
+      if (UI_NOISE_APP.test(name)) continue;
+      if (!(pType === 'C' || COMPUTE.test(name) || ACTIVE_APP.test(name))) continue;
+      const scale = (g._lowP && g.clockMHz && g.maxClockMHz) ? Math.min(1, g.clockMHz / g.maxClockMHz) : 1;
+      const sm = (g._lowP && g._idlePower && pType !== 'C') ? 0 : Math.round((Number(cols[3]) || 0) * scale);
+      const mem = Math.round((Number(cols[4]) || 0) * scale);
+      if (sm >= 2 || pType === 'C') g.activeProcs.push({ pid, name, sm, mem });
+    }
+    for (const g of list) {
+      if (g.activeProcs) {
+        g.activeProcs.sort((a, b) => (b.sm - a.sm) || (b.mem - a.mem));
+        // In P5/P8 or at idle power with no compute process, DWM/WebView2 repaints make the raw
+        // utilisation jump 4-54 % at idle clocks (210-450 MHz): scale it down to what it really is.
+        if ((g._lowP || g._idlePower) && g.activeProcs.length === 0 && g.procs.length === 0) {
+          const scale = (g.clockMHz && g.maxClockMHz) ? Math.min(1, g.clockMHz / g.maxClockMHz) : 0.15;
+          const scaled = Math.round(g.rawUtil * scale * 0.35);
+          g.util = scaled <= 2 ? 0 : Math.min(3, scaled);
+        } else if (g._lowP && g.clockMHz && g.maxClockMHz) {
+          g.util = Math.round(g.rawUtil * Math.min(1, g.clockMHz / g.maxClockMHz));
+        }
+        const prev = prevGpuUtil.get(g.key);
+        if (prev !== undefined && g._lowP) g.util = Math.round(prev * 0.5 + g.util * 0.5);
+        prevGpuUtil.set(g.key, g.util);
+      }
+      delete g._lowP; delete g._idlePower;
     }
     return list;
   }
@@ -92,7 +176,7 @@ module.exports = function gpuQueue({ dir, file = 'gpu-queue.json', config = {}, 
   const sshArgs = (s) => ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=6', '-o', 'StrictHostKeyChecking=accept-new',
     ...(s.port ? ['-p', String(s.port)] : []), ...(s.key ? ['-i', s.key] : []), s.ssh];
   const remote = new Map(); // server id -> { at, list }
-  // Slurm cluster: one entry per GPU node of the partition. A Slurm GPU is handed
+  // Slurm cluster (e.g. Delta): one entry per GPU node of the partition. A Slurm GPU is handed
   // out whole (--gres=gpu:1), so a node counts as busy while any job holds its GPU — ours or
   // a teammate's — and as unusable while Slurm has it down/drained.
   async function probeSlurm(s) {
@@ -131,7 +215,7 @@ module.exports = function gpuQueue({ dir, file = 'gpu-queue.json', config = {}, 
     // detached remote jobs of this server: exit code file, else is the pid alive
     const jobs = st.tickets.filter((t) => t.status === 'granted' && t.remoteJob && String(t.gpu || '').split(':')[0] === s.id);
     const jobCheck = jobs.map((t) => `if [ -f ${t.remoteJob.dir}/exit ]; then echo "__JOB__ ${t.id} exit $(cat ${t.remoteJob.dir}/exit)"; elif kill -0 ${t.remoteJob.pid} 2>/dev/null; then echo "__JOB__ ${t.id} run"; else echo "__JOB__ ${t.id} gone"; fi`).join('; ');
-    const r = await run('ssh', [...sshArgs(s), `nvidia-smi ${QUERY.join(' ')}; echo __MEM__; grep -E '^(MemTotal|MemAvailable):' /proc/meminfo; echo __THERM__; nvidia-smi ${THERMAL.join(' ')}; echo __CPU__ $(cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null | sort -n | tail -1)${jobCheck ? `; ${jobCheck}` : ''}`], 15000);
+    const r = await run('ssh', [...sshArgs(s), `nvidia-smi ${QUERY.join(' ')}; echo __MEM__; grep -E '^(MemTotal|MemAvailable):' /proc/meminfo; echo __THERM__; nvidia-smi ${THERMAL.join(' ')}; echo __CPU__ $(cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null | sort -n | tail -1); echo __STAT__ $(head -1 /proc/stat); sleep 1; echo __STAT2__ $(head -1 /proc/stat) __LOAD__ $(cut -d' ' -f1 /proc/loadavg) $(nproc)${jobCheck ? `; ${jobCheck}` : ''}`], 15000);
     const [gOut, memOut = ''] = String(r.out || '').split('__MEM__');
     for (const m of memOut.matchAll(/__JOB__ (\S+) (run|exit|gone)(?: (-?\d+))?/g)) {
       const t = jobs.find((x) => x.id === m[1]);
@@ -142,16 +226,35 @@ module.exports = function gpuQueue({ dir, file = 'gpu-queue.json', config = {}, 
     const unify = (x) => (x.unified && kb('MemTotal') ? { ...x, totalMB: Math.round(kb('MemTotal') / 1024), usedMB: Math.round((kb('MemTotal') - kb('MemAvailable')) / 1024) } : x);
     const [, thermOut = ''] = memOut.split('__THERM__');
     const cpuM = /__CPU__ (\d+)/.exec(memOut);
-    const list = r.out && gOut.trim()
-      ? applyThermal(parse(s.id, gOut).map((x) => ({ ...unify(x), server: s.name || s.id })), thermOut.split('__CPU__')[0], cpuM ? Math.round(Number(cpuM[1]) / 1000) : NaN)
+    const parsed = r.out && gOut.trim() ? parse(s.id, gOut) : [];
+    // host CPU use (2 /proc/stat samples 1 s apart), load and RAM, shown next to the server's GPUs
+    const st1 = /__STAT__ cpu\s+([\d ]+)/.exec(memOut), st2 = /__STAT2__ cpu\s+([\d ]+?)\s+__LOAD__ ([\d.]+) (\d+)/.exec(memOut);
+    let host = {};
+    if (st1 && st2) {
+      const a = st1[1].trim().split(/\s+/).map(Number), b = st2[1].trim().split(/\s+/).map(Number);
+      const idle = (v) => v[3] + (v[4] || 0), tot = (v) => v.reduce((x, y) => x + y, 0);
+      const dt = tot(b) - tot(a);
+      host = { cpuPct: dt > 0 ? Math.round(100 * (1 - (idle(b) - idle(a)) / dt)) : null, cpuLoad: Number(st2[2]), cpuCores: Number(st2[3]) };
+    }
+    if (kb('MemTotal')) Object.assign(host, { ramTotalMB: Math.round(kb('MemTotal') / 1024), ramUsedMB: Math.round((kb('MemTotal') - kb('MemAvailable')) / 1024) });
+    if (!parsed.length && gOut.trim()) r.err = gOut.trim().split(/\r?\n/)[0]; // e.g. "Failed to initialize NVML: Unknown Error"
+    const list = parsed.length
+      ? applyThermal(parse(s.id, gOut).map((x) => ({ ...unify(x), ...host, server: s.name || s.id })), thermOut.split('__CPU__')[0], cpuM ? Math.round(Number(cpuM[1]) / 1000) : NaN)
       : [{ key: `${s.id}:?`, host: s.id, server: s.name || s.id, index: -1, name: '연결 안 됨', totalMB: 0, usedMB: 0, util: 0, procs: [],
           error: (r.err || '').split('\n').map((l) => l.trim()).filter(Boolean).pop() || 'unreachable' }];
     remote.set(s.id, { at: Date.now(), list });
   }
   async function probe() {
     const out = [];
-    const [g, a, th] = await Promise.all([run('nvidia-smi', QUERY), run('nvidia-smi', APPS), run('nvidia-smi', THERMAL)]);
-    if (g.out) out.push(...applyThermal(parse('local', g.out, a.out), th.out, NaN)); else probeError = `nvidia-smi: ${g.err}`;
+    let [g, a, th] = await Promise.all([run('nvidia-smi', QUERY_LOCAL), run('nvidia-smi', APPS), run('nvidia-smi', THERMAL)]);
+    if (!g.out) g = await run('nvidia-smi', QUERY); // older driver without the extra fields
+    // pmon blocks ~1 s: only ask while the card is in a boost state (P0-P2) and only if it is supported
+    let pm = { out: '' };
+    if (g.out && !pmonUnsupported && /,\s*P[012]\s*,/i.test(g.out)) {
+      pm = await run('nvidia-smi', PMON, 5000);
+      if (!pm.out || /not supported|failed/i.test(pm.out + (pm.err || ''))) { pmonUnsupported = true; pm = { out: '' }; }
+    }
+    if (g.out) out.push(...applyThermal(parse('local', g.out, a.out, pm.out), th.out, NaN)); else probeError = `nvidia-smi: ${g.err}`;
     for (const s of cfg.servers) {
       const last = remote.get(s.id);
       // remote servers are polled less often (ssh round trips); an OFF server only for reachability
@@ -214,7 +317,7 @@ module.exports = function gpuQueue({ dir, file = 'gpu-queue.json', config = {}, 
   function pendingReserve(g, now) {
     return active().filter((t) => t.gpu === g.key && !t.exclusive && now - t.grantedAt < cfg.warmupMs).reduce((s, t) => s + (t.memMB || 0), 0);
   }
-  // "auto": this PC's GPUs or any server marked auto:true (e.g. a big-memory but slower box)
+  // "auto": this PC's GPUs or any server marked auto:true (e.g. the big-memory, slower GX10)
   const serverCfg = (host) => cfg.servers.find((x) => x.id === host);
   const targets = (t, g) => t.gpu === 'auto' ? g.host === 'local' || !!serverCfg(g.host)?.auto
     : !t.gpu || t.gpu === 'any' ? g.host === 'local' : t.gpu.endsWith(':*') ? g.host === t.gpu.slice(0, -2) : t.gpu === g.key;
@@ -243,7 +346,18 @@ module.exports = function gpuQueue({ dir, file = 'gpu-queue.json', config = {}, 
     // Honour declared peaks: a job past its warm-up may still grow to what it reserved, so the
     // GPU counts as occupied by whichever is larger — measured use or the sum of reservations.
     const reserved = leases.reduce((sum, x) => sum + (x.memMB || 0), 0);
-    const occupied = Math.max(g.usedMB + pendingReserve(g, now), reserved);
+    // Unified-memory servers (GX10) also hold things the queue does not lease: the always-loaded Ollama
+    // models and the OS (~55 GB on the GX10). Without counting that, leases were judged against the
+    // whole 121 GB: 11-17 three 30 GB jobs granted 3 min apart (each still loading past the warm-up)
+    // plus an 8 GB job drove the GX10 out of memory and it stopped answering. Config: reserveBaseMB.
+    // The local 4090 also drives the displays: 11-18 the desktop compositor (dwm) alone held ~12 GB and jobs that
+    // grew past their leases pushed the card into shared memory (screen froze). Keep cfg.localDisplayReserveMB free.
+    const base = serverCfg(g.host)?.reserveBaseMB ?? (g.unified ? 56000 : g.host === "local" ? (cfg.localDisplayReserveMB ?? 4000) : 0);
+    // Shared servers (config "idleOnly": true): only use a GPU nobody else is using — memory in use beyond our own
+    // leases above idleMB (default 2000) blocks new grants on it.
+    const sc = serverCfg(g.host);
+    if (sc?.idleOnly && g.usedMB - reserved > (sc.idleMB ?? 2000)) return false;
+    const occupied = Math.max(g.usedMB + pendingReserve(g, now), reserved + base);
     const free = g.totalMB - occupied - cfg.marginMB;
     return free >= (t.memMB || 0);
   }
@@ -486,6 +600,7 @@ module.exports = function gpuQueue({ dir, file = 'gpu-queue.json', config = {}, 
   async function tick() {
     await probe().catch((e) => { probeError = e.message; });
     await measureRam().catch(() => {});
+    if (readOnly) return;
     const now = Date.now();
     const adopted = await adopt(now).catch(() => false);
     if (reap(now) | schedule(now) | adopted) save();
@@ -494,9 +609,16 @@ module.exports = function gpuQueue({ dir, file = 'gpu-queue.json', config = {}, 
   // period instead of judging it by the last value written to disk.
   for (const t of st.tickets) if (t.status === 'granted' || t.status === 'waiting') t.heartbeatAt = Date.now();
   if (!st.durationsSeeded) { for (const t of st.tickets) if (t.status === 'released') recordDuration(t); st.durationsSeeded = true; }
-  let timer = null;
-  function start() { if (!timer) { tick(); timer = setInterval(tick, cfg.pollMs); } }
-  function stop() { if (timer) { clearInterval(timer); timer = null; } save(); }
+  let timer = null, cpuTimer = null;
+  function start() {
+    if (!timer) { tick(); timer = setInterval(tick, cfg.pollMs); }
+    if (!cpuTimer) { cpuTimer = setInterval(sampleCpu, 2000); cpuTimer.unref?.(); }
+  }
+  function stop() {
+    if (timer) { clearInterval(timer); timer = null; }
+    if (cpuTimer) { clearInterval(cpuTimer); cpuTimer = null; }
+    save();
+  }
 
   // place in its shortest line (1 = next on some GPU)
   function lanePosition(t) {
@@ -553,6 +675,8 @@ module.exports = function gpuQueue({ dir, file = 'gpu-queue.json', config = {}, 
   };
 
   async function handle(p, url, req, body, send) {
+    if (readOnly && req.method === 'POST' && /^\/api\/gpu\/(request|est|toggle|priority|heartbeat|release)$/.test(p))
+      return send(503, { error: 'this hub instance is read-only for the GPU queue (side/test instance) — use the main hub on port 7777' });
     if (p === '/api/gpu') {
       const now = Date.now();
       return send(200, {
@@ -563,6 +687,7 @@ module.exports = function gpuQueue({ dir, file = 'gpu-queue.json', config = {}, 
         heatLog: (st.heatLog || []).slice(-10),
         heatLimits: { hotC: cfg.hotC, hotTlimitC: cfg.hotTlimitC, hotCpuC: cfg.hotCpuC, hysteresisC: cfg.heatHysteresisC },
         history: st.tickets.filter((t) => !['granted', 'waiting'].includes(t.status)).sort((a, b) => b.endedAt - a.endedAt).slice(0, 12),
+        cpu: cpuState,
         ram: { ...sysRam(), reservedMB: active().filter(onLocalRam).reduce((x, t) => x + (t.ramMB || 0), 0), outstandingMB: ramOutstanding(now), marginMB: cfg.ramMarginMB },
         ramUse: Object.fromEntries(ramUse),
         error: probeError, config: { marginMB: cfg.marginMB, idleMB: cfg.idleMB },
@@ -619,7 +744,8 @@ module.exports = function gpuQueue({ dir, file = 'gpu-queue.json', config = {}, 
       const slurmOnly = gpus.filter((g) => g.index >= 0 && targets({ gpu: gpuKey }, g)).every((g) => serverCfg(g.host)?.slurm);
       if (!b.exclusive && total && memMB > total - (slurmOnly ? 0 : cfg.idleMB)) {
         const big = cfg.servers.filter((s) => s.auto).map((s) => s.id);
-        return send(400, { error: `요청 ${memMB}MB는 대상 GPU(최대 ${total}MB)에서 기본 사용량을 뺀 것보다 큽니다${big.length && gpuKey === 'any' ? ` — 대용량 서버를 쓰려면 --gpu ${big[0]} 또는 --gpu auto --sync <폴더>` : ''}` });
+        const syncArg = require('./i18n').language() === 'en' ? '<dir>' : '<폴더>';
+        return send(400, { error: `요청 ${memMB}MB는 대상 GPU(최대 ${total}MB)에서 기본 사용량을 뺀 것보다 큽니다${big.length && gpuKey === 'any' ? ` — 대용량 서버를 쓰려면 --gpu ${big[0]} 또는 --gpu auto --sync ${syncArg}` : ''}` });
       }
       const holderPid = Number(b.holderPid) || null;
       const t = {

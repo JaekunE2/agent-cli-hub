@@ -1,0 +1,17 @@
+{
+  "id": "gpt-rotation",
+  "name": "GPT across logins",
+  "description": "ccd gpt tries every ChatGPT login by remaining quota, then a gptFallback plugin",
+  "cli": "cli.js",
+  "valueFlags": [
+    "account",
+    "via",
+    "cd",
+    "image",
+    "file",
+    "model"
+  ],
+  "help": [
+    "  gpt \"prompt\" ... [--account EMAIL] [--via hub|local]   several ChatGPT logins, best quota first, then a fallback plugin   (plugin gpt-rotation)"
+  ]
+}
