@@ -148,9 +148,9 @@ html.is-tauri .drw-compact .drw-panel { max-height: calc(100vh - 80px); }
 .tauri-tb-btn.tauri-tb-close:hover { background: var(--danger); color: #ffffff; }
 
 /* Astryx 4-variant x 2-size button system */
-button { font: inherit; font-size: 13px; font-weight: 500; color: inherit; background: var(--panel); border: 1px solid var(--line-strong); border-radius: var(--radius-md); min-height: var(--ctrl-h-md); padding: 0 12px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; transition: border-color .14s ease, background .14s ease, color .14s ease, box-shadow .14s ease, opacity .14s ease; white-space: nowrap; }
+button { font: inherit; font-size: 13px; font-weight: 500; color: inherit; background: var(--panel); border: 1px solid var(--line-strong); border-radius: var(--radius-md); min-height: var(--ctrl-h-md); padding: 0 12px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; transition: border-color .14s ease, background .14s ease, color .14s ease, box-shadow .14s ease, opacity .14s ease, transform .1s ease-out; white-space: nowrap; }
 button:hover { border-color: color-mix(in srgb, var(--text) 28%, var(--line-strong)); background: color-mix(in srgb, var(--panel2) 52%, var(--panel)); }
-button:active:not(:disabled) { transform: translateY(0.5px); }
+button:active:not(:disabled) { transform: translateY(1px); }
 button:disabled { opacity: .48; cursor: not-allowed; transform: none; }
 button.btn-sm { min-height: var(--ctrl-h-sm); height: var(--ctrl-h-sm); padding: 0 9px; font-size: 12px; border-radius: var(--radius-sm); gap: 4px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
@@ -238,7 +238,7 @@ input[type="checkbox"], input[type="radio"] { min-height: 0; padding: 0; accent-
 .srow { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: var(--radius-md); cursor: pointer; transition: background .12s, border-color .16s; min-height: 32px; position: relative; border: 1px solid transparent; }
 .srow:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
 .srow.sel { background: var(--sel); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 22%, transparent); }
-.srow.just-done { background: color-mix(in srgb, var(--ok) 11%, transparent); border-color: color-mix(in srgb, var(--ok) 36%, transparent); animation: done-glow 2.8s ease-in-out infinite; }
+.srow.just-done { background: color-mix(in srgb, var(--ok) 11%, transparent); border-color: color-mix(in srgb, var(--ok) 36%, transparent); }
 .srow.just-done:hover { background: color-mix(in srgb, var(--ok) 17%, transparent); }
 .dot.busy { animation: busy-pulse 2s ease-in-out infinite; }
 .ts-right { margin-inline-start: auto; }
@@ -263,11 +263,10 @@ input[type="checkbox"], input[type="radio"] { min-height: 0; padding: 0; accent-
 .term-live-pill.dormant { color: var(--muted); background: color-mix(in srgb, var(--text) 4%, transparent); }
 .term-live-pill.exited { color: var(--muted); background: color-mix(in srgb, var(--text) 5%, transparent); opacity: .82; }
 #termwrap::after { content: ''; position: absolute; inset: 0; pointer-events: none; opacity: 0; border-top: 2px solid var(--ok); transition: opacity .4s ease; }
-#termwrap.term-done-flash::after { animation: term-shimmer 2.6s ease-out forwards; }
-@keyframes done-glow { 0%, 100% { border-color: color-mix(in srgb, var(--ok) 28%, transparent); } 50% { border-color: color-mix(in srgb, var(--ok) 68%, transparent); } }
+#termwrap.term-done-flash::after { animation: term-shimmer .32s ease-out forwards; }
 @keyframes busy-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
 @keyframes term-shimmer { 0% { opacity: 0; } 18% { opacity: 1; } 100% { opacity: 0; } }
-@media (prefers-reduced-motion: reduce) { .srow.just-done, .dot.busy, #termwrap.term-done-flash::after { animation: none !important; } }
+@media (prefers-reduced-motion: reduce) { .dot.busy, #termwrap.term-done-flash::after { animation: none !important; } }
 .srow-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .side-history { display: flex; flex-direction: column; gap: 2px; }
 .srow-open { align-items: stretch; min-height: 0; padding: 0; border: 0; border-radius: var(--radius-sm); text-align: left; }
@@ -397,7 +396,8 @@ body.side-collapsed .side-float-btn { display: inline-flex; }
 .tablist button { position: relative; min-height: 38px; height: 38px; padding: 0 13px; font-size: 13.5px; border: 0; border-radius: var(--radius-sm) var(--radius-sm) 0 0; background: transparent; color: var(--muted); font-weight: 500; box-shadow: none; }
 .tablist button:hover { color: var(--text); background: color-mix(in srgb, var(--panel2) 65%, transparent); }
 .tablist button.on { color: var(--text); font-weight: 650; }
-.tablist button.on::after { content: ''; position: absolute; left: 8px; right: 8px; bottom: 0; height: 2px; border-radius: 2px; background: var(--accent); }
+.tablist button::after { content: ''; position: absolute; left: 8px; right: 8px; bottom: 0; height: 2px; border-radius: 2px; background: var(--accent); transform: scaleX(0); transition: transform 120ms ease-out; }
+.tablist button.on::after { transform: scaleX(1); }
 .subtoolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 24px; border-bottom: 1px solid var(--line); background: var(--panel); flex: none; }
 .subtoolbar .sp { flex: 1; }
 @media (max-width: 760px) {

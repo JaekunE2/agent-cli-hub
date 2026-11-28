@@ -851,6 +851,12 @@ function renderSide() {
   }
 
   side.innerHTML = h;
+  if (termDoneMotion.size) {
+    for (const row of side.querySelectorAll('.srow.just-done')) {
+      if (termDoneMotion.has(row.dataset.key)) row.classList.add('srow-done-arrived');
+    }
+    termDoneMotion.clear();
+  }
   const historyList = $('.side-history', side);
   if (historyList) historyList.scrollTop = prevHistoryTop;
   side.scrollTop = prevTop;

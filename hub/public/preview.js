@@ -365,6 +365,7 @@
       });
     };
 
+    let previewEntrance;
     const setVisible = (show) => {
       const next = !!show;
       if (isPaneVisible === next) { syncBarSideButtons(); return; }
@@ -373,7 +374,13 @@
       rootEl.hidden = !next;
       if (resizerEl) resizerEl.hidden = !next;
       splitEl?.classList.toggle('has-pv', next);
+      previewEntrance?.cancel();
       if (next) applySplitRatio();
+      if (next && matchMedia('(prefers-reduced-motion: no-preference)').matches) {
+        previewEntrance = rootEl.animate(
+          [{ opacity: 0.8, transform: 'translateX(8px)' }, { opacity: 1, transform: 'none' }],
+          { duration: 180, easing: 'ease-out' });
+      }
       syncBarSideButtons();
     };
 
@@ -664,6 +671,7 @@
       const item = findItem(selectedId)?.artifact;
       const initial = $('img, iframe', bodyEl);
       if (!initial || areaReview || !canReviewArtifactArea(item)) return;
+      previewEntrance?.cancel();
       const review = {};
       const isActive = () => areaReview === review && rootEl.isConnected;
       areaReview = review;
@@ -674,7 +682,7 @@
           async onSubmit(message, sent, regions, comment) {
             const text = `${quotePath(item.abs || item.path)}\n${message}`;
             await sendWithRegionCheck(initial, item, regions, askTarget, text, () => sendAreaReviewInChat(text, askTarget), comment);
-            sent();
+            await sent();
           },
           onStop() { stopPaneAreaReview(); areaEl.focus(); },
         });

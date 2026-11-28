@@ -51,6 +51,8 @@ function select(sel, tab, persistTab = false) {
   }
   const leaving = state.sel.kind === 'term' && (sel.kind !== 'term' || String(state.sel.id) !== String(sel.id))
     ? state.terms.find(t => String(t.id) === String(state.sel.id) && t.projectTask) : null;
+  const pageChanged = booted && (state.sel.kind !== sel.kind || state.sel.id !== sel.id ||
+    state.sel.version !== sel.version || (tab && state.tab !== tab));
   if (sel.kind !== state.sel.kind || String(sel.id) !== String(state.sel.id)) closeWorkspacePanel();
   stopView();
   if (leaving) setTimeout(() => {
@@ -86,6 +88,10 @@ function select(sel, tab, persistTab = false) {
   }
   renderSide();
   window.ACH_PREVIEW?.setActiveController(null);
+  if (pageChanged && !['term', 'recent', 'console', 'operator'].includes(sel.kind) &&
+      matchMedia('(prefers-reduced-motion: no-preference)').matches) {
+    $('#view').animate([{ opacity: 0.78 }, { opacity: 1 }], { duration: 150, easing: 'ease-out' });
+  }
   if (sel.kind === 'schedules') return viewSchedules();
   if (sel.kind === 'appearance') return viewAppearance();
   return ({ home: viewHome, terms: viewTerms, projects: window.viewProjects || (() => { setBar('<h2>Project</h2>'); $('#view').textContent = 'Project 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }), console: viewConsole, recent: viewTranscript, term: viewTerm, search: viewSearch, usage: viewUsage, research: viewResearch, gpu: viewGpu, operator: window.viewOperator || (() => { setBar('<h2>관제 세션</h2>'); }), 'trusted-folders': viewUsage, calendar: viewCalendar, apps: () => (window.viewApps ? window.viewApps(sel.id || '') : setBar('<h2>Apps</h2>')), vault: window.viewVault || (() => { setBar('<h2>공통 자원</h2>'); $('#view').textContent = '공통 자원 기능을 반영하려면 허브 서버를 재시작해야 합니다.'; }) })[sel.kind]?.();

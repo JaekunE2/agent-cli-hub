@@ -403,6 +403,8 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
   if (sideChatState.open) renderSideChat();
 
   let lastSig = '';
+  let previousResultReply = null;
+  const shownResultFeedback = new Set();
   let lastLiveMode = '';
   let lastMessages = [];
   let msgLimit = 120;
@@ -838,6 +840,21 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
         ? `<div class="row" style="justify-content:center;gap:8px;margin-bottom:8px"><span class="ums" style="margin:0">… 이전 메시지 ${b}개 생략${!jump && msgLimit >= 2000 ? ' (최대 2,000건 표시됨)' : ''}</span>${!jump && msgLimit < 2000 ? `<button type="button" class="btn-sm" data-load-older="1">이전 메시지 더 보기</button>` : ''}</div>`
         : '';
       msgsHost.innerHTML = lineageBanner + olderBanner + (parts.join('') || '<div class="empty">메시지 없음</div>') + more;
+      if (!jump && latestReply >= 0) {
+        const reply = b + latestReply;
+        if (reply !== previousResultReply) shownResultFeedback.clear();
+        const latest = $(`.msg.assistant[data-mi="${latestReply}"]`, msgsHost);
+        const feedback = latest?.querySelectorAll('.chat-work-verdict, .chat-work-tested > strong, .chat-work-failure > strong, .chat-work-observations > .badge') || [];
+        for (const badge of feedback) {
+          const key = badge.textContent.trim();
+          if (previousResultReply !== null && !shownResultFeedback.has(key)) badge.classList.add('work-feedback-arrived');
+          shownResultFeedback.add(key);
+        }
+        previousResultReply = reply;
+      } else if (!jump) {
+        previousResultReply = -1;
+        shownResultFeedback.clear();
+      }
       for (const button of msgsHost.querySelectorAll('[data-work-file]')) {
         button.onclick = () => openChatWorkDiff(curSid, button.closest('[data-work-result]').dataset.workResult, button.dataset.workFile);
       }

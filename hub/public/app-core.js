@@ -266,6 +266,8 @@ function fmtTok(n) {
 }
 window.fmtTok = fmtTok;
 
+const termDoneMotion = new Set();
+
 function fireTermDoneNotice(t, nextState) {
   const id = String(t.id);
   const label = termLabel(t);
@@ -284,6 +286,7 @@ function fireTermDoneNotice(t, nextState) {
     paintActiveTermStatus();
   } else {
     state.unreadTerms.add(id);
+    termDoneMotion.add(`term:${id}`);
     updateDocTitle();
   }
 

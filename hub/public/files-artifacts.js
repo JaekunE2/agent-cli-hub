@@ -703,7 +703,7 @@ function sendPathDialog(abs, { message = '', attachment = '', onSent, ...drawerO
       const r = await api('/api/term/send', { method: 'POST', body: { id: $('#spT', d).value, text, submit: !!msg } });
       if (!r.ok) throw Object.assign(new Error(r.error || '터미널 입력을 확인하지 못했습니다.'), { delivery: r.delivery });
       d.close();
-      onSent?.();
+      await onSent?.();
       toast(msg ? '세션에 보냈습니다' : '경로를 세션 입력칸에 넣었습니다');
     } catch (error) {
       uncertain = error.delivery !== 'not-sent';
@@ -1381,16 +1381,22 @@ function startArtifactRegionReview({ initial: media, slot, item, isActive, onSub
   const tools = reviewControls(slot, async (comment) => {
     const number = selected;
     const region = regions.get(number);
-    if (!isActive() || !region) return;
+    if (!isActive() || !region || region.sent) return;
     if (region.uncertain && !confirm('CLI가 이미 받았을 수 있습니다. 대화를 확인한 뒤 다시 전송할까요?')) return;
     const context = [region.context, region.element].filter(Boolean).join('\n');
     const message = `아래 산출물의 선택 영역을 코멘트에 따라 수정하고 같은 파일을 업데이트해 주세요.\n#${number}\n${context}\n코멘트: ${comment}`;
     try {
-      await onSubmit(message, () => {
+      await onSubmit(message, async () => {
         if (!isActive()) return;
+        region.sent = true;
+        tools.status.textContent = '이 영역의 코멘트를 보냈습니다.';
+        if (matchMedia('(prefers-reduced-motion: no-preference)').matches) {
+          await Promise.all([region.mark, region.button].map(el =>
+            el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 120, easing: 'ease-in', fill: 'forwards' }).finished.catch(() => {})));
+        }
+        if (!isActive() || !regions.has(number)) return;
         removeRegion(number);
         if (!regions.size) stop();
-        else tools.status.textContent = '이 영역의 코멘트를 보냈습니다.';
       }, isHtml ? null : [region.area], comment, regions.size > 1);
     } catch (error) {
       region.uncertain = error.delivery !== 'not-sent';
@@ -1437,7 +1443,7 @@ function startArtifactRegionReview({ initial: media, slot, item, isActive, onSub
     if (!regions.size) $('[data-review-drag]', slot).focus();
   };
   remove.onclick = () => {
-    if (tools.sending || !regions.has(selected)) return;
+    if (tools.sending || !regions.has(selected) || regions.get(selected).sent) return;
     removeRegion(selected);
     tools.status.textContent = '';
   };
@@ -1572,7 +1578,7 @@ function bindArtifactReview(dialog, body, url, item) {
         throw new Error(uncertain ? `전달 여부 확인 필요 · ${error.message}` : error.message);
       }
       uncertain = false;
-      onSent();
+      await onSent();
       toast('세션에 보냈습니다');
       return;
     }
