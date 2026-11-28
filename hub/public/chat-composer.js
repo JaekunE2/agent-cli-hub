@@ -327,7 +327,7 @@ async function sendAreaReviewInChat(text, target) {
   const { kind, id } = state.sel;
   const composer = $('.chat-comp-host', $('#view'));
   if (!target || target.kind !== kind || String(target.id) !== String(id) || !composer?._sendAreaReview) {
-    throw new Error('산출물을 연결할 세션을 열어 주세요.');
+    throw Object.assign(new Error('산출물을 연결할 세션을 열어 주세요.'), { delivery: 'not-sent' });
   }
   await composer._sendAreaReview(text);
 }
@@ -794,10 +794,12 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
   const sendReply = async (retry = false, areaReview = '') => {
     const previous = chatSendRecovery.get(recoveryKey);
     if (sendingReply || resolvingArtifact || repBtn.disabled || previous?.sending) {
-      if (areaReview) throw new Error('메시지를 전송하는 중입니다.');
+      if (areaReview) throw Object.assign(new Error('메시지를 전송하는 중입니다.'), { delivery: 'not-sent' });
       return;
     }
-    if (areaReview && previous?.error) throw new Error('이전 전송 오류를 먼저 확인해 주세요.');
+    if (areaReview && previous?.error) {
+      throw Object.assign(new Error('이전 전송 오류를 먼저 확인해 주세요.'), { delivery: 'not-sent' });
+    }
     if (retry && previous?.areaReview) areaReview = previous.typed;
     if (!areaReview && previous?.areaReview) return toast('이전 전송 오류를 먼저 확인해 주세요.');
     if (previous?.uncertain && !confirm('CLI가 이미 받았을 수 있습니다. 대화를 확인한 뒤 다시 전송할까요?')) return;
@@ -883,7 +885,7 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       }
       if (activeConsolePid) {
         const r = await api('/api/console/send', { method: 'POST', body: { pid: activeConsolePid, text, submit: true, resendIfMissing: retry, nativeSlash: !!nativeCommand } });
-        if (!r.ok) throw new Error(r.error || '터미널 입력을 확인하지 못했습니다.');
+        if (!r.ok) throw Object.assign(new Error(r.error || '터미널 입력을 확인하지 못했습니다.'), { delivery: r.delivery });
         syncConn();
         if (!nativeCommand) notifySent(null, text);
         if (nativeCommand?.tui) toast('명령 결과는 연결된 CLI 창에서 확인하세요.');
@@ -892,6 +894,7 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
       const t = await launchAndSend();
       if (t) toast(`터미널 t:${t.id}을(를) 연결해 메시지를 전송했습니다`);
     } catch (er) {
+      if (areaReview) throw er;
       record.error = er.message;
       record.uncertain = er.delivery !== 'not-sent';
     } finally {

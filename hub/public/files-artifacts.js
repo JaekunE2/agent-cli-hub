@@ -1232,27 +1232,38 @@ async function uploadReviewCrop(image, area) {
   return data.path;
 }
 
-function reviewControls(slot, onSubmit, onCancel) {
+function reviewControls(slot, onSubmit, onCancel, { perRegion = false } = {}) {
   slot.innerHTML = `<form class="review-controls">
     <div class="row"><button type="button" class="btn-sm" data-review-drag>영역 선택</button>
       <button type="button" class="ghost btn-sm" data-review-full>전체 영역</button>
       <span class="ums" role="status"></span></div>
     <textarea rows="2" required maxlength="3000" aria-label="수정 코멘트" placeholder="이 영역에서 바꿀 내용을 입력하세요"></textarea>
-    <button class="primary btn-sm">수정 요청</button><button type="button" class="ghost btn-sm" data-review-cancel>취소</button>
+    <button class="primary btn-sm"></button><button type="button" class="ghost btn-sm" data-review-cancel>취소</button>
   </form>`;
   const form = $('form', slot), status = $('[role=status]', form), comment = $('textarea', form);
   const drag = $('[data-review-drag]', form);
+  const button = $('button.primary', form);
+  button.textContent = perRegion ? '이 영역 코멘트 보내기' : '수정 요청';
+  let sending = false;
+  const sync = () => { button.disabled = sending || comment.disabled || !comment.value.trim(); };
+  comment.addEventListener('input', sync);
+  sync();
   $('[data-review-cancel]', form).onclick = onCancel;
   form.onsubmit = async (e) => {
     e.preventDefault();
-    const button = $('button.primary', form);
-    button.disabled = true;
+    if (button.disabled) return;
+    sending = true;
+    comment.readOnly = true;
+    sync();
     try { await onSubmit(comment.value.trim(), status); }
     catch (error) { status.textContent = error.message; }
-    finally { button.disabled = false; }
+    finally { sending = false; comment.readOnly = false; sync(); }
   };
   return {
     status,
+    comment,
+    sync,
+    get sending() { return sending; },
     setSelecting(selecting) { drag.textContent = selecting ? '위치 이동' : '영역 선택'; },
     connect(picker, allowMove = false) {
       drag.onclick = () => allowMove && picker.selecting ? picker.pause() : picker.begin();
@@ -1261,7 +1272,7 @@ function reviewControls(slot, onSubmit, onCancel) {
   };
 }
 
-function bindReviewElementPick(media, slot, picker, status, signal) {
+function bindReviewElementPick(media, slot, picker, status, signal, addRegion, isSelected) {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'ghost btn-sm';
@@ -1269,11 +1280,6 @@ function bindReviewElementPick(media, slot, picker, status, signal) {
   button.setAttribute('aria-pressed', 'false');
   $('[data-review-full]', slot).after(button);
 
-  const chip = document.createElement('button');
-  chip.type = 'button';
-  chip.className = 'ghost btn-sm review-element-chip';
-  chip.hidden = true;
-  $('textarea', slot).before(chip);
   const outline = document.createElement('div');
   outline.className = 'review-element-outline';
   outline.setAttribute('aria-hidden', 'true');
@@ -1289,14 +1295,6 @@ function bindReviewElementPick(media, slot, picker, status, signal) {
     armed = false;
     button.setAttribute('aria-pressed', 'false');
   };
-  const render = () => {
-    chip.hidden = !target;
-    if (!target) return;
-    const label = target.selector ? `요소: ${target.selector}` : `지정 위치: ${target.position}`;
-    chip.textContent = `${label} ×`;
-    chip.title = label;
-    chip.setAttribute('aria-label', target.selector ? '요소 정보 제거' : '지정 위치 제거');
-  };
   button.onclick = () => {
     const next = !armed;
     picker.begin();
@@ -1306,24 +1304,28 @@ function bindReviewElementPick(media, slot, picker, status, signal) {
       status.textContent = '수정할 요소를 누르세요.';
     } else disarm();
   };
-  chip.onclick = () => {
-    if (target?.selector) {
-      target.selector = '';
-    } else clearTarget();
-    render();
-    if (!target) button.focus();
-  };
   window.addEventListener('message', event => {
     const { type, request, selector, bounds } = event.data || {};
     if (event.source !== media.contentWindow || type !== 'hub-review-element' || !target
       || !Number.isSafeInteger(request) || target.request !== request) return;
     if (!target.resolved) {
       target.resolved = true;
-      if (typeof selector === 'string' && /^#[A-Za-z][A-Za-z0-9_-]{0,47}$/.test(selector)) target.selector = selector;
-      render();
+      if (typeof selector === 'string' && /^#[A-Za-z][A-Za-z0-9_-]{0,47}$/.test(selector)) {
+        target.region.element = `HTML 요소: ${selector}`;
+      }
     }
     outline.hidden = true;
-    if (!Array.isArray(bounds) || bounds.length !== 4 || !bounds.every(Number.isFinite)) return;
+    if (!Array.isArray(bounds) || bounds.length !== 4 || !bounds.every(Number.isFinite)) {
+      target.bounds = null;
+      return;
+    }
+    target.bounds = bounds;
+    paint();
+  }, { signal });
+  function paint() {
+    outline.hidden = true;
+    if (!target?.bounds || !isSelected(target.region)) return;
+    const { bounds } = target;
     const [x, y, w, h] = bounds;
     const left = Math.max(x, 0), top = Math.max(y, 0);
     const width = Math.min(x + w, media.clientWidth) - left;
@@ -1331,12 +1333,14 @@ function bindReviewElementPick(media, slot, picker, status, signal) {
     if (width <= 0 || height <= 0) return;
     Object.assign(outline.style, { left: left + 'px', top: top + 'px', width: width + 'px', height: height + 'px' });
     outline.hidden = false;
-  }, { signal });
-  media.addEventListener('load', () => { clearTarget(); render(); }, { signal });
+  }
+  media.addEventListener('load', clearTarget, { signal });
   signal.addEventListener('abort', () => { clearTarget(); outline.remove(); }, { once: true });
 
   return {
     disarm,
+    paint,
+    remove(region) { if (target?.region === region) clearTarget(); },
     pick(clientX, clientY) {
       if (!armed) return false;
       disarm();
@@ -1344,17 +1348,14 @@ function bindReviewElementPick(media, slot, picker, status, signal) {
       const x = clientX - rect.left, y = clientY - rect.top;
       if (x < 0 || y < 0 || x >= rect.width || y >= rect.height) return true;
       const request = crypto.getRandomValues(new Uint32Array(1))[0];
-      const position = [x / rect.width, y / rect.height].map(value => (value * 100).toFixed(1)).join(', ');
+      const point = { x: x / rect.width, y: y / rect.height, w: 0, h: 0 };
+      const region = addRegion(point, true);
+      if (!region) return true;
       clearTarget();
-      target = { position, request, selector: '' };
-      render();
+      target = { region, request };
       media.contentWindow?.postMessage({ type: 'hub-review-element-request', request, x, y }, '*');
+      status.textContent = '영역 선택됨';
       return true;
-    },
-    get context() {
-      if (!target) return '';
-      if (target.selector) return `HTML 요소: ${target.selector}`;
-      return `HTML 클릭 좌표 (왼쪽%, 위%): ${target.position}`;
     },
   };
 }
@@ -1377,27 +1378,80 @@ function startArtifactRegionReview({ initial: media, slot, item, isActive, onSub
   };
   const regions = new Map();
   let nextRegion = 1, elementPick;
-  const tools = reviewControls(slot, async (comment, status) => {
-    const elementContext = elementPick?.context;
-    if ((!regions.size && !elementContext) || !comment) throw new Error('영역과 코멘트를 입력하세요.');
-    if (!isActive()) return;
-    const context = [elementContext, ...[...regions].map(([number, region]) => `#${number}\n${region.context}`)].filter(Boolean).join('\n\n');
-    const message = `아래 산출물의 선택 영역을 코멘트에 따라 수정하고 같은 파일을 업데이트해 주세요.\n${context}\n코멘트: ${comment}`;
-    await onSubmit(message, stop, isHtml ? null : [...regions.values()].map(region => region.area), comment);
-    status.textContent = '';
-  }, stop);
+  const tools = reviewControls(slot, async (comment) => {
+    const number = selected;
+    const region = regions.get(number);
+    if (!isActive() || !region) return;
+    if (region.uncertain && !confirm('CLI가 이미 받았을 수 있습니다. 대화를 확인한 뒤 다시 전송할까요?')) return;
+    const context = [region.context, region.element].filter(Boolean).join('\n');
+    const message = `아래 산출물의 선택 영역을 코멘트에 따라 수정하고 같은 파일을 업데이트해 주세요.\n#${number}\n${context}\n코멘트: ${comment}`;
+    try {
+      await onSubmit(message, () => {
+        if (!isActive()) return;
+        removeRegion(number);
+        if (!regions.size) stop();
+        else tools.status.textContent = '이 영역의 코멘트를 보냈습니다.';
+      }, isHtml ? null : [region.area], comment, regions.size > 1);
+    } catch (error) {
+      region.uncertain = error.delivery !== 'not-sent';
+      if (region.uncertain) throw new Error(`전달 여부 확인 필요 · ${error.message}`);
+      throw error;
+    }
+  }, stop, { perRegion: true });
   const list = document.createElement('div');
   list.className = 'row review-regions';
   list.hidden = true;
-  $('textarea', slot).before(list);
+  tools.comment.before(list);
+  const commentLabel = tools.comment.getAttribute('aria-label');
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.className = 'ghost btn-sm';
+  remove.textContent = '영역 제거';
+  $('[data-review-cancel]', slot).before(remove);
   const markers = document.createElement('div');
   markers.className = 'review-markers';
   let selected = null, scroll = null;
   const selectRegion = number => {
     selected = number;
+    const region = regions.get(number);
     for (const [id, region] of regions) {
       region.mark.toggleAttribute('data-selected', id === number);
-      region.remove.hidden = id !== number;
+      region.button.setAttribute('aria-pressed', String(id === number));
+    }
+    elementPick?.paint();
+    remove.hidden = !region;
+    tools.comment.disabled = !region;
+    tools.comment.value = region?.draft || '';
+    tools.comment.setAttribute('aria-label', region ? `#${number} · ${commentLabel}` : commentLabel);
+    tools.sync();
+    if (region) tools.comment.focus();
+  };
+  const removeRegion = number => {
+    const region = regions.get(number);
+    elementPick?.remove(region);
+    region.mark.remove();
+    region.button.remove();
+    regions.delete(number);
+    list.hidden = !regions.size;
+    selectRegion(regions.keys().next().value ?? null);
+    if (!regions.size) $('[data-review-drag]', slot).focus();
+  };
+  remove.onclick = () => {
+    if (tools.sending || !regions.has(selected)) return;
+    removeRegion(selected);
+    tools.status.textContent = '';
+  };
+  tools.comment.oninput = () => {
+    const region = regions.get(selected);
+    if (!region || tools.sending) return;
+    region.draft = tools.comment.value;
+    region.button.toggleAttribute('data-has-comment', !!region.draft.trim());
+  };
+  selectRegion(null);
+  const choose = number => {
+    if (!tools.sending && regions.has(number)) {
+      tools.status.textContent = '';
+      selectRegion(number);
     }
   };
   const selectAt = (x, y) => {
@@ -1405,7 +1459,7 @@ function startArtifactRegionReview({ initial: media, slot, item, isActive, onSub
       const rect = mark.getBoundingClientRect();
       return !mark.hidden && x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
     });
-    selectRegion(hit?.[0] ?? null);
+    if (hit) choose(hit[0]);
   };
   const updateMarkers = () => {
     for (const { mark, area, documentRect } of regions.values()) {
@@ -1420,14 +1474,16 @@ function startArtifactRegionReview({ initial: media, slot, item, isActive, onSub
           h: documentRect.h / height,
         };
         mark.hidden = visibleArea.x >= 1 || visibleArea.y >= 1
-          || visibleArea.x + visibleArea.w <= 0 || visibleArea.y + visibleArea.h <= 0;
+          || visibleArea.x + visibleArea.w < 0 || visibleArea.y + visibleArea.h < 0;
         positionReviewMark(mark, visibleArea);
       }
     }
   };
-  const addRegion = area => {
+  const addRegion = (area, point = false) => {
+    if (tools.sending) return;
     const coords = [area.x, area.y, area.w, area.h].map(value => (value * 100).toFixed(1)).join(', ');
     let context = `선택 영역 (왼쪽%, 위%, 너비%, 높이%): ${coords}`;
+    if (point) context = `HTML 클릭 좌표 (왼쪽%, 위%): ${coords.split(', ').slice(0, 2).join(', ')}`;
     let documentRect;
     if (isHtml) {
       const { width, height } = media.getBoundingClientRect();
@@ -1447,38 +1503,20 @@ function startArtifactRegionReview({ initial: media, slot, item, isActive, onSub
     const mark = document.createElement('div');
     mark.className = 'review-mark';
     mark.textContent = number;
-    const removeOnMark = document.createElement('button');
-    removeOnMark.type = 'button';
-    removeOnMark.className = 'review-mark-remove';
-    removeOnMark.textContent = '×';
-    removeOnMark.title = '영역 제거';
-    removeOnMark.setAttribute('aria-label', '영역 제거');
-    removeOnMark.hidden = true;
-    mark.append(removeOnMark);
+    mark.toggleAttribute('data-point', point);
     markers.append(mark);
-    regions.set(number, { area, documentRect, context, mark, remove: removeOnMark });
-    selectRegion(null);
-    mark.onclick = () => selectRegion(number);
-    updateMarkers();
-
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.className = 'ghost btn-sm';
-    remove.textContent = `#${number} ×`;
-    remove.title = '영역 제거';
-    const removeRegion = () => {
-      const next = remove.nextElementSibling || remove.previousElementSibling || $('[data-review-drag]', slot);
-      regions.delete(number);
-      if (selected === number) selectRegion(null);
-      mark.remove();
-      remove.remove();
-      list.hidden = !regions.size;
-      next.focus();
-    };
-    remove.onclick = removeRegion;
-    removeOnMark.onclick = event => { event.stopPropagation(); removeRegion(); };
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'ghost btn-sm';
+    button.textContent = `#${number}`;
+    button.onclick = mark.onclick = () => choose(number);
+    const region = { area, documentRect, context, mark, button, draft: '' };
+    regions.set(number, region);
     list.hidden = false;
-    list.append(remove);
+    list.append(button);
+    updateMarkers();
+    selectRegion(number);
+    return region;
   };
   const picker = reviewRegion(media, tools.status, {
     host,
@@ -1492,7 +1530,8 @@ function startArtifactRegionReview({ initial: media, slot, item, isActive, onSub
   media.after(markers);
   tools.connect(picker, isHtml);
   if (isHtml) {
-    elementPick = bindReviewElementPick(media, slot, picker, tools.status, listener.signal);
+    elementPick = bindReviewElementPick(media, slot, picker, tools.status, listener.signal, addRegion,
+      region => regions.get(selected) === region);
     const options = { signal: listener.signal };
     const requestScroll = () => media.contentWindow?.postMessage({ type: 'hub-review-scroll-request' }, '*');
     window.addEventListener('message', event => {
@@ -1517,7 +1556,7 @@ function bindArtifactReview(dialog, body, url, item) {
   const originalUrl = initial.src;
   let active = false, revision = '', watching = false, refreshTimer, disposeReview, uncertain = false;
   const file = quotePath(item.abs || item.path);
-  const sendReview = async (message, attachment, onSent, regions, comment) => {
+  const sendReview = async (message, attachment, onSent, regions, comment, hasOtherRegions = false) => {
     const term = currentReviewTerminal();
     if (term?.agent) {
       if (uncertain && !confirm('CLI가 이미 받았을 수 있습니다. 대화를 확인한 뒤 다시 전송할까요?')) return;
@@ -1528,6 +1567,7 @@ function bindArtifactReview(dialog, body, url, item) {
           if (!result.ok) throw Object.assign(new Error(result.error || '터미널 입력을 확인하지 못했습니다.'), { delivery: result.delivery });
         }, comment);
       } catch (error) {
+        if (comment !== undefined) throw error;
         uncertain = error.delivery !== 'not-sent';
         throw new Error(uncertain ? `전달 여부 확인 필요 · ${error.message}` : error.message);
       }
@@ -1536,7 +1576,7 @@ function bindArtifactReview(dialog, body, url, item) {
       toast('세션에 보냈습니다');
       return;
     }
-    if (typeof stageReviewInChat === 'function' && stageReviewInChat(`${message}\n${file}`, attachment)) {
+    if (!hasOtherRegions && typeof stageReviewInChat === 'function' && stageReviewInChat(`${message}\n${file}`, attachment)) {
       dialog.close();
       return;
     }
@@ -1598,7 +1638,9 @@ function bindArtifactReview(dialog, body, url, item) {
     try {
       disposeReview = startArtifactRegionReview({
         initial, slot, item, isActive: () => dialog.open && active,
-        onSubmit: (message, stop, regions, comment) => sendReview(message, '', stop, regions, comment), onStop: stopReview,
+        onSubmit: (message, sent, regions, comment, hasOtherRegions) =>
+          sendReview(message, '', sent, regions, comment, hasOtherRegions),
+        onStop: stopReview,
       });
     } catch (error) {
       stopReview();

@@ -103,6 +103,7 @@ function regionFailureRequest(outcome) {
 // Keep a small baseline in the browser that submitted the region edit.
 const pendingRegionChecks = new Map();
 const completedRegionChecks = new Map();
+const reviewedImages = new WeakSet();
 const regionTargetKey = target => `${target.kind}:${target.id}`;
 
 function imagePixels(image) {
@@ -180,18 +181,40 @@ async function sendWithRegionCheck(image, item, regions, target, text, send, com
     || regions.length > 16 || image.tagName !== 'IMG' || !image.naturalWidth) return send();
   const url = new URL(image.src, location.href);
   if (url.origin !== location.origin || url.pathname !== '/api/artifact-file') return send();
-  let before;
-  try { before = imagePixels(image); } catch {}
-  if (!before) return send();
   const key = regionTargetKey(target);
+  const previous = pendingRegionChecks.get(key);
+  // Replies to overlapping edits cannot establish which request changed a pixel.
+  const overlapping = previous?.item.path === item.path;
+  let before;
+  if (!overlapping) {
+    try {
+      if (reviewedImages.has(image)) {
+        const res = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(4000) });
+        if (res.ok) {
+          const bitmap = await createImageBitmap(await res.blob());
+          try { before = imagePixels(bitmap); }
+          finally { bitmap.close(); }
+        }
+      } else before = imagePixels(image);
+    } catch {}
+    if (!before) return send();
+  }
   const entry = { before, url, item, regions, comment, color: requestedRegionColor(comment), text: text.trim(), sentAt: Date.now() };
   if (!pendingRegionChecks.has(key) && pendingRegionChecks.size >= 4) {
     pendingRegionChecks.delete(pendingRegionChecks.keys().next().value);
   }
   pendingRegionChecks.set(key, entry);
-  try { return await send(); }
-  catch (error) {
-    if (pendingRegionChecks.get(key) === entry) pendingRegionChecks.delete(key);
+  try {
+    const result = await send();
+    reviewedImages.add(image);
+    return result;
+  } catch (error) {
+    if (pendingRegionChecks.get(key) === entry) {
+      if (previous) {
+        previous.check = null;
+        pendingRegionChecks.set(key, previous);
+      } else pendingRegionChecks.delete(key);
+    }
     throw error;
   }
 }
@@ -220,7 +243,7 @@ async function settleRegionCheck(target, sid, messages, base) {
         const bitmap = await createImageBitmap(await res.blob());
         try {
           const after = imagePixels(bitmap);
-          observation.scope = regionPixelCheck(entry.before, after, entry.regions);
+          if (entry.before) observation.scope = regionPixelCheck(entry.before, after, entry.regions);
           if (entry.color && ['inside', 'outside', 'unchanged'].includes(observation.scope)) {
             observation.colorCheck = regionColorCheck(after, entry.regions, entry.color);
           }

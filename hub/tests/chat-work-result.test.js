@@ -50,6 +50,32 @@ test('chat reports image checks based on pixel differences without requiring a r
   assert.doesNotMatch(issue, /<details/);
 });
 
+test('image checks keep the earlier request on send failure and skip pixel attribution when edits overlap', async () => {
+  const source = await fs.readFile(path.join(__dirname, '../public/chat-work-card.js'), 'utf8');
+  const baseline = { width: 2, height: 1 };
+  const { sendWithRegionCheck, pendingRegionChecks } = vm.runInNewContext(
+    source + '\n({sendWithRegionCheck, pendingRegionChecks})', {
+      URL, location: new URL('http://localhost/'),
+      document: { createElement: () => ({ getContext: () => ({ drawImage() {}, getImageData: () => baseline }) }) },
+    });
+  const item = { kind: 'image', path: 'fixture.png' };
+  const image = { tagName: 'IMG', naturalWidth: 2, naturalHeight: 1, src: '/api/artifact-file' };
+  const target = { kind: 'term', id: '1' };
+  const left = { x: 0, y: 0, w: 0.5, h: 1 }, right = { ...left, x: 0.5 };
+  await sendWithRegionCheck(image, item, [left], target, 'First', async () => {}, 'Red');
+  const first = pendingRegionChecks.get('term:1');
+  assert.equal(first.before, baseline);
+  await assert.rejects(sendWithRegionCheck(image, item, [right], target, 'Second', async () => {
+    throw new Error('Not sent');
+  }, 'Grayscale'), /Not sent/);
+  assert.equal(pendingRegionChecks.get('term:1'), first);
+  await sendWithRegionCheck(image, item, [right], target, 'Second', async () => {}, 'Grayscale');
+  const second = pendingRegionChecks.get('term:1');
+  assert.equal(second.before, undefined);
+  assert.equal(second.comment, 'Grayscale');
+  assert.deepEqual(second.regions, [right]);
+});
+
 test('artifact data checks and fix requests carry the actual and requested counts', async () => {
   const source = await fs.readFile(path.join(__dirname, '../public/chat-work-data.js'), 'utf8');
   const { requestedArtifactRows, readChatDelimited, chatDataFixRequest } = vm.runInThisContext(

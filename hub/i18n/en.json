@@ -74,6 +74,8 @@
   "선택 영역 이미지를 만들 수 없습니다.": "Couldn't create an image of the selected area.",
   "선택 영역 이미지를 첨부하지 못했습니다.": "Couldn't attach the selected area.",
   "수정 코멘트": "Revision comment",
+  "이 영역 코멘트 보내기": "Send comment for this area",
+  "이 영역의 코멘트를 보냈습니다.": "Comment for this area sent.",
   "이 영역에서 바꿀 내용을 입력하세요": "Describe what to change in this area",
   "영역 선택": "Select area",
   "요소 지정": "Pick element",
