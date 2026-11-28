@@ -79,6 +79,14 @@ async function mutateSessionGroups(body) {
   const r = await api('/api/session-groups', { method: 'POST', body, requireOk: true });
   if (r.sessionGroups) state.sessionGroups = r.sessionGroups;
   renderSide();
+  if (['move-session', 'assign'].includes(body.action)) {
+    const target = body.bucket || body.groupId || '_ungrouped';
+    const block = $(`.side-history .sgrp-block[data-sgrp-id="${CSS.escape(target)}"]`);
+    if (block) {
+      const moved = [...block.querySelectorAll('.srow[data-srow-pkey]')].find(row => body.keys.includes(row.dataset.srowPkey));
+      (moved || $('.sgrp-hd, .sgrp-lbl', block))?.classList.add('session-move-arrived');
+    }
+  }
   return r;
 }
 
@@ -1067,6 +1075,7 @@ $('#side')?.addEventListener('dblclick', (e) => {
   if (!side) return;
   let candidate = null;
   let ghostEl = null;
+  let ghostWidth = 0, ghostHeight = 0;
   let lastDropMark = null;
   let lastDropPos = '';
   let lastIntoBlock = null;
@@ -1156,10 +1165,13 @@ $('#side')?.addEventListener('dblclick', (e) => {
       ghostEl.className = 'side-drag-ghost';
       ghostEl.textContent = candidate.label;
       document.body.appendChild(ghostEl);
+      ({ width: ghostWidth, height: ghostHeight } = ghostEl.getBoundingClientRect());
     }
 
     if (ghostEl) {
-      ghostEl.style.transform = `translate3d(${Math.round(e.clientX + 14)}px, ${Math.round(e.clientY + 12)}px, 0)`;
+      const x = Math.max(0, Math.min(e.clientX + 14, window.innerWidth - ghostWidth - 4));
+      const y = Math.max(0, Math.min(e.clientY + 12, window.innerHeight - ghostHeight - 4));
+      ghostEl.style.transform = `translate3d(${Math.round(x)}px, ${Math.round(y)}px, 0)`;
     }
 
     // Auto-scroll #side near top/bottom edges while dragging
@@ -1197,11 +1209,12 @@ $('#side')?.addEventListener('dblclick', (e) => {
     if (targetRow && targetRow.dataset.key !== sideDragPayload.dataKey && targetRow.dataset.srowBucket !== '_project') {
       const rect = targetRow.getBoundingClientRect();
       const pos = (e.clientY - rect.top) < rect.height / 2 ? 'before' : 'after';
-      const parentBlk = targetRow.closest('.sgrp-block[data-sgrp-id]');
+      const group = targetRow.closest('.sgrp-block[data-sgrp-id]');
+      const parentBlk = group?.dataset.sgrpId === sideDragPayload.sourceBucket ? null : group;
       if (lastDropMark !== targetRow || lastDropPos !== pos || lastIntoBlock !== parentBlk) {
         clearDropVisuals();
         targetRow.classList.add(pos === 'before' ? 'drop-before' : 'drop-after');
-        if (parentBlk && parentBlk.dataset.sgrpId !== sideDragPayload.sourceBucket) {
+        if (parentBlk) {
           parentBlk.classList.add('drop-into');
           lastIntoBlock = parentBlk;
         }

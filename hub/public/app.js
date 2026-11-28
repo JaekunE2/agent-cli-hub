@@ -112,6 +112,8 @@ function runSearch(q) {
   select({ kind: 'search' });
 }
 
+let lastSearchCounts;
+
 function viewSearch() {
   const gen = viewGen;
   const S = state.search;
@@ -144,7 +146,10 @@ function viewSearch() {
     const nHits = d.sessions.reduce((a, r) => a + r.total, 0);
     const snippets = (preview, other, render) => preview.map(render).join('') + (other.length
       ? `<details class="search-more"><summary>추가 일치 항목 <span class="badge">${other.length}</span></summary>${other.map(render).join('')}</details>` : '');
-    let h = `<div class="empty" style="padding:0 0 6px">세션 ${d.sessions.length}개 · 메시지 ${nHits}건 · 창 ${d.screens.length}개 · ${d.ms}ms</div>`;
+    const counts = [String(params), d.sessions.length, nHits, d.screens.length].join(':');
+    const changed = !state.sel.restoreScroll && counts !== lastSearchCounts;
+    lastSearchCounts = counts;
+    let h = `<div class="empty search-summary" role="status"><span class="search-result-count${changed ? ' search-count-arrived' : ''}">세션 ${d.sessions.length}개 · 메시지 ${nHits}건 · 창 ${d.screens.length}개</span> · ${d.ms}ms</div>`;
     if (!d.ready) h += `<div class="empty">인덱스 구축 중 (${d.progress?.done || 0}/${d.progress?.total || '?'} 파일) — 결과가 일부만 나올 수 있습니다.</div>`;
     if (d.screens.length) {
       h += '<h3>열린 창 화면</h3>' + d.screens.map((c) => `<div class="rgroup">
@@ -175,7 +180,11 @@ function viewSearch() {
       host.innerHTML = h;
       if (state.sel.restoreScroll) $('#view').scrollTo({ top: S.scrollTop || 0, behavior: 'instant' });
     }
-  }).catch((e) => { const host = $('#searchBody'); if (host) host.innerHTML = `<div class="err">${esc(e.message)}</div>`; });
+  }).catch((e) => {
+    if (gen !== viewGen) return;
+    const host = $('#searchBody');
+    if (host) host.innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  });
 
   $('#view').onclick = (e) => {
     const el = e.target.closest('[data-sid],[data-console]');

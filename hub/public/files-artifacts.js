@@ -19,6 +19,7 @@ function createAttachmentStrip(stripEl, cwd) {
       return;
     }
     stripEl.hidden = false;
+    const readyIds = new Set([...stripEl.querySelectorAll('[data-att-ready]')].map(chip => Number(chip.dataset.attReady)));
     stripEl.innerHTML = items.map((it) => {
       const visual = it.thumbUrl
         ? `<img class="att-thumb" src="${esc(it.thumbUrl)}" alt="">`
@@ -33,7 +34,9 @@ function createAttachmentStrip(stripEl, cwd) {
             : '<span class="att-chip-sz" style="color:var(--danger)">실패</span>')
           : (it.size ? `<span class="att-chip-sz">${esc(fmtSize(it.size))}</span>` : '');
       const rmLbl = it.isDir ? '첨부 폴더 제거' : '첨부 파일 제거';
-      return `<span class="att-chip${it.isDir ? ' is-dir' : ''}" title="${esc(it.path || it.name)}">${visual}<span class="att-chip-name">${esc(it.name)}</span>${meta}<button type="button" class="att-chip-rm" data-att-rm="${it.id}" aria-label="${rmLbl}" title="${rmLbl}">×</button></span>`;
+      const ready = it.path && !it.loading && !it.failed;
+      const check = ready ? '<span class="att-chip-ready" role="img" aria-label="첨부 완료" title="첨부 완료">✓</span>' : '';
+      return `<span class="att-chip${it.isDir ? ' is-dir' : ''}${ready && !readyIds.has(it.id) ? ' attachment-arrived' : ''}" ${ready ? `data-att-ready="${it.id}"` : ''} title="${esc(it.path || it.name)}">${visual}<span class="att-chip-name">${esc(it.name)}</span>${meta}${check}<button type="button" class="att-chip-rm" data-att-rm="${it.id}" aria-label="${rmLbl}" title="${rmLbl}">×</button></span>`;
     }).join('');
     stripEl.querySelectorAll('[data-att-pick]').forEach((b) => {
       b.onclick = () => {
