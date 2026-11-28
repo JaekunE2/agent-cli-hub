@@ -28,6 +28,10 @@ async function openBranchDialog({ sid, atIndex = null, message = null, agent = '
     <label>분기 후 바로 보낼 첫 메시지 (선택)
       <textarea name="prompt" rows="3" placeholder="비워두면 이 분기점까지의 맥락이 준비된 새 터미널만 엽니다."></textarea>
     </label>
+    ${cwd ? `<label class="row" style="gap:8px;align-items:flex-start;font-size:12.5px;color:var(--muted);cursor:pointer">
+      <input type="checkbox" name="isolateFiles" style="margin-top:2px">
+      <span>이 시점의 작업 파일 스냅샷을 별도 Git 워크트리로 복제 <small style="display:block;opacity:.85">(원본 폴더와 파일 충돌 없이 독립 작업)</small></span>
+    </label>` : ''}
     <p role="alert" class="pj-error"></p>
     <div class="dlg-foot">
       <button type="button" data-br-close>취소</button>
@@ -95,6 +99,7 @@ async function openBranchDialog({ sid, atIndex = null, message = null, agent = '
           effort: meVals.effort,
           prompt: String(fd.get('prompt') || '').trim(),
           cwd,
+          isolateFiles: !!fd.get('isolateFiles'),
         },
       });
       if (res.error) throw new Error(res.error);
@@ -102,7 +107,11 @@ async function openBranchDialog({ sid, atIndex = null, message = null, agent = '
       await refreshOverview();
       const targetAg = String(fd.get('targetAgent') || sourceAg);
       select({ kind: 'term', id: res.term.id, ...(targetAg === 'agy' && res.childSessionId ? { agyResume: res.childSessionId } : {}) }, getSavedTermTab(null) || 'split');
-      toast(res.native ? '이 지점에서 네이티브 분기 대화를 시작했습니다' : '분기점 맥락을 전달한 새 대화를 시작했습니다');
+      toast(res.isolatedWorktree
+        ? '이 시점의 파일 스냅샷(워크트리)과 함께 분기 대화를 시작했습니다'
+        : res.native
+          ? '이 지점에서 네이티브 분기 대화를 시작했습니다'
+          : '분기점 맥락을 전달한 새 대화를 시작했습니다');
     } catch (err) {
       $('.pj-error', d).textContent = err.message;
       btn.disabled = false;
@@ -700,11 +709,13 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
     const regionPending = !jump && pendingRegionChecks.has(regionTargetKey(regionTarget));
     const pendingWork = (regionPending || d.messages?.at(-1)?.workResult?.pending) ? await updateLiveBubble(d.messages) : null;
     if (gen !== viewGen) return;
-    if (regionPending && !pendingWork) await settleRegionCheck(regionTarget, curSid, d.messages || [], d.base || 0);
+    const persistentVerification = Array.isArray(d.verificationRuns);
+    if (regionPending && !pendingWork) await settleRegionCheck(regionTarget, curSid, d.messages || [], d.base || 0, persistentVerification);
     if (gen !== viewGen) return;
     const regionSignature = completedRegionChecks.size
       ? (d.messages || []).map((m, i) => observedRegionCheck(curSid, m, (d.base || 0) + i)).join(',') : '';
-    const sig = `${d.size || 0}:${d.total || 0}:${d.base || 0}:${d.rev || 0}:${d.title || ''}:${parentSig}:${childSig}:${d.usageRev || ''}:${pendingWork ? 1 : 0}:${regionSignature}`;
+    const verification = (d.verificationRuns || []).filter(run => d.messages?.[run.at - (d.base || 0)]?.ts === run.stamp);
+    const sig = `${d.size || 0}:${d.total || 0}:${d.base || 0}:${d.rev || 0}:${d.title || ''}:${parentSig}:${childSig}:${d.usageRev || ''}:${pendingWork ? 1 : 0}:${regionSignature}:${verification.map(run => run.id).join(',')}`;
     if (d.error && !d.messages?.length) {
       if (lastMessages.length) {
         const working = await updateLiveBubble(lastMessages);
@@ -824,13 +835,19 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
           const bodyHtml = !terms.length ? md(rawTxt) : `<div class="msg-body" style="white-space:pre-wrap">${linkUrls(linkPaths(hl(rawTxt, terms)))}</div>`;
           const turn = m.codexTurnId || String(gi);
           const usage = m.codexUsage?.length ? codexAnswerTokensHTML(m.codexUsage, turn, openTokenIds.has(turn)) : '';
-          const observation = observedRegionCheck(curSid, m, gi);
+          const runs = verification.filter(run => run.at === gi);
+          const lastRuns = runs.filter((run, i) => runs.findIndex(r => r.group === run.group) === i);
+          const imageRun = lastRuns.find(run => run.kind === 'image');
+          const observation = imageRun ? { ...imageRun.criteria, ...imageRun.evidence, thumbnail: imageRun.thumbnail, runId: imageRun.id,
+            item: { path: imageRun.path, name: base(imageRun.path), kind: 'image' }, url: artUrl(curSid, imageRun.path) }
+            : observedRegionCheck(curSid, m, gi);
           const workResult = m.workResult?.pending && pendingWork && k === d.messages.length - 1 ? null : m.workResult;
           if (observation || /[\p{L}\p{N}_-]\.[a-z0-9]{1,12}\b/iu.test(rawTxt)) {
-            resultMessages.push({ index: k, output: rawTxt, observation, latest: k === latestReply, request: resultRequest });
+            resultMessages.push({ index: k, output: rawTxt, observation, latest: k === latestReply, request: resultRequest,
+              verification: persistentVerification ? { at: gi, stamp: m.ts, runs } : null });
           }
           const work = chatWorkCardHTML(workResult, openWorkIds.has(workResult?.id));
-          parts.push(`<div class="msg assistant${tgt ? ' target' : ''}" data-mi="${k}"><div class="msg-av">${agentIcon(ag || 'claude')}</div><div class="msg-col"><div class="msg-hd"><span class="w-role">${esc(who)}</span>${when ? `<span class="w-ts">${esc(when)}</span>` : ''}${editedBadge}<span style="flex:1"></span><span class="msg-acts">${quoteBtn}${forkBtn}${copyBtn}</span></div><div class="msg-bubble">${bodyHtml}</div>${chatWorkOutcomeHTML(workResult)}${chatRegionOutcomeHTML(observation)}${work}${usage}${branchChipsHTML(gi)}</div></div>`);
+          parts.push(`<div class="msg assistant${tgt ? ' target' : ''}" data-mi="${k}"><div class="msg-av">${agentIcon(ag || 'claude')}</div><div class="msg-col"><div class="msg-hd"><span class="w-role">${esc(who)}</span>${when ? `<span class="w-ts">${esc(when)}</span>` : ''}${editedBadge}<span style="flex:1"></span><span class="msg-acts">${quoteBtn}${forkBtn}${copyBtn}</span></div><div class="msg-bubble">${bodyHtml}</div>${chatWorkOutcomeHTML(workResult)}${chatRegionOutcomeHTML(observation)}${lastRuns.filter(run => run.kind !== 'image').map(savedVerificationHTML).join('')}${verificationHistoryHTML(runs)}${work}${usage}${branchChipsHTML(gi)}</div></div>`);
         }
       });
       flushTools();
@@ -859,6 +876,21 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
         button.onclick = () => openChatWorkDiff(curSid, button.closest('[data-work-result]').dataset.workResult, button.dataset.workFile);
       }
       const workTarget = artifactChatTarget();
+      for (const button of msgsHost.querySelectorAll('[data-verification-run], [data-verify-fix]')) {
+        const run = verification.find(run => run.id === (button.dataset.verificationRun || button.dataset.verifyFix));
+        button.onclick = async () => {
+          if (!run) return;
+          if (button.dataset.verifyFix) return stageReviewInChat(run.kind === 'html' ? headingFailureRequest(run)
+            : chatDataFixRequest({ path: run.path }, run.evidence.actual, run.criteria.expected, !/\.json$/i.test(run.path)), [], workTarget);
+          button.disabled = true;
+          try {
+            await rerunSavedVerification(run);
+            if (gen === viewGen) container._triggerPoll();
+            await refreshOverview();
+          } catch (error) { toast(error.message); }
+          finally { button.disabled = false; }
+        };
+      }
       for (const button of msgsHost.querySelectorAll('[data-work-fix]')) {
         const check = d.messages[Number(button.closest('.msg').dataset.mi)].workResult.checks[Number(button.dataset.workFix)];
         const name = check.failureNames?.[Number(button.dataset.workCase)];

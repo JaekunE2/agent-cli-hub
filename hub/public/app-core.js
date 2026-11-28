@@ -412,6 +412,7 @@ async function refreshOverview() {
       activeBuildId = o.buildId;
     }
     previousTerms = state.terms;
+    state.attention = o.attention || [];
     Object.assign(state, { live: o.live || [], consoles: o.consoles || [], terms: o.terms || [], err: o.consoleError || null, services: o.services || state.services, hubDown: false });
     if (o.accountPrefs && typeof syncServerAccountPrefs === 'function') syncServerAccountPrefs(o.accountPrefs);
     if (Array.isArray(o.favs)) state.favs = new Set(o.favs);
@@ -643,6 +644,8 @@ function termStatusMeta(t, now = Date.now()) {
   const st = termStateOf(t);
   if (st === 'exited') return { state: 'exited', dormant: false, label: `종료됨 (${t.exited ?? '?'})`, shortLabel: '종료됨', badgeClass: '', dot: 'dead', title: '' };
   if (st === 'busy') return { state: 'busy', dormant: false, label: '실행 중', shortLabel: '실행 중', badgeClass: 'warn', dot: 'busy', title: '' };
+  const needsWait = ['permission', 'confirmation', 'folder-trust', 'login', 'hooks-menu', 'term-dumb'].includes(t.startupBlock) || !!t.needsInput;
+  if (needsWait) return { state: 'idle', needsInput: true, dormant: false, label: '입력 대기', shortLabel: '입력 대기', badgeClass: 'wait', dot: 'wait', title: terminalStartupLabel(t) || '세션이 사용자 확인·입력을 기다리고 있습니다' };
   if (isTermDormant(t, now)) return { state: 'idle', dormant: true, label: '유휴', shortLabel: '유휴', badgeClass: 'dormant', dot: 'dormant', title: '1시간 이상 입력·출력 활동 없음' };
   return { state: 'idle', dormant: false, label: '대기', shortLabel: '대기', badgeClass: 'ok', dot: 'idle', title: '' };
 }

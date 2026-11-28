@@ -806,6 +806,62 @@ function mountChatComposer({ barHost, chatHost = null, sid = null, termId = null
     if (!areaReview && slash?.dispatch()) return;
     if (!areaReview) slash?.close();
     const typed = areaReview || repIn.value.trim();
+    const mentionMatch = !areaReview && !retry ? /^@(claude|codex|agy)\s+([\s\S]+)$/i.exec(typed) : null;
+    if (mentionMatch) {
+      const targetAg = mentionMatch[1].toLowerCase();
+      const question = mentionMatch[2].trim();
+      const selectedText = quotedMsg?.text ? String(quotedMsg.text) : '';
+      if (quotedMsg) setQuotedMsg(null);
+      repIn.value = ''; fitRep();
+      const agLabel = providerName(targetAg);
+      const card = document.createElement('div');
+      card.className = 'rcard';
+      card.style.cssText = 'margin:8px 14px;padding:10px 12px;border-left:3px solid var(--accent);background:var(--panel2);';
+      card.innerHTML = `<div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px">
+        <span class="badge c">${esc(agLabel)} 위임</span>
+        <button type="button" class="ghost icon-btn btn-sm" data-del-close aria-label="닫기">${ICO.close}</button>
+      </div>
+      <div class="ums" style="margin:0 0 6px">${esc(question.slice(0, 140))}${question.length > 140 ? '…' : ''}</div>
+      <div class="del-body" style="font-size:13px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere">${esc(agLabel)}에게 의견을 요청하는 중…</div>`;
+      card.querySelector('[data-del-close]').onclick = () => card.remove();
+      if (chatHost) {
+        chatHost.appendChild(card);
+        chatHost.scrollTop = chatHost.scrollHeight;
+      }
+      try {
+        const curTerm = findLiveTerm();
+        const r = await api('/api/transcript/sidechat', {
+          method: 'POST',
+          body: { sessionId: resolveTermSessionId(curTerm) || sid || '', selectedText, question, agent: targetAg, cwd },
+        });
+        if (!r?.ok) throw new Error(r?.error || '위임 응답을 받지 못했습니다.');
+        const bodyEl = card.querySelector('.del-body');
+        if (bodyEl) {
+          if (typeof renderMarkdown === 'function') {
+            bodyEl.style.whiteSpace = 'normal';
+            bodyEl.innerHTML = renderMarkdown(r.reply || '');
+          } else {
+            bodyEl.textContent = r.reply || '';
+          }
+        }
+        const acts = document.createElement('div');
+        acts.className = 'row';
+        acts.style.cssText = 'gap:6px;margin-top:8px;justify-content:flex-end';
+        acts.innerHTML = `<button type="button" class="btn-sm" data-del-quote>입력창에 인용</button>`;
+        acts.querySelector('[data-del-quote]').onclick = () => {
+          const snippet = `[${agLabel} 의견]\n${String(r.reply || '').trim()}`;
+          repIn.value = repIn.value ? `${repIn.value}\n\n${snippet}` : snippet;
+          fitRep();
+          repIn.focus();
+        };
+        card.appendChild(acts);
+        if (chatHost) chatHost.scrollTop = chatHost.scrollHeight;
+      } catch (err) {
+        const bodyEl = card.querySelector('.del-body');
+        if (bodyEl) bodyEl.innerHTML = `<span style="color:var(--danger)">${esc(err.message || '위임 실패')}</span>`;
+      }
+      return;
+    }
     const nativeCommand = areaReview ? null : slash?.native(typed);
     if (!areaReview && !nativeCommand && chatAttCtl.isLoading()) return toast('첨부 파일을 준비하는 중입니다…');
     if (!areaReview && typed && !nativeCommand && !previous?.error && !chatAttCtl.hasItems() && !quotedMsg) {

@@ -1,6 +1,7 @@
 /* Dots & Semantic Badges */
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted); }
 .dot.busy { background: var(--warn); }
+.dot.wait { background: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent); }
 .dot.idle { background: var(--ok); }
 .dot.dormant { background: color-mix(in srgb, var(--muted) 58%, transparent); border: 1px solid var(--muted); }
 .dot.dead { background: transparent; border: 1.5px solid var(--muted); }
@@ -12,6 +13,7 @@
 .badge.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); border-color: color-mix(in srgb, var(--ok) 26%, transparent); }
 .badge.dormant { color: var(--muted); background: color-mix(in srgb, var(--muted) 11%, transparent); border-color: color-mix(in srgb, var(--muted) 26%, transparent); }
 .badge.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 13%, transparent); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
+.badge.wait { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); border-color: color-mix(in srgb, var(--accent) 32%, transparent); font-weight: 600; }
 .badge.lim { color: #fff; background: var(--danger); border-color: var(--danger); font-weight: 650; }
 .badge.st-planned { color: var(--muted); background: var(--panel2); border: 1px solid var(--line); }
 .badge.st-doing { color: var(--accent); background: color-mix(in srgb, var(--accent) 13%, transparent); border-color: color-mix(in srgb, var(--accent) 30%, transparent); font-weight: 650; }
@@ -721,6 +723,7 @@ body.remote .desk { display: none; }
   .srow { min-height: 40px; }
 }
 .side-attention .srow-open { width: 100%; padding: 4px 7px; align-items: flex-start; gap: 2px; }
+.side-attention-list { max-height: 14rem; overflow-y: auto; }
 .side-attention .srow-open:hover { background: var(--panel2); }
 .chat-conn-bar { flex-wrap: wrap; }
 .review-controls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-block: 5px; }

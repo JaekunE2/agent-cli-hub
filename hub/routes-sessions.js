@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const { execFileSync } = require('child_process');
 const { resolveTaskConfig, buildTaskHarnessPrompt } = require('./project-harness');
 const { versionWorkspace } = require('./version-files');
 const { requiredMcpMessage } = require('./vault-cli-ops');
@@ -259,6 +260,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
     const ag = d.agent || 'claude';
     return {
       title: sessionDisplayTitle(sessionId, d), agent: ag, cwd: d.cwd, size: d.offset, rev: conversationBranches.rev() + (termEvents ? termEvents.rev() : 0), total: n, base: start,
+      verificationRuns: hub.verificationRuns?.list(sessionId).filter(run => run.at >= start && run.at < end),
       messages: allMsgs.slice(start, end).map((m, idx) => {
         const ov = edits[String(start + idx)];
         const { workResult, ...message } = m;
@@ -355,9 +357,25 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       agyQuota: hub.agyEnabled === false ? { ok: false, disabled: true } : { ok: !!hub.agyQuota.get(), refreshing: hub.agyQuota.getFast().refreshing, account: hub.agyQuota.get()?.account || null },
       helper: { ok: !hub.getHelperMissing(), error: hub.getHelperMissing() || null },
     };
-    const projectRevisions = Object.fromEntries(projects.list().map((p) => [p.id, p.revision]));
+    const projectList = projects.list();
+    const projectRevisions = Object.fromEntries(projectList.map((p) => [p.id, p.revision]));
+    const attention = [
+      ...projectList.flatMap(p => (p.tasks || []).filter(t => t.stage === 'review' && t.reviewStatus !== 'reviewing' || t.reviewStatus === 'merge-blocked')
+        .map(t => ({ kind: 'projects', id: p.id, task: t.id, version: t.version, title: t.title,
+          reason: t.reviewStatus === 'merge-blocked' ? '병합 확인 필요' : '프로젝트 검토 대기' }))),
+      ...(hub.scheduleAttention?.() || []),
+      ...(hub.verificationRuns?.attention() || []).flatMap(run => {
+        if (run.kind === 'behavior') {
+          const task = projectList.find(p => p.id === run.project)?.tasks.find(t => t.id === run.task);
+          return task ? [{ kind: 'projects', id: run.project, task: run.task, version: task.version,
+            event: run.id, title: run.criteria.behavior, reason: '사용자 동작 검증 실패' }] : [];
+        }
+        return projects.hidden().has(run.sid) ? [] : [{ kind: 'recent', id: run.sid, at: run.at, event: run.id,
+          title: path.basename(run.path), reason: '산출물 검증 실패' }];
+      }),
+    ].slice(0, 60);
     const pluginState = hub.plugins?.overview() || {};
-    return { pluginState, features: { agy: !!hub.agyEnabled, sidebar: config.sidebar && typeof config.sidebar === 'object' ? config.sidebar : null }, live, consoles, terms: termsOut, consoleError: cons.error, favs: hub.liveFavs(), sessionGroups: hub.loadSessionGroups ? hub.loadSessionGroups() : { version: 1, groups: [], assignments: {} }, disk: diskLow, consolesOff: config.consoles === false, services, buildId, accountPrefs: accountPrefs.get(), projectRevisions };
+    return { pluginState, attention, features: { agy: !!hub.agyEnabled, sidebar: config.sidebar && typeof config.sidebar === 'object' ? config.sidebar : null }, live, consoles, terms: termsOut, consoleError: cons.error, favs: hub.liveFavs(), sessionGroups: hub.loadSessionGroups ? hub.loadSessionGroups() : { version: 1, groups: [], assignments: {} }, disk: diskLow, consolesOff: config.consoles === false, services, buildId, accountPrefs: accountPrefs.get(), projectRevisions };
   }
 
   function overviewSnapshot() {
@@ -936,6 +954,31 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
     return { id: t.id };
   };
 
+  function createBranchCheckpointWorktree(cwd) {
+    if (!cwd || !fs.existsSync(cwd)) throw new Error('작업 폴더를 찾을 수 없습니다.');
+    let repoRoot = '';
+    try {
+      repoRoot = execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', windowsHide: true }).trim();
+    } catch {
+      throw new Error('Git 저장소 폴더에서만 파일 스냅샷 워크트리를 만들 수 있습니다.');
+    }
+    const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+    const short = crypto.randomBytes(3).toString('hex');
+    const branchName = `hub-branch-${stamp}-${short}`;
+    const wtRoot = path.join(repoRoot, '.hub-worktrees', branchName);
+    fs.mkdirSync(path.dirname(wtRoot), { recursive: true });
+    execFileSync('git', ['-C', repoRoot, 'worktree', 'add', '-b', branchName, wtRoot, 'HEAD'], { encoding: 'utf8', windowsHide: true });
+    try {
+      const stashSha = execFileSync('git', ['-C', repoRoot, 'stash', 'create'], { encoding: 'utf8', windowsHide: true }).trim();
+      if (stashSha) {
+        execFileSync('git', ['-C', wtRoot, 'stash', 'apply', stashSha], { encoding: 'utf8', windowsHide: true });
+      }
+    } catch {}
+    const rel = path.relative(path.resolve(repoRoot), path.resolve(cwd));
+    const branchCwd = rel && !rel.startsWith('..') ? path.join(wtRoot, rel) : wtRoot;
+    return { wtRoot, branchCwd: fs.existsSync(branchCwd) ? branchCwd : wtRoot };
+  }
+
   async function handleForkOrEdit(p, req, res, body, send) {
     const b = await body(req);
     const id = String(b.id || '').trim();
@@ -986,7 +1029,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
 
     const reqME = cleanModelEffort(b.model, b.effort);
     accountPrefs.save({ account: launchAccount?.account?.id || b.account || '', agent: targetAgent, model: reqME.model, effort: reqME.effort });
-    const launchAndDeliver = async ({ agent, resumeId, forkId, title, promptToSend, extraEnv = {} }) => {
+    const launchAndDeliver = async ({ agent, resumeId, forkId, title, promptToSend, extraEnv = {}, targetCwd = cwd }) => {
       const workspaceLaunch = await branchPlan(agent, resumeId);
       if (!!workspaceLaunch !== !!inherited) throw new WorkspaceError(409, 'REVISION_CONFLICT', 'Folder settings changed during launch');
       let cmd, args = [];
@@ -1007,7 +1050,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
         if (resumeId) args.push('--resume', resumeId);
         args.push(...(!workspaceLaunch ? ['--dangerously-skip-permissions'] : []), ...cliModelEffortArgs('claude', reqME.model, reqME.effort));
       }
-      const term = hub.createTerm({ cwd, cmd, args, env: { ...(launchAccount?.env || {}), ...extraEnv }, title, account: launchAccount?.account || null, model: reqME.model, effort: reqME.effort, workspaceLaunch, workspaceCli: agent });
+      const term = hub.createTerm({ cwd: targetCwd, cmd, args, env: { ...(launchAccount?.env || {}), ...extraEnv }, title, account: launchAccount?.account || null, model: reqME.model, effort: reqME.effort, workspaceLaunch, workspaceCli: agent });
       if (promptToSend && (agent === 'claude' || resumeId)) {
         (async () => {
           if (await hub.waitFor(() => term.exited === null && hub.inputReady(term), 45000, 700)) {
@@ -1052,6 +1095,18 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       return send(res, 200, { ok: true, mode: 'rewind-edit', term: hub.termInfo(term), childSessionId: id });
     }
 
+    let branchCwd = cwd;
+    let isolatedWorktree = '';
+    if (b.isolateFiles) {
+      try {
+        const snap = createBranchCheckpointWorktree(cwd);
+        branchCwd = snap.branchCwd;
+        isolatedWorktree = snap.wtRoot;
+      } catch (e) {
+        return send(res, 400, { error: e.message });
+      }
+    }
+
     const inclusive = !isEdit;
     const anchorText = String(messages[atIndex]?.text || '').replace(/\s+/g, ' ').trim().slice(0, 100);
     const branchTitle = isEdit && newText ? `(분기) ${newText.replace(/\s+/g, ' ').trim().slice(0, 36)}` : `(분기) ${sourceTitle.slice(0, 32)}`;
@@ -1059,10 +1114,10 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       let forked;
       try { forked = forkClaudeJsonlAt({ sourceFile, cutIndex: atIndex, inclusive, title: branchTitle }); conversationBranches.setTitle(forked.newSessionId, branchTitle); await index.updateFile(forked.file); }
       catch (e) { return send(res, 400, { error: e.message }); }
-      const term = await launchAndDeliver({ agent: 'claude', resumeId: forked.newSessionId, title: branchTitle, promptToSend: newText });
-      const branch = conversationBranches.addBranch({ parentSessionId: id, childSessionId: forked.newSessionId, termId: term.id, sourceAgent, targetAgent, mode, atIndex, branchTitle, anchorText, editedText: isEdit ? newText.slice(0, 500) : '', native: true });
+      const term = await launchAndDeliver({ agent: 'claude', resumeId: forked.newSessionId, title: branchTitle, promptToSend: newText, targetCwd: branchCwd });
+      const branch = conversationBranches.addBranch({ parentSessionId: id, childSessionId: forked.newSessionId, termId: term.id, sourceAgent, targetAgent, mode, atIndex, branchTitle, anchorText, editedText: isEdit ? newText.slice(0, 500) : '', native: true, ...(isolatedWorktree ? { worktreeDir: isolatedWorktree } : {}) });
       overviewStale();
-      return send(res, 200, { ok: true, mode, native: true, term: hub.termInfo(term), branch, childSessionId: forked.newSessionId });
+      return send(res, 200, { ok: true, mode, native: true, isolatedWorktree, term: hub.termInfo(term), branch, childSessionId: forked.newSessionId });
     }
 
     if (sourceAgent === 'codex' && targetAgent === 'codex') {
@@ -1072,8 +1127,8 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       const sameCodexHome = path.resolve(sourceCodexHome).toLowerCase() === path.resolve(targetCodexHome).toLowerCase();
       const extraEnv = targetCodexHome ? { CODEX_HOME: targetCodexHome } : {};
       // At the latest message in the same CODEX_HOME, use Codex CLI's native `codex fork <id>` (supports paginated history too).
-      if (inclusive && atIndex >= messages.length - 1 && sameCodexHome) {
-        const term = await launchAndDeliver({ agent: 'codex', forkId: id, title: branchTitle, promptToSend: newText, extraEnv });
+      if (inclusive && atIndex >= messages.length - 1 && sameCodexHome && !isolatedWorktree) {
+        const term = await launchAndDeliver({ agent: 'codex', forkId: id, title: branchTitle, promptToSend: newText, extraEnv, targetCwd: branchCwd });
         const branch = conversationBranches.addBranch({ parentSessionId: id, childSessionId: null, termId: term.id, sourceAgent, targetAgent, mode, atIndex, branchTitle, anchorText, editedText: '', native: true });
         overviewStale();
         return send(res, 200, { ok: true, mode, native: true, term: hub.termInfo(term), branch, childSessionId: null });
@@ -1081,26 +1136,26 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       if (sourceFile && forkCodexJsonlAt) {
         let forked;
         try {
-          forked = forkCodexJsonlAt({ sourceFile, codexHome: targetCodexHome, cutIndex: atIndex, inclusive, cwd, title: branchTitle });
+          forked = forkCodexJsonlAt({ sourceFile, codexHome: targetCodexHome, cutIndex: atIndex, inclusive, cwd: branchCwd, title: branchTitle });
           conversationBranches.setTitle(forked.newSessionId, branchTitle);
           await index.updateFile(forked.file);
         } catch (e) {
           return send(res, 400, { error: e.message });
         }
-        const term = await launchAndDeliver({ agent: 'codex', resumeId: forked.newSessionId, title: branchTitle, promptToSend: newText, extraEnv });
-        const branch = conversationBranches.addBranch({ parentSessionId: id, childSessionId: forked.newSessionId, termId: term.id, sourceAgent, targetAgent, mode, atIndex, branchTitle, anchorText, editedText: isEdit ? newText.slice(0, 500) : '', native: true });
+        const term = await launchAndDeliver({ agent: 'codex', resumeId: forked.newSessionId, title: branchTitle, promptToSend: newText, extraEnv, targetCwd: branchCwd });
+        const branch = conversationBranches.addBranch({ parentSessionId: id, childSessionId: forked.newSessionId, termId: term.id, sourceAgent, targetAgent, mode, atIndex, branchTitle, anchorText, editedText: isEdit ? newText.slice(0, 500) : '', native: true, ...(isolatedWorktree ? { worktreeDir: isolatedWorktree } : {}) });
         overviewStale();
-        return send(res, 200, { ok: true, mode, native: true, term: hub.termInfo(term), branch, childSessionId: forked.newSessionId });
+        return send(res, 200, { ok: true, mode, native: true, isolatedWorktree, term: hub.termInfo(term), branch, childSessionId: forked.newSessionId });
       }
     }
 
     const { instruction } = writeBranchContextFile({
-      uploadsDir: path.join(baseDir, 'uploads'), sourceSessionId: id, sourceTitle, sourceAgent: sourceAgent || 'claude', targetAgent, cwd, messages, atIndex, inclusive, editedText: isEdit ? newText : '', followUp: !isEdit ? newText : '',
+      uploadsDir: path.join(baseDir, 'uploads'), sourceSessionId: id, sourceTitle, sourceAgent: sourceAgent || 'claude', targetAgent, cwd: branchCwd, messages, atIndex, inclusive, editedText: isEdit ? newText : '', followUp: !isEdit ? newText : '',
     });
-    const term = await launchAndDeliver({ agent: targetAgent, resumeId: null, title: branchTitle, promptToSend: instruction });
-    const branch = conversationBranches.addBranch({ parentSessionId: id, childSessionId: null, termId: term.id, sourceAgent: sourceAgent || 'claude', targetAgent, mode, atIndex, branchTitle, anchorText, editedText: isEdit ? newText.slice(0, 500) : '', native: false });
+    const term = await launchAndDeliver({ agent: targetAgent, resumeId: null, title: branchTitle, promptToSend: instruction, targetCwd: branchCwd });
+    const branch = conversationBranches.addBranch({ parentSessionId: id, childSessionId: null, termId: term.id, sourceAgent: sourceAgent || 'claude', targetAgent, mode, atIndex, branchTitle, anchorText, editedText: isEdit ? newText.slice(0, 500) : '', native: false, ...(isolatedWorktree ? { worktreeDir: isolatedWorktree } : {}) });
     overviewStale();
-    return send(res, 200, { ok: true, mode, native: false, term: hub.termInfo(term), branch, childSessionId: null });
+    return send(res, 200, { ok: true, mode, native: false, isolatedWorktree, term: hub.termInfo(term), branch, childSessionId: null });
   }
 
   const consoleSubmissions = new Set();
@@ -1390,6 +1445,49 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       catch (e) { send(res, 500, { error: e.message || 'CLI 대화 기록 삭제에 실패했습니다.' }); }
       return true;
     }
+    if (p === '/api/transcript/verification' && req.method === 'POST') {
+      const { readVerificationBody, runEvidence } = require('./verification-runs');
+      let input;
+      try { input = await readVerificationBody(req); }
+      catch (error) { send(res, error.status || 400, { error: error.message }); return true; }
+      const { sid, at, stamp, kind, path: wanted, version, criteria, evidence, thumbnail, previousId } = input;
+      const parsed = runEvidence(kind, criteria, evidence);
+      if (!hub.verificationRuns || !parsed || !validSessionId(sid) || projects.hidden().has(sid)
+        || !Number.isSafeInteger(at) || at < 0 || typeof wanted !== 'string'
+        || typeof version !== 'string' || !/^"[\d.-]{5,100}"$/.test(version)
+        || (previousId !== undefined && typeof previousId !== 'string')) {
+        send(res, 400, { error: '검증 기록 정보가 올바르지 않습니다.' });
+        return true;
+      }
+      const doc = index.get(sid);
+      const messages = doc && (termEvents ? termEvents.mergeIntoMessages(doc.msgs, sid) : doc.msgs);
+      const message = messages?.[at];
+      if (message?.role !== 'assistant' || message.ts !== stamp) {
+        send(res, 409, { error: '검증 대상 응답이 변경되었습니다.' });
+        return true;
+      }
+      const term = [...hub.terms.values()].find(t => hub.termSessionId(t) === sid);
+      const item = (await hub.artifacts.list(sid, { termId: term?.id })).find(item => item.path === wanted);
+      let stat;
+      try { if (item) stat = await fs.promises.stat(item.path); } catch {}
+      const actual = stat && `"${stat.size}-${stat.mtimeMs}-${stat.ctimeMs}"`;
+      const compatible = kind === 'image' ? item?.ext === 'png' : kind === 'html'
+        ? /^(html|htm)$/.test(item?.ext) : /^(json|csv|tsv)$/.test(item?.ext);
+      if (!compatible || actual !== version || !stat.isFile()) {
+        send(res, 409, { error: '파일이 바뀌었습니다. 같은 조건으로 다시 검사해 주세요.' });
+        return true;
+      }
+      const thumb = typeof thumbnail === 'string' && thumbnail.length <= 260000 &&
+        /^data:image\/png;base64,[\w+/]+=*$/.test(thumbnail) ? thumbnail : undefined;
+      try {
+        const run = hub.verificationRuns.add({ sid, at, stamp, path: wanted, version, kind, ...parsed, thumbnail: thumb, previousId });
+        send(res, 200, { run });
+      } catch (err) {
+        if (err.status !== 409) throw err;
+        send(res, 409, { error: '이전 실행의 검증 조건과 일치하지 않습니다.' });
+      }
+      return true;
+    }
     if (p === '/api/transcript/work-diff' && req.method === 'GET') {
       const id = url.searchParams.get('id');
       const doc = validSessionId(id) && !projects.hidden().has(id) ? index.get(id) : null;
@@ -1487,7 +1585,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       const fallback = (!d && id) ? transcript(id, 40) : null;
       const msgs = d?.msgs || fallback?.messages || [];
       const agent = ['claude', 'codex', 'agy'].includes(b.agent) ? b.agent : (d?.agent || 'claude');
-      const cwd = (d?.cwd && fs.existsSync(d.cwd)) ? d.cwd : os.homedir();
+      const cwd = (d?.cwd && fs.existsSync(d.cwd)) ? d.cwd : (b.cwd && fs.existsSync(b.cwd) ? b.cwd : os.homedir());
       const normSel = selectedText.replace(/\s+/g, ' ').slice(0, 80);
       let ctxMsgs = msgs.slice(-12);
       if (normSel) {
