@@ -24,6 +24,42 @@ const MIME = {
   yml: 'text/plain; charset=utf-8', tex: 'text/plain; charset=utf-8', bib: 'text/plain; charset=utf-8', py: 'text/plain; charset=utf-8',
 };
 const kindOf = (p) => (KIND.find(([re]) => re.test(p)) || [null, 'file'])[1];
+const REVIEW_ELEMENT_BRIDGE = `<script data-hub-review-element>
+if (parent !== window) {
+  let target, pending = 0;
+  const report = () => {
+    pending = 0;
+    if (!target) return;
+    const { element, request, selector } = target;
+    const rect = element?.isConnected ? element.getBoundingClientRect() : null;
+    const bounds = rect ? [rect.x, rect.y, rect.width, rect.height] : null;
+    parent.postMessage({ type: 'hub-review-element', request, selector, bounds }, '*');
+  };
+  const schedule = () => { if (target && !pending) pending = setTimeout(report, 16); };
+  const observer = new ResizeObserver(schedule);
+  addEventListener('scroll', schedule, { capture: true, passive: true });
+  addEventListener('resize', schedule);
+  addEventListener('message', event => {
+    const { type, request, x, y } = event.data || {};
+    if (event.source !== parent || !Number.isSafeInteger(request)) return;
+    if (type === 'hub-review-element-clear' && request === target?.request) {
+      target = null;
+      observer.disconnect();
+      return;
+    }
+    if (type !== 'hub-review-element-request' || !Number.isFinite(x) || !Number.isFinite(y)
+        || x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) return;
+    const element = document.elementFromPoint(x, y);
+    const id = element?.id || '';
+    const selector = /^[A-Za-z][A-Za-z0-9_-]{0,47}$/.test(id) && document.querySelectorAll('#' + id).length === 1 ? '#' + id : '';
+    target = { element, request, selector };
+    observer.disconnect();
+    if (element) observer.observe(element);
+    if (pending) clearTimeout(pending);
+    report();
+  });
+}
+</script>`;
 
 // ---- Office preview: PowerPoint/Word → PDF (LibreOffice headless, own profile so a user's open
 // LibreOffice/PowerPoint is never touched), cached by path+size+mtime in preview-cache/ (G:) ----
@@ -95,7 +131,8 @@ function serve(req, res, file) {
     try {
       const bridge = '<script data-hub-link-bridge>(function(){if(window.parent===window)return;var tauri=/[?&]hub_ext=1(&|$)/.test(location.search);function reportScroll(){parent.postMessage({type:"hub-review-scroll",x:scrollX,y:scrollY},"*");}addEventListener("message",function(e){if(e.source===parent&&e.data&&e.data.type==="hub-review-scroll-request")reportScroll();});addEventListener("scroll",reportScroll,{passive:true});function send(u){try{window.parent.postMessage({type:"hub-open-external",url:u},"*");}catch(_){}}document.addEventListener("click",function(e){var a=e.target&&e.target.closest?e.target.closest("a[href]"):null;if(!a||a.hasAttribute("download"))return;var raw=(a.getAttribute("href")||"").trim();if(!raw||raw.charAt(0)==="#"||/^javascript:/i.test(raw))return;var u=a.href;if(!/^https?:\\/\\//i.test(u))return;if(tauri){e.preventDefault();send(u);return;}if(!a.target||a.target==="_self"){a.target="_blank";a.rel="noopener noreferrer";}},true);if(tauri){var oo=window.open;window.open=function(u){if(typeof u==="string"&&/^https?:\\/\\//i.test(u)){send(u);return null;}return oo?oo.apply(window,arguments):null;};}})();</script>';
       const html = fs.readFileSync(file, 'utf8');
-      const injected = /<\/body>/i.test(html) ? html.replace(/<\/body>/i, `${bridge}</body>`) : `${html}\n${bridge}`;
+      const bridges = bridge + REVIEW_ELEMENT_BRIDGE;
+      const injected = /<\/body>/i.test(html) ? html.replace(/<\/body>/i, () => `${bridges}</body>`) : `${html}\n${bridges}`;
       const buf = Buffer.from(injected, 'utf8');
       res.writeHead(200, { ...headers, 'content-length': buf.length });
       return res.end(buf);

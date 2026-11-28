@@ -493,16 +493,20 @@ body.side-collapsed .side-float-btn { display: inline-flex; }
 .chat-pv-pane { flex: 0 0 46%; min-width: 260px; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); }
 .pv-lbl { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text); flex: none; }
 @media (max-width: 900px) {
-  .chat-split { flex-direction: column; }
+  .chat-split { position: relative; flex-direction: column; }
   .chat-pv-resizer { display: none !important; }
-  .chat-pv-pane { flex: 0 0 44% !important; min-width: 0; width: 100%; border-top: 1px solid var(--line); }
+  .chat-pv-pane { position: absolute; inset: 44px 0 0; z-index: 2; min-width: 0; }
+  .chat-split.has-pv > .chat-shell { visibility: hidden; }
 }
 .chat-shell { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; width: 100%; }
 .pv-rail { flex: 0 0 36px; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 4px; background: var(--side-bg); border-left: 1px solid var(--line); }
 .pv-rail-btn { width: 28px; height: 28px; min-height: 0; padding: 0; border: 0; border-radius: var(--radius-md); background: transparent; color: var(--muted); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
 .pv-rail-btn:hover { background: var(--panel2); color: var(--text); }
 .pv-rail-btn.on { background: var(--sel); color: var(--accent); }
-@media (max-width: 900px) { .pv-rail { display: none; } }
+@media (max-width: 900px) {
+  .pv-rail { order: -1; flex: 0 0 44px; min-height: 44px; flex-direction: row; padding: 0 8px; border-left: 0; border-bottom: 1px solid var(--line); }
+  .pv-rail-btn { width: 44px; height: 44px; }
+}
 .chat-scroll { flex: 1; min-height: 0; min-width: 0; overflow-y: auto; overflow-x: hidden; }
 .chat-scroll > .chat { width: 100%; max-width: 880px; margin-inline: auto; }
 .chat-reply-bar { flex: none; border-top: 1px solid var(--line); background: var(--panel); padding: 10px clamp(12px, 2vw, 24px) 12px; }

@@ -324,7 +324,7 @@
           <button type="button" data-pv-mode="preview" class="on">미리보기</button>
           <button type="button" data-pv-mode="source">소스</button>
         </div>
-        <div class="row" style="gap:3px;flex:none;margin-left:auto">
+        <div class="row pv-actions">
           <button type="button" class="btn-sm" data-pv-ask hidden>이 결과에 질문</button>
           <button type="button" class="btn-sm" data-pv-area hidden>영역 코멘트</button>
           <button type="button" class="ghost icon-btn btn-sm" data-pv-copy title="내용 복사" aria-label="복사">${UI_ICO.copy}</button>
@@ -656,7 +656,9 @@
     };
     askEl.onclick = () => {
       const cur = findItem(selectedId);
-      if (cur?.source === 'artifact') askArtifactQuestion([cur.artifact], askTarget);
+      if (cur?.source !== 'artifact') return;
+      if (window.matchMedia('(max-width: 900px)').matches) setVisible(false);
+      askArtifactQuestion([cur.artifact], askTarget);
     };
     areaEl.onclick = () => {
       const item = findItem(selectedId)?.artifact;

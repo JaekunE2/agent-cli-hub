@@ -1222,6 +1222,104 @@ function reviewControls(slot, onSubmit, onCancel) {
   };
 }
 
+function bindReviewElementPick(media, slot, picker, status, signal) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'ghost btn-sm';
+  button.textContent = '요소 지정';
+  button.setAttribute('aria-pressed', 'false');
+  $('[data-review-full]', slot).after(button);
+
+  const chip = document.createElement('button');
+  chip.type = 'button';
+  chip.className = 'ghost btn-sm review-element-chip';
+  chip.hidden = true;
+  $('textarea', slot).before(chip);
+  const outline = document.createElement('div');
+  outline.className = 'review-element-outline';
+  outline.setAttribute('aria-hidden', 'true');
+  outline.hidden = true;
+  media.after(outline);
+  let armed = false, target = null;
+  const clearTarget = () => {
+    if (target) media.contentWindow?.postMessage({ type: 'hub-review-element-clear', request: target.request }, '*');
+    target = null;
+    outline.hidden = true;
+  };
+  const disarm = () => {
+    armed = false;
+    button.setAttribute('aria-pressed', 'false');
+  };
+  const render = () => {
+    chip.hidden = !target;
+    if (!target) return;
+    const label = target.selector ? `요소: ${target.selector}` : `지정 위치: ${target.position}`;
+    chip.textContent = `${label} ×`;
+    chip.title = label;
+    chip.setAttribute('aria-label', target.selector ? '요소 정보 제거' : '지정 위치 제거');
+  };
+  button.onclick = () => {
+    const next = !armed;
+    picker.begin();
+    if (next) {
+      armed = true;
+      button.setAttribute('aria-pressed', 'true');
+      status.textContent = '수정할 요소를 누르세요.';
+    } else disarm();
+  };
+  chip.onclick = () => {
+    if (target?.selector) {
+      target.selector = '';
+    } else clearTarget();
+    render();
+    if (!target) button.focus();
+  };
+  window.addEventListener('message', event => {
+    const { type, request, selector, bounds } = event.data || {};
+    if (event.source !== media.contentWindow || type !== 'hub-review-element' || !target
+      || !Number.isSafeInteger(request) || target.request !== request) return;
+    if (!target.resolved) {
+      target.resolved = true;
+      if (typeof selector === 'string' && /^#[A-Za-z][A-Za-z0-9_-]{0,47}$/.test(selector)) target.selector = selector;
+      render();
+    }
+    outline.hidden = true;
+    if (!Array.isArray(bounds) || bounds.length !== 4 || !bounds.every(Number.isFinite)) return;
+    const [x, y, w, h] = bounds;
+    const left = Math.max(x, 0), top = Math.max(y, 0);
+    const width = Math.min(x + w, media.clientWidth) - left;
+    const height = Math.min(y + h, media.clientHeight) - top;
+    if (width <= 0 || height <= 0) return;
+    Object.assign(outline.style, { left: left + 'px', top: top + 'px', width: width + 'px', height: height + 'px' });
+    outline.hidden = false;
+  }, { signal });
+  media.addEventListener('load', () => { clearTarget(); render(); }, { signal });
+  signal.addEventListener('abort', () => { clearTarget(); outline.remove(); }, { once: true });
+
+  return {
+    disarm,
+    pick(clientX, clientY) {
+      if (!armed) return false;
+      disarm();
+      const rect = media.getBoundingClientRect();
+      const x = clientX - rect.left, y = clientY - rect.top;
+      if (x < 0 || y < 0 || x >= rect.width || y >= rect.height) return true;
+      const request = crypto.getRandomValues(new Uint32Array(1))[0];
+      const position = [x / rect.width, y / rect.height].map(value => (value * 100).toFixed(1)).join(', ');
+      clearTarget();
+      target = { position, request, selector: '' };
+      render();
+      media.contentWindow?.postMessage({ type: 'hub-review-element-request', request, x, y }, '*');
+      return true;
+    },
+    get context() {
+      if (!target) return '';
+      if (target.selector) return `HTML 요소: ${target.selector}`;
+      return `HTML 클릭 좌표 (왼쪽%, 위%): ${target.position}`;
+    },
+  };
+}
+
 function startArtifactRegionReview({ initial: media, slot, item, isActive, onSubmit, onStop }) {
   const isHtml = item.kind === 'html';
   const host = isHtml ? media.parentElement : null;
@@ -1239,11 +1337,12 @@ function startArtifactRegionReview({ initial: media, slot, item, isActive, onSub
     onStop();
   };
   const regions = new Map();
-  let nextRegion = 1;
+  let nextRegion = 1, elementPick;
   const tools = reviewControls(slot, async (comment, status) => {
-    if (!regions.size || !comment) throw new Error('영역과 코멘트를 입력하세요.');
+    const elementContext = elementPick?.context;
+    if ((!regions.size && !elementContext) || !comment) throw new Error('영역과 코멘트를 입력하세요.');
     if (!isActive()) return;
-    const context = [...regions].map(([number, region]) => `#${number}\n${region.context}`).join('\n\n');
+    const context = [elementContext, ...[...regions].map(([number, region]) => `#${number}\n${region.context}`)].filter(Boolean).join('\n\n');
     const message = `아래 산출물의 선택 영역을 코멘트에 따라 수정하고 같은 파일을 업데이트해 주세요.\n${context}\n코멘트: ${comment}`;
     await onSubmit(message, stop);
     status.textContent = '';
@@ -1343,11 +1442,18 @@ function startArtifactRegionReview({ initial: media, slot, item, isActive, onSub
     list.append(remove);
   };
   const picker = reviewRegion(media, tools.status, {
-    host, onSelectingChange: isHtml ? tools.setSelecting : undefined, onCommit: addRegion, onTap: selectAt,
+    host,
+    onSelectingChange(selecting) {
+      if (!selecting) elementPick?.disarm();
+      if (isHtml) tools.setSelecting(selecting);
+    },
+    onCommit(area) { elementPick?.disarm(); addRegion(area); },
+    onTap(x, y) { if (!elementPick?.pick(x, y)) selectAt(x, y); },
   });
   media.after(markers);
   tools.connect(picker, isHtml);
   if (isHtml) {
+    elementPick = bindReviewElementPick(media, slot, picker, tools.status, listener.signal);
     const options = { signal: listener.signal };
     const requestScroll = () => media.contentWindow?.postMessage({ type: 'hub-review-scroll-request' }, '*');
     window.addEventListener('message', event => {
