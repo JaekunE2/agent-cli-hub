@@ -671,8 +671,9 @@
       try {
         review.dispose = startArtifactRegionReview({
           initial, slot: reviewSlot, item, isActive,
-          async onSubmit(message) {
-            await sendAreaReviewInChat(`${quotePath(item.abs || item.path)}\n${message}`, askTarget);
+          async onSubmit(message, stop, regions, comment) {
+            const text = `${quotePath(item.abs || item.path)}\n${message}`;
+            await sendWithRegionCheck(initial, item, regions, askTarget, text, () => sendAreaReviewInChat(text, askTarget), comment);
             if (isActive()) stopPaneAreaReview();
           },
           onStop() { stopPaneAreaReview(); areaEl.focus(); },

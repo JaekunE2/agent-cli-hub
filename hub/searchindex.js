@@ -8,6 +8,7 @@ const addAgyWorkspaces = require('./agy-workspaces');
 
 const CACHE_FILE = path.join(__dirname, '.search-cache.json.gz');
 const CACHE_VER = 10;
+const { MAX_LINE, workState, codexEvidence, claudeEvidence, agyEvidence, finishWork } = require('./chat-work-result');
 
 const emptyTokens = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 });
 function normalizeTokens(t) {
@@ -257,6 +258,7 @@ class SearchIndex {
     this.codexRoot = codexRoot;
     this.agyRoot = agyRoot;
     this.docs = new Map(); // sessionId -> {file, offset, mtime, cwd, title, firstPrompt, msgs:[{role,text,ts}]}
+    this.fileUpdates = new Map();
     this.ready = false;
     this.building = null;
     this.dirty = false;
@@ -327,13 +329,22 @@ class SearchIndex {
   }
 
   // Parse bytes [doc.offset, size) of one file, appending complete lines only.
-  async updateFile(file, { codexAnswers = false } = {}) {
+  updateFile(file, options) {
+    const pending = this.fileUpdates.get(file);
+    if (pending) return options?.workResults ? pending.then(() => this.updateFile(file, options)) : pending;
+    const update = this.readFileUpdate(file, options).finally(() => this.fileUpdates.delete(file));
+    this.fileUpdates.set(file, update);
+    return update;
+  }
+
+  async readFileUpdate(file, { codexAnswers = false, workResults = false } = {}) {
     const codex = isCodexFile(file);
     const agy = !codex && isAgyFile(file);
     const id = codex ? codexIdOf(file) : agy ? agyIdOf(file) : path.basename(file, '.jsonl');
     let st; try { st = await fs.promises.stat(file); } catch { return; }
     let doc = this.docs.get(id);
     if (codex && codexAnswers && doc && !doc.codexAnswers) doc = null;
+    if (workResults && doc && !doc.workIndexed) doc = null;
     const bestMtime = (d, stMs) => {
       for (let i = d.msgs.length - 1; i >= 0; i--) {
         const ts = Date.parse(d.msgs[i]?.ts || '');
@@ -357,6 +368,7 @@ class SearchIndex {
     }
     if (!doc || doc.file !== file || st.size < doc.offset) {
       doc = { id, file, offset: 0, mtime: 0, cwd: null, title: null, firstPrompt: null, auto: null, msgs: [], tokens: emptyTokens(), _tokMap: {}, agent: codex ? 'codex' : agy ? 'agy' : 'claude', ...(codex ? { codexAnswers: true } : {}) };
+      doc.workIndexed = true;
       this.docs.set(id, doc);
     }
     if (!doc.tokens) doc.tokens = emptyTokens();
@@ -377,17 +389,25 @@ class SearchIndex {
         const head = lineBuf.subarray(0, 300).toString('utf8');
         if (!/"type":"(session_meta|turn_context|response_item|event_msg)"/.test(head)) return;
         const isAnswerOut = head.includes('"function_call_output"') && lineBuf.length < 32768 && lineBuf.includes('answers');
-        if (!isAnswerOut && head.includes('"type":"response_item"') && /"type":"(reasoning|function_call_output|custom_tool_call_output)"/.test(head)) return;
+        const evidenceOutput = doc._work?.calls.length && lineBuf.length <= MAX_LINE && head.includes('"function_call_output"');
+        if (!isAnswerOut && !evidenceOutput && head.includes('"type":"response_item"') && /"type":"(reasoning|function_call_output|custom_tool_call_output)"/.test(head)) return;
         let e; try { e = JSON.parse(lineBuf.toString('utf8')); } catch { return; }
         const p = e.payload || {};
         if ((e.type === 'turn_context' || p.type === 'task_started') && p.turn_id && p.turn_id !== doc._codexTurn) {
           doc._codexTurn = p.turn_id;
           doc._codexAnswer = null;
           doc._codexFinal = false;
+          doc._work = workState();
+        }
+        if (doc._work && lineBuf.length <= MAX_LINE && (!p.turn_id || p.turn_id === doc._codexTurn)) {
+          codexEvidence(doc._work, e, { offset: consumed, length: lineBuf.length });
         }
         if (e.type === 'event_msg' && p.type === 'task_complete' && p.turn_id && p.turn_id === doc._codexTurn && doc._codexAnswer != null) {
           doc.msgs[doc._codexAnswer].codexTurnId = p.turn_id;
+          const result = finishWork(doc._work, consumed);
+          if (result) doc.msgs[doc._codexAnswer].workResult = result;
           doc._codexAnswer = null;
+          doc._work = null;
         }
         const r = codexLine(e);
         if (r.cwd && !doc.cwd) doc.cwd = r.cwd;
@@ -427,9 +447,30 @@ class SearchIndex {
         }
         // Fast raw-buffer pre-filter: skips large GENERIC / SYSTEM_MESSAGE lines before UTF-8 decode & JSON.parse
         // while preserving support for spaced or late "type" fields.
-        if (!lineBuf.includes('USER_INPUT') && !lineBuf.includes('PLANNER_RESPONSE')) return;
+        if (!lineBuf.includes('USER_INPUT') && !lineBuf.includes('PLANNER_RESPONSE')
+          && !(doc._work?.calls.length && lineBuf.length <= MAX_LINE
+            && (lineBuf.includes('GENERIC') || lineBuf.includes('SYSTEM_MESSAGE')))) return;
         let e; try { e = JSON.parse(lineBuf.toString('utf8')); } catch { return; }
+        const completed = doc._work && lineBuf.length <= MAX_LINE
+          && agyEvidence(doc._work, e, { offset: consumed, length: lineBuf.length });
         const r = agyLine(e);
+        if (e.type === 'PLANNER_RESPONSE' && Array.isArray(e.tool_calls)) {
+          const reason = e.tool_calls.find(tool => tool.name === 'finish')?.args?.reason;
+          if (typeof reason === 'string') doc._agyWorkReason = reason.slice(0, 4000);
+        }
+        if (completed) {
+          const result = finishWork(doc._work, consumed);
+          if (result) {
+            if (doc._agyWorkAnswer == null) {
+              pushMsg({ role: 'assistant', text: doc._agyWorkReason || '작업이 완료됐습니다.', ts: e.created_at });
+              doc._agyWorkAnswer = doc.msgs.length - 1;
+            }
+            doc.msgs[doc._agyWorkAnswer].workResult = result;
+          }
+          doc._work = null;
+          doc._agyWorkReason = '';
+          doc._agyWorkAnswer = null;
+        }
         if (r.cwd && !doc.cwd) doc.cwd = r.cwd;
         if (r.tokStep) {
           const prev = doc._tokMap[r.tokStep.key] || emptyTokens();
@@ -443,8 +484,19 @@ class SearchIndex {
         }
         if (r.settingsNote) doc.msgs.push({ role: 'assistant', text: r.settingsNote, ts: e.created_at });
         if (!r.msg) return;
+        if (r.msg.role === 'user') {
+          doc._work = workState();
+          doc._agyWorkAnswer = null;
+          doc._agyWorkReason = '';
+        }
         if (r.msg.role === 'user' && !doc.firstPrompt) doc.firstPrompt = cleanPromptTitle(r.msg.text);
         pushMsg(r.msg);
+        if (doc._work && r.msg.role === 'assistant' && doc.msgs.at(-1)?.role === 'assistant') {
+          const result = finishWork(doc._work, consumed);
+          if (doc._agyWorkAnswer != null && doc.msgs[doc._agyWorkAnswer].workResult?.pending) delete doc.msgs[doc._agyWorkAnswer].workResult;
+          doc._agyWorkAnswer = doc.msgs.length - 1;
+          if (result) doc.msgs[doc._agyWorkAnswer].workResult = { ...result, pending: true };
+        }
       };
       const handle = codex ? handleCodex : agy ? handleAgy : (lineBuf) => {
         // Cheap pre-filter before JSON.parse; tool results / attachments can be MBs.
@@ -456,7 +508,8 @@ class SearchIndex {
         if (!isMsg && !isTitle && doc.cwd) return;
         const s = lineBuf.toString('utf8');
         const hasToolAnswer = isMsg && s.includes('"tool_use_id"') && s.length < 32768 && (s.includes('"toolUseResult"') || s.includes('"answers"') || s.includes('User has answered'));
-        if (isMsg && s.includes('"tool_use_id"') && !hasToolAnswer) { if (!doc.cwd) { const m = s.match(/"cwd":"((?:[^"\\]|\\.)*)"/); if (m) doc.cwd = JSON.parse(`"${m[1]}"`); } return; }
+        const isToolResult = isMsg && s.includes('"tool_use_id"');
+        if (isToolResult && !hasToolAnswer && (!doc._work?.calls.length || lineBuf.length > MAX_LINE)) { if (!doc.cwd) { const m = s.match(/"cwd":"((?:[^"\\]|\\.)*)"/); if (m) doc.cwd = JSON.parse(`"${m[1]}"`); } return; }
         let e; try { e = JSON.parse(s); } catch { return; }
         doc.cwd = doc.cwd || e.cwd || null;
         if (e.type === 'custom-title' && e.customTitle) { doc.title = e.customTitle; doc.titleKind = 'custom'; }
@@ -464,8 +517,9 @@ class SearchIndex {
         else if (e.type === 'ai-title' && e.aiTitle && (!doc.title || doc.titleKind === 'ai')) { doc.title = e.aiTitle; doc.titleKind = 'ai'; }
         else if (e.type === 'summary' && e.summary && (!doc.title || doc.titleKind === 'ai')) { doc.title = e.summary; doc.titleKind = 'summary'; }
         if ((e.type !== 'user' && e.type !== 'assistant') || e.isMeta || e.isSidechain) return;
-        if (hasToolAnswer) {
-          const ansNote = claudeToolResultNote(e);
+        if (doc._work && lineBuf.length <= MAX_LINE) claudeEvidence(doc._work, e, { offset: consumed, length: lineBuf.length });
+        if (isToolResult) {
+          const ansNote = hasToolAnswer ? claudeToolResultNote(e) : null;
           if (ansNote) doc.msgs.push({ role: 'user', text: ansNote, ts: e.timestamp });
           return;
         }
@@ -494,7 +548,13 @@ class SearchIndex {
           return;
         }
         if (e.type === 'user' && !doc.firstPrompt && !e.isCompactSummary && !text.startsWith('This session is being continued') && !text.startsWith('⚙')) { const c = cleanPromptTitle(text); if (c && !isNoise(c)) doc.firstPrompt = c; }
+        if (e.type === 'user' && !e.isCompactSummary) doc._work = workState();
         pushMsg({ role: e.type, text, ts: e.timestamp });
+        if (e.type === 'assistant' && e.message?.stop_reason === 'end_turn' && !e.isApiErrorMessage) {
+          const result = finishWork(doc._work, consumed);
+          if (result) doc.msgs.at(-1).workResult = result;
+          doc._work = null;
+        }
       };
       stream.on('data', (chunk) => {
         let buf = rest.length ? Buffer.concat([rest, chunk]) : chunk;

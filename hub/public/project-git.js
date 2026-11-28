@@ -1,4 +1,10 @@
 // ---------- Read-only Project Git Metro Map & Diff Inspector ----------
+function gitDiffLineClass(line) {
+  if (line.startsWith('+') && !line.startsWith('+++')) return 'pg-dl-add';
+  if (line.startsWith('-') && !line.startsWith('---')) return 'pg-dl-del';
+  return line.startsWith('@@') ? 'pg-dl-hunk' : '';
+}
+
 async function projectGitView(p, gen) {
   const host = $('#projectContent');
   if (!host) return;
@@ -106,16 +112,7 @@ async function projectGitView(p, gen) {
           const dr = await api(`/api/projects/git?${qs}`);
           if (!diffPre.isConnected) return;
           const lines = String(dr.diff || '(변경 내용 없음)').split('\n');
-          diffPre.innerHTML = lines.map((line) => {
-            const cls = line.startsWith('+') && !line.startsWith('+++')
-              ? 'pg-dl-add'
-              : line.startsWith('-') && !line.startsWith('---')
-                ? 'pg-dl-del'
-                : line.startsWith('@@')
-                  ? 'pg-dl-hunk'
-                  : '';
-            return `<div class="${cls}">${esc(line)}</div>`;
-          }).join('');
+          diffPre.innerHTML = lines.map(line => `<div class="${gitDiffLineClass(line)}">${esc(line)}</div>`).join('');
         } catch (err) {
           diffPre.textContent = err.message;
         }

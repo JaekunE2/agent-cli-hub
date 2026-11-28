@@ -694,7 +694,15 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
     if (d.hidden) { msgsHost.textContent = d.error; return; }
     const parentSig = d.lineage?.parent ? `${d.lineage.parent.parentSessionId}:${d.lineage.parent.atIndex}` : '';
     const childSig = (d.lineage?.children || []).map((c) => `${c.id || ''}:${c.childSessionId || ''}:${c.atIndex}`).join(',');
-    const sig = `${d.size || 0}:${d.total || 0}:${d.base || 0}:${d.rev || 0}:${d.title || ''}:${parentSig}:${childSig}:${d.usageRev || ''}`;
+    const regionTarget = state.sel;
+    const regionPending = !jump && pendingRegionChecks.has(regionTargetKey(regionTarget));
+    const pendingWork = (regionPending || d.messages?.at(-1)?.workResult?.pending) ? await updateLiveBubble(d.messages) : null;
+    if (gen !== viewGen) return;
+    if (regionPending && !pendingWork) await settleRegionCheck(regionTarget, curSid, d.messages || [], d.base || 0);
+    if (gen !== viewGen) return;
+    const regionSignature = completedRegionChecks.size
+      ? (d.messages || []).map((m, i) => observedRegionCheck(curSid, m, (d.base || 0) + i)).join(',') : '';
+    const sig = `${d.size || 0}:${d.total || 0}:${d.base || 0}:${d.rev || 0}:${d.title || ''}:${parentSig}:${childSig}:${d.usageRev || ''}:${pendingWork ? 1 : 0}:${regionSignature}`;
     if (d.error && !d.messages?.length) {
       if (lastMessages.length) {
         const working = await updateLiveBubble(lastMessages);
@@ -749,6 +757,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
         ? `<div class="row" style="justify-content:center;margin:10px"><button class="btn-latest">최신 대화로 이동</button></div>` : '';
       const openToolIds = new Set([...msgsHost.querySelectorAll('details.toolgrp[open]')].map((el) => el.dataset.tgKey).filter(Boolean));
       const openTokenIds = new Set([...msgsHost.querySelectorAll('.msg-token-usage[open]')].map(el => el.dataset.tokenTurn));
+      const openWorkIds = new Set([...msgsHost.querySelectorAll('.chat-work-card[open]')].map(el => el.dataset.workResult));
       const parts = [];
       let toolBuf = [];
       const branchChipsHTML = (gi) => {
@@ -774,6 +783,8 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
       };
       let lastDay = '';
       const resultMessages = [];
+      const latestReply = d.messages.findLastIndex(m => m.role === 'assistant' && !String(m.text).startsWith('⚙'));
+      let resultRequest = '';
       d.messages.forEach((m, k) => {
         const isMetaNote = m.role === 'assistant' && /^⚙ \[(?:설정|터미널)/.test(m.text);
         const tool = m.role === 'assistant' && m.text.startsWith('⚙') && !isMetaNote;
@@ -804,14 +815,20 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
         if (tool || isMetaNote) {
           parts.push(`<div class="msg tool${tgt ? ' target' : ''}" data-mi="${k}">${linkPaths(hl(rawTxt, terms))}</div>${branchChipsHTML(gi)}`);
         } else if (m.role === 'user') {
+          resultRequest = rawTxt;
           const bodyHtml = linkUrls(linkPaths(hl(rawTxt, terms)));
           parts.push(`<div class="msg user${tgt ? ' target' : ''}" data-mi="${k}">${branchOriginNote}<div class="msg-bubble"><div class="msg-body">${bodyHtml}</div></div><div class="msg-meta">${editedBadge}<span class="msg-acts">${quoteBtn}${editBtn}${forkBtn}${copyBtn}</span>${when ? `<span>${esc(when)}</span>` : ''}</div>${branchChipsHTML(gi)}</div>`);
         } else {
-          if (!isMetaNote && /[\p{L}\p{N}_-]\.[a-z0-9]{1,12}\b/iu.test(rawTxt)) resultMessages.push([k, rawTxt]);
           const bodyHtml = !terms.length ? md(rawTxt) : `<div class="msg-body" style="white-space:pre-wrap">${linkUrls(linkPaths(hl(rawTxt, terms)))}</div>`;
           const turn = m.codexTurnId || String(gi);
           const usage = m.codexUsage?.length ? codexAnswerTokensHTML(m.codexUsage, turn, openTokenIds.has(turn)) : '';
-          parts.push(`<div class="msg assistant${tgt ? ' target' : ''}" data-mi="${k}"><div class="msg-av">${agentIcon(ag || 'claude')}</div><div class="msg-col"><div class="msg-hd"><span class="w-role">${esc(who)}</span>${when ? `<span class="w-ts">${esc(when)}</span>` : ''}${editedBadge}<span style="flex:1"></span><span class="msg-acts">${quoteBtn}${forkBtn}${copyBtn}</span></div><div class="msg-bubble">${bodyHtml}</div>${usage}${branchChipsHTML(gi)}</div></div>`);
+          const observation = observedRegionCheck(curSid, m, gi);
+          const workResult = m.workResult?.pending && pendingWork && k === d.messages.length - 1 ? null : m.workResult;
+          if (observation || /[\p{L}\p{N}_-]\.[a-z0-9]{1,12}\b/iu.test(rawTxt)) {
+            resultMessages.push({ index: k, output: rawTxt, observation, latest: k === latestReply, request: resultRequest });
+          }
+          const work = chatWorkCardHTML(workResult, openWorkIds.has(workResult?.id));
+          parts.push(`<div class="msg assistant${tgt ? ' target' : ''}" data-mi="${k}"><div class="msg-av">${agentIcon(ag || 'claude')}</div><div class="msg-col"><div class="msg-hd"><span class="w-role">${esc(who)}</span>${when ? `<span class="w-ts">${esc(when)}</span>` : ''}${editedBadge}<span style="flex:1"></span><span class="msg-acts">${quoteBtn}${forkBtn}${copyBtn}</span></div><div class="msg-bubble">${bodyHtml}</div>${chatWorkOutcomeHTML(workResult)}${chatRegionOutcomeHTML(observation)}${work}${usage}${branchChipsHTML(gi)}</div></div>`);
         }
       });
       flushTools();
@@ -821,9 +838,23 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
         ? `<div class="row" style="justify-content:center;gap:8px;margin-bottom:8px"><span class="ums" style="margin:0">… 이전 메시지 ${b}개 생략${!jump && msgLimit >= 2000 ? ' (최대 2,000건 표시됨)' : ''}</span>${!jump && msgLimit < 2000 ? `<button type="button" class="btn-sm" data-load-older="1">이전 메시지 더 보기</button>` : ''}</div>`
         : '';
       msgsHost.innerHTML = lineageBanner + olderBanner + (parts.join('') || '<div class="empty">메시지 없음</div>') + more;
-      const resultBubbles = resultMessages.map(([index, output]) => [
-        $(`.msg.assistant[data-mi="${index}"] .msg-bubble`, msgsHost), output,
-      ]);
+      for (const button of msgsHost.querySelectorAll('[data-work-file]')) {
+        button.onclick = () => openChatWorkDiff(curSid, button.closest('[data-work-result]').dataset.workResult, button.dataset.workFile);
+      }
+      const workTarget = artifactChatTarget();
+      for (const button of msgsHost.querySelectorAll('[data-work-fix]')) {
+        const check = d.messages[Number(button.closest('.msg').dataset.mi)].workResult.checks[Number(button.dataset.workFix)];
+        const name = check.failureNames?.[Number(button.dataset.workCase)];
+        button.onclick = () => stageReviewInChat(workFailureRequest(check, name), [], workTarget);
+      }
+      const resultBubbles = resultMessages.map(row => {
+        const message = $(`.msg.assistant[data-mi="${row.index}"]`, msgsHost);
+        const image = $('[data-work-image]', message);
+        if (image && row.observation) image.onclick = () => openArtifact(curSid, row.observation.item, row.observation.url);
+        const fix = $('[data-work-image-fix]', message);
+        if (fix && row.observation) fix.onclick = () => stageReviewInChat(regionFailureRequest(row.observation), [], workTarget);
+        return { ...row, bubble: $('.msg-bubble', message), outcome: $('.chat-work-outcome', message) };
+      });
       if (typeof showChatArtifactPreviews === 'function') void showChatArtifactPreviews(resultBubbles, curSid, tCur?.id, jump ? null : v);
       const loadOlderBtn = $('[data-load-older]', msgsHost);
       if (loadOlderBtn) {
@@ -964,7 +995,7 @@ async function renderChat(sid, gen, at = -1, terms = [], hostEl = null) {
       };
       requestAnimationFrame(syncChatBottom);
     }
-    const working = await updateLiveBubble(lastMessages);
+    const working = pendingWork ?? await updateLiveBubble(lastMessages);
     if (!jump) chatPollTimer = setTimeout(tick, working ? 1100 : 3000);
   };
   container._triggerPoll = () => {

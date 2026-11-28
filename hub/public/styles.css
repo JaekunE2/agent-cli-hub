@@ -513,7 +513,9 @@ body.side-collapsed .side-float-btn { display: inline-flex; }
 .chat-reply-bar.compact { padding: 8px 12px 10px; }
 .chat-conn-bar { width: 100%; max-width: 880px; margin: 0 auto 7px; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); }
 .chat-reply-bar.compact .chat-conn-bar { max-width: 100%; }
-.chat-conn-pill { display: inline-flex; align-items: center; gap: 6px; font-weight: 550; color: var(--text); flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.chat-conn-pill { display: inline-flex; align-items: center; gap: 6px; font-weight: 550; color: var(--text); flex: 1; min-width: 0; }
+.chat-conn-pill > span:last-child { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-conn-pill > :is(.dot, .badge) { flex: none; }
 .chat-conn-bar :is([data-chat-selection], [data-chat-screen]) > svg { display: none; }
 .chat-me-toggle { flex: none; }
 .chat-me-bar { width: 100%; max-width: 880px; margin: 0 auto 7px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 8px; border-radius: var(--radius-md); background: var(--bg); border: 1px solid var(--line); }
@@ -582,8 +584,6 @@ body.side-collapsed .side-float-btn { display: inline-flex; }
 .chat-reply-bar.compact .chat-me-bar [data-chat-apply] { height: 25px; min-height: 25px; font-size: 11.5px; padding: 0 8px; }
 @container chat-with-preview (max-width: 480px) {
   .chat-conn-bar { flex-wrap: nowrap; gap: 4px; }
-  .chat-conn-pill > span:last-child { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .chat-conn-pill > :is(.dot, .badge) { flex: none; }
   .chat-conn-bar > button { flex: none; width: var(--ctrl-h-sm); padding: 0; }
   .chat-conn-bar > button > span { display: none; }
   .chat-conn-bar :is([data-chat-selection], [data-chat-screen]) > svg { display: block; }

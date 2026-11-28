@@ -25,7 +25,8 @@ function setup({ role = 'assistant', output = '', preview, items = [], pending =
   });
   vm.runInContext(source, ctx);
   const infer = async (text, sid = 'test') => Array.from(await ctx.inferChatArtifacts(text, { sid, chatHost }));
-  return { infer, calls };
+  const results = (output, request) => Array.from(ctx.chatResultArtifacts(output, request, items), item => item.path);
+  return { infer, calls, results };
 }
 
 test('an open artifact supplies context to a short follow-up without looking up other files', async () => {
@@ -34,6 +35,22 @@ test('an open artifact supplies context to a short follow-up without looking up 
   assert.deepEqual(await infer('이 결과에서 뭘 알 수 있어?', 'another-session'), []);
   assert.deepEqual(await infer('서버 상태 알려줘'), []);
   assert.deepEqual(calls, []);
+});
+
+test('chat shows deliverables and leaves source files mentioned in the reply out of previews', async () => {
+  const items = [
+    { name: 'index.html', path: 'D:/repo/hub/public/index.html', ext: 'html', kind: 'html' },
+    { name: 'en.json', path: 'D:/repo/hub/i18n/en.json', ext: 'json', kind: 'text' },
+    { name: 'report.html', path: 'D:/repo/reports/report.html', ext: 'html', kind: 'html' },
+    { name: 'stats.csv', path: 'D:/repo/reports/stats.csv', ext: 'csv', kind: 'text' },
+    { name: 'stats.json', path: 'D:/repo/reports/stats.json', ext: 'json', kind: 'text' },
+  ];
+  const { results, infer } = setup({ items, output: 'Changed index.html and en.json.' });
+  assert.deepEqual(results('Changed index.html and en.json.', '미리보기를 수정해줘'), []);
+  assert.deepEqual(await infer('이 결과를 설명해줘'), []);
+  assert.deepEqual(results('산출물 report.html과 stats.csv를 저장했습니다.', ''), items.slice(2, 4).map(item => item.path));
+  assert.deepEqual(results('완료했습니다. stats.json', 'stats.json으로 내보내 주세요.'), [items[4].path]);
+  assert.deepEqual(results('변경 대상 stats.json 파일을 읽었습니다.', ''), []);
 });
 
 test('a result follow-up attaches referenced files from the last response and skips ambiguous names', async () => {

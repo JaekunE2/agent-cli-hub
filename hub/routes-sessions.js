@@ -261,7 +261,11 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       title: sessionDisplayTitle(sessionId, d), agent: ag, cwd: d.cwd, size: d.offset, rev: conversationBranches.rev() + (termEvents ? termEvents.rev() : 0), total: n, base: start,
       messages: allMsgs.slice(start, end).map((m, idx) => {
         const ov = edits[String(start + idx)];
-        return ov ? { ...m, text: String(ov.text || '').slice(0, 24000), edited: true } : { ...m, text: m.text.slice(0, 24000) };
+        const { workResult, ...message } = m;
+        const result = workResult ? { ...workResult,
+          files: workResult.files.map(({ path, refs }) => ({ path, hasDiff: refs.some(ref => ref.diff) })) } : undefined;
+        return ov ? { ...message, workResult: result, text: String(ov.text || '').slice(0, 24000), edited: true }
+          : { ...message, workResult: result, text: m.text.slice(0, 24000) };
       }),
       lineage: conversationBranches.lineageFor(sessionId, (id) => sessionDisplayTitle(id, index.get(id))),
       capabilities: { canNativeFork: ag === 'claude' || ag === 'codex', canRewindEdit: ag === 'claude', canEditSource: ag === 'claude' || ag === 'codex' },
@@ -1386,6 +1390,16 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
       catch (e) { send(res, 500, { error: e.message || 'CLI 대화 기록 삭제에 실패했습니다.' }); }
       return true;
     }
+    if (p === '/api/transcript/work-diff' && req.method === 'GET') {
+      const id = url.searchParams.get('id');
+      const doc = validSessionId(id) && !projects.hidden().has(id) ? index.get(id) : null;
+      const resultId = url.searchParams.get('result'), file = url.searchParams.get('file');
+      const entry = doc?.msgs.find(message => message.workResult?.id === resultId)?.workResult?.files.find(item => item.path === file);
+      if (!entry) { send(res, 404, { error: '기록된 변경 내용을 찾을 수 없습니다.' }); return true; }
+      try { send(res, 200, await require('./chat-work-diff').chatWorkDiff(doc, entry)); }
+      catch { send(res, 404, { error: '기록된 변경 내용을 찾을 수 없습니다.' }); }
+      return true;
+    }
     if (p === '/api/transcript') {
       const id = url.searchParams.get('id'), at = Number(url.searchParams.get('at') ?? -1);
       const limit = Number(url.searchParams.get('limit') || 120);
@@ -1398,7 +1412,7 @@ function createSessionRoutes(hub, workspaceContexts, logError) {
         else if (Date.now() - hub.getLastIndexAt() > 1500) await hub.refreshIndex();
         d = index.get(id);
       }
-      if (d) await index.updateFile(d.file, { codexAnswers: true });
+      if (d) await index.updateFile(d.file, { codexAnswers: true, workResults: true });
       const out = transcriptFromIndex(id, at, limit) || transcript(id);
       if (out?.agent === 'codex' && out.messages?.length) {
         const turns = out.messages.map(m => m.codexTurnId).filter(Boolean);

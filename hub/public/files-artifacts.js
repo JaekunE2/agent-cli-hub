@@ -499,7 +499,7 @@ async function inferChatArtifacts(text, { chatHost, sid, termId } = {}) {
   if (!output) return [];
 
   const items = await loadChatArtifactItems(sid, termId);
-  return matchChatArtifacts(output, items).map(item => item.path);
+  return matchChatArtifacts(output, items).filter(item => !isChatImplementationPath(item.path)).map(item => item.path);
 }
 
 async function loadChatArtifactItems(sid, termId) {
@@ -529,35 +529,62 @@ function matchChatArtifacts(output, items) {
     || (names.get(normalize(item.name)) === 1 && mentions(item.name, true))));
 }
 
+function isChatImplementationPath(file) {
+  const path = String(file || '').replace(/\\/g, '/');
+  return /(?:^|\/)(?:src|public|i18n|locales|tests?|fixtures|node_modules|\.github)\//i.test(path)
+    || /(?:^|\/)(?:package(?:-lock)?\.json|tsconfig(?:\.[^/]+)?\.json|composer\.json|(?:pnpm-lock|yarn)\.(?:yaml|lock))$/i.test(path);
+}
+
+function chatResultArtifacts(output, request, items) {
+  return matchChatArtifacts(output, items).filter(item => {
+    if (item.source === 'pinned') return true;
+    if (isChatImplementationPath(item.path)) return false;
+    if (['image', 'video', 'audio', 'pdf'].includes(item.kind)
+      || /^(csv|tsv|xlsx?|docx?|pptx?|hwp|zip|7z)$/i.test(item.ext)) return true;
+    if (!/^(html?|json|txt|md)$/i.test(item.ext)) return false;
+    if (matchChatArtifacts(request, [item]).length
+      && /(?:만들|작성|생성|내보내|저장|렌더링|다운로드|\b(?:create|generate|export|save|render|download)\b)/i.test(request)) return true;
+    return String(output).split('\n').some(line =>
+      /(?:산출물|결과\s*파일|내보낸|다운로드|미리보기\s*파일|\b(?:deliverable|artifact|output file|exported|download)\b)/i.test(line)
+      && matchChatArtifacts(line, [item]).length);
+  });
+}
+
 async function showChatArtifactPreviews(rows, sid, termId, scroller) {
   if (!rows.length || (!sid && !termId)) return;
   const items = await loadChatArtifactItems(sid, termId).catch(() => []);
   const stick = scroller?.isConnected && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80;
   let added = false;
-  for (const [bubble, output] of rows) {
+  for (const { bubble, output, observation, outcome, latest, request } of rows) {
     if (!bubble?.isConnected) continue;
-    const matches = matchChatArtifacts(output, items);
-    if (!matches.length) continue;
+    const matches = chatResultArtifacts(output, request, items);
+    if (observation && !matches.some(item => item.path === observation.item.path)) matches.unshift(observation.item);
     bubble._chatArtifactPaths = [...new Set(matches.map(item => item.path))];
+    if (!matches.length) continue;
+    const visible = matches.filter(item => item.path !== observation?.item.path || !observation.thumbnail);
+    if (!visible.length) continue;
     const group = document.createElement('div');
     group.className = 'chat-result-previews';
-    for (const item of matches.slice(0, 2)) {
+    const dataFiles = visible.filter(item => /^(csv|tsv|json)$/i.test(item.ext));
+    for (const item of visible.slice(0, 2)) {
       const url = artUrl(sid, item.path, termId);
-      group.append(createChatArtifactCard(sid, item, url));
+      const autoOpen = latest && ['image', 'text', 'markdown', 'html'].includes(item.kind);
+      const count = autoOpen && dataFiles.length === 1 && item === dataFiles[0] ? requestedArtifactRows(request) : null;
+      group.append(createChatArtifactCard(sid, item, url, { autoOpen, count }));
     }
-    if (matches.length > 2) {
+    if (visible.length > 2) {
       const count = document.createElement('span');
       count.className = 'muted';
-      count.textContent = `+${matches.length - 2}`;
+      count.textContent = `+${visible.length - 2}`;
       group.append(count);
     }
-    bubble.after(group);
+    (outcome || bubble).after(group);
     added = true;
   }
   if (added && stick) scroller.scrollTop = scroller.scrollHeight;
 }
 
-function createChatArtifactCard(sid, item, url) {
+function createChatArtifactCard(sid, item, url, { autoOpen = false, count = null } = {}) {
   const card = document.createElement('details');
   card.className = 'chat-result-card';
   const image = item.kind === 'image';
@@ -600,9 +627,20 @@ function createChatArtifactCard(sid, item, url) {
       }, { once: true });
       preview.src = url;
       content.replaceChildren(preview);
+    } else if (item.kind === 'html') {
+      const frame = document.createElement('iframe');
+      frame.className = 'chat-result-html';
+      frame.title = 'HTML 정적 미리보기';
+      frame.setAttribute('sandbox', '');
+      frame.src = url;
+      content.replaceChildren(frame);
     } else if (item.kind === 'text' || item.kind === 'markdown') {
       content.textContent = '불러오는 중…';
       try {
+        if (/^(csv|tsv|json)$/i.test(item.ext)) {
+          const onFix = target ? text => stageReviewInChat(text, [], target) : null;
+          if (await renderChatArtifactData(content, item, url, count, onFix)) return;
+        }
         const snippet = await readChatArtifactSnippet(url);
         const pre = document.createElement('pre');
         pre.className = 'mdpre';
@@ -616,6 +654,7 @@ function createChatArtifactCard(sid, item, url) {
       content.textContent = '확대 버튼으로 파일을 열 수 있습니다.';
     }
   });
+  if (autoOpen) card.open = true;
   return card;
 }
 
@@ -1344,7 +1383,7 @@ function startArtifactRegionReview({ initial: media, slot, item, isActive, onSub
     if (!isActive()) return;
     const context = [elementContext, ...[...regions].map(([number, region]) => `#${number}\n${region.context}`)].filter(Boolean).join('\n\n');
     const message = `아래 산출물의 선택 영역을 코멘트에 따라 수정하고 같은 파일을 업데이트해 주세요.\n${context}\n코멘트: ${comment}`;
-    await onSubmit(message, stop);
+    await onSubmit(message, stop, isHtml ? null : [...regions.values()].map(region => region.area), comment);
     status.textContent = '';
   }, stop);
   const list = document.createElement('div');
@@ -1478,14 +1517,16 @@ function bindArtifactReview(dialog, body, url, item) {
   const originalUrl = initial.src;
   let active = false, revision = '', watching = false, refreshTimer, disposeReview, uncertain = false;
   const file = quotePath(item.abs || item.path);
-  const sendReview = async (message, attachment, onSent) => {
+  const sendReview = async (message, attachment, onSent, regions, comment) => {
     const term = currentReviewTerminal();
     if (term?.agent) {
       if (uncertain && !confirm('CLI가 이미 받았을 수 있습니다. 대화를 확인한 뒤 다시 전송할까요?')) return;
       const text = [message, file, attachment ? quotePath(attachment) : ''].filter(Boolean).join('\n');
       try {
-        const result = await api('/api/term/send', { method: 'POST', body: { id: term.id, text, submit: true } });
-        if (!result.ok) throw Object.assign(new Error(result.error || '터미널 입력을 확인하지 못했습니다.'), { delivery: result.delivery });
+        await sendWithRegionCheck(initial, item, regions, { kind: 'term', id: term.id }, text, async () => {
+          const result = await api('/api/term/send', { method: 'POST', body: { id: term.id, text, submit: true } });
+          if (!result.ok) throw Object.assign(new Error(result.error || '터미널 입력을 확인하지 못했습니다.'), { delivery: result.delivery });
+        }, comment);
       } catch (error) {
         uncertain = error.delivery !== 'not-sent';
         throw new Error(uncertain ? `전달 여부 확인 필요 · ${error.message}` : error.message);
@@ -1557,7 +1598,7 @@ function bindArtifactReview(dialog, body, url, item) {
     try {
       disposeReview = startArtifactRegionReview({
         initial, slot, item, isActive: () => dialog.open && active,
-        onSubmit: (message, stop) => sendReview(message, '', stop), onStop: stopReview,
+        onSubmit: (message, stop, regions, comment) => sendReview(message, '', stop, regions, comment), onStop: stopReview,
       });
     } catch (error) {
       stopReview();
