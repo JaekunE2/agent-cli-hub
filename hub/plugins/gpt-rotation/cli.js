@@ -15,7 +15,7 @@ module.exports = function cli(ctx) {
   async gpt() {
     let cfg = {};
     try { cfg = JSON.parse(fs.readFileSync(path.join(DIR, 'config.json'), 'utf8')).gpt || {}; } catch {}
-    const exe = require('./codex-accounts').codexExe(cfg.codex);
+    const exe = require('../../codex-accounts').codexExe(cfg.codex);
     let prompt = pos.slice(1).join(' ');
     if (flags.file) for (const f of String(flags.file).split(',')) prompt += `\n\n--- ${f.trim()} ---\n${fs.readFileSync(f.trim(), 'utf8')}`;
     if (!process.stdin.isTTY) { const chunks = []; for await (const c of process.stdin) chunks.push(c); const s = Buffer.concat(chunks).toString('utf8'); if (s.trim()) prompt += `\n\n${s}`; }
@@ -34,7 +34,7 @@ module.exports = function cli(ctx) {
     const { spawn } = require('child_process');
     // several ChatGPT logins (ccd codex add): try them by remaining quota, the next one on a limit error,
     // and only then the Delta Hub. --account <email|id> pins one.
-    const CA = require('./codex-accounts');
+    const CA = require('../../codex-accounts');
     let order = CA.accounts(usageDir());
     const usage = order.length > 1 ? await Promise.race([api('/api/usage').catch(() => null), new Promise((r) => setTimeout(() => r(null), 20000))]) : null;
     if (usage?.accounts) order = CA.rank(order, usage);

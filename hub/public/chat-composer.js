@@ -14,8 +14,15 @@ function dockTopSegHTML({ openSet, isContentTab = false, hasTerm = true, hasChat
 }
 
 function setSessionBar(identity, views, actions, subagents, folders) {
-  setBar(`<div class="session-head">${identity}<div class="session-actions">${folderBadge(folders)}${actions}</div></div>
+  const switchTerm = subagents?.termId && (state.terms || []).find(t => String(t.id) === String(subagents.termId));
+  const canSwitch = subagents?.sessionId || switchTerm?.claude || switchTerm?.codex || switchTerm?.agy;
+  const switchButtons = canSwitch ? `<button type="button" class="btn-sm" data-account-recommend title="같은 에이전트의 여유 계정으로 전환하고 계속 진행">${ICO.swap || ''} 추천 계정으로 계속</button><button type="button" class="ghost btn-sm" data-account-choose>계정 선택</button>` : '';
+  setBar(`<div class="session-head">${identity}<div class="session-actions">${folderBadge(folders)}${switchButtons}${actions}</div></div>
     <div class="session-views">${views}</div>`);
+  if (canSwitch) {
+    $('[data-account-recommend]', $('#bar')).onclick = e => { e.stopPropagation(); void switchRecommended(subagents.sessionId || '', subagents.termId || '', e.currentTarget); };
+    $('[data-account-choose]', $('#bar')).onclick = e => { e.stopPropagation(); void openSwitch(subagents.sessionId || '', subagents.termId || ''); };
+  }
   if (subagents) mountSubagents($('#bar .session-views'), subagents);
 }
 

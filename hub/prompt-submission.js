@@ -58,8 +58,12 @@ async function submitPrompt({ text, read, write, guard, waitFor, sleep, delay = 
   const freshPaste = (draft) => {
     const shown = draft?.trimStart() || '';
     if (pasteMarker === 'claude') {
-      const lines = Number(/^\[pasted text #\d+ \+(\d+) lines?\]$/i.exec(shown)?.[1]);
-      return lines === text.split('\n').length - 1;
+      // Claude Code shows "[Pasted text #1 +4 lines]" for a multi-line paste and just "[Pasted text #1]"
+      // for a long single-line one; the bare badge used to time out, leaving the prompt unsent
+      const m = /^\[pasted text #\d+(?: \+(\d+) lines?)?\]$/i.exec(shown);
+      if (!m) return false;
+      const newlines = text.split('\n').length - 1;
+      return m[1] === undefined ? newlines === 0 : Number(m[1]) === newlines;
     }
     if (pasteMarker === 'agy' && /^\[pasted(?:\s+(?:content|text))?(?:\s+#?\d+)?(?:\s+\+?\d+\s*(?:lines?|chars?))?\]$/i.test(shown)) {
       return true;

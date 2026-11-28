@@ -176,6 +176,17 @@ test('Claude multiline paste is confirmed from the current paste badge', async (
   assert.deepEqual(legacy, { ok: false, writes: [] });
 });
 
+test('Claude long single-line paste is confirmed from the bare paste badge', async () => {
+  const text = 'Reply with OK only. ' + 'filler text '.repeat(100);
+  const badge = ['❯ [Pasted text #1]', '─────────────'];
+  for (const target of ['term', 'automatic']) {
+    const result = await replay(target, [['❯  '], badge, badge, running], { cli: 'claude', text });
+    assert.deepEqual(result, { ok: true, writes: [text, '\r', '\r'] });
+  }
+  const multi = await replay('automatic', [['❯  '], badge, badge, running], { cli: 'claude', text: `${text}\nsecond line` });
+  assert.equal(multi.ok, false, 'a bare badge does not confirm a multi-line paste');
+});
+
 test('a long Codex draft still submits after its beginning scrolls off after paste', async () => {
   const visible = 'Confirm the tests and report which changes were verified before returning.';
   const text = 'Inspect the full project context and implement the requested update. ' + visible;

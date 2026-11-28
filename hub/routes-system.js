@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { parseAgyQuotaTui } = require('./agy-quota');
+const { createResetCreditsService } = require('./codex-reset-credits');
 
 /** Create system, usage, account-switching, subsystem proxy, and Unified Vault routes. */
 function createSystemRoutes(hub) {
@@ -11,6 +12,7 @@ function createSystemRoutes(hub) {
   const localDesktop = (req) => !req.headers.origin &&
     req.socket.localAddress === '127.0.0.1' && req.socket.remoteAddress === '127.0.0.1';
   let desktopStopping = false;
+  const resetCredits = createResetCreditsService({ usageDir: hub.USAGE_DIR, exe: () => hub.codexExe() });
 
   async function handleSystemRoutes(p, url, req, res, body, send, authed) {
     if (!authed(req, url)) { send(res, 401, { error: 'bad token' }); return true; }
@@ -105,6 +107,15 @@ function createSystemRoutes(hub) {
     }
     if (p === '/api/usage') {
       send(res, 200, await hub.aiUsage(url.searchParams.has('force')));
+      return true;
+    }
+    if (p === '/api/codex/reset-credits' && ['GET', 'POST'].includes(req.method)) {
+      try {
+        const result = req.method === 'GET'
+          ? await resetCredits.read(url.searchParams.get('account'))
+          : await resetCredits.consume(await body(req));
+        send(res, 200, result);
+      } catch (e) { send(res, 400, { ok: false, error: e.message }); }
       return true;
     }
     if (p === '/api/codex/tokens' && req.method === 'GET') {

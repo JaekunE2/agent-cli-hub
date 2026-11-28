@@ -44,6 +44,35 @@ async function runSwitchRequest(payload) {
   return res;
 }
 
+const recommendedSwitches = new Set();
+async function switchRecommended(sid, termId = '', button = null) {
+  const key = sid || `term:${termId}`;
+  if (recommendedSwitches.has(key)) return;
+  recommendedSwitches.add(key);
+  const before = button?.innerHTML;
+  if (button) { button.disabled = true; button.textContent = '추천 계정 확인 중…'; }
+  try {
+    const res = await runSwitchRequest({ sessionId: sid || undefined, termId: termId || undefined,
+      account: 'auto', sameAgentOnly: true, cont: true });
+    if (!res.ok) {
+      if (res.busy) return;
+      toast(res.error || '계정을 전환하지 못했습니다.', 6000, 'danger');
+      return;
+    }
+    await refreshOverview();
+    if (res.term) select({ kind: 'term', id: res.term.id });
+    if (res.followUpSubmitted === false) {
+      toast(`계정은 전환됐지만 작업 재개 입력은 확인하지 못했습니다: ${res.deliveryError || '터미널을 확인하세요.'}`, 8000, 'danger');
+      return;
+    }
+    toast(`${res.account?.label || '추천 계정'} 계정으로 전환하고 작업을 이어갑니다.`);
+  } catch (e) { toast(e.message || '계정 전환 요청에 실패했습니다.', 6000, 'danger'); }
+  finally {
+    recommendedSwitches.delete(key);
+    if (button?.isConnected) { button.disabled = false; button.innerHTML = before; }
+  }
+}
+
 async function openSwitch(sid, termId = '') {
   const d = openDrawer({
     title: '다른 계정 · 에이전트로 이어하기',
@@ -54,6 +83,7 @@ async function openSwitch(sid, termId = '') {
   const r = await api(`/api/switch/candidates?id=${encodeURIComponent(sid)}${termId ? `&term=${encodeURIComponent(termId)}` : ''}`).catch((e) => ({ error: e.message }));
   if (r?.accountPrefs && typeof syncServerAccountPrefs === 'function') syncServerAccountPrefs(r.accountPrefs);
   const body = $('#swBody', d);
+  if (!d.isConnected) return;
   if (r.error || !r.candidates) { body.innerHTML = `<div class="err">${esc(r.error || '후보를 불러오지 못함')}</div>`; return; }
   const s = state.live.find((x) => x.sessionId === sid);
   const srcAgent = r.sourceAgent || 'claude';
@@ -96,7 +126,7 @@ async function openSwitch(sid, termId = '') {
     <label class="row" id="swSkipRow"><input type="checkbox" id="swSkip" checked> YOLO 모드 자동 승인으로 실행 (Claude · Codex · Antigravity)</label>
     <div id="swHint" class="empty" style="padding:4px 0 0"></div>`;
   const goBtn = $('#swGo', d);
-  if (goBtn) goBtn.disabled = !r.candidates.some((c) => c.best || (c.usable && !c.current));
+  if (goBtn) goBtn.disabled = !r.candidates.some((c) => c.best);
   const initSelAcc = $('input[name=acc]:checked', d);
   const initSelAgent = initSelAcc?.dataset.agent || srcAgent;
   const swMeCtl = typeof createCliModelEffortController === 'function'
@@ -111,6 +141,7 @@ async function openSwitch(sid, termId = '') {
     : null;
   const updateHint = () => {
     const sel = $('input[name=acc]:checked', d);
+    if (goBtn) goBtn.disabled = !sel;
     const targetAgent = sel?.dataset.agent || srcAgent;
     const accSaved = (sel?.value && typeof readSavedAccountPref === 'function') ? readSavedAccountPref(sel.value, targetAgent) : null;
     if (accSaved) swMeCtl?.setCli(targetAgent, accSaved.model, accSaved.effort);
@@ -160,7 +191,9 @@ async function openSwitch(sid, termId = '') {
       skip: $('#swSkip', d)?.checked ?? true,
       openMode,
     };
-    const res = await runSwitchRequest(payload);
+    let res;
+    try { res = await runSwitchRequest(payload); }
+    catch (e) { res = { ok: false, error: e.message }; }
     if (!res.ok) { go.disabled = false; go.textContent = '이어하기'; if (!res.busy) body.insertAdjacentHTML('afterbegin', `<div class="err" style="padding:0 0 8px">${esc(res.error)}</div>`); return; }
     d.close();
     await refreshOverview();

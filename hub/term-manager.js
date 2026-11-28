@@ -9,6 +9,7 @@ const { Terminal: HeadlessTerminal } = require('@xterm/headless');
 const { createTermScreenMonitor } = require('./term-events');
 const { codexHistorySearchActive, flushNewAgyQueue } = require('./immediate-send');
 const { hasCodexPasteDraft, submitPrompt } = require('./prompt-submission');
+const { withoutClaudeSuggestion } = require('./claude-composer');
 const { agyStatusFromScreen: explicitAgyStatus } = require('./agy-session');
 const { requiredMcpMessage } = require('./vault-cli-ops');
 const { resolveLaunchFolders } = require('./workspace-launch');
@@ -102,7 +103,7 @@ async function dispatchTerminalPrompt(hub, term, text, { submitDraft = false, cl
     const inputAt = term.lastInputAt;
     const inputSeq = term._interactiveInputSeq;
     const read = () => {
-      const raw = hub.readTerm(term, Math.max(40, term.rows || 0)).join('\n');
+      const raw = (hub.readTermForInput || hub.readTerm)(term, Math.max(40, term.rows || 0)).join('\n');
       const screen = hub.stripAnsi?.(raw) || raw;
       const busy = (cli === 'codex' ? hub.codexStatus?.(term) : cli === 'agy'
         ? explicitAgyStatus(screen.split('\n').slice(-16).join('\n')) : hub.claudeStatus?.(term)) === 'busy';
@@ -272,7 +273,7 @@ function createTermManager(hub) {
     },
   }) : null;
 
-  function readTerm(t, n = 60, cursorOnly = false) {
+  function readTerm(t, n = 60, cursorOnly = false, forInput = false) {
     const b = t.vt.buffer.active, lines = [];
     const text = (i) => b.getLine(i)?.translateToString(true) ?? '';
     let last = b.length - 1;
@@ -280,7 +281,7 @@ function createTermManager(hub) {
     const start = Math.max(0, last - n + 1);
     if (cursorOnly) return b.baseY + b.cursorY - start;
     for (let i = start; i <= last; i++) lines.push(text(i));
-    return lines;
+    return forInput && agentOf(t) === 'claude' ? withoutClaudeSuggestion(t.vt, lines, start) : lines;
   }
 
   const inputReady = (t) => {
@@ -615,6 +616,9 @@ function createTermManager(hub) {
     const terminalEnv = {
       ...cleanEnv(),
       ...env,
+      // Ghost prompt suggestions look like an unsent draft in the plain-text PTY mirror.
+      // Keep the real-draft guard intact and turn off suggestions for managed Claude terminals.
+      ...(shared.kind === 'claude' ? { CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: 'false' } : {}),
       ACH_TERM_ID: id,
       ACH_HUB_PARENT_TERM: id,
       ACH_HOOK_DIR: path.join(baseDir, 'data', 'hooks'),
@@ -1321,6 +1325,7 @@ function createTermManager(hub) {
     agentOf,
     readTerm,
     termCursorLine: (t, n) => readTerm(t, n, true),
+    readTermForInput: (t, n) => readTerm(t, n, false, true),
     sleep,
     SUBMIT_DELAY,
     consoleSubmitDelay,

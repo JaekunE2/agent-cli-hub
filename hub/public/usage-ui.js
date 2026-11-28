@@ -379,9 +379,69 @@ async function loadCodexTokenDetail(host, account) {
   }
 }
 
+async function loadCodexResetCredits(host, account) {
+  const accountId = String(account.id || '');
+  const storageKey = `codex-reset-pending:${accountId}`;
+  let pendingKey = null;
+  try { pendingKey = localStorage.getItem(storageKey); } catch {}
+  const show = async () => {
+    host.textContent = '초기화 티켓 조회 중…';
+    try {
+      const data = await api(`/api/codex/reset-credits?account=${encodeURIComponent(accountId)}`, { requireOk: true });
+      if (!host.isConnected) return;
+      const credits = data.rateLimitResetCredits;
+      const count = credits?.availableCount;
+      const label = data.account.email || data.account.label;
+      host.innerHTML = `<div class="ums">${esc(label)}</div>
+        <div class="drw-kv"><span>사용 가능한 티켓</span><b>${Number.isInteger(count) ? `${count}장` : '정보 없음'}</b></div>
+        ${credits?.credits?.map(c => `<div class="ums">${esc(c.title || '한도 초기화 티켓')}${c.expiresAt ? ` · 만료 ${esc(new Date(c.expiresAt * 1000).toLocaleString(uiLocale()))}` : ''}</div>`).join('') || ''}
+        ${pendingKey ? '<div class="ums">결과가 확인되지 않은 이전 요청이 있습니다. 재확인 시 같은 요청 번호를 사용합니다.</div>' : ''}
+        <button class="btn-sm" data-reset-use ${count > 0 || pendingKey ? '' : 'disabled'}>${pendingKey ? '이전 사용 요청 재확인' : '초기화 티켓 1장 사용'}</button>
+        <button class="ghost btn-sm" data-reset-refresh>티켓 다시 조회</button>
+        <div data-reset-result role="status" aria-live="polite"></div>`;
+      host.querySelector('[data-reset-refresh]').onclick = show;
+      host.querySelector('[data-reset-use]').onclick = async () => {
+        if (!pendingKey && !confirm(`${label} 계정의 초기화 티켓 1장을 사용하시겠습니까?\n이 계정의 적용 가능한 Codex 한도가 초기화됩니다.`)) return;
+        const button = host.querySelector('[data-reset-use]');
+        const refreshButton = host.querySelector('[data-reset-refresh]');
+        const result = host.querySelector('[data-reset-result]');
+        // Persist BEFORE sending: reloads and ambiguous network failures reuse the same key.
+        try {
+          pendingKey ||= globalThis.crypto?.randomUUID?.() || `hub-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+          localStorage.setItem(storageKey, pendingKey);
+        } catch { result.textContent = '요청 번호를 저장할 수 없습니다. 브라우저 저장소를 허용한 뒤 다시 시도하세요.'; return; }
+        button.disabled = true; refreshButton.disabled = true;
+        result.textContent = '티켓 사용 결과 확인 중…';
+        try {
+          const response = await api('/api/codex/reset-credits', { method: 'POST', body: { account: accountId, idempotencyKey: pendingKey, confirmed: true }, requireOk: true });
+          const messages = { reset: '티켓 1장을 사용해 한도를 초기화했습니다.', alreadyRedeemed: '이 요청은 이미 처리됐습니다. 추가 티켓은 사용하지 않았습니다.', nothingToReset: '초기화할 수 있는 한도 구간이 없습니다.', noCredit: '사용 가능한 초기화 티켓이 없습니다.' };
+          if (!messages[response.outcome]) throw new Error('사용 결과를 확인하지 못했습니다. 같은 요청으로 재시도하세요.');
+          localStorage.removeItem(storageKey); pendingKey = null;
+          await show();
+          if (host.isConnected) {
+            const output = host.querySelector('[data-reset-result]');
+            if (output) output.textContent = messages[response.outcome] + (response.refreshError ? ' 한도 재조회가 필요합니다.' : '');
+          }
+          void refreshUsage(true);
+        } catch (e) {
+          if (result.isConnected) result.textContent = `${e.message} 같은 요청 번호로 재시도할 수 있습니다.`;
+          if (button.isConnected) { button.disabled = false; button.textContent = '이전 사용 요청 재확인'; }
+          if (refreshButton.isConnected) refreshButton.disabled = false;
+        }
+      };
+    } catch (e) {
+      if (!host.isConnected) return;
+      host.innerHTML = `<div class="ums">${esc(e.message)}</div><button class="btn-sm" data-reset-retry>티켓 조회 재시도</button>`;
+      host.querySelector('[data-reset-retry]').onclick = show;
+    }
+  };
+  await show();
+}
+
 function openUsageDetailDrawer(a) {
   if (!a) return;
   const codex = isCodexTokenAccount(a);
+  const claude = usageKindOf(a) === 'claude';
   const meterRow = (m) => {
     const used = m.usedPercent != null ? Math.round(Number(m.usedPercent)) : null;
     const rem = used != null ? Math.max(0, 100 - used) : null;
@@ -396,10 +456,30 @@ function openUsageDetailDrawer(a) {
     <div class="row" style="gap:8px">${agentIcon(usageKindOf(a) === 'other' ? 'bot' : usageKindOf(a), a.live ? 'idle' : '')}<b>${esc(a.label)}</b>${a.plan ? `<span class="badge">${esc(a.plan)}</span>` : ''}</div>
     ${!a.ok ? `<div class="err" style="padding:0">${esc(a.error || '조회 실패')}</div>` : ''}
     ${(a.meters || []).length ? `<div class="ugrp">${a.meters.map(meterRow).join('')}</div>` : '<div class="empty" style="padding:0">표시할 상세 미터가 없습니다.</div>'}
-    ${codex ? '<section class="ugrp"><div class="ugrp-title">이번 주 · 이 PC의 CLI 토큰</div><div data-codex-token-detail aria-live="polite">불러오는 중…</div></section>' : ''}
+    ${codex ? '<section class="ugrp"><div class="ugrp-title">GPT / Codex 한도 초기화 티켓</div><div data-codex-reset-credits aria-live="polite">불러오는 중…</div></section><section class="ugrp"><div class="ugrp-title">이번 주 · 이 PC의 CLI 토큰</div><div data-codex-token-detail aria-live="polite">불러오는 중…</div></section>' : ''}
+    ${claude ? `<section class="ugrp"><div class="ugrp-title">Claude 한도 초기화 티켓</div>
+      <div class="ums">Claude 설정 → 사용량의 Limit resets에서 Reset for free를 눌러 사용합니다. 사용 결과는 같은 계정의 Claude Code에도 적용됩니다.</div>
+      <div class="ums">대상: ${esc(a.email || a.label)}. 열린 Claude 웹사이트의 로그인 계정이 같은지 확인하세요. 관제의 계정 선택은 웹 로그인을 바꾸지 않습니다.</div>
+      <div class="row" style="gap:8px;margin-top:8px"><a class="btn-sm" href="https://claude.ai/settings/usage" target="_blank" rel="noopener noreferrer">Claude 티켓 사용 화면 열기</a>
+      <button class="btn-sm" data-claude-reset-refresh>사용 후 한도 새로고침</button></div>
+      <div data-claude-reset-status class="ums" role="status"></div></section>` : ''}
     ${footNotes.length ? `<div class="ugrp">${footNotes.map((t) => `<div class="ums">${t}</div>`).join('')}</div>` : ''}`;
   const drawer = openDrawer({ title: `${a.label} · 상세`, bodyHTML: body, footerHTML: '<button data-drw-close>닫기</button>', width: 460 });
   if (codex) void loadCodexTokenDetail(drawer.querySelector('[data-codex-token-detail]'), a);
+  if (codex) void loadCodexResetCredits(drawer.querySelector('[data-codex-reset-credits]'), a);
+  if (claude) drawer.querySelector('[data-claude-reset-refresh]').onclick = async () => {
+    const button = drawer.querySelector('[data-claude-reset-refresh]');
+    const status = drawer.querySelector('[data-claude-reset-status]');
+    button.disabled = true; status.textContent = '한도 조회 중…';
+    try {
+      await refreshUsage(true);
+      const updated = state.usage?.accounts?.find(item => item.id === a.id);
+      if (updated?.ok) {
+        status.textContent = (updated.meters || []).map(m => `${m.name}: ${pctTxt(m.usedPercent)}% 사용`).join(' · ') || '조회 완료';
+      } else status.textContent = updated?.error || '한도를 확인하지 못했습니다. 잠시 후 다시 조회하세요.';
+    } catch (e) { status.textContent = e.message; }
+    finally { if (button.isConnected) button.disabled = false; }
+  };
 }
 function usageKindOf(a) {
   const tag = `${a.type || ''} ${a.provider || ''}`;

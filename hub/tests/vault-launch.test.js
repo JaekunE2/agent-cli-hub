@@ -25,7 +25,7 @@ test('four project launch paths apply and persist the same Vault resources', asy
     return { json: async () => ({ ok: true }) };
   });
   t.mock.method(require('node:child_process'), 'spawn', (exe, args, { env }) => {
-    assert.equal(exe, 'claude.exe');
+    assert.equal(path.basename(exe), 'claude.exe');
     recordLaunch({ args, env });
     const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() });
     const structured_output = args.includes('--no-session-persistence')
@@ -39,7 +39,7 @@ test('four project launch paths apply and persist the same Vault resources', asy
   });
   t.mock.method(require('../project-review-run'), 'runReview', async (_dir, prepare) => {
     const spec = await prepare();
-    assert.equal(spec.cmd, 'claude.exe');
+    assert.equal(path.basename(spec.cmd), 'claude.exe');
     recordLaunch({ args: spec.args, env: spec.options.env });
     return { verdict: { verdict: 'APPROVE', reason: 'fixture' } };
   });
@@ -51,6 +51,9 @@ test('four project launch paths apply and persist the same Vault resources', asy
   const store = require('../projects');
   const file = path.join(dir, 'projects.json');
   const projects = store(file);
+  // the vault folder is only passed with --add-dir once Claude Code trusts it
+  fs.mkdirSync(path.join(dir, 'home'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'home', '.claude.json'), JSON.stringify({ projects: { [dir]: { hasTrustDialogAccepted: true } } }));
   const unifiedVault = createUnifiedVault({ homeDir: path.join(dir, 'home'), repoRoot: dir });
   unifiedVault.saveSkill({ name: 'demo', content: 'unique-skill-body' });
   unifiedVault.saveSkill({ name: 'missing', content: 'removed' });

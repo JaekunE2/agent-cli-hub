@@ -2,6 +2,7 @@
 
 const { nativeFolderKey } = require('./workspace-execution');
 const { resolveLaunchFolders } = require('./workspace-launch');
+const { recommendedAccount } = require('./account-recommendation');
 
 const fs = require('fs');
 const os = require('os');
@@ -200,9 +201,10 @@ function createAccountSwitchService(hub) {
       const reset = (c.usage?.meters || []).find((m) => /5시간|5-hour/i.test(m.name))?.resetsAt
         || (c.usage?.meters || []).find((m) => /주간 \(전체|주간|weekly/i.test(m.name))?.resetsAt || null;
       const current = !!currentId && (c.id === currentId || (!!curEmail && emailOf(c) === curEmail));
-      return { id: c.id, agent: 'claude', provider: 'Claude', label: c.label, fiveH, weekly, score, reset, current, sameAccount: current && c.id !== currentId, usable: c.usage?.ok !== false && score > 0 };
+      const limited = (c.usage?.notes || []).some(n => /한도에 도달|rejected|limit reached/i.test(n));
+      return { id: c.id, agent: 'claude', provider: 'Claude', label: c.label, fiveH, weekly, score, reset, current, sameAccount: current && c.id !== currentId, usable: c.usage?.ok !== false && score > 0 && !limited };
     });
-    const best = out.filter((c) => c.usable && !c.current).sort((a, b) => b.score - a.score || (a.weekly ?? 0) - (b.weekly ?? 0))[0];
+    const best = recommendedAccount(out, 'claude', { stale: !!u.stale });
     if (best) best.best = true;
     return { candidates: out, stale: !!u.stale, usageAvailable: u.available !== false };
   }
@@ -215,7 +217,7 @@ function createAccountSwitchService(hub) {
       const current = !!cur && (a.id === cur.id || (!!cur.email && a.email === cur.email));
       return { id: a.id, agent: 'codex', provider: 'ChatGPT (Codex)', label: a.label || a.email, email: a.email, fiveH: a.fiveH, weekly: a.weekly, score: a.score, reset: a.reset, current, sameAccount: current && a.id !== cur.id, usable: a.usable };
     });
-    const best = out.find((c) => c.usable && !c.current);
+    const best = recommendedAccount(out, 'codex', { stale: !!u.stale });
     if (best) best.best = true;
     return { candidates: out, stale: !!u.stale, usageAvailable: u.available !== false, codex: true };
   }
@@ -291,10 +293,8 @@ function createAccountSwitchService(hub) {
     };
     const order = sourceAgent === 'codex' ? ['codex', 'claude', 'agy'] : sourceAgent === 'agy' ? ['agy', 'codex', 'claude'] : ['claude', 'codex', 'agy'];
     const all = order.flatMap((k) => groups[k]);
-    const bestSame = groups[sourceAgent].filter((c) => c.usable && !c.current).sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
-    const bestAny = all.filter((c) => c.usable && !c.current).sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
-    if (bestSame) bestSame.best = true;
-    else if (bestAny && config.switchCrossAgentAuto === true) bestAny.best = true;
+    const best = recommendedAccount(all, sourceAgent, { allowCrossAgent: config.switchCrossAgentAuto === true, stale: !!(clRes.stale || cxRes.stale) });
+    if (best) best.best = true;
 
     return {
       candidates: all, sourceAgent, stale: !!(clRes.stale || cxRes.stale), usageAvailable: clRes.usageAvailable,
@@ -369,8 +369,9 @@ function createAccountSwitchService(hub) {
     return { ok: true, external: true, openMode: 'external' };
   }
 
-  async function switchAccount({ sessionId, termId, account = 'auto', model = '', effort = '', cont = false, followUp = '', verifyFollowUp = false, skip, interrupt = false, force = false, openMode = 'dashboard' }) {
+  async function switchAccount({ sessionId, termId, account = 'auto', sameAgentOnly = false, model = '', effort = '', cont = false, followUp = '', verifyFollowUp = false, skip, interrupt = false, force = false, openMode = 'dashboard' }) {
     let t0 = termId != null && termId !== '' ? [...hub.terms.values()].find((x) => String(x.id) === String(termId)) : null;
+    if (termId && (!t0 || t0.exited !== null)) return { ok: false, error: '터미널이 이미 전환되었거나 종료되었습니다. 목록을 새로고침하세요.' };
     let sid = sessionId || (t0 && hub.termSessionId(t0)) || '';
     if (!t0 && sid) t0 = [...hub.terms.values()].find((x) => x.exited === null && hub.termSessionId(x) === sid) || null;
     const d = sid ? index.get(sid) : (t0 ? hub.termDocOf(t0) : null);
@@ -378,15 +379,16 @@ function createAccountSwitchService(hub) {
 
     const cons = (await hub.helperCall({ op: 'list' })).consoles || [];
     const loc = sid ? locateSession(sid, cons) : { live: false };
-    const { candidates, sourceAgent } = await allSwitchCandidates({ sessionId: sid, termId: t0?.id });
+    const { candidates, sourceAgent, stale } = await allSwitchCandidates({ sessionId: sid, termId: t0?.id });
     const reqME = cleanModelEffort(model, effort);
     const cliDirect = /^__cli__:(claude|codex|agy)$/.exec(String(account || ''));
     const pick = account === 'auto'
-      ? (candidates.find((c) => c.best) || candidates.find((c) => c.usable && !c.current))
+      ? recommendedAccount(candidates, sourceAgent, { allowCrossAgent: !sameAgentOnly && config.switchCrossAgentAuto === true, stale })
       : cliDirect
         ? (candidates.find((c) => c.agent === cliDirect[1] && c.current) || candidates.find((c) => c.agent === cliDirect[1]) || { id: 'default', agent: cliDirect[1], label: `${cliDirect[1]} (기본)` })
         : candidates.find((c) => c.id === account);
     if (!pick) return { ok: false, error: account === 'auto' ? '여유 있는 다른 계정이 없습니다 (AI 사용량 확인)' : '선택한 계정을 찾을 수 없습니다' };
+    if (!cliDirect && !pick.usable) return { ok: false, error: '선택한 계정의 한도가 소진됐거나 사용량 조회에 실패했습니다. 다른 계정을 선택하세요.' };
 
     const targetAgent = pick.agent || 'claude';
     const { hasAgyCliConversation } = require('./agy-session');
@@ -447,7 +449,8 @@ function createAccountSwitchService(hub) {
     const effectiveFollowUp = followUp && String(followUp).trim() ? String(followUp).trim() : (cont ? '계속 진행해' : '');
     const nativeInitialPrompt = nativeConverted ? effectiveFollowUp : '';
 
-    const verifyHandoff = verifyFollowUp === true && !!(nativeConverted ? nativeInitialPrompt : handoffPrompt) && openMode === 'dashboard';
+    const verifySameClaude = sameAgentOnly && samePlatform && targetAgent === 'claude' && cont && !!sid && openMode === 'dashboard';
+    const verifyHandoff = verifySameClaude || (verifyFollowUp === true && !!(nativeConverted ? nativeInitialPrompt : handoffPrompt) && openMode === 'dashboard');
     const inheritedProjectTask = t0?.meta?.projectTask || null;
     if (t0 && inheritedProjectTask) {
       if (d?.file) await index.updateFile(d.file).catch(() => {});
@@ -591,7 +594,7 @@ function createAccountSwitchService(hub) {
     }
 
     let deliveryError;
-    const dispatchPrompt = nativeConverted ? nativeInitialPrompt : handoffPrompt;
+    const dispatchPrompt = verifySameClaude ? '계속 진행해' : nativeConverted ? nativeInitialPrompt : handoffPrompt;
     if (verifyHandoff) {
       try {
         const spawned = await t.spawnResult;

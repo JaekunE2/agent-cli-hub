@@ -108,6 +108,27 @@ function syncJsonMcpTarget(cli, cliCfg, mcps, activeMcps, report, summary) {
   }
 }
 
+// Has Claude Code's folder-trust prompt already been accepted for dir or one of its parents?
+// Read-only look at ~/.claude.json "projects"; never writes trust.
+const normDir = (p) => path.resolve(p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+function isClaudeTrustedDir(dir, homeDir) {
+  let projects;
+  try { projects = JSON.parse(fs.readFileSync(path.join(homeDir, '.claude.json'), 'utf8')).projects || {}; } catch { return false; }
+  const trusted = new Set(Object.entries(projects).filter(([, v]) => v && v.hasTrustDialogAccepted === true).map(([k]) => normDir(k)));
+  for (let d = normDir(dir); ; ) {
+    if (trusted.has(d)) return true;
+    const up = d.replace(/\/[^/]*$/, '');
+    if (!up || up === d || !up.includes('/')) return trusted.has(up);
+    d = up;
+  }
+}
+const warnedUntrusted = new Set();
+function warnUntrustedOnce(dir) {
+  if (warnedUntrusted.has(dir)) return;
+  warnedUntrusted.add(dir);
+  console.warn(`[vault-launch] ${dir} is not a trusted Claude Code folder: launching without vault skills (open claude there once and trust it to turn them on)`);
+}
+
 /** Create gather, sync, inspect, import, and launch-preparation operations for Unified Vault. */
 function createVaultCliOps(ctx) {
   const {
@@ -602,13 +623,20 @@ function createVaultCliOps(ctx) {
     }
 
     const extraArgs = [];
-    if (activeSkillNames.size > 0 || combined) extraArgs.push('--add-dir', runtimeDir);
+    // --add-dir on a folder Claude Code has not trusted stops the CLI at a "trust this directory?"
+    // prompt whose default is "No, exit" — every restored session hung there on 2026-11-28.
+    // Only add the vault folder when it (or a parent) is already trusted; otherwise launch without
+    // vault skills rather than hang. Trusting it once (claude in that folder → Yes) turns them back on.
+    const wantsDir = activeSkillNames.size > 0 || !!combined;
+    const dirOk = wantsDir && (ctx.isTrustedDir ? ctx.isTrustedDir(runtimeDir) : isClaudeTrustedDir(runtimeDir, homeDir));
+    if (wantsDir && !dirOk) warnUntrustedOnce(runtimeDir);
+    if (dirOk) extraArgs.push('--add-dir', runtimeDir);
     if (hasMcps) extraArgs.push('--mcp-config', mcpFile);
     if (!resume && combined) extraArgs.push('--append-system-prompt-file', harnessFile);
-    return { extraArgs, env: (activeSkillNames.size > 0 || combined) ? { CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1' } : {}, synced: true };
+    return { extraArgs, env: dirOk ? { CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1' } : {}, synced: true, ...(wantsDir && !dirOk ? { untrustedDir: runtimeDir } : {}) };
   };
 
   return { gatherFromClis, syncToClis, inspectCli, importFromCli, prepareLaunch };
 }
 
-module.exports = { createVaultCliOps, requiredMcpMessage };
+module.exports = { createVaultCliOps, requiredMcpMessage, isClaudeTrustedDir };

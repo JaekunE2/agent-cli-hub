@@ -161,6 +161,8 @@ test('createUnifiedVault gathers from all CLIs and syncs idempotently across tar
     fs.mkdirSync(clSkill, { recursive: true });
     fs.writeFileSync(path.join(clSkill, 'SKILL.md'), '---\nname: claude-helper\ndescription: Claude helper skill\n---\nBody', 'utf8');
     fs.writeFileSync(path.join(env.homeDir, '.claude.json'), JSON.stringify({
+      // the vault folder is only passed with --add-dir once Claude Code trusts it
+      projects: { [env.base]: { hasTrustDialogAccepted: true } },
       mcpServers: {
         github: { command: 'npx', args: ['-y', '@mcp/github'], env: { GITHUB_TOKEN: 'ghp_secret123456' } },
       },
