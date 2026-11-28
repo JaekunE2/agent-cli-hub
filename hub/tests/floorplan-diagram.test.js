@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { renderFloorplanDiagram } = require('../floorplan-diagram');
 const { saveDiagram, diagramFile, diagramSource } = require('../floorplan-diagram-store');
+const { createProjectRoutes } = require('../routes-projects');
 
 const node = (id, file) => ({ id, name: file, relPath: file, endpoints: [], calls: [] });
 const options = { title: 'Sample <script>', commit: '0'.repeat(40), locale: 'en', scannedAt: 0 };
@@ -49,4 +50,35 @@ test('source excerpt is served separately and the snapshot cannot follow a path 
   assert.equal(diagramFile(dir, '../outside', 'html'), null);
   assert.equal(diagramFile(dir, file.id, 'source'), null);
   assert.equal(await diagramSource(dir, file.id, 'unlisted'), null);
+});
+
+test('unregistered workspaces resolve from a managed terminal or a recorded session', async t => {
+  const temp = await fs.realpath(os.tmpdir());
+  const dir = await fs.mkdtemp(path.join(temp, 'hub-session-diagram-'));
+  t.after(async () => {
+    assert.equal(path.dirname(await fs.realpath(dir)), temp);
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  const workspace = path.join(dir, 'workspace');
+  await fs.mkdir(workspace);
+  const seen = [], pinned = [];
+  const { handleProjectRoutes } = createProjectRoutes({
+    baseDir: dir, config: {}, projects: { list: () => [] },
+    terms: new Map([['31', { id: '31', cwd: workspace }]]),
+    index: { get: id => id === 'recorded' ? { cwd: workspace } : null },
+    scanFloorplan: cwd => { seen.push(cwd); return { ...graph, exists: true, scannedAt: 0 }; },
+    artifactsMod: { pinFile: key => pinned.push(key) },
+  });
+  const post = async selection => {
+    let result;
+    const url = new URL('http://localhost/api/projects/floorplan/diagram?cwd=unexpected');
+    await handleProjectRoutes(url.pathname, url, { method: 'POST' }, null, async () => selection,
+      (_res, status, body) => { result = { status, body }; }, () => true);
+    return result;
+  };
+  assert.equal((await post({ sessionId: 'unknown', cwd: workspace })).status, 400);
+  assert.equal((await post({ sessionId: 'term:31' })).status, 200);
+  assert.equal((await post({ sessionId: 'recorded' })).status, 200);
+  assert.deepEqual(seen, [workspace, workspace]);
+  assert.deepEqual(pinned, ['term:31', 'recorded']);
 });

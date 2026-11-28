@@ -231,6 +231,9 @@
     if (!host) return;
     const version = p?.scope?.version;
     const allowSave = !version || !!version.workspace;
+    const diagramSession = termCtx?.sessionId || currentSessionId() || '';
+    const diagramTerm = termCtx?.termId || (state.sel.kind === 'term' ? state.sel.id : '');
+    const canShareDiagram = !previewCwd && (p?.id || diagramSession || diagramTerm);
     let activeCwd = version ? version.workspace || '' : previewCwd || cwd || p?.cwd || '';
     host.innerHTML = '<div class="empty" style="padding:24px 8px">코드 구조와 핵심 모듈을 분석하는 중…</div>';
 
@@ -480,7 +483,7 @@
         </div>
         <div class="row" style="gap:6px;flex-wrap:wrap">
           <button type="button" class="btn-sm" id="fmPreviewMd" title="아키텍처 & 품질 보고서 전문 미리보기 · 산출물 저장">${ico.file || ''} 보고서 보기</button>
-          ${p?.id && !previewCwd ? '<button type="button" class="btn-sm" id="fmShareDiagram">공유용 다이어그램 만들기</button>' : ''}
+          ${canShareDiagram ? '<button type="button" class="btn-sm" id="fmShareDiagram">공유용 다이어그램 만들기</button>' : ''}
           <details class="fm-exports"><summary>보고서 내보내기</summary><div class="row">
             ${allowSave ? `<button type="button" class="btn-sm" id="fmSaveArtifact" title="FLOORPLAN.md" ${savingReport ? 'disabled' : ''}>${ico.plus || ''} ${saveLabel}</button>` : ''}
             <button type="button" class="btn-sm" id="fmCopyMd" title="실무자 공유용 마크다운 아키텍처 보고서 복사">${ico.copy || ''} 복사</button>
@@ -854,14 +857,12 @@
       if (share && !share.disabled) {
         share.disabled = true;
         try {
-          const query = new URLSearchParams({ id: p.id, ...(version ? { version: version.number } : {}) });
-          const sessionId = termCtx?.sessionId || currentSessionId() || '';
-          const termId = termCtx?.termId || (state.sel.kind === 'term' ? state.sel.id : '');
+          const query = new URLSearchParams({ id: p?.id || '', ...(version ? { version: version.number } : {}) });
           const { artifact } = await api('/api/projects/floorplan/diagram?' + query, {
-            method: 'POST', requireOk: true, body: { sessionId, termId, locale: document.documentElement.lang },
+            method: 'POST', requireOk: true, body: { sessionId: diagramSession, termId: diagramTerm, locale: document.documentElement.lang },
           });
           if (gen !== viewGen || !host.contains(share)) return;
-          await openArtifact(sessionId, artifact, floorplanDiagramUrl(artifact.id));
+          await openArtifact(diagramSession, artifact, floorplanDiagramUrl(artifact.id));
         } catch (error) {
           toast(error.message, 5000, 'danger');
         } finally {

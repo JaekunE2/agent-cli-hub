@@ -493,15 +493,20 @@ function createProjectRoutes(hub) {
       const pid = url.searchParams.get('id') || '';
       const rawCwd = url.searchParams.get('cwd') || '';
       const proj = pid ? projects.list().find((x) => x.id === pid) : null;
-      if (diagramRoute && !proj) {
+      if (diagramRoute && pid && !proj) {
         send(res, 404, { error: '프로젝트를 찾을 수 없습니다.' });
         return true;
       }
       let temporary;
       try {
+        const selection = diagramRoute ? await body(req) : {};
+        const session = String(selection?.sessionId || '');
+        const termId = String(selection?.termId || (/^term:\d+$/.test(session) ? session.slice(5) : ''));
+        const term = termId ? hub.terms?.get(termId) : null;
+        const record = session && !session.startsWith('term:') ? index.get(session) : null;
         const version = findVersion(pid, url.searchParams.get('version'));
         const commit = version?.completedCommit || version?.baseCommit;
-        let targetDir = (diagramRoute ? '' : rawCwd) || proj?.cwd || '';
+        let targetDir = diagramRoute ? (proj?.cwd || term?.cwd || record?.cwd || '') : (rawCwd || proj?.cwd || '');
         if (version) {
           targetDir = version.workspace || (version.snapshotId
             ? path.join(versionFolder(path.join(VERSION_DIR, 'snapshots'), pid, version.number), version.snapshotId) : '');
@@ -521,7 +526,6 @@ function createProjectRoutes(hub) {
         const floorplan = scanFloorplan(targetDir);
         if (diagramRoute) {
           if (!floorplan.exists || !floorplan.nodes?.length) throw new Error('다이어그램으로 만들 코드가 없습니다.');
-          const selection = await body(req);
           let revision = commit || '';
           let dirty = !!version && !temporary;
           if (!temporary) {
@@ -540,11 +544,10 @@ function createProjectRoutes(hub) {
             } catch {}
           }
           const artifact = await saveDiagram(baseDir, targetDir, floorplan, {
-            title: proj.name, commit: revision, dirty, locale: selection.locale, scannedAt: floorplan.scannedAt,
+            title: proj?.name || path.basename(targetDir), commit: revision, dirty,
+            locale: selection?.locale, scannedAt: floorplan.scannedAt,
           });
-          const term = hub.terms?.get(String(selection.termId || ''));
-          const session = String(selection.sessionId || '');
-          const key = session && (index.get(session) || term?.sessionId === session)
+          const key = session && (record || term?.sessionId === session)
             ? session : term ? `term:${term.id}` : '';
           const pinned = key ? !!hub.artifactsMod.pinFile(key, artifact.path, '프로젝트 아키텍처 다이어그램') : false;
           send(res, 200, { ok: true, artifact, pinned });
